@@ -113,7 +113,7 @@ class PluginPackageTests(unittest.TestCase):
         build_mod = importlib.util.module_from_spec(build_spec)
         build_spec.loader.exec_module(build_mod)
         assembled, parts = build_mod.assemble_bytes(ROOT / "src" / "overlay")
-        self.assertEqual(len(parts), 14)   # 04- 前缀两文件；v350 移除手机 chips 采集分片后为 14
+        self.assertEqual(len(parts), 19)   # 04- 前缀七文件（词包+速度 V3 五分片+rotator 数据）；v384 增至 19
         self.assertEqual(assembled, (ROOT / "overlay.js").read_bytes())
         self.assertEqual(assembled, (PLUGIN / "overlay.js").read_bytes())
         self.assertEqual(build_mod.main(["--check"], root=ROOT), 0)

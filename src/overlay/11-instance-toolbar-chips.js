@@ -272,13 +272,18 @@
       var chipSpan = (v.kind === "live" || v.sessAvg)
         ? speedSpan(sess.started, sess.last_at)
         : speedSpan(last.startedAt, last.endedAt);
-      /* v255：精简模式速度 chip 也走 V2 整卡（此前只接了全量状态条两条路径，
-       * compact 下 hover 一直显示旧「统计口径 + 10 根粗柱」）。筛选/悬停状态挂数据包，
-       * tpsTip 浮层委托见模块层；旧快照缺轮表时原样回退旧摘要卡。 */
-      var cv2 = spdRebuildOr(t && t.speedHistory, (t && t.speedSel) ||
-        { range: "recent", period: "recent", dim: "time" },
-        (t && typeof t.speedHover === "number") ? t.speedHover : -1, t && t.speedLive,
-        { fmtTok: fmt, fmtCnt: countFmt, fmtMoney: state.cost ? fmtMoney : null }, sess);
+      /* v255：精简模式速度 chip 也走整卡（v384 起 V3：模型筛选/五视图/悬停明细）。
+       * 筛选/悬停状态挂数据包，tpsTip 浮层委托见模块层；旧快照缺轮表时原样回退旧摘要卡。 */
+      var cv2 = (typeof spd3RebuildOr === "function"
+        ? spd3RebuildOr(t && t.speedHistory, (t && t.speedDays) ||
+            (typeof lastSpeedDays !== "undefined" && lastSpeedDays) || null,
+          (t && t.speedSel) ||
+            { range: "recent", period: "recent", dim: "time",
+              filt: (typeof spd3FilterAuto === "function" ? spd3FilterAuto() : { mode: "auto", keys: null }),
+              pop: { open: false, query: "" }, expanded: false },
+          (t && typeof t.speedHover === "number") ? t.speedHover : -1, t && t.speedLive,
+          { fmtTok: fmt, fmtCnt: countFmt, fmtMoney: state.cost ? fmtMoney : null }, sess)
+        : null);
       if (cv2) return cv2((t && typeof t.speedHover === "number") ? t.speedHover : -1, t.speedSel);
       try { FATAL.spdTip = { t: Date.now(), src: "fb-chip",
         turns: t && t.speedHistory && t.speedHistory.turns ? t.speedHistory.turns.length : -1 }; } catch (_) { }
@@ -433,10 +438,20 @@
       }
       var prevT = chip.__zuT;
       chip.__zuT = { v: v, view: lastView, buildTip: tpsChipTipHTML,
-        /* v255：V2 轮表与筛选/悬停状态随 chip 包走，10Hz 心跳不重置用户选择 */
+        /* v255：轮表与筛选/悬停状态随 chip 包走，10Hz 心跳不重置用户选择；v384 加 speedDays */
         speedHistory: (state.data && state.data.speed_history) || (prevT && prevT.speedHistory) ||
           (typeof lastSpeedHistory !== "undefined" && lastSpeedHistory) || null,
-        speedSel: (prevT && prevT.speedSel) || { range: "recent", period: "recent", dim: "time" },
+        speedDays: (state.data && state.data.speed_days) || (prevT && prevT.speedDays) ||
+          (typeof lastSpeedDays !== "undefined" && lastSpeedDays) || null,
+        speedSel: (prevT && prevT.speedSel &&
+          prevT.sessId === ((lastView && lastView.session && lastView.session.sid) || "")) ? prevT.speedSel :
+          /* v384 m6：会话变化不继承旧 pane 筛选（实例链 07:627 同款重置语义）。
+           * 身份取 lastView.session.sid——本函数作用域无 sess 变量（S7 P1 实测
+           * ReferenceError），chip 面的会话归属与格面同源。 */
+          { range: "recent", period: "recent", dim: "time",
+            filt: (typeof spd3FilterAuto === "function" ? spd3FilterAuto() : { mode: "auto", keys: null }),
+            pop: { open: false, query: "" }, expanded: false },
+        sessId: (lastView && lastView.session && lastView.session.sid) || "",
         speedHover: prevT && typeof prevT.speedHover === "number" ? prevT.speedHover : -1,
         speedLive: v.kind === "live" ? v.sv : null };
       var lite = bar.classList.contains("zu-light");

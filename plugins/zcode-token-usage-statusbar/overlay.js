@@ -756,6 +756,11 @@
    * 轮表是历史统计，分钟级陈旧可接受（v257 同取舍），下一帧成功即覆盖。 */
   var lastSpeedHistory = (typeof window !== "undefined" && window.__zusageSpdSticky) || null;
   if (mobileMode) lastSpeedHistory = null;
+  /* v384：speed_days（全历史日桶）同款粘性——旧 Python/serve 重启窗口缺帧时兜底，
+   * 语义与轮表粘性一致（历史统计分钟级陈旧可接受），下一帧成功即覆盖。逐帧独立
+   * 捕获/回填（M3/S10：不挂在缺轮表分支，否则正常帧永不更新）。 */
+  var lastSpeedDays = (typeof window !== "undefined" && window.__zusageSpdDaysSticky) || null;
+  if (mobileMode) lastSpeedDays = null;
   function renderAll(rebuildPanels) {
     if (rateTipFor) showRateTip(rateTipFor);
     for (var i = 0; i < instances.length; i++) {
@@ -901,19 +906,35 @@
       }
       FATAL.spdFrame = { t: Date.now(), has: mc.row && d.speed_history ? 1 : 0, sticky: 0, turns: 0 };
     }
+    /* v384（M3/S10 修复）：speed_days 粘性逐帧独立执行，不再挂在「缺轮表」分支——
+     * 正常帧恒有 speed_history，原位会让捕获/回填在主路径死代码化（speed_days 单独
+     * 瞬时失败时既不回填也不更新）。语义：新帧有 days 即捕获+写 window；缺 days
+     * （None）回填粘性；days 在场但空/畸形不粘不回填（与轮表空帧不粘同口径）。 */
+    if (!isMobile) {
+      if (d.speed_days && d.speed_days.days && d.speed_days.days.length) {
+        lastSpeedDays = d.speed_days;
+        try { window.__zusageSpdDaysSticky = lastSpeedDays; } catch (_) { }
+      } else if (!d.speed_days && typeof lastSpeedDays !== "undefined" && lastSpeedDays) {
+        d.speed_days = lastSpeedDays;
+      }
+    }
     /* v255：粘性统一轮表。常驻 serve 重启/空闲回收时主进程会回退到一次性 json，
      * 那一帧可能缺 speed_history；沿用本代最近一份有界轮表，速度 Tooltip 不再
      * 在 V2 与旧版整卡之间闪回。首帧尚无轮表（旧 Python/查询失败）才回退旧布局。 */
     if (!isMobile && d.speed_history && d.speed_history.turns && d.speed_history.turns.length) {
       lastSpeedHistory = d.speed_history;
       try { window.__zusageSpdSticky = lastSpeedHistory; } catch (_) { }
-      FATAL.spdFrame = { t: Date.now(), has: 1, sticky: 0, turns: d.speed_history.turns.length };   // v257 帧级诊断
+      /* v257 帧级诊断 + v384 sd 分量：has/sticky/turns=轮表链，sd=本帧（含粘性回填后）
+       * speed_days 在场与否——M3/S10 修复前该链无诊断分量，分支错位不可见。 */
+      FATAL.spdFrame = { t: Date.now(), has: 1, sticky: 0, turns: d.speed_history.turns.length,
+        sd: d.speed_days ? 1 : 0 };
     } else if (!isMobile) {
       var stickyHit = !d.speed_history && typeof lastSpeedHistory !== "undefined" && lastSpeedHistory;
       if (stickyHit) d.speed_history = lastSpeedHistory;
       /* v257 帧级诊断：缺字段/None 帧记 0，粘性补帧记 1——再出现象时 diag 直接可定位是
        * 数据链缺帧还是粘性未建立，不再靠截图反推。原地更新不替换对象（FATAL 共享引用）。 */
-      FATAL.spdFrame = { t: Date.now(), has: 0, sticky: stickyHit ? 1 : 0, turns: 0 };
+      FATAL.spdFrame = { t: Date.now(), has: 0, sticky: stickyHit ? 1 : 0, turns: 0,
+        sd: d.speed_days ? 1 : 0 };
     }
     if (!isMobile && d.remote_today) for (var key in d.remote_today) {
       if (d.remote_today[key] && typeof d.remote_today[key] === "object") {
@@ -1470,7 +1491,60 @@
       }
     }
   }
-  tpsTip.addEventListener("pointerdown", tpsTabActivate);
+  /* v384 V3 模型筛选交互（compact 链镜像 06 分片 spd3Activate）：状态存 chip 数据包
+   * t.speedSel（10Hz 心跳不重置），改完清 __zuTipSig 让 showTpsTip 幂等重编。
+   * toggle 动作非同值幂等：pointerdown 独占鼠标路径，click 只认键盘（e.detail===0）。 */
+  function tpsSpd3Activate(e) {
+    var el = tpsTipFor;
+    if (!el || !el.__zuT) return false;
+    var t = el.__zuT, s3 = t.speedSel;
+    var hit = e.target && e.target.closest ? e.target.closest(
+      ".zu-sv3-chip,.zu-sv3-fpop-row,.zu-sv3-fsearch,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-more]") : null;
+    if (!hit || !s3 || typeof spd3FilterToggle !== "function") return false;
+    if (!s3.filt) s3.filt = (typeof spd3FilterAuto === "function") ? spd3FilterAuto() : { mode: "auto", keys: null };
+    if (!s3.pop) s3.pop = { open: false, query: "" };
+    var key = hit.getAttribute("data-k");
+    if (key && (hit.classList.contains("zu-sv3-chip") || hit.classList.contains("zu-sv3-fpop-row"))) {
+      spd3FilterToggle(s3.filt, key);
+    } else if (hit.classList.contains("zu-sv3-fsearch")) {
+      s3.pop.open = !s3.pop.open;
+    } else if (hit.hasAttribute("data-sv3-all")) {
+      /* v384 B2：同 06 分片——SPD3_POOL 是对象数组，全选取 key 串 */
+      spd3FilterOnly(s3.filt, (typeof SPD3_POOL !== "undefined" && SPD3_POOL || []).map(function (pm) { return pm.key; }));
+    } else if (hit.hasAttribute("data-sv3-none")) {
+      spd3FilterOnly(s3.filt, []);
+    } else if (hit.hasAttribute("data-sv3-reset")) {
+      spd3FilterAll(s3.filt);
+    } else if (hit.hasAttribute("data-sv3-more")) {
+      s3.expanded = !s3.expanded;
+    } else return false;
+    if (!s3.pop.open) s3.pop.query = "";
+    t.speedHover = -1;
+    tpsTip.__zuTipSig = "";
+    showTpsTip(el);
+    /* v384 M2：弹层刚打开焦点移入搜索框（showTpsTip 同步重编完成） */
+    if (s3.pop.open) {
+      var fi3 = tpsTip.querySelector(".zu-sv3-fpop-input");
+      if (fi3 && fi3.focus) fi3.focus();
+    }
+    return true;
+  }
+  /* v384 M3：tpsTip 链补 mousedown 阻断名单（镜像 06 同名名单；搜索输入框豁免，
+   * 否则点击无法聚焦——v362 sysTip 同款镜像先例）。防 tip 内交互把焦点移出编辑器。 */
+  tpsTip.addEventListener("mousedown", function (e) {
+    var t = e.target;
+    if (!t || !t.closest) return;
+    var interactive = t.closest(".zu-sv-tab") || t.closest(".zu-sv3-fbar") ||
+      (t.closest(".zu-sv3-fpop") && !t.classList.contains("zu-sv3-fpop-input")) || t.closest(".zu-sv3-more");
+    if (interactive) {
+      e.stopPropagation();
+      if (e.preventDefault) e.preventDefault();
+    }
+  });
+  tpsTip.addEventListener("pointerdown", function (e) {
+    if (tpsSpd3Activate(e)) return;
+    tpsTabActivate(e);
+  });
   tpsTip.addEventListener("click", function (e) {
     var el = tpsTipFor;   // hideTpsTip 会清 tpsTipFor，回调目标先取
     if (!el) return;
@@ -1488,19 +1562,28 @@
     }
     /* v255：V2 双 Tab 走 tpsTip 本体委托（全量 tip 的同款逻辑），只改 chip 数据包，
      * 由 showTpsTip 签名幂等重编；不新增全局监听、不重建浮层。
-     * v263：鼠标路径提前到 pointerdown（见 tpsTabActivate），此处保留键盘与兜底。 */
+     * v263：鼠标路径提前到 pointerdown（见 tpsTabActivate），此处保留键盘与兜底。
+     * v384：V3 筛选 toggle 动作 click 只认键盘路径（e.detail===0）。 */
+    if (e.detail === 0 && tpsSpd3Activate(e)) return;
     tpsTabActivate(e);
   });
-  /* 柱 hover/键盘焦点：委托重建整卡，信息卡随串自愈，不额外挂逐柱监听。 */
+  /* 柱 hover/键盘焦点：委托重建整卡，信息卡随串自愈，不额外挂逐柱监听。
+   * v384 m5（镜像 06 同名守卫）：重建销毁聚焦柱节点，先记焦点、重建后归位。 */
   function tpsSpeedPick(idx) {
     var t = tpsTipFor && tpsTipFor.__zuT;
     if (!t || t.speedHover === idx) return;
+    var hadFocus = tpsTip.contains(document.activeElement) &&
+      document.activeElement.closest && document.activeElement.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit");
     t.speedHover = idx;
     tpsTip.__zuTipSig = "";
     showTpsTip(tpsTipFor);
+    if (hadFocus && idx >= 0) {
+      var nu3 = tpsTip.querySelector('.zu-sc-col[data-i="' + idx + '"],.zu-hm-cell[data-i="' + idx + '"],.zu-sv3-hit[data-i="' + idx + '"]');
+      if (nu3 && nu3.focus) nu3.focus();
+    }
   }
   tpsTip.addEventListener("mouseover", function (e) {
-    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
+    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit");
     if (col) tpsSpeedPick(parseInt(col.getAttribute("data-i"), 10) || 0);
     var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
     if (lb) spdLegendTipShow(lb);   // v281：问号 hover 即显档位说明
@@ -1513,28 +1596,84 @@
         spdLegendTipScheduleHide();
       return;
     }
-    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
+    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit");
     if (!col) return;
-    if (to && to.closest && to.closest(".zu-sc-col,.zu-hm-cell")) return;
+    if (to && to.closest && to.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit")) return;
     tpsSpeedPick(-1);
   });
   tpsTip.addEventListener("focusin", function (e) {
-    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
+    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit");
     if (col) tpsSpeedPick(parseInt(col.getAttribute("data-i"), 10) || 0);
     var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
     if (lb) spdLegendTipShow(lb);   // v281：键盘聚焦问号同样显示
   });
   tpsTip.addEventListener("focusout", function (e) {
-    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
-    if (col && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest(".zu-sc-col,.zu-hm-cell"))) tpsSpeedPick(-1);
+    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit");
+    if (col && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit"))) tpsSpeedPick(-1);
     var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
     if (lb && !(e.relatedTarget && e.relatedTarget.closest && (e.relatedTarget.closest(".zu-sv-legend-btn") || e.relatedTarget.closest(".zu-sv-legend-tip"))))
       spdLegendTipScheduleHide();
   });
   /* v281：浮层开着时 Escape 只收档位说明（本链无既存 Escape 监听，语义成立；
-   * 全量 tip 链的 legend 分支并入其 v254 既存 keydown，见 spawnInstance 内） */
+   * 全量 tip 链的 legend 分支并入其 v254 既存 keydown，见 spawnInstance 内）。
+   * v384：V3 筛选弹出层最先收（焦点归还搜索按钮），再走档位说明分层。 */
   tpsTip.addEventListener("keydown", function (e) {
-    if (e.key === "Escape" && spdLegendTip.style.display === "block") { e.stopPropagation(); spdLegendTipHide(); }
+    /* v384 M1：方向键移动（镜像 06 分片同款步长表）。 */
+    var ac3 = e.target && e.target.closest && e.target.closest(".zu-hm-cell,.zu-sv3-hit");
+    if (ac3 && typeof e.key === "string" && e.key.indexOf("Arrow") === 0) {
+      var idx3 = parseInt(ac3.getAttribute("data-i"), 10);
+      if (idx3 >= 0) {
+        var isHit3 = ac3.classList.contains("zu-sv3-hit");
+        var isHist3 = !isHit3 && !!ac3.closest(".zu3-hh-grid");
+        var step3 = e.key === "ArrowRight" ? (isHit3 || !isHist3 ? 1 : 7)
+          : e.key === "ArrowLeft" ? (isHit3 || !isHist3 ? -1 : -7)
+          : e.key === "ArrowDown" ? (isHist3 ? 1 : 7)
+          : e.key === "ArrowUp" ? (isHist3 ? -1 : -7) : 0;
+        if (step3) {
+          var nu3 = tpsTip.querySelector('.zu-hm-cell[data-i="' + (idx3 + step3) + '"],.zu-sv3-hit[data-i="' + (idx3 + step3) + '"]');
+          if (nu3 && nu3 !== ac3) {
+            e.preventDefault();
+            ac3.setAttribute("tabindex", "-1");
+            nu3.setAttribute("tabindex", "0");
+            if (nu3.focus) nu3.focus();
+          } else if (!nu3) e.preventDefault();
+          return;
+        }
+      }
+    }
+    if (e.key !== "Escape") return;
+    var t3 = tpsTipFor && tpsTipFor.__zuT, s3 = t3 && t3.speedSel;
+    if (s3 && s3.pop && s3.pop.open) {
+      e.stopPropagation();
+      s3.pop.open = false; s3.pop.query = "";
+      tpsTip.__zuTipSig = "";
+      showTpsTip(tpsTipFor);
+      var fsBtn3 = tpsTip.querySelector(".zu-sv3-fsearch");
+      if (fsBtn3 && fsBtn3.focus) fsBtn3.focus();
+      return;
+    }
+    if (spdLegendTip.style.display === "block") { e.stopPropagation(); spdLegendTipHide(); }
+  });
+  /* v384 V3 筛选弹出层搜索：input 委托挂 tpsTip 本体；只重渲染弹出层并回填焦点/光标，
+   * 全卡签名不动（下一次完整重编自然携带最新 query）。 */
+  tpsTip.addEventListener("input", function (e) {
+    var inp = e.target && e.target.classList && e.target.classList.contains("zu-sv3-fpop-input") ? e.target : null;
+    if (!inp) return;
+    var t3 = tpsTipFor && tpsTipFor.__zuT, s3 = t3 && t3.speedSel;
+    if (!s3) return;
+    if (!s3.pop) s3.pop = { open: false, query: "" };
+    s3.pop.query = inp.value || "";
+    var pop = inp.closest(".zu-sv3-fpop");
+    if (pop && typeof spd3FilterPopHTML === "function") {
+      var pool3 = (typeof SPD3_POOL !== "undefined" && SPD3_POOL) || [];
+      pop.innerHTML = spd3FilterPopHTML(pool3, s3.filt, s3.pop.query);
+      var ni3 = pop.querySelector(".zu-sv3-fpop-input");
+      if (ni3) {
+        ni3.value = s3.pop.query;
+        if (ni3.focus) ni3.focus();
+        try { ni3.setSelectionRange(ni3.value.length, ni3.value.length); } catch (_) { }
+      }
+    }
   });
   var TPS_HIDE_DELAY_MS = 180, tpsHideTimer = 0;
   function scheduleTpsHide() {
@@ -1641,15 +1780,15 @@
       /* v279：柱状图横滚位置跨重编记忆（用户实报 全部×全部 拉到末尾、关闭再开回到
        * 开头）——重建前从旧 DOM 连同选择键（data-sv-key）一起捕获，键同才回填：
        * hover/心跳重编不跳回头部，关闭再开（含期间数据刷新）恢复原位置，切换
-       * 范围/时间后键变自动归零；空态/V1 图无 .zu-sv-root 键不参与。 */
-      var sw0 = tpsTip.querySelector(".zu-sc-wrap"), sr0 = tpsTip.querySelector(".zu-sv-root"), st0 = null;
+       * 范围/时间后键变自动归零；空态/V1 图无 .zu-sv3-root 键不参与。 */
+      var sw0 = tpsTip.querySelector(".zu-sc-wrap"), sr0 = tpsTip.querySelector(".zu-sv3-root"), st0 = null;
       if (sw0 && sr0) {
         var oldKey = sr0.getAttribute("data-sv-key") || "";
         st0 = !wasVisible ? (tpsTip.__zuChartScroll && tpsTip.__zuChartScroll.key === oldKey ? tpsTip.__zuChartScroll : null) : { key: oldKey, x: sw0.scrollLeft };
       }
       tpsTip.innerHTML = html;
       if (st0) {
-        var sw1 = tpsTip.querySelector(".zu-sc-wrap"), sr1 = tpsTip.querySelector(".zu-sv-root");
+        var sw1 = tpsTip.querySelector(".zu-sc-wrap"), sr1 = tpsTip.querySelector(".zu-sv3-root");
         if (sw1 && sr1 && (sr1.getAttribute("data-sv-key") || "") === st0.key) sw1.scrollLeft = st0.x;
         else if (sw1 && sw1.hasAttribute && sw1.hasAttribute("data-sv-end"))
           sw1.scrollLeft = sw1.scrollWidth;   /* v291：键变进入全部历史=本图无有效记忆，滚到最新区 */
@@ -1669,7 +1808,7 @@
       if (typeof fitModelNames === "function") fitModelNames(tpsTip);
       if (rebuilt || !wasVisible) {
         if (!rebuilt) st0 = tpsTip.__zuChartScroll || null;
-        var fittedChart = tpsTip.querySelector(".zu-sc-wrap"), fittedRoot = tpsTip.querySelector(".zu-sv-root");
+        var fittedChart = tpsTip.querySelector(".zu-sc-wrap"), fittedRoot = tpsTip.querySelector(".zu-sv3-root");
         if (fittedChart && st0 && fittedRoot && (fittedRoot.getAttribute("data-sv-key") || "") === st0.key) fittedChart.scrollLeft = st0.x;
         else if (fittedChart && fittedChart.hasAttribute && fittedChart.hasAttribute("data-sv-end")) fittedChart.scrollLeft = fittedChart.scrollWidth;
       }
@@ -1677,10 +1816,10 @@
     }
     /* v297：tpsTip 链同款月历网格量测回写（动态字号数据源，见 08 drawTip 同名块）。
      * v298 起挂 display:block 之后——隐藏态量测全 0 会把下一帧字号压到 6px 下限。 */
-    var mgEl2 = tpsTip.querySelector(".zu-hm-grid--mon");
+    var mgEl2 = tpsTip.querySelector(".zu3-hm-grid");
     if (mgEl2) {
       var mgr2 = mgEl2.getBoundingClientRect();
-      var monRoot2 = mgEl2.closest && mgEl2.closest(".zu-sv-root");
+      var monRoot2 = mgEl2.closest && mgEl2.closest(".zu-sv3-root");
       var monZoom2 = parseFloat(monRoot2 && monRoot2.style && monRoot2.style.zoom) || 1;
       window.__zusageSpdMonRect = { w: mgr2.width / monZoom2, h: mgr2.height / monZoom2 };
     }
@@ -1702,7 +1841,7 @@
   function hideTpsTip() {
     cancelTpsHide();
     if (tpsTip.style.display !== "none") {
-      var closingChart = tpsTip.querySelector(".zu-sc-wrap"), closingRoot = tpsTip.querySelector(".zu-sv-root");
+      var closingChart = tpsTip.querySelector(".zu-sc-wrap"), closingRoot = tpsTip.querySelector(".zu-sv3-root");
       if (closingChart && closingRoot) tpsTip.__zuChartScroll = { key: closingRoot.getAttribute("data-sv-key") || "", x: closingChart.scrollLeft };
     }
     tpsTip.style.display = "none";
@@ -1732,7 +1871,7 @@
   function spdHoverPortalPlace(tipEl, idx) {
     if (!(idx >= 0) || !tipEl || !tipEl.isConnected) { spdHoverPortalHide(); return; }
     /* v291：热力图格子与柱体共用 data-i 定位契约 */
-    var col = tipEl.querySelector('.zu-sc-col[data-i="' + idx + '"],.zu-hm-cell[data-i="' + idx + '"]');
+    var col = tipEl.querySelector('.zu-sc-col[data-i="' + idx + '"],.zu-hm-cell[data-i="' + idx + '"],.zu-sv3-hit[data-i="' + idx + '"]');
     if (!col) { spdHoverPortalHide(); return; }
     var cr = col.getBoundingClientRect();
     /* 柱体滚出可视绘图区即收：与 wrap 视口无交叠不再显示（不显示错位卡）。
@@ -3780,78 +3919,9 @@
   function spdRangeFull(a, b) {
     return (a ? spdFull(a) : "—") + " – " + (b ? spdFull(b) : "—");
   }
-  /* 轮表解包：t 是相对上一轮完成时刻的 delta（升序还原），s/msl 是索引表下标。
-   * 任何字段缺失/非法都丢弃该轮，不让畸形远端/旧快照污染统计。 */
-  /* 按 speed_history 对象引用缓存解包结果：updateLive 心跳/store 通知与悬停重编会反复经 spdAnalyze
-   * 解包同一份轮表（6000 轮约 5ms/次，占整张速度卡生成的 95%）。同一帧内引用恒定；新帧是新 JSON
-   * 对象自然失效，引用相等即内容相等，零陈旧风险。WeakMap 随帧对象回收，无需上限。
-   * 结果只读：spdAnalyze/spdAggregate 只 filter/slice 出新数组、不改行对象；轮数守卫防原地追加。 */
-  var SPD_UNPACK_MEMO = new WeakMap();
-  function spdUnpack(h) {
-    if (!h || !h.turns || typeof h.turns.length !== "number" || !h.sids || !h.snames) return null;
-    var memo = SPD_UNPACK_MEMO.get(h);
-    if (memo && memo.n === h.turns.length) return memo.res;
-    var res = spdUnpackRaw(h);
-    SPD_UNPACK_MEMO.set(h, { n: h.turns.length, res: res });
-    return res;
-  }
-  function spdUnpackRaw(h) {
-    var sids = h.sids, snames = h.snames, pids = h.pids || [], mnames = h.mnames || [];
-    var out = [], prev = 0;
-    for (var i = 0; i < h.turns.length; i++) {
-      var r = h.turns[i];
-      if (!r || typeof r.t !== "number" || !isFinite(r.t)) continue;
-      var t = prev + r.t;
-      prev = t;
-      var outv = spdNum(r.out), ms = spdNum(r.ms);
-      if (!(outv > 0 && ms > 0) || !(typeof r.s === "number" && sids[r.s])) continue;
-      var models = [];
-      if (r.msl && typeof r.msl.length === "number") {
-        for (var j = 0; j < r.msl.length; j++) {
-          var p = r.msl[j];
-          if (p && typeof p[0] === "number" && mnames[p[0]] && spdNum(p[1]) > 0)
-            models.push({ m: mnames[p[0]], o: spdNum(p[1]) });
-        }
-      }
-      var meta = pids[r.s] || ["", ""];
-      out.push({ s: r.s, sid: sids[r.s], sname: snames[r.s] || sids[r.s],
-        pid: meta[0] || "", pname: meta[1] || sids[r.s],
-        t: t, b: spdNum(r.b) || t, out: outv, ms: ms,
-        i: spdNum(r.i), o: spdNum(r.o), n: spdNum(r.n), models: models,
-        c: (typeof r.c === "number" && isFinite(r.c)) ? r.c : null, cf: !!r.cf });
-    }
-    return { turns: out, sid: h.sid || "", source: h.source || "", truncated: !!h.truncated };
-  }
-  /* 统一聚合器：任何桶/柱/均值都走 Σ有效输出 ÷ Σ生成窗口，绝不逐轮算术平均。
-   * 每柱携带 hover 五字段所需完整元数据（时间区间/速度/模型/Token/请求数/费用完整性）。 */
-  function spdAggregate(rows, withNames) {
-    var out = 0, ms = 0, i = 0, o = 0, n = 0, turns = 0, models = {}, c = 0, priced = false, costFull = true;
-    var t0 = Infinity, t1 = 0, last = 0;
-    for (var k = 0; k < rows.length; k++) {
-      var r = rows[k];
-      out += r.out; ms += r.ms; i += r.i; o += r.o; n += r.n; turns++;
-      if (r.b < t0) t0 = r.b;
-      if (r.t > t1) t1 = r.t;
-      if (r.t >= last) last = r.t;
-      for (var j = 0; j < r.models.length; j++) {
-        var m = r.models[j];
-        models[m.m] = (models[m.m] || 0) + m.o;
-      }
-      if (r.c !== null) { c += r.c; priced = true; costFull = costFull && r.cf; }
-      else costFull = false;
-    }
-    if (!ms) return null;
-    var ml = [];
-    for (var name in models) if (models[name] > 0) ml.push({ m: name, o: models[name] });
-    ml.sort(function (a, b) { return b.o - a.o; });
-    var res = { v: out / (ms / 1000), out: out, ms: ms, i: i, o: o, n: n, turns: turns,
-      models: ml.slice(0, 8), modelCount: ml.length, t0: isFinite(t0) ? t0 : 0, t1: t1,
-      last: last, c: priced ? c : null, costFull: priced && costFull };
-    /* 2026-11-09 用户规格：模型行悬停列表不省略——仅整体口径（withNames）额外产出
-     * 全量模型名；逐柱/逐桶聚合不产（热力图数百桶 × 名单，白耗分配） */
-    if (withNames) res.modelNames = ml.map(function (x) { return x.m; });
-    return res;
-  }
+  /* v291 前的本页存留注释见 git 历史；v384 起 V2 专属函数（spdUnpack/spdAggregate/
+   * spdAnalyze/spdTabRow/spdHeadHTML/spdLeftHTML/spdCardHTML/spdChartHTML/spdRebuildOr/
+   * speedCardV2HTML/月历与历史热力图）已删除，由 04-speed-v3-*.js 分片接替。 */
   /* 本地自然时间桶键：hour/day/week/month/quarter/year，轮归属只看完成时刻。 */
   function spdBucket(t, unit) {
     var d = spdDate(t), y = d.getFullYear(), mo = d.getMonth(), day = d.getDate();
@@ -3880,210 +3950,7 @@
     if (unit === "quarter") return d.getFullYear() + " Q" + (Math.floor(d.getMonth() / 3) + 1);
     return String(d.getFullYear());
   }
-  function spdPeriodPrefix(p) {
-    return p === "today" ? SPD_L("今天", "Today") : p === "week" ? SPD_L("近 7 天", "Last 7 days")
-      : p === "month" ? SPD_L("本月", "This month") : p === "recent" ? SPD_L("最近", "Recent")
-      : SPD_L("历史", "History");
-  }
-  /* 20 种组合 + 3 维度的唯一入口。返回 {items, range, title, unit, dimension, notice}。
-   * items 每柱 = spdAggregate 结果 + {label, full, a, b}，空数据不补位、不显 0 t/s。 */
-  function spdAnalyze(h, sel) {
-    var u = spdUnpack(h);
-    if (!u) return null;
-    var range = sel.range, period = sel.period, now = Date.now();
-    /* v272：维度切换功能移除（用户裁定），图表恒按时间聚合；「项目」范围恢复当前项目
-     * 语义（否则与「全部」完全等价），四 Tab 递进：最近=当前会话 16 轮 / 会话=当前
-     * 会话全部 / 项目=当前项目全部会话 / 全部=全库，均按时间。 */
-    var dim = "time";
-    // paneSid 由调用点从本窗口/分栏可信身份注入（同一帧推给所有窗，绝不用帧里 sid）
-    var paneSid = sel.sid || "";
-    var panePid = "";
-    for (var pi = 0; pi < u.turns.length; pi++) if (u.turns[pi].sid === paneSid) { panePid = u.turns[pi].pid; break; }
-    var pool = u.turns, notice = "";
-    if (range === "session" || range === "recent") pool = pool.filter(function (r) { return r.sid === paneSid; });
-    else if (range === "project") pool = pool.filter(function (r) { return panePid && r.pid === panePid; });
-    // 全部 + 远端身份：本地库不能冒充远端历史，明确降级到本会话并提示
-    var remote = !!sel.remote;
-    if (remote && range === "all") { range = "session"; pool = pool.filter(function (r) { return r.sid === paneSid; }); notice = SPD_L("远端会话仅显示本会话历史", "Remote pane: local session history only"); }
-    if (u.truncated && !notice) notice = SPD_L("历史较长，仅统计最近可用轮次", "Long history: recent turns only");
-    var a = 0, b = 0;
-    var todayStart = new Date(now).setHours(0, 0, 0, 0);
-    var weekStart = todayStart - 6 * 86400000;
-    var monthStart = new Date(new Date(now).getFullYear(), new Date(now).getMonth(), 1).getTime();
-    if (period === "today") { a = todayStart; b = now; }
-    else if (period === "week") { a = weekStart; b = now; }
-    else if (period === "month") { a = monthStart; b = now; }
-    if (a) pool = pool.filter(function (r) { return r.t >= a && r.t <= b; });
-    // 范围「最近」在该周期过滤之后取最近 16 个有效轮（时间窗先行、16 轮上限在后）——
-    // 月历/历史图上 16 轮之前的同月日期会如实显示为无记录，稀疏说明已带轮数限定
-    if (range === "recent") pool = pool.slice(-SPD_BARS_MAX);
-    var items = [], unit = "", title = "";
-    if (period === "recent") {
-      pool = pool.slice(-SPD_BARS_MAX);
-      for (var i = 0; i < pool.length; i++) {
-        var agg = spdAggregate([pool[i]]);
-        /* 2026-11-09 用户规格：柱底只显时分，v263 跨日日期行（dayLabel）移除——
-         * 30px 柱宽下两行标签展示不全，月日由图表头范围行与悬停卡承载 */
-        if (agg) items.push(Object.assign(agg, { label: spdShort(pool[i].t, "turn"),
-          full: spdFull(pool[i].b) + " – " + spdFull(pool[i].t),
-          a: pool[i].b, b: pool[i].t, single: true }));
-      }
-      unit = "turn";
-      title = SPD_L("最近 " + items.length + " 轮 · 生成速度", "Last " + items.length + " turns · speed");
-    } else {
-      // 按时间粒度：今天恒按小时（含空桶）；v291 起其余时间 Tab（近 7 天/本月/全部）
-      // 全部按日——「全部」切历史热力图需要完整日粒度桶，原跨度自适应月/季/年
-      // 柱状图随热力图改造一并退役。
-      if (pool.length) {
-        if (period === "today") unit = "hour";
-        else unit = "day";
-        var buckets = {}, bkeys = [];
-        for (var w = 0; w < pool.length; w++) {
-          var bk = spdBucket(pool[w].t, unit);
-          if (!buckets[bk]) { buckets[bk] = []; bkeys.push(bk); }
-          buckets[bk].push(pool[w]);
-        }
-        bkeys.sort(function (x, y) { return x - y; });
-        // 今天：00:00→当前小时全桶，无数据显空柱而非零速度；
-        // v273：有效桶 ≤3 且全桶 ≥4 时默认聚焦有效时段。2026-11-07 用户规格：
-        // 覆盖提示与「显示完整时间轴」切换按钮移除——聚焦即默认形态（收放
-        // 条件读 sel.focus 的逻辑保留，当前无 UI 再改写该值）。
-        if (period === "today") {
-          bkeys = [];
-          for (var hr = 0; hr <= new Date(now).getHours(); hr++) bkeys.push(todayStart + hr * 3600000);
-          var fullKeys = bkeys.slice(0), realKeys = [];
-          for (var fk = 0; fk < fullKeys.length; fk++) if ((buckets[fullKeys[fk]] || []).length) realKeys.push(fullKeys[fk]);
-          if (sel.focus !== "full" && realKeys.length && realKeys.length <= 3 && fullKeys.length >= 4) bkeys = realKeys;
-        }
-        for (var bi = 0; bi < bkeys.length; bi++) {
-          var bk2 = bkeys[bi], rows = buckets[bk2] || [], bg = spdAggregate(rows);
-          var nb = spdNextBucket(bk2, unit);
-          items.push(bg ? Object.assign(bg, { label: spdLabel(bk2, unit, true), full: spdFull(bk2) + " – " + spdFull(Math.min(nb, now)), a: bk2, b: nb, single: false })
-            : { v: null, label: spdLabel(bk2, unit, true), full: spdFull(bk2) + " – " + spdFull(nb), a: bk2, b: nb, empty: true });
-        }
-      }
-      /* v292（用户规格 2026-11-08）：标题去掉粒度词（每日/每小时）——「范围 · 时间 · 平均速度」
-       * 三段式，粒度由图表形态自明（今天恒小时、其余恒日），不再进标题。 */
-      var prefix = period === "today" ? SPD_L("今天", "Today") : period === "week" ? SPD_L("近 7 天", "Last 7 days")
-        : period === "month" ? SPD_L("本月", "This month") : SPD_L("历史", "History");
-      title = (range === "project" ? SPD_L("当前项目 · ", "Current project · ") : "") +
-        prefix + SPD_L(" · 平均速度", " · average speed");
-    }
-    /* v295.7（用户规格）：恢复顺序时间（旧→新，最新柱在最右）——v290 的倒序撤销；
-     * real 与峰值/最低/最新均按时间戳比较不受顺序影响；spanA/spanB 取自 pool。 */
-    var real = items.filter(function (x) { return !x.empty; });
-    var overall = spdAggregate(pool, true);
-    var spanA = a || (pool.length ? pool[0].b : 0);
-    var spanB = b || (pool.length ? pool[pool.length - 1].t : 0);
-    if (period === "all" && pool.length) { spanA = pool[0].b; spanB = pool[pool.length - 1].t; }
-    var peak = null, low = null, latest = null;
-    for (var z = 0; z < real.length; z++) {
-      if (!peak || real[z].v > peak.v) peak = real[z];
-      if (!low || real[z].v < low.v) low = real[z];
-      if (!latest || real[z].last > latest.last) latest = real[z];
-    }
-    /* 2026-11-07 用户规格：覆盖提示（v273 cov、v274「暂无足够数据」尾缀）、
-     * 聚焦切换按钮与聚焦提示整体移除——图表头只留标题/单位/档位入口/时间范围。 */
-    return { items: items, real: real, overall: overall, range: range, period: period, dim: "time",
-      dims: ["time"], title: title, unit: unit, spanA: spanA, spanB: spanB,
-      peak: peak, low: low, latest: latest, notice: notice, truncated: u.truncated };
-  }
 
-  function spdTabRow(group, list, cur, labels) {
-    var out = '<div class="zu-sv-tabs" data-sv-group="' + group + '">';
-    for (var i = 0; i < list.length; i++) {
-      out += '<button type="button" class="zu-sv-tab' + (list[i] === cur ? " on" : "") +
-        '" data-sv-group="' + group + '" data-sv-val="' + spdEsc(list[i]) + '"' +
-        (list[i] === cur ? ' aria-pressed="true"' : ' aria-pressed="false"') + '>' +
-        spdEsc(labels[list[i]]) + "</button>";
-    }
-    return out + "</div>";
-  }
-  /* v278 顶部单行 Header：标题居左，范围/时间双 Tab 组成一个连续操作区整体靠右
-   * （filter margin-left:auto），替代旧「标题一行 + 独立筛选行 + 时间胶囊」三段式；
-   * 窄窗 flex-wrap 降级——Tab 组整体换到标题第二行仍右对齐，不裁剪不挤压。
-   * 顶部时间胶囊删除，统计时间改由图表标题栏右端承载（spdChartHTML）。 */
-  function spdHeadHTML(an) {
-    var rl = { recent: SPD_L("最近", "Recent"), session: SPD_L("会话", "Session"),
-      project: SPD_L("项目", "Project"), all: SPD_L("全部", "All") };
-    var pl = { recent: SPD_L("最近", "Recent"), today: SPD_L("今天", "Today"),
-      week: SPD_L("近 7 天", "7 days"), month: SPD_L("本月", "Month"), all: SPD_L("全部", "All") };
-    return '<div class="zu-sv-head"><div class="zu-sv-title">' + spdEsc(SPD_L("生成速度", "Generation speed")) + "</div>" +
-      '<div class="zu-sv-filter"><span class="zu-sv-flabel">' + spdEsc(SPD_L("范围", "Scope")) + "</span>" +
-      spdTabRow("range", SPD_RANGES, an.range, rl) +
-      '<span class="zu-sv-time"><span class="zu-sv-flabel">' + spdEsc(SPD_L("时间", "Time")) + "</span>" +
-      spdTabRow("period", SPD_PERIODS, an.period, pl) + "</span></div>" +
-      (an.notice ? '<div class="zu-sv-notice">' + spdEsc(an.notice) + "</div>" : "") + "</div>";
-  }
-  /* v298.2：左卡标题随时间 Tab（用户规格五命名）；EN 简洁对译 */
-  function spdLeftTitle(period) {
-    /* v303.4：跟随 SPD_BARS_MAX（此前硬编码 16 与柱数上限脱节） */
-    var t = { recent: SPD_L("最近" + SPD_BARS_MAX + "轮", "Last " + SPD_BARS_MAX + " turns"), today: SPD_L("今天", "Today"),
-      week: SPD_L("近7天", "Last 7 days"), month: SPD_L("本月", "This month"),
-      all: SPD_L("近一年", "Last year") }[period] || SPD_L("平均", "Average");
-    return t + SPD_L("平均速度", " · average speed");
-  }
-  /* 左统计卡：当前状态（实时估算与历史均值分离）/ 主均值 / 档位 / 峰值·最低·最新 */
-  function spdLeftHTML(an, live) {
-    var avg = an.overall ? an.overall.v : null;
-    var bd = avg != null ? tpsBand(avg) : null;
-    /* 实时状态（工具执行中/思考中/生成中）与历史均值分离：状态只作独立 note，
-     * 不再当整卡标题，避免「工具执行中 65.2 t/s」被误读成工具速度。 */
-    var spdLiveStatus = live && live.statusText ? live.statusText : "";
-    var main = avg != null ? (avg % 1 ? avg.toFixed(1) : String(avg)) : "—";
-    var fmtV = function (x) { return x == null ? "—" : (x.v % 1 ? x.v.toFixed(1) : String(x.v)); };
-    var stat = function (lb, x) {
-      var b2 = x && x.v != null ? tpsBand(x.v) : null;
-      return '<span class="zu-sl-stat"><i>' + spdEsc(lb) + "</i><b" + (b2 ? ' class="' + b2.cls + '"' : "") + ">" +
-        spdEsc(fmtV(x)) + "</b></span>";
-    };
-    /* v278：标题行改「平均速度」+ 小号「历史统计」标识（规格 §7 第一层），原
-     * .zu-sl-k 独立标签行删除（语义并入标题）；实时状态仍为行尾轻量标识不抢主数字 */
-    /* v298.4（用户规格）：档位徽标下方展示当前筛选池对应模型名——与左卡均速同池
-     * （an.overall.models 已按 Σ输出降序）；单模型直显全名，多模型显主模型 +N
-     * （悬停带全列表）；池空不显该行。
-     * 2026-11-09 用户实报：宿主内原生 title 不弹（生成期重建打断 + Electron 宿主
-     * 对 title 气泡不可靠，同轮播分区先例）——改纯 CSS data-tip 伪元素气泡。
-     * 同日用户规格：悬停列表**不省略**——用整体口径全量 modelNames（spdAggregate
-     * withNames 产出），不再以 models 上限 8 截断加 …。 */
-    var modelLine = "", modelFull = "";
-    if (an.overall && an.overall.models && an.overall.models.length) {
-      var mm = an.overall.models;
-      modelLine = mm[0].m;
-      var fullNames = (an.overall.modelNames && an.overall.modelNames.length)
-        ? an.overall.modelNames : mm.map(function (m2) { return m2.m; });
-      modelFull = fullNames.join(", ");
-      if (an.overall.modelCount > 1) {
-        modelLine += " +" + (an.overall.modelCount - 1);
-      }
-    }
-    return '<div class="zu-speed-left zu-sv-left"><div class="zu-sl-status">' +
-      /* v298.2（用户规格）：删「历史统计」标识，标题随时间 Tab 命名 */
-      '<span class="zu-sl-title">' + spdEsc(spdLeftTitle(an.period)) + "</span>" +
-      (spdLiveStatus ? '<span class="zu-sl-sub">' + spdEsc(spdLiveStatus) + "</span>" : "") + "</div>" +
-      '<div class="zu-sl-body">' +
-      '<div class="zu-sl-main"><span class="zu-sl-val' + (bd ? " " + bd.cls : " dim") + '">' + main +
-      '</span><small class="zu-sl-unit">t/s</small></div>' +
-      (bd ? '<div class="zu-speed-bandtag"><b class="' + bd.cls + '" style="font-weight:600">' +
-        spdEsc(tpsBandText(bd)) + "</b></div>" : "") +
-      /* v304.2（用户规格）：模型名升级为立方体 SVG 胶囊（与档位胶囊同视觉语言；
-       * 多模型=「主模型 +N」，title 全列表不变） */
-      (modelLine ? '<div class="zu-sl-model" data-tip="' + spdEsc(modelFull) + '" aria-label="' + spdEsc(modelFull) + '">' +
-        '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-        '<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>' +
-        '<span class="zu-model-fit">' + spdEsc(modelLine) + "</span></div>" : "") +
-      /* v263：口径公式行删除（规格点名「删除大段统计口径文字」，语义由图例 ⓘ title 承载）。
-       * v307（用户规格）：「生成中估 X t/s」note 行删除——生成中估算只留标题旁
-       * 「生成中（估算）」徽标，瞬时估算值不再与历史均值同卡并列（完成态会话均
-       * 被误标「生成中估」的边界一并消失）。 */
-      "</div>" +
-      /* 2026-11-09 用户规格：单柱 zu-sl-solo 弱化删除——近 7 天/本月/全部聚合后常
-       * 只有一根柱，峰值/最低/最新档位色恒与多柱态一致（CSS 规则同步删） */
-      '<div class="zu-sl-stats">' + stat(SPD_L("峰值", "Peak"), an.peak) + stat(SPD_L("最低", "Low"), an.low) +
-      stat(SPD_L("最新", "Latest"), an.latest) + "</div></div>";
-  }
-  /* 柱 hover 五字段卡：时间（聚合桶显完整区间）/ 速度（档位色）/ 模型（多模型 N 种）/
-   * Token 总消耗（input 已含缓存、output 已含思考，不重复相加）/ 预估价格（缺失显暂无估价）。 */
   /* v270：聚合桶区间同日压缩（右侧只补时分秒），跨日全量；配 CSS 换行兜底，
    * 避免长区间被 nowrap 省略号截断（用户实报） */
   function spdCompactRange(a, b) {
@@ -4094,161 +3961,11 @@
       return spdFull(a) + " – " + hms(d2);
     return spdFull(a) + " – " + spdFull(b);
   }
-  function spdCardHTML(item, hoverIdx, o) {
-    if (!(hoverIdx >= 0) || !item || item.empty) return "";
-    var bd = tpsBand(item.v);
-    var cls = "zu-sv-card" + (bd ? " " + bd.cls : "");
-    var modelTxt, modelFull;
-    if (!item.models || !item.models.length) {
-      modelTxt = SPD_L("未知模型", "Unknown model"); modelFull = modelTxt;
-    } else if (item.modelCount > 1 || item.models.length > 1) {
-      var n = item.modelCount || item.models.length;
-      modelTxt = SPD_L("多模型（" + n + " 种）", n + " models");
-      modelFull = item.models.slice(0, 4).map(function (m) { return m.m; }).join(", ") + (n > 4 ? " …" : "");
-    } else {
-      modelTxt = item.models[0].m; modelFull = modelTxt;
-    }
-    var tok = item.i + item.o;
-    var tokLine = (o && typeof o.fmtTok === "function" ? o.fmtTok(tok) : String(tok)) +
-      SPD_L(" token", " tokens");
-    var sub = SPD_L("（输入 ", " (in ") + (o && typeof o.fmtTok === "function" ? o.fmtTok(item.i) : String(item.i)) +
-      SPD_L(" · 输出 ", " · out ") + (o && typeof o.fmtTok === "function" ? o.fmtTok(item.o) : String(item.o)) + SPD_L("）", ")");
-    var cost;
-    if (!o || !o.fmtMoney) cost = '<span class="zu-sv-off">' + spdEsc(SPD_L("费用显示已关闭", "Cost display off")) + "</span>";
-    else if (item.c === null) cost = '<span class="zu-sv-off">' + spdEsc(SPD_L("暂无估价", "Estimate unavailable")) + "</span>";
-    else cost = spdEsc(o.fmtMoney(item.c)) + (!item.costFull ? '<i class="zu-sv-partial">' + spdEsc(SPD_L(" · 含兜底估价", " · partly estimated")) + "</i>" : "");
-    /* v291：tv=悬停卡时间覆写（热力图日格显「2026-11-06 周五」整日形态），
-     * 缺省保持聚合桶区间压缩逻辑不变 */
-    var timeVal = item.tv || spdCompactRange(item.a, item.b);
-    return '<div class="' + cls + '" role="tooltip"><div class="zu-sv-crow"><span>' + spdEsc(SPD_L("时间", "Time")) +
-      '</span><b class="zu-sv-twrap" title="' + spdEsc(item.full) + '">' + spdEsc(timeVal) + "</b></div>" +
-      '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("速度", "Speed")) + '</span><b class="zu-sv-cval' +
-      (bd ? " " + bd.cls : "") + '">' + (item.v % 1 ? item.v.toFixed(1) : String(item.v)) + " t/s</b></div>" +
-      '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("模型型号", "Model")) + '</span><b class="zu-model-fit" title="' + spdEsc(modelFull) + '">' + spdEsc(modelTxt) + "</b></div>" +
-      '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("Token 总消耗", "Total tokens")) + '</span><b>' + spdEsc(tokLine) +
-      '<small>' + spdEsc(sub) + "</small></b></div>" +
-      '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("预估价格", "Est. cost")) + "</span><b>" + cost + "</b></div></div>";
-  }
-  /* v274：统一图表布局参数入口（§5.1）——柱宽/间距/稀疏化密度由此一处决定，
-   * 用数据密度驱动布局，不按 Tab 名写死。 */
-  /* v280 P0：柱 hover 信息卡侧信道——spdChartHTML 构建时产出卡片 HTML（纯字符串，
-   * 不触 DOM，VM 切片安全），宿主重编后经 spdHoverPortalSync 渲染到 body 级 Portal。
-   * 每次构建都整体覆写（未悬停/空柱=空串），消费即清，跨帧/跨 tip 不串。 */
+
   var SPD_PORTAL = "";
-  function spdChartLayout(n) {
-    return {
-      colPitch: 24,                                   /* v295.17：每柱 24px（柱 14 + 10px 间距） */
-      spacerW: Math.max(240, n * 24 + 12),            /* plot 撑宽（少柱拉满容器、多桶横滚） */
-      valEvery: Math.max(1, Math.ceil(n / 8)),        /* 柱顶数值稀疏化（防 16 柱重叠） */
-      single: n === 1
-    };
-  }
-  /* v291 图表标题栏/空态提取（原 spdChartHTML 内联段）：三态图表（柱状图/本月月历
-   * 热力图/全部历史热力图）共用同一标题行（标题 + t/s 单位徽章 + 档位说明入口 +
-   * 统计时间）与空态。sub=可选副题（历史热力图「按日聚合 · 自适应密度」）。
-   * v272：维度下拉移除；v273：数据覆盖提示 + 聚焦/完整轴切换按钮；
-   * v278：统计时间从顶部胶囊迁到标题栏右端（margin-left:auto + 钳边省略，
-   * title 挂完整 YYYY-MM-DD HH:mm:ss 区间），单位紧随标题不再独占右端 */
-  function spdChartHeadHTML(an, sub) {
-    var ico = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/></svg>';
-    /* v281→v285：档位说明入口（单位旁）。v285 换专用 Speed Bands SVG（细圆环 +
-     * 三级递增速度柱，currentColor 继承按钮色态）替代通用问号；「单位：t/s」收为
-     * 轻量「t/s」标签。data-sv-band 携带当前平均速度档位 cls——浮层高亮随整卡
-     * 重编自动更新；空数据空串不高亮。 */
-    var qico = '<svg viewBox="0 0 20 20" width="18" height="18" fill="none" aria-hidden="true" focusable="false">' +
-      '<circle cx="10" cy="10" r="8.15" stroke="currentColor" stroke-width="1.3" stroke-opacity="0.72"/>' +
-      '<path d="M6.35 13.2V10.9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-opacity="0.68"/>' +
-      '<path d="M10 13.2V8.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-opacity="0.88"/>' +
-      '<path d="M13.65 13.2V6.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>' +
-      '</svg>';
-    return '<div class="zu-sc-head"><span class="zu-sc-title">' + spdEsc(an.title) + "</span>" +
-      '<span class="zu-sc-unit">t/s</span>' +
-      '<button type="button" class="zu-sv-legend-btn" data-sv-band="' + (an.overall ? tpsBand(an.overall.v).cls : "") +
-      '" aria-haspopup="true" aria-expanded="false" title="' + spdEsc(SPD_L("查看速度档位说明", "View speed bands")) +
-      '" aria-label="' + spdEsc(SPD_L("查看速度档位说明", "View speed bands")) + '">' + qico + "</button>" +
-      (sub ? '<span class="zu-sc-sub zu-hm-sub">' + spdEsc(sub) + "</span>" : "") +
-      /* 2026-11-07 用户规格：覆盖提示/聚焦切换按钮/聚焦提示三段渲染删除 */
-      '<span class="zu-sv-range" title="' + spdEsc(spdRangeFull(an.spanA, an.spanB)) + '">' + ico +
-      "<span>" + spdEsc(spdRangeText(an.spanA, an.spanB)) + "</span></span></div>";
-  }
-  function spdChartEmptyHTML(head) {
-    return '<div class="zu-speed-chart zu-sv-chart">' + head +
-      '<div class="zu-sv-empty">' + spdEsc(SPD_L("当前筛选无有效速度数据", "No rated turns for this filter")) +
-      '<span class="zu-sv-empty-hint">' + spdEsc(SPD_L("尝试选择更长时间范围", "Try a longer time range")) + "</span></div></div>";
-  }
-  /* 动态柱状图：细柱定宽居中、X 轴稀疏、Y 轴整洁刻度、无均值虚线。 */
-  function spdChartHTML(an, hoverIdx, o) {
-    var items = an.items, n = items.length;
-    var L = spdChartLayout(n);
-    SPD_PORTAL = "";
-    var head = spdChartHeadHTML(an, "");
-    if (!n) return spdChartEmptyHTML(head);
-    var maxV = 0;
-    for (var i = 0; i < n; i++) if (!items[i].empty && items[i].v > maxV) maxV = items[i].v;
-    var yMax = 0, step = 0;
-    var mant = [1, 2, 2.5, 5, 6, 7.5];
-    for (var K = 0; K <= 6 && !yMax; K++) for (var kk = 0; kk < mant.length; kk++) {
-      var st = mant[kk] * Math.pow(10, K);
-      if (st * 4 >= maxV * 1.12) { yMax = st * 4; step = st; break; }
-      if (st * 5 >= maxV * 1.12) { yMax = st * 5; step = st; break; }
-    }
-    if (!yMax) { step = Math.pow(10, Math.ceil(Math.log(Math.max(maxV, 1)) / Math.LN10)); yMax = step * 4; }
-    var ticks = [], div = Math.round(yMax / step);
-    for (var ti = 0; ti <= div; ti++) ticks.push(step * ti);
-    var H = 148, valEvery = L.valEvery;
-    /* v290 用户规格（2026-11-08）：每根柱都展示时间——字号降至 8px 后 5 字符标签
-     * 在 30px 列宽内可容纳，稀疏化废弃 */
-    /* v295.17（用户规格）：柱距 24px 下时间恢复每柱显示（相邻间隔 24px > 5 字符
-     * 宽 ~21px，互不重叠）；2026-11-09 用户规格：跨日日期行（v263 dayLabel）移除，
-     * 柱底恒单行时分（最近/今天 Tab），月日由图表头范围行承载 */
-    function xShown() { return true; }
-    /* v274：柱顶数值稀疏化——n>8 时按 valEvery 抽稀（首末恒显、悬停柱恒显），
-     * 未显示柱由 hover 信息卡兜底完整数值 */
-    function valShown(idx, isCur) {
-      if (isCur) return true;
-      return n <= 8 || idx === n - 1 || idx === 0 || idx % valEvery === 0;
-    }
-    var cols = "";
-    for (var c = 0; c < n; c++) {
-      var it = items[c], isCur = c === hoverIdx, bd = it.empty ? null : tpsBand(it.v);
-      var hPct = it.empty ? 0 : Math.max(1.2, Math.round(it.v / yMax * 1000) / 10);
-      var xTxt = "";
-      if (xShown(c)) xTxt = "<b>" + spdEsc(it.label) + "</b>";
-      cols += '<div class="zu-sc-col' + (isCur ? " cur" : "") + (it.empty ? " empty" : "") +
-        (c === n - 1 ? " latest" : "") +   /* 顺序时间：最新柱在最右 */
-        '" role="img" tabindex="0" data-i="' + c + '" aria-label="' +
-        spdEsc(it.label + "，" + (it.empty ? SPD_L("无数据", "no data") : (it.v.toFixed(1) + " t/s"))) + '">' +
-        '<span class="zu-sc-vz"><span class="zu-sc-val">' + (it.empty || !valShown(c, isCur) ? "" : it.v.toFixed(1)) + "</span>" +
-        '<i class="zu-sc-bar' + (bd ? " " + bd.cls : "") + '" style="height:' + hPct + '%"></i></span>' +
-        '<span class="zu-sc-x">' + xTxt + "</span></div>";
-    }
-    var grid = "", gutter = "";
-    for (var g = 0; g < ticks.length; g++) {
-      var pct = Math.round(ticks[g] / yMax * 1000) / 10;
-      grid += '<i style="bottom:' + pct + '%"' + (ticks[g] ? "" : ' data-base="1"') + "></i>";
-      gutter += '<i' + (g === ticks.length - 1 ? ' class="top" style="bottom:calc(100% - 13px)"' : ' style="bottom:' + pct + '%"') + ">" + ticks[g] + "</i>";
-    }
-    /* v280 P0：信息卡不再内嵌 plot（被 .zu-sc-wrap 的 overflow 滚动容器裁剪）——
-     * 改经 SPD_PORTAL 侧信道产出纯字符串，由宿主（showTpsTip/zuSpeedChartPick）
-     * 渲染到 body 级 Portal 并按柱体屏幕坐标定位。空柱/未悬停产出空串=Portal 收起。 */
-    SPD_PORTAL = (hoverIdx >= 0 && items[hoverIdx] && !items[hoverIdx].empty)
-      ? spdCardHTML(items[hoverIdx], hoverIdx, o) : "";
-    /* v273：plot 自适应——in-flow spacer 撑宽（多桶触发横滚），min-width 拉满容器，
-     * 柱组 flex 居中；网格/Y 轴/hover 定位共享同一 plot 坐标系 */
-    /* v295.13（用户规格）：首开滚到最右——时间顺序后最新数据在最右，窄容器横滚时
-     * 默认定位最新（data-sv-end 由 drawTip/showTpsTip 既有分支消费，横滚记忆仍优先） */
-    /* v295.18（用户规格）：Y 轴刻度列移出滚动容器（列宽 30px 固定，横向滚动时
-     * 刻度不随滚，同「全部」热力图左侧星期列模式）；plot 不再留 30px 缩进 */
-    return '<div class="zu-speed-chart zu-sv-chart">' + head +
-      '<div class="zu-sv-plotrow"><div class="zu-sv-gutcol"><span class="zu-sc-gutter">' + gutter + '</span></div>' +
-      '<div class="zu-sc-wrap" data-sv-end="1"><div class="zu-sv-plot"><i class="zu-sv-spacer" style="width:' + L.spacerW + 'px"></i>' +
-      '</span><span class="zu-sc-grid">' + grid + '</span>' +
-      '<span class="zu-sv-bars' + (n >= 10 ? ' zu-sv-bars--spread' : '') + '">' + cols + "</span></div></div></div>";
-  }
-  /* v281：档位说明浮层内容（底部常驻图例移除，改由图表标题栏问号按钮承载）。
-   * 十档自 TPS_BANDS 升序生成（颜色/星标/文案与柱体、chip 同源唯一事实）；
-   * curCls=当前平均速度档位 cls（按钮 data-sv-band 随整卡重编自动更新），空串不高亮。
-   * TPS_BANDS 数组为降序存储，倒序循环即得「从低到高」展示序（Goal §六）。 */
+  /* v384：V2 块删除时 spdLegendCardHTML 一并消失，但 01 分片 spdLegendTipShow（档位
+   * 说明浮层，热力/柱图表头共用）仍消费它——按 fork/main 原文恢复（TPS_BANDS 倒序
+   * 循环升序展示；Ultra 渐变圆点由 .zu-sv-li 作用域规则承载，CSS 仍留 06 分片）。 */
   function spdLegendCardHTML(curCls) {
     var out = '<div class="zu-sv-lg-head"><span class="zu-sv-lg-title">' + spdEsc(SPD_L("档位说明", "Speed bands")) +
       '</span><span class="zu-sv-lg-sub">' + spdEsc(SPD_L("生成速度 t/s", "Generation speed (t/s)")) + "</span></div>" +
@@ -4259,35 +3976,6 @@
         b.cls + '">' + (b.lo === 0 ? "&lt;" + TPS_BANDS[TPS_BANDS.length - 2].lo : b.hi ? b.lo + "–" + b.hi : "≥" + b.lo) + "</b></span>";
     }
     return out + "</div>";
-  }
-  /* 纯函数桥：三处 speedTipRebuild 调用共用。无统一轮表返回 null（旧布局逐字回退），
-   * 有则把实例闭包状态烘进重建函数——Tab 切换/hover 改闭包后重调即整卡刷新，
-   * 不引用任何实例内符号，VM 源码切片夹具也能直接跑（测试纪律）。 */
-  function spdRebuildOr(h, sel, hover, liveOrSess, o, paneSess) {
-    if (!h || !h.turns || typeof h.turns.length !== "number" || !h.turns.length) {
-      /* v261：null 原因取证（typeof FATAL 守卫，VM 切片夹具无 FATAL 不炸）。 */
-      try { if (typeof FATAL !== "undefined" && FATAL) FATAL.spdNull =
-        { t: Date.now(), hType: typeof h, hasTurns: !!(h && h.turns),
-          len: h && h.turns ? h.turns.length : -1 }; } catch (_) { }
-      return null;
-    }
-    var sess = paneSess || null;
-    var live = liveOrSess || null;
-    /* 闭包是 IIFE 顶层函数，读不到 spawnInstance 内的 speedChartHover/speedSel。
-     * 由调用方在每次重建时显式传入当前实例值（curHover/curSel）；缺省回退到生成时
-     * 快照，VM 切片夹具无实例状态时仍可跑。sel 是同一可变对象（会话切换原地改属性）。 */
-    return function (curHover, curSel) {
-      var cur = curSel || sel;
-      var opts = { speedHistory: h,
-        sel: { range: cur.range, period: cur.period, dim: cur.dim,
-          /* remote 判定只认快照 remote 标（上游 v287 热修吸收，2026-11-07）：
-           * 本地 scoped 行也带 workspace_identity，旧判定把本地 pane 误当远端，
-           * 选「全部」被静默降级为本会话并显虚假远端提示 */
-          sid: (sess && sess.sid) || "", remote: !!(sess && sess.remote) },
-        live: live, segsHover: (typeof curHover === "number" ? curHover : hover),
-        fmtTok: o.fmtTok, fmtCnt: o.fmtCnt, fmtMoney: o.fmtMoney };
-      return "\x01" + speedCardV2HTML(opts);
-    };
   }
   /* 模型名按实际宽度缩小至不低于 10px，仍放不下时保留既有省略兜底。 */
   function fitModelNames(root) {
@@ -4306,7 +3994,26 @@
   /* 只按筛选栏和左卡量尺寸，不读取图表横滚内容，避免随历史桶数量撑宽。 */
   function spdFitTip(tip, reset) {
     if (!tip || !tip.querySelector || !tip.style) return;
-    var root = tip.querySelector(".zu-sv-root");
+    /* v384：V3 卡（.zu-sv3-root）自带 920×480 基准、--ui-font-size 缩放与内部横滚，
+     * 这里只做视口兜底——清 V2 遗留 zoom、宽高钳进视口，并维护 __zuSpeedSize 供
+     * tpsTip 链的「视口尺寸变化才重适配」判定；旧 .zu-sv-root 量测分支保留防热更
+     * 过渡期旧卡在挂。 */
+    var root = tip.querySelector(".zu-sv3-root");
+    if (root) {
+      var vw0 = window.innerWidth, vh0 = window.innerHeight;
+      if (!(vw0 > 0 && vh0 > 0) || !root.getBoundingClientRect) return;
+      root.style.zoom = "";
+      root.style.maxWidth = Math.max(1, vw0 - 24) + "px";
+      root.style.maxHeight = Math.max(1, vh0 - 16) + "px";
+      tip.__zuSpeedSize = { w: 0, h: 0, left: 0, vw: vw0, vh: vh0, font: 0 };
+      if (typeof tip.style.removeProperty === "function") {   /* VM 夹具 style 桩无该方法 */
+        tip.style.removeProperty("--zu-sv-width");
+        tip.style.removeProperty("--zu-sv-height");
+        tip.style.removeProperty("--zu-sv-left-width");
+      }
+      return;
+    }
+    root = tip.querySelector(".zu-sv-root");
     if (!root) {
       tip.__zuSpeedSize = null;
       tip.style.removeProperty("--zu-sv-width");
@@ -4361,310 +4068,6 @@
     height = Math.min(maxH, Math.max(300, height, previous ? previous.h : 0));
     tip.style.setProperty("--zu-sv-height", height + "px");
     tip.__zuSpeedSize = { w: width, h: height, left: leftWidth, vw: vw, vh: vh, font: fontSize };
-  }
-  /* V2 整卡（v278 三层）：单行 Header（标题居左 + 双 Tab 组整体靠右）→ 左统计卡 +
-   * 右动态图（统计时间在图表标题栏右端）→ 单行十档对照。到此结束。 */
-  function speedCardV2HTML(o) {
-    var an = spdAnalyze(o.speedHistory, o.sel || {});
-    if (!an) return "";
-    /* v279：根节点携带选择键（范围|时间）——横滚位置记忆的键（drawTip/showTpsTip
-     * 同键回填、换键归零），不涉及统计口径 */
-    var selKey = spdEsc(((o.sel && o.sel.range) || "") + "|" + ((o.sel && o.sel.period) || ""));
-    return '<div class="zu-stat-tip zu-stat-tip--speed zu-sv-root" data-sv-key="' + selKey + '">' +
-      /* v280 P1：tip 定宽（此前只钳 max-width，宽度=内容 max-content——plot spacer 与
-       * 图表头文案随 Tab 变化让整卡在 ~700-960px 间跳动）。width+max-width 同值 !important
-       * 压过 .tip 的 width:max-content 与 tpsTip 内联 max-width:520；border-box 含内边距。
-       * v283：定宽值 960→800（用户规格，与宿主 dock 对齐构图协调）。 */
-      /* v292（用户规格）：整卡高度固定 315px（border-box）——四种图表形态同高，
-       * 切 Tab 不跳高；内部 .zu-sv-root 走 flex column，图表区吃剩余高度自适应 */
-      /* v295（用户规格）：tooltip 收为 800×300 卡（v295.1 用户更正）。布局决策：
-       * ①祖先层仍纯 height 链（tip 定高 300 → tbody 100% → 卡 100%，flex 只留卡自身）；
-       * ②本月月历态（:has(.zu-hm-month)）隐藏左统计卡、热力图 6 列均分铺满全卡
-       *   （30 天整除零空位；31 天末格跨行尾，永不留空隙）；
-       * ③tbody 纵向 auto——其它 Tab（柱状/历史）内容超高时滚动而非裁切；
-       * ④滚动条隐藏、ultra 抑制等既有契约不变。 */
-      '<style>.zusage-tip-root:has(.zu-sv-root),.zusage-tps-tip:has(.zu-sv-root){width:var(--zu-sv-width,min(760px,calc(100vw - 24px)))!important;max-width:calc(100vw - 24px)!important;height:var(--zu-sv-height,300px)!important;max-height:calc(100vh - 16px)!important;box-sizing:border-box!important;overflow-y:auto!important;overflow-x:hidden!important}' +
-      '.zu-sv-measure .zu-sv-head{width:max-content!important;max-width:none!important;flex-wrap:nowrap!important}.zu-sv-measure .zu-sv-filter,.zu-sv-measure .zu-sv-tabs{flex-wrap:nowrap!important}' +
-      '.zu-sv-measure-height:has(.zu-sv-root){height:auto!important;max-height:none!important}.zusage-tip-root.zu-sv-measure-height:has(.zu-sv-root) .tbody,.zusage-tps-tip.zu-sv-measure-height:has(.zu-sv-root) .tbody,.zusage-tip-root.zu-sv-measure-height:has(.zu-sv-root) .zu-sv-root,.zusage-tps-tip.zu-sv-measure-height:has(.zu-sv-root) .zu-sv-root{height:auto!important;max-height:none!important;overflow:visible!important}.zu-sv-measure-height .zu-speed-body{min-height:180px!important}.zu-sv-measure-height .zu-sv-left .zu-sl-body{min-height:max-content!important}' +
-      /* v303.1：tbody padding 归零——速度卡根带 zu-stat-tip 类会吃到 06:887 的
-       * 12px 15px（与根 .tip 10px 13px 叠成 22/28 双层），与紧凑四卡统一后的
-       * 单层 10px 13px 不一致（真机 segH 实证 tbody 278−24=root 254） */
-      /* 右缘幽灵预留槽归零——基础 .tbody 的 scrollbar-gutter:stable（06:831，六卡
-       * 纵滚防跳动用）在速度卡上是纯空耗：卡 height:100% 恒等于 tbody 高、纵向
-       * 永不滚动，滚动条永不出现但 stable 仍恒预留 thin 滚动条槽位（QA 实测
-       * tbody 732 vs 卡 721，右缘 11px 死空隙；devtools 元素高亮把该非内容区
-       * 涂成 padding 绿，即用户实报「右侧绿色区域」）。速度卡不恢复 stable——
-       * 极端字号溢出时 auto 让滚动条自然出现，代价仅该极端帧压缩 11px。 */
-      '.zusage-tip-root:has(.zu-sv-root) .tbody,.zusage-tps-tip:has(.zu-sv-root) .tbody{height:100%!important;box-sizing:border-box!important;overflow:hidden!important;overflow-y:auto!important;padding:0!important;scrollbar-gutter:auto!important}' +
-      /* v295.2：tpsTip 链生产上无 .tbody（直塞卡），该规则空匹配无害；harness 复刻页
-       * 带 tbody 层，缺这条会让 tbody 高度悬空、卡 height:100% 回落内容高溢出被裁 */
-      '.zusage-tip-root:has(.zu-sv-root) .zu-sv-root,.zusage-tps-tip:has(.zu-sv-root) .zu-sv-root{height:100%!important;min-height:0!important;box-sizing:border-box!important;display:flex;flex-direction:column;overflow:visible}' +
-      /* 300 小卡：本月态隐藏左统计卡（热力图铺满），其余 Tab 左卡纵排换行 */
-      '.zusage-tip-root:has(.zu-sv-root) .zu-sv-root:has(.zu-hm-month) .zu-sv-filter{flex-wrap:wrap}' +
-      /* 滚动条隐藏：新 Chromium（Fluent/overlay 滚动条）忽略 ::-webkit-scrollbar，
-       * 标准属性 scrollbar-width 必须写在元素本身（写进伪元素无效，v293.1 曾写错位置） */
-      '.zusage-tip-root .zu-sc-wrap,.zusage-tps-tip .zu-sc-wrap,.zu-sv-portal .zu-sc-wrap{scrollbar-width:none!important}' +
-      '.zusage-tip-root .zu-sc-wrap::-webkit-scrollbar,.zusage-tps-tip .zu-sc-wrap::-webkit-scrollbar,.zu-sv-portal .zu-sc-wrap::-webkit-scrollbar{display:none!important}' +
-      /* v298.1：柱状图 Y 轴刻度/网格锁定柱区基线。根因：V1 遗留 .zu-sc-gutter/
-       * .zu-sc-grid 固定 height:160px 在 V2 只声明 top+bottom 时仍然胜出（V2 规则
-       * 不含 height；绝对定位 top+height 同设时 bottom 被忽略）——刻度列被锁 160px
-       * 下坠，「0」压进时间标签行（真机 segH 实测 gutter h=160、tick 0 与 x0 重叠）。
-       * 此处显式 height:auto 让 top+bottom 生效，并按柱区基线对齐：
-       * gutter bottom=21px（wrap padding 5 + x 标签 16，刻度「0」字形中心恰落在
-       * 柱底基线）；grid bottom=16px（0% 网格线贴柱底基线，100% 贴绘图区顶）。
-       * 仅作用柱状图——:not 排除月历/历史热力图两态（其 gutcol 语义不同）。 */
-      '.zu-sv-chart:not(.zu-hm-month):not(.zu-hm-hist) .zu-sc-gutter{height:auto;top:5px;bottom:21px}' +
-      '.zu-sv-chart:not(.zu-hm-month):not(.zu-hm-hist) .zu-sc-grid{height:auto;top:0;bottom:16px}</style>' +
-      spdHeadHTML(an) +
-      /* v281：底部常驻档位说明移除（连分割线/占位），档位说明改由图表标题栏问号
-       * 浮层承载（spdLegendCardHTML + spdLegendTip）——TPS_BANDS 单一事实源不变，
-       * 整卡高度由 Header 与统计主体决定，比旧版更紧凑。 */
-      '<div class="zu-speed-body">' + spdLeftHTML(an, o.live) + spdChartFor(an, o.segsHover, o) + "</div></div>";
-  }
-  /* ---------- v291 热力图（本月月历 / 全部历史 GitHub 风格，用户设计图规格） ----------
-   * 时间 Tab「本月」「全部」的柱状图替换为日粒度热力图：颜色仍走 TPS_BANDS 档位类
-   * （currentColor 与柱体/图例同源，CSS 按 .zu-hm-cell 上的档位类给底色），数据复用
-   * spdAnalyze 的日桶聚合（Σ有效输出 ÷ Σ生成窗口），绝不算术平均、绝不显 0 t/s。
-   * 无记录日=中性格（无记录不等于零速）、未来日=弱化占位（无任何速度、不进统计）；
-   * 格子带 data-i 指向本图 days 数组，悬停/焦点委托复用 .zu-hm-cell 契约（宿主侧
-   * 选择器已扩展），悬停卡经 SPD_PORTAL 侧信道走 body 级 Portal（与柱状图同链）。 */
-  var SPD_WD_ZH = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-  var SPD_WD_EN = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  var SPD_MO_EN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  function spdWdLabel(wd) { return SPD_L(SPD_WD_ZH[wd], SPD_WD_EN[wd]); }
-  function spdFmt1(v) { return v % 1 ? v.toFixed(1) : String(v); }
-  /* v297 动态字号（用户 Goal）：在 6~14px 内选「能完整容纳的最大字号」。
-   * 纯算术实现——等宽数字字宽 ≈ 0.64em（保守系数，含 k/M/小数点混合余量），
-   * 行高 1.0；不做 DOM/Canvas 测量、不挂 ResizeObserver（格尺寸由宿主量测一次
-   * 写 window.__zusageSpdMonRect，首帧用推导默认，字号变化不改变格尺寸故无振荡）。
-   * 6px 仍超宽时进入紧凑数值格式（12.3k / 1.23M，完整精度走 Hover）。 */
-  var SPD_HM_FS_MIN = 6, SPD_HM_FS_MAX = 14, SPD_HM_CHAR_W = 0.64;
-  function spdHmFitFs(text, availW, availH) {
-    var fs = Math.min(SPD_HM_FS_MAX,
-      availW / Math.max(text.length, 1) / SPD_HM_CHAR_W,
-      availH / 1.05);
-    fs = Math.floor(fs * 2) / 2;   /* 0.5px 步进向下取 */
-    return Math.max(SPD_HM_FS_MIN, Math.min(SPD_HM_FS_MAX, fs));
-  }
-  function spdCompactNum(v) {
-    if (v >= 1e6) return (v / 1e6).toFixed(2).replace(/\.?0+$/, "") + "M";
-    if (v >= 1e4) return (v / 1e3).toFixed(1).replace(/\.0$/, "") + "k";
-    return spdFmt1(v);
-  }
-  /* 完整日期形态（悬停卡时间行/aria）：2026-11-06 周五 / Fri 2026-11-06 */
-  function spdDayFull(t, withWd) {
-    var d = spdDate(t);
-    return d.getFullYear() + "-" + spd2(d.getMonth() + 1) + "-" + spd2(d.getDate()) +
-      (withWd ? SPD_L(" " + SPD_WD_ZH[d.getDay()], " " + SPD_WD_EN[d.getDay()]) : "");
-  }
-  /* 格子 aria：2026年11月6日 周五，平均速度 143.8 t/s，流畅；无记录日显式说明，
-   * 绝不出现「0 t/s」。 */
-  function spdCellAria(t, item) {
-    var d = spdDate(t), wd = d.getDay();
-    var dateTxt = SPD_L(d.getFullYear() + "年" + (d.getMonth() + 1) + "月" + d.getDate() + "日 " + SPD_WD_ZH[wd],
-      SPD_WD_EN[wd] + ", " + SPD_MO_EN[d.getMonth()] + " " + d.getDate() + " " + d.getFullYear());
-    if (!item) return dateTxt + SPD_L("，无有效速度记录", ", no rated speed data");
-    var b = tpsBand(item.v);
-    return dateTxt + SPD_L("，平均速度 ", ", avg ") + spdFmt1(item.v) + SPD_L(" t/s", " t/s") +
-      (b ? SPD_L("，" + b.zh, ", " + b.en) : "");
-  }
-  /* 日格悬停卡：有记录日复用 spdCardHTML 五字段（tv 覆写时间行为整日形态，模型/
-   * Token/费用链逐字同源）；无记录日显式「当日无有效生成速度记录」；未来日「尚未
-   * 开始」（月历占位格也可悬停，语义完整）。 */
-  function spdDayCardHTML(entry, o, coverage) {
-    var dayTxt = spdDayFull(entry.t, true);
-    var head = '<div class="zu-sv-card" role="tooltip"><div class="zu-sv-crow"><span>' +
-      spdEsc(SPD_L("日期", "Date")) + '</span><b title="' + spdEsc(spdRangeFull(entry.t, entry.t + 86400000)) + '">' +
-      spdEsc(dayTxt) + "</b></div>";
-    if (entry.state === "future")
-      return '<div class="zu-sv-card zu-sv-card--void" role="tooltip"><div class="zu-sv-crow"><span>' +
-        spdEsc(SPD_L("日期", "Date")) + "</span><b>" + spdEsc(dayTxt) + "</b></div>" +
-        '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("状态", "Status")) + "</span><b>" +
-        spdEsc(SPD_L("尚未开始", "Not started yet")) + "</b></div></div>";
-    if (!entry.item)
-      /* v296.1（用户规格）：无数据卡=日期 + 覆盖统计（共 N 天 · 其中 M 天有有效速度记录） */
-      return head + '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("统计", "Coverage")) + "</span><b>" +
-        spdEsc(coverage || SPD_L("当日无有效生成速度记录", "No rated speed data this day")) + "</b></div></div>";
-    return spdCardHTML(Object.assign({}, entry.item, { tv: dayTxt }), 0, o);
-  }
-  /* 本月月历热力图：7 列（周日首列，与 spdBucket week 同基准）、行数=实际月历
-   * （4～6 行，1 日前空位=透明对齐占位，不伪造上月日期）。有记录日=低饱和档位
-   * 底（22% 混色）+ 左 3px 档位色条 + 日期 + 当日均速；已过无记录日=中性格 +
-   * 日期；未来日=弱日期号（无速度无框，v294）。当日柔和内描边；≤2 天有记录时
-   * 附一条轻量稀疏说明（规格 §9，不建新统计卡）。 */
-  function spdMonthHeatmapHTML(an, hoverIdx, o) {
-    SPD_PORTAL = "";
-    var now = Date.now(), d0 = spdDate(now);
-    var y = d0.getFullYear(), mo = d0.getMonth();
-    /* v296.1（用户拍板）：7 列周日对齐日历——显示当月 1 日至今天；1 日前按星期日
-     * 补齐占位；无数据日=中性弱底+弱日期号（补 0 与红底按用户要求移除），
-     * 未来日期=弱日期号；行数=ceil((占位+天数)/7) */
-    var nDays = new Date(y, mo + 1, 0).getDate();
-    var cols = 7;
-    var lead = new Date(y, mo, 1).getDay();
-    var rows = Math.ceil((lead + nDays) / cols);
-    var todayStart = new Date(y, mo, d0.getDate()).getTime();
-    var byDay = {};
-    for (var i = 0; i < an.items.length; i++) {
-      var it0 = an.items[i];
-      if (!it0.empty && it0.a) byDay[it0.a] = it0;
-    }
-    /* v293.1（用户拍板）：星期表头行舍弃——7 列日历结构不变，格子区直接平分卡高 */
-    /* v295.4（用户拍板）：星期表头行恢复（周日..周六，7 列与格子对齐） */
-    var wk = "";
-    for (i = 0; i < 7; i++) wk += "<span>" + spdEsc(spdWdLabel(i)) + "</span>";
-    var days = [], cells = "";
-    if (lead) for (var p = 0; p < lead; p++) cells += '<i class="zu-hm-pad"></i>';
-    /* v297 动态字号：宿主量测月历网格实际宽高（window.__zusageSpdMonRect，渲染后
-     * 写回，缺省用 850 卡推导值），折算格宽/格高后按「速度文本长度分桶」计算
-     * 每桶最大可容纳字号（6~14px、0.5px 步进、宽高双约束）——同长度同字号，
-     * 不逐格 inline。6px 仍超宽的极端数值进紧凑格式（12.3k/1.23M，Hover 保完整）。
-     * 极矮行档（6 行月）压日期字号与 padding，但不隐藏速度数字（v297 废止隐藏）。 */
-    var mr = (typeof window !== "undefined" && window.__zusageSpdMonRect) || null;
-    var calW = (mr && mr.w > 40) ? mr.w : 530, calH = (mr && mr.h > 40) ? mr.h : 161;
-    var cellW = (calW - 6 * 8) / 7, cellH = (calH - (rows - 1) * 8) / rows;
-    var padY = cellH >= 30 ? 4 : (cellH >= 24 ? 3 : 2);
-    var padX = cellW >= 60 ? 6 : 4;
-    var dateFs = cellH >= 30 ? 10 : (cellH >= 24 ? 8 : 7);   /* 日期让高给速度（速度优先级更高） */
-    var availH = cellH - padY * 2 - dateFs * 1 - 1;
-    var availW = cellW - padX * 2;
-    var buckets = { f4: SPD_HM_FS_MAX, f5: SPD_HM_FS_MAX, f6: SPD_HM_FS_MIN };
-    var fsByLen = {};
-    var lenList = [4, 5, 6];
-    for (i = 0; i < lenList.length; i++) {
-      var L = lenList[i], fs = spdHmFitFs(new Array(L + 1).join("8"), availW, availH);
-      if (fs <= SPD_HM_FS_MIN && availW < L * SPD_HM_FS_MIN * SPD_HM_CHAR_W) {
-        var cTxt = spdCompactNum(L >= 6 ? 123456 : 12345);
-        var cFs = spdHmFitFs(cTxt, availW, availH);
-        buckets[L >= 6 ? "f6" : "f5"] = cFs;
-        fsByLen[L] = { compact: true, fs: cFs };
-        continue;
-      }
-      buckets[L >= 6 ? "f6" : (L >= 5 ? "f5" : "f4")] = fs;
-      fsByLen[L] = { fs: fs };
-    }
-    var dFs = Math.max(6, dateFs);
-    for (var dn = 1; dn <= nDays; dn++) {
-      var ds = new Date(y, mo, dn).getTime();
-      var it = byDay[ds] || null, bd = it ? tpsBand(it.v) : null;
-      var future = ds > todayStart, cur = days.length === hoverIdx ? " cur" : "";
-      var di = days.length;
-      days.push({ t: ds, item: it, state: future ? "future" : (it ? "data" : "void") });
-      if (future)
-        cells += '<div class="zu-hm-cell fut' + cur + '" aria-hidden="true" data-i="' + di + '"><span class="zu-hm-d">' + dn + "</span></div>";
-      else if (it) {
-        var txt = spdFmt1(it.v), L2 = txt.length;
-        if (fsByLen[L2] && fsByLen[L2].compact) { txt = spdCompactNum(it.v); L2 = txt.length; }
-        var cls = L2 >= 6 ? "len6" : (L2 >= 5 ? "len5" : "len4");
-        cells += '<div class="zu-hm-cell data ' + cls + (bd ? " " + bd.cls : "") + (ds === todayStart ? " zu-hm-today" : "") + cur +
-          '" role="img" tabindex="0" data-i="' + di + '" aria-label="' + spdEsc(spdCellAria(ds, it)) + '">' +
-          '<span class="zu-hm-d">' + dn + '</span><span class="zu-hm-v">' + spdEsc(txt) + "</span></div>";
-      } else
-        cells += '<div class="zu-hm-cell void' + (ds === todayStart ? " zu-hm-today" : "") + cur +
-          '" role="img" data-i="' + di + '" aria-label="' + spdEsc(spdCellAria(ds, null)) + '">' +
-          '<span class="zu-hm-d">' + dn + "</span></div>";
-    }
-    if (hoverIdx >= 0 && days[hoverIdx]) SPD_PORTAL = spdDayCardHTML(days[hoverIdx], o);
-    var gridStyle = '--zu-hm-rows:' + rows + ';--hm-df:' + dFs + 'px;--hm-f4:' + buckets.f4 + 'px;--hm-f5:' + buckets.f5 +
-      'px;--hm-f6:' + buckets.f6 + 'px;--hm-pady:' + padY + 'px;--hm-padx:' + padX + 'px';
-    return '<div class="zu-speed-chart zu-sv-chart zu-hm-month">' + spdChartHeadHTML(an, "") +
-      '<div class="zu-sc-wrap"><div class="zu-hm-cal"><div class="zu-hm-week">' + wk + "</div>" +
-      '<div class="zu-hm-grid zu-hm-grid--mon" style="' + gridStyle + '">' + cells + "</div></div></div></div>";
-  }
-  /* 全部历史热力图（GitHub Contributions 版式）：一列=一周、一行=固定星期，从左到右
-   * 最早→最新（最新在右）；颜色=当日均速档位（不是请求量/Token 量）。窗口=最早有效
-   * 日所在周 → 当前周（含今日，尾部空周如实显示覆盖空档）；窗口外格子=透明占位，
-   * 不计入统计。首开由宿主按 data-sv-end 滚到最右（§12.2 最新区域优先），横滚记忆
-   * 键（data-sv-key）不变。列数上限 1040（约 20 年）纯 DOM 护栏——轮表本身有界
-   * 6000 轮，跨窗截断已由 notice 显式披露。月标签按实际月份边界对齐（含新月那列），
-   * 相邻标签不足 2 列时跳过防重叠；跨年在 1 月标签带年份。日期逐格用 Date 构造器
-   * 推进（DST 安全，毫秒加法会把夏令时日的边界推出本地零点）。 */
-  function spdHistoryHeatmapHTML(an, hoverIdx, o) {
-    SPD_PORTAL = "";
-    var todayStart = spdBucket(Date.now(), "day");
-    var first = Infinity, lastData = 0, byDay = {};
-    for (var i = 0; i < an.items.length; i++) {
-      var it0 = an.items[i];
-      if (!it0.empty && it0.a) { byDay[it0.a] = it0; if (it0.a < first) first = it0.a; if (it0.a > lastData) lastData = it0.a; }
-    }
-    if (first === Infinity) return spdChartEmptyHTML(spdChartHeadHTML(an, ""));
-    /* v296（用户规格）：窗口=最近 365 天（today-364 → today，按周日起对齐补齐网格）；
-     * 窗口内没有数据的日=中性格（#484848），更早的历史不在本视图。窗口外格子=透明
-     * 星期对齐占位。 */
-    var winStart = todayStart - 364 * 86400000;
-    var winEnd = todayStart;
-    var WEEK = 7 * 86400000;
-    var w0 = spdDate(spdBucket(winStart, "week"));
-    var wy = w0.getFullYear(), wmo = w0.getMonth(), wd0 = w0.getDate();
-    /* 周数按周起点到周起点计算（窗口端点落在周内，直接相减会多算一周） */
-    var weeks = Math.round((spdBucket(winEnd, "week") - spdBucket(winStart, "week")) / WEEK) + 1;
-    /* DOM 护栏：>1040 周（约 20 年，现实库龄不可达——轮表本身有界 6000 轮）时右端
-     * 对齐结束月、只渲染最近 1040 周；这是纯渲染钳制，spanA/左卡统计仍覆盖全池，
-     * 与轮表 truncated 的 notice 披露是两回事 */
-    if (weeks > 1040) {
-      var w1 = spdDate(spdBucket(winEnd, "week"));
-      wy = w1.getFullYear(); wmo = w1.getMonth(); wd0 = w1.getDate() - 1039 * 7;
-      weeks = 1040;
-    }
-    var days = [], cells = "", labels = "", dayNums = "", lastMo = -1, lastLabCol = -9, dataN = 0;
-    for (var w = 0; w < weeks; w++) {
-      var cs = new Date(wy, wmo, wd0 + w * 7), ce = new Date(wy, wmo, wd0 + w * 7 + 6);
-      /* 月标签：首列必标；其后本列右端出现新月即在该列标（月份只前进不回退），
-       * 与上一标签间隔不足 2 列时跳过防文字重叠。端点按窗口钳制——首尾列可能
-       * 越出窗口（星期对齐），越界部分的月份不得参与标签（v292 复验抓过 9月/12月
-       * 幽灵标签） */
-      var m1 = new Date(Math.max(cs.getTime(), winStart)).getMonth(),
-          m2 = new Date(Math.min(ce.getTime(), winEnd)).getMonth();
-      var lab = lastMo < 0 ? m1 : (m2 !== lastMo ? m2 : -1);
-      if (lab >= 0 && w - lastLabCol >= 2) {
-        lastMo = lab; lastLabCol = w;
-        /* 年份取被标月份所在端点（同样经窗口钳制，防跨年首列取到越界周首的旧年） */
-        var ly = new Date(lab === m2 && m2 !== m1 ? Math.min(ce.getTime(), winEnd) : Math.max(cs.getTime(), winStart)).getFullYear();
-        labels += '<span class="zu-hm-ml" style="grid-column:' + (w + 1) + " / " + (w + 3 <= weeks ? "span 2" : "-1") + '">' +
-          spdEsc(SPD_L((lab === 0 ? ly + "年" : "") + (lab + 1) + "月",
-            lab === 0 ? SPD_MO_EN[lab] + " " + ly : SPD_MO_EN[lab])) + "</span>";
-      }
-      /* 列头日期数字（v293 设计图规格）：该列窗口内首日的日号 */
-      var colFirst = Math.max(cs.getTime(), winStart);
-      dayNums += '<span class="zu-hm-dn" style="grid-column:' + (w + 1) + ' / span 1">' +
-        spd2(spdDate(colFirst).getDate()) + "</span>";
-      for (var r = 0; r < 7; r++) {
-        var ds = new Date(wy, wmo, wd0 + w * 7 + r).getTime();
-        if (ds < winStart || ds > winEnd) { cells += '<i class="zu-hm-pad"></i>'; continue; }
-        var it = byDay[ds] || null, bd = it ? tpsBand(it.v) : null;
-        if (it) dataN++;
-        var di = days.length, cur = di === hoverIdx ? " cur" : "";
-        days.push({ t: ds, item: it, state: it ? "data" : "void" });
-        cells += it
-          ? '<div class="zu-hm-cell sq data' + (bd ? " " + bd.cls : "") + (ds === todayStart ? " zu-hm-today" : "") + cur +
-            '" role="img" tabindex="0" data-i="' + di + '" aria-label="' + spdEsc(spdCellAria(ds, it)) + '"></div>'
-          : '<div class="zu-hm-cell sq void' + (ds === todayStart ? " zu-hm-today" : "") + cur +
-            '" role="img" data-i="' + di + '" aria-label="' + spdEsc(spdCellAria(ds, null)) + '"></div>';
-      }
-    }
-    /* v296.1（用户规格）：覆盖统计不再单独成行，改随无数据格的悬停卡展示。
-     * 须先于 SPD_PORTAL 赋值计算（review 修复：原写在 Portal 之后，var 提升致
-     * 实参恒 undefined，覆盖统计静默退化为兜底文案）；分母以窗口起点与首数据日
-     * 的较晚者起算，与网格可视窗口同口径（首数据日早于 365 天窗口时不虚增天数）。 */
-    var totalDays = Math.round((todayStart - Math.max(first, winStart)) / 86400000) + 1;
-    var coverage = SPD_L("共 " + totalDays + " 天 · 其中 " + dataN + " 天有有效速度记录",
-      totalDays + " days in total · " + dataN + " with rated speed data");
-    if (hoverIdx >= 0 && days[hoverIdx]) SPD_PORTAL = spdDayCardHTML(days[hoverIdx], o, coverage);
-    var wd = "";
-    for (i = 0; i < 7; i++) wd += "<span>" + spdEsc(spdWdLabel(i)) + "</span>";
-    return '<div class="zu-speed-chart zu-sv-chart zu-hm-hist">' + spdChartHeadHTML(an, "") +
-      '<div class="zu-hm-outer"><div class="zu-hm-wds">' + wd + "</div>" +
-      '<div class="zu-sc-wrap" data-sv-end="1"><div class="zu-hm-scroll" style="--zu-hm-w:' + weeks + '">' +
-      '<div class="zu-hm-months" style="--zu-hm-w:' + weeks + '">' + labels + "</div>" +
-      '<div class="zu-hm-days" style="--zu-hm-w:' + weeks + '">' + dayNums + "</div>" +
-      '<div class="zu-hm-grid zu-hm-grid--hist" style="--zu-hm-w:' + weeks + '">' + cells + "</div></div></div></div>";
-  }
-  /* v291 图表分发（§3.1 切换规则）：本月=月历热力图、全部=历史热力图，
-   * 最近/今天/近 7 天保持原柱状图。 */
-  function spdChartFor(an, hoverIdx, o) {
-    if (an.period === "month") return spdMonthHeatmapHTML(an, hoverIdx, o);
-    if (an.period === "all") return spdHistoryHeatmapHTML(an, hoverIdx, o);
-    return spdChartHTML(an, hoverIdx, o);
   }
   /* SPD_V2_BLOCK_END */
   /* 思考态动效图标（用户提供的设计稿）：呼吸脑轮廓 + 流动信号 + 脉冲节点，纯 CSS
@@ -8474,6 +7877,1886 @@
     },
   }
   ];
+  /* ---------- v384 生成速度 Tooltip V3：图表分片（近/今/近7天三形态 + 悬停卡，纯字符串） ----------
+   * spec §5 三图表形态 + §2 模型色 + §7 悬停卡契约。本分片只做字符串拼装（零 DOM），
+   * 唯一副作用是给模块外变量 SPD_PORTAL 赋值（02 分片声明的悬停卡侧信道，宿主
+   * spdHoverPortalSync 既有机制消费即清）：每次构建先置空串，有悬停才写卡串。
+   * 数据上游 = 04-speed-v3-core.js 的 spd3Analyze 产物 an（结果只读，绝不原地改）；
+   * 图表头 spd3ChartHeadHTML(an, sub) 由 view 分片提供（V3 集成后同 IIFE 可达）。
+   * 只引用存活符号：L / SPD_L / TPS_BANDS / tpsBand / spdEsc / spdNum / spdFull /
+   * spdLabel / spdCompactRange + core 的 spd3Color / spd3ModelKey。V2 专属函数
+   * （spdChartHTML/spdCardHTML/spdChartLayout 等）一律不引用：Y 轴整洁刻度阶梯在本
+   * 文件实现 spd3Ticks（算法与 V2 同构：1/2/2.5/5/6/7.5×10^k，同档先 ×4 后 ×5，
+   * need ≥ maxV×1.12）。month/all 热力形态归 heat 分片，本函数对未知 period 返回
+   * 空串（错接线显性暴露，不静默画错图）。样式全部 .zu-sv3- 前缀并集中在常量
+   * SPD3_CHART_CSS（只在 recent/today/week 三分支产物头部出现一次；.zu-sc-* 基础
+   * 类沿用宿主 06 分片静态样式，这里只做 V3 作用域覆写）。本文件可独立
+   * node --check、可单独切片进 VM 夹具。 */
+  /* SPD_V3_CHARTS_BEGIN */
+  /* ==================== ① 几何常量与 Y 轴整洁刻度 ====================
+   * 几何纪律（.zcode/rules/overlay-ui.md §5）：柱区/绘图区固定 px 不随 --ui-font-size，
+   * 读数一位小数，X 轴每柱恒显时分，多桶横滚兜底。 */
+  var SPD3_PLOT_H = 148;   /* 柱区 / 折线绘图区固定高（px） */
+  var SPD3_X_H = 16;       /* X 轴标签带高（px） */
+  var SPD3_GUT_W = 30;     /* Y 轴刻度列宽（px，= 柱图 plot 左缩进） */
+  var SPD3_PITCH = 24;     /* 柱距 / 命中列宽（px，柱 14 + 10 间距） */
+  var SPD3_BAR_W = 14;     /* 柱宽（px） */
+  /* Y 轴整洁刻度阶梯（V2 算法复刻）：need ≥ maxV×1.12，同档先 ×4 后 ×5；
+   * maxV=0 退化为 {yMax:4, step:1}（调用方在无有效数据时走空态，不会用它画图）。 */
+  function spd3Ticks(maxV) {
+    var yMax = 0, step = 0;
+    var mant = [1, 2, 2.5, 5, 6, 7.5];
+    for (var K = 0; K <= 6 && !yMax; K++) for (var kk = 0; kk < mant.length; kk++) {
+      var st = mant[kk] * Math.pow(10, K);
+      if (st * 4 >= maxV * 1.12) { yMax = st * 4; step = st; break; }
+      if (st * 5 >= maxV * 1.12) { yMax = st * 5; step = st; break; }
+    }
+    if (!yMax) { step = Math.pow(10, Math.ceil(Math.log(Math.max(maxV, 1)) / Math.LN10)); yMax = step * 4; }
+    var ticks = [], div = Math.round(yMax / step);
+    for (var ti = 0; ti <= div; ti++) ticks.push(step * ti);
+    return { yMax: yMax, step: step, ticks: ticks };
+  }
+  /* ==================== ② 图表样式（.zu-sv3- 前缀，集中声明一次） ====================
+   * 选择器统一挂 .zu-sv3-chart 作用域（0,2,0 特异性稳定压过 06 分片的 .zu-sc-* 基础
+   * 规则，不依赖样式表注入顺序）；V2 专属类（zu-sv-bars/zu-sv-plot 等）随 V2 删除，
+   * 柱组容器/几何在本表自带，不依赖其存留。 */
+  var SPD3_CHART_CSS = "<style>" +
+    /* 容器与滚动 */
+    ".zu-sv3-chart{display:flex;flex-direction:column;min-height:0}" +
+    ".zu-sv3-chart .zu-sv-empty{flex:1;min-height:120px}" +
+    ".zu-sv3-chart .zu-sc-wrap{flex:1;min-height:0;padding:5px 0;box-sizing:border-box;overflow-x:auto;overflow-y:hidden;width:100%}" +
+    /* 柱图 plot 定高 164 = 柱区 148 + X 轴 16；max-content 由 in-flow spacer 撑宽 */
+    ".zu-sv3-chart .zu-sc-plot{height:" + (SPD3_PLOT_H + SPD3_X_H) + "px;min-width:max(240px,100%);width:max-content;max-width:none;box-sizing:content-box}" +
+    ".zu-sv3-chart .zu-sc-grid,.zu-sv3-chart .zu-sc-gutter{height:" + SPD3_PLOT_H + "px}" +
+    ".zu-sv3-spacer{display:block;height:0}" +
+    /* 柱组：定宽柱距、贴 Y 轴左对齐（v308 纪律）、两侧 5px 呼吸边距（柱顶 nowrap
+     * 数值越缘不撑出横滚）；多柱（n≥10）spread 均匀铺满 */
+    ".zu-sv3-bars{position:absolute;inset:0;display:flex;align-items:flex-end;justify-content:flex-start;gap:0;padding:0 5px}" +
+    ".zu-sv3-bars--spread{justify-content:space-between}" +
+    ".zu-sv3-bars .zu-sc-col{flex:0 0 " + SPD3_PITCH + "px;height:100%}" +
+    ".zu-sv3-bars .zu-sc-vz{flex:0 0 " + SPD3_PLOT_H + "px;height:" + SPD3_PLOT_H + "px}" +
+    ".zu-sv3-bars .zu-sc-bar{width:" + SPD3_BAR_W + "px;max-width:" + SPD3_BAR_W + "px}" +
+    ".zu-sv3-bars .zu-sc-x{height:" + SPD3_X_H + "px;flex:0 0 " + SPD3_X_H + "px;width:" + SPD3_PITCH + "px;max-width:" + SPD3_PITCH + "px;overflow:visible;justify-content:flex-start;align-items:flex-end;font-size:7px}" +
+    ".zu-sv3-bars .zu-sc-x b{display:block;width:100%;overflow:hidden;text-overflow:clip;text-align:center;line-height:14px}" +
+    ".zu-sv3-bars .zu-sc-col.empty .zu-sc-bar{background:transparent;box-shadow:none}" +
+    ".zu-sv3-bars .zu-sc-col.cur .zu-sc-val{font-weight:700}" +
+    ".zu-sv3-bars .zu-sc-col.latest .zu-sc-bar{box-shadow:0 0 0 1.5px var(--color-popover-border,rgba(255,255,255,.28))}" +
+    ".zu-light .zu-sv3-bars .zu-sc-col.latest .zu-sc-bar{box-shadow:0 0 0 1.5px rgba(15,23,42,.22)}" +
+    /* 混合轮中性灰（spec §5：不得用主导模型色填满混合轮） */
+    ".zu-sv3-chart .zu-sc-bar.zu-sv3-mix{background:var(--color-tooltip-tag-foreground,#8a8f98)}" +
+    /* SVG 折线（今天多模型 / 近 7 天） */
+    ".zu-sv3-svg{display:block}" +
+    ".zu-sv3-gline{stroke:var(--color-border,rgba(255,255,255,.1));stroke-dasharray:3 3}" +
+    ".zu-sv3-gline[data-base]{stroke:var(--color-border,rgba(255,255,255,.16));stroke-dasharray:none}" +
+    ".zu-sv3-gtxt{fill:var(--color-tooltip-tag-foreground,#a6a6a6);font-size:9px;font-variant-numeric:tabular-nums}" +
+    ".zu-sv3-xtxt{fill:var(--color-tooltip-tag-foreground,#a6a6a6);font-size:8px;text-anchor:middle;font-variant-numeric:tabular-nums}" +
+    ".zu-sv3-line{fill:none;stroke-width:1.6;stroke-linejoin:round;stroke-linecap:round}" +
+    ".zu-sv3-nline{stroke:var(--color-tooltip-tag-foreground,#8a8f98)}" +
+    ".zu-sv3-area{stroke:none;fill-opacity:.12}" +
+    ".zu-sv3-chart .zu-sc-wrap::-webkit-scrollbar{display:none}" +
+    ".zu-sv3-oline{fill:none;stroke:var(--color-tooltip-tag-foreground,#8a8f98);stroke-width:1.4;stroke-dasharray:4 3}" +
+    ".zu-sv3-pt{stroke:none}" +
+    ".zu-sv3-npt{fill:var(--color-tooltip-tag-foreground,#8a8f98)}" +
+    ".zu-sv3-elabel{font-size:9.5px;font-weight:600;font-variant-numeric:tabular-nums;text-anchor:end;fill:var(--color-foreground,#e9edf4)}" +
+    ".zu-sv3-elabel.zu-sv3-olabel{fill:var(--color-tooltip-tag-foreground,#a6a6a6);font-weight:400}" +
+    /* 悬停命中列与十字参考线（hover/focus 纯 CSS 显现，零 JS 监听） */
+    ".zu-sv3-hit{fill:#000;fill-opacity:0;pointer-events:all;outline:none}" +
+    ".zu-sv3-hit:focus-visible{stroke:var(--color-brand,#a3cfff);stroke-width:1.5}" +
+    ".zu-sv3-xline{stroke:var(--color-border,rgba(255,255,255,.3));stroke-dasharray:3 3;opacity:0;pointer-events:none}" +
+    ".zu-sv3-hg:hover .zu-sv3-xline,.zu-sv3-hg:focus-within .zu-sv3-xline{opacity:1}" +
+    /* 悬停卡模型组成行（卡根 .zu-sv-card 基础样式由 06 分片提供） */
+    ".zu-sv3-msub>b{overflow:hidden}" +
+    ".zu-sv3-mi{display:flex;align-items:center;justify-content:flex-end;gap:5px;min-width:0;font-weight:400}" +
+    ".zu-sv3-mdot{display:inline-block;width:8px;height:8px;border-radius:2px;flex:0 0 8px}" +
+    ".zu-sv3-mname{min-width:0;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+    ".zu-sv3-mv{font-style:normal;font-variant-numeric:tabular-nums;font-weight:600;flex:0 0 auto}" +
+    ".zu-sv3-mt{font-style:normal;font-variant-numeric:tabular-nums;font-weight:400;opacity:.65;flex:0 0 auto}" +
+    "</style>";
+  /* ==================== ③ 通用小件 ==================== */
+  function spd3RealMax(items) {
+    var maxV = 0;
+    for (var i = 0; i < items.length; i++) if (!items[i].empty && items[i].v > maxV) maxV = items[i].v;
+    return maxV;
+  }
+  /* 柱图网格线 + Y 轴刻度标签（V2 几何同款：0 基线加粗、顶刻度钉在 100%-13px） */
+  function spd3GridTicks(tk) {
+    var grid = "", gutter = "";
+    for (var g = 0; g < tk.ticks.length; g++) {
+      var pct = Math.round(tk.ticks[g] / tk.yMax * 1000) / 10;
+      grid += '<i style="bottom:' + pct + '%"' + (tk.ticks[g] ? "" : ' data-base="1"') + "></i>";
+      gutter += '<i' + (g === tk.ticks.length - 1 ? ' class="top" style="bottom:calc(100% - 13px)"' : ' style="bottom:' + pct + '%"') + ">" + tk.ticks[g] + "</i>";
+    }
+    return { grid: grid, gutter: gutter };
+  }
+  /* 悬停卡侧信道：有悬停且目标桶非空才写卡（空桶/未悬停 = 空串 = Portal 收起） */
+  function spd3PortalFor(items, hoverIdx, o) {
+    return (hoverIdx >= 0 && items[hoverIdx] && !items[hoverIdx].empty)
+      ? spd3HoverCardHTML(items[hoverIdx], o, hoverIdx) : "";
+  }
+  /* ==================== ④ 柱状图列构建（recent / 今天单模型共用） ====================
+   * 柱色规则（spec §5）：行 models.length===1 → 柱色=spd3Color(模型key)（内联
+   * background，速度档位色阶不再上柱体）；>1 → .zu-sv3-mix 中性灰（绝不用主导模型
+   * 色）+ title/aria 标「混合」；=0（旧帧无 msl）→ 中性默认色（基础 currentColor）。
+   * 柱顶读数一位小数，n>8 按 valEvery=ceil(n/8) 抽稀（首/末/悬停恒显，空桶不显）；
+   * X 轴每柱恒显时分；最新柱（最右）latest 描边。 */
+  function spd3BarCols(items, hoverIdx, yMax) {
+    var n = items.length, valEvery = Math.max(1, Math.ceil(n / 8)), cols = "";
+    for (var c = 0; c < n; c++) {
+      var it = items[c], isCur = c === hoverIdx, empty = !!it.empty;
+      var mcolor = "", mix = false, mname = "";
+      if (!empty && it.models && it.models.length) {
+        if (it.models.length === 1) { mcolor = spd3Color(spd3ModelKey(it.models[0])); mname = it.models[0].name || ""; }
+        else mix = true;
+      }
+      var vv = spdNum(it.v);
+      var hPct = empty || !(vv > 0) ? 0 : Math.max(1.2, Math.round(vv / yMax * 1000) / 10);
+      var shown = !empty && (isCur || n <= 8 || c === n - 1 || c === 0 || c % valEvery === 0);
+      var aria = it.label + SPD_L("，", ", ") + (empty || !(vv > 0) ? SPD_L("无数据", "no data") : (vv.toFixed(1) + " t/s")) +
+        (mname ? SPD_L("，", ", ") + mname : "") + (mix ? SPD_L("，", ", ") + SPD_L("混合", "mixed") : "");
+      cols += '<div class="zu-sc-col' + (isCur ? " cur" : "") + (empty ? " empty" : "") +
+        (c === n - 1 ? " latest" : "") +
+        '" role="img" tabindex="0" data-i="' + c + '"' +
+        (mix ? ' title="' + spdEsc(SPD_L("混合（" + it.models.length + " 种模型）", "Mixed (" + it.models.length + " models)")) + '"' : "") +
+        ' aria-label="' + spdEsc(aria) + '">' +
+        '<span class="zu-sc-vz"><span class="zu-sc-val">' + (shown ? vv.toFixed(1) : "") + "</span>" +
+        '<i class="zu-sc-bar' + (mix ? " zu-sv3-mix" : "") + '" style="height:' + hPct + "%" +
+        (mcolor ? ";background:" + mcolor : "") + '"></i></span>' +
+        '<span class="zu-sc-x"><b>' + spdEsc(it.label) + "</b></span></div>";
+    }
+    return cols;
+  }
+  /* ==================== ⑤ 悬停卡（五字段 + 真实模型组成） ====================
+   * 结构沿 V2 spdCardHTML 纪律：时间（tv 覆写保留，缺省聚合桶区间压缩）/ 速度（档位
+   * 色值）/ 模型型号 / Token 总消耗（input 已含缓存、output 已含思考，不重复相加）/
+   * 预估价格（缺失显暂无估价，绝不显示 0）。「模型型号」段升级（spec §7）：多模型
+   * 主行标「混合（N 种模型）」+ 逐模型子行（色点 + 名 + 该模型 t/s + 该模型 token）；
+   * t/s 仅在该模型条目 ms>0 时给出（绝不拿整轮窗口冒充模型速度），无 ms 只显名称与
+   * token。o={fmtTok,fmtCnt,fmtMoney}，fmtMoney 缺失按 V2 纪律显「费用显示已关闭」。
+   * hoverIdx 可选：≥0 时卡根携带 data-i（Portal 定位与键盘焦点归位消费）。 */
+  function spd3HoverCardHTML(item, o, hoverIdx) {
+    if (!item || item.empty || !(spdNum(item.v) > 0)) return "";
+    var bd = tpsBand(item.v), vv = spdNum(item.v);
+    var cls = "zu-sv-card" + (bd ? " " + bd.cls : "");
+    var ms = item.models || [], mix = ms.length > 1;
+    var modelFull, modelCell;
+    if (!ms.length) {
+      modelFull = SPD_L("未知模型", "Unknown model");
+      modelCell = '<b class="zu-model-fit">' + spdEsc(modelFull) + "</b>";
+    } else if (mix) {
+      modelFull = ms.map(function (m) { return m.name; }).join(", ");
+      modelCell = '<b class="zu-model-fit" title="' + spdEsc(modelFull) + '">' +
+        spdEsc(SPD_L("混合（" + ms.length + " 种模型）", "Mixed (" + ms.length + " models)")) + "</b>";
+    } else {
+      modelFull = ms[0].name || "";
+      modelCell = '<b class="zu-model-fit zu-sv3-mi" title="' + spdEsc(modelFull) + '">' +
+        '<i class="zu-sv3-mdot" style="background:' + spd3Color(spd3ModelKey(ms[0])) + '"></i>' +
+        '<span class="zu-sv3-mname">' + spdEsc(modelFull) + "</span></b>";
+    }
+    var fmtTok = o && typeof o.fmtTok === "function" ? o.fmtTok : null;
+    var tok = spdNum(item.i) + spdNum(item.o);
+    var tokLine = (fmtTok ? fmtTok(tok) : String(tok)) + SPD_L(" token", " tokens");
+    var sub = SPD_L("（输入 ", " (in ") + (fmtTok ? fmtTok(spdNum(item.i)) : String(spdNum(item.i))) +
+      SPD_L(" · 输出 ", " · out ") + (fmtTok ? fmtTok(spdNum(item.o)) : String(spdNum(item.o))) + SPD_L("）", ")");
+    var cost;
+    if (!o || !o.fmtMoney) cost = '<span class="zu-sv-off">' + spdEsc(SPD_L("费用显示已关闭", "Cost display off")) + "</span>";
+    else if (item.c === null || item.c === undefined) cost = '<span class="zu-sv-off">' + spdEsc(SPD_L("暂无估价", "Estimate unavailable")) + "</span>";
+    else cost = spdEsc(o.fmtMoney(item.c)) + (!item.costFull ? '<i class="zu-sv-partial">' + spdEsc(SPD_L(" · 含兜底估价", " · partly estimated")) + "</i>" : "");
+    var rows = '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("时间", "Time")) +
+      '</span><b class="zu-sv-twrap" title="' + spdEsc(item.full || "") + '">' +
+      spdEsc(item.tv || spdCompactRange(item.a, item.b)) + "</b></div>" +
+      '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("速度", "Speed")) + '</span><b class="zu-sv-cval' +
+      (bd ? " " + bd.cls : "") + '">' + (vv % 1 ? vv.toFixed(1) : String(vv)) + " t/s</b></div>" +
+      '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("模型型号", "Model")) + "</span>" + modelCell + "</div>";
+    for (var j = 0; mix && j < ms.length; j++) {
+      var m = ms[j], mtps = spdNum(m.ms) > 0
+        ? '<i class="zu-sv3-mv">' + (m.o / (m.ms / 1000)).toFixed(1) + " t/s</i>" : "";
+      rows += '<div class="zu-sv-crow zu-sv3-msub"><span></span><b class="zu-sv3-mi">' +
+        '<i class="zu-sv3-mdot" style="background:' + spd3Color(spd3ModelKey(m)) + '"></i>' +
+        '<span class="zu-sv3-mname" title="' + spdEsc(m.name) + '">' + spdEsc(m.name) + "</span>" + mtps +
+        '<i class="zu-sv3-mt">' + spdEsc((fmtTok ? fmtTok(spdNum(m.o)) : String(spdNum(m.o))) + SPD_L(" token", " tokens")) + "</i></b></div>";
+    }
+    rows += '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("Token 总消耗", "Total tokens")) + '</span><b>' + spdEsc(tokLine) +
+      '<small>' + spdEsc(sub) + "</small></b></div>" +
+      '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("预估价格", "Est. cost")) + "</span><b>" + cost + "</b></div>";
+    return '<div class="' + cls + '" role="tooltip"' +
+      (typeof hoverIdx === "number" && hoverIdx >= 0 ? ' data-i="' + hoverIdx + '"' : "") + ">" + rows + "</div>";
+  }
+  /* ==================== ⑥ 空态 ==================== */
+  function spd3ChartEmptyHTML(head) {
+    return '<div class="zu-speed-chart zu-sv3-chart">' + (head || "") +
+      '<div class="zu-sv-empty">' + spdEsc(SPD_L("当前筛选无有效速度数据", "No rated turns for this filter")) +
+      '<span class="zu-sv-empty-hint">' + spdEsc(SPD_L("尝试选择更长时间范围", "Try a longer time range")) + "</span></div></div>";
+  }
+  /* ==================== ⑦ recent：一轮一柱（柱色=模型身份） ==================== */
+  function spd3RecentHTML(an, hoverIdx, o) {
+    var items = an.items, n = items.length;
+    var head = spd3ChartHeadHTML(an, "") || "";
+    var maxV = spd3RealMax(items);
+    if (!n || !(maxV > 0)) return spd3ChartEmptyHTML(head);
+    var tk = spd3Ticks(maxV), gt = spd3GridTicks(tk);
+    SPD_PORTAL = spd3PortalFor(items, hoverIdx, o);
+    return SPD3_CHART_CSS +
+      '<div class="zu-speed-chart zu-sv3-chart">' + head +
+      '<div class="zu-sc-wrap" data-sv-end="1"><div class="zu-sc-plot">' +
+      '<i class="zu-sv3-spacer" style="width:' + Math.max(240, n * SPD3_PITCH + 12) + 'px"></i>' +
+      '<span class="zu-sc-grid">' + gt.grid + '</span>' +
+      '<span class="zu-sc-gutter">' + gt.gutter + '</span>' +
+      '<span class="zu-sv3-bars' + (n >= 10 ? " zu-sv3-bars--spread" : "") + '">' +
+      spd3BarCols(items, hoverIdx, tk.yMax) + "</span></div></div></div>";
+  }
+  /* ==================== ⑧ today：小时桶（单模型柱 / 多模型折线） ====================
+   * 单模型判定：筛选后池内 distinct 模型 key 数===1（an.perModel）。单模型（含旧帧
+   * 降级）恒柱状：桶整值 = 该模型口径（无窗口帧按 spec §6 画整轮值，同样诚实）；
+   * 多模型折线从 an.items[].models 取每模型分量（ms>0 才有点），降级多模型
+   * （msAvail=false，逐模型无速度可画）退化为一条中性整轮值线。 */
+  function spd3TodayHTML(an, hoverIdx, o) {
+    var items = an.items, n = items.length;
+    var head = spd3ChartHeadHTML(an, "") || "";
+    var maxV = spd3RealMax(items);
+    if (!n || !(maxV > 0)) return spd3ChartEmptyHTML(head);
+    if (an.perModel && an.perModel.length === 1) {
+      var tk = spd3Ticks(maxV), gt = spd3GridTicks(tk);
+      SPD_PORTAL = spd3PortalFor(items, hoverIdx, o);
+      return SPD3_CHART_CSS +
+        '<div class="zu-speed-chart zu-sv3-chart">' + head +
+        '<div class="zu-sc-wrap" data-sv-end="1"><div class="zu-sc-plot">' +
+        '<i class="zu-sv3-spacer" style="width:' + Math.max(240, n * SPD3_PITCH + 12) + 'px"></i>' +
+        '<span class="zu-sc-grid">' + gt.grid + '</span>' +
+        '<span class="zu-sc-gutter">' + gt.gutter + '</span>' +
+        '<span class="zu-sv3-bars' + (n >= 10 ? " zu-sv3-bars--spread" : "") + '">' +
+        spd3BarCols(items, hoverIdx, tk.yMax) + "</span></div></div></div>";
+    }
+    return spd3LineHTML(an, hoverIdx, o, items, head, false);
+  }
+  /* ==================== ⑨ 折线图共用（今天多模型 / 近 7 天） ====================
+   * 每系列一条 path（颜色=spd3Color，缺数据断线不插值：连续非空点一段 M…L…）；
+   * 数据点 circle r=2.5 只落在真实点；命中列 rect（data-i=桶序号）承载悬停/键盘，
+   * 同组内竖线十字参考线由 CSS :hover/:focus-within 显现。weekForm=近 7 天形态：
+   * 附加末端数值标签（末端 y 冲突时上下错开 ≥12px）与中性虚线「总体」——spec §5
+   * 的总体线是 week 多模型专属，今天多模型只有逐模型线 + 悬停十字卡。 */
+  function spd3SeriesPts(slots, key) {
+    var pts = [];
+    for (var i = 0; i < slots.length; i++) {
+      var it = slots[i], pv = null;
+      if (it && !it.empty && it.models && it.models.length) {
+        if (key == null) pv = spdNum(it.v) > 0 ? spdNum(it.v) : null;
+        else for (var j = 0; j < it.models.length; j++) {
+          if (spd3ModelKey(it.models[j]) === key) {
+            var mm = it.models[j];
+            pv = spdNum(mm.ms) > 0 && spdNum(mm.o) > 0 ? mm.o / (mm.ms / 1000) : null;
+            break;
+          }
+        }
+      }
+      pts.push(pv);
+    }
+    return pts;
+  }
+  /* 命中列 aria：单模型显桶速度，多模型逐模型「名 v t/s」（无窗口如实标注） */
+  function spd3HitAria(an, it) {
+    var t = (it && it.label) || "";
+    if (!it || it.empty || !(spdNum(it.v) > 0)) return t + SPD_L("，", ", ") + SPD_L("无数据", "no data");
+    if (an.perModel && an.perModel.length > 1 && an.msAvail && it.models && it.models.length) {
+      var parts = [];
+      for (var j = 0; j < it.models.length; j++) {
+        var m = it.models[j];
+        parts.push((m.name || "") + " " + (spdNum(m.ms) > 0
+          ? (m.o / (m.ms / 1000)).toFixed(1) + " t/s" : SPD_L("无窗口", "no timing")));
+      }
+      return t + SPD_L("，", ", ") + parts.join(SPD_L("、", ", "));
+    }
+    return t + SPD_L("，", ", ") + spdNum(it.v).toFixed(1) + " t/s";
+  }
+  function spd3LineHTML(an, hoverIdx, o, slots, head, weekForm) {
+    var N = slots.length;
+    var TOP = 8, PLOT = SPD3_PLOT_H, XH = SPD3_X_H, GX = SPD3_GUT_W + 4, PITCH = SPD3_PITCH, GR = 10;
+    /* 少桶（focus 后今天常 1–3 桶）放宽列距，图表本体不缩成窄条 */
+    var P = Math.max(PITCH, Math.floor(256 / Math.max(N, 1)));
+    var W = GX + N * P + GR, H = TOP + PLOT + XH, base = TOP + PLOT;
+    var cx = function (i) { return GX + i * P + P / 2; };
+    /* 系列组装：多模型（msAvail）=逐模型线 + 总体虚线（an.overall 在场才画）；
+     * 其余（单模型 / 降级多模型）=一条桶整值线（单模型上模型色，降级中性灰） */
+    var series = [];
+    var multi = an.perModel && an.perModel.length > 1;
+    if (multi && an.msAvail) {
+      for (var s = 0; s < an.perModel.length; s++) {
+        var pm = an.perModel[s];
+        series.push({ color: spd3Color(pm.key), dashed: false, pts: spd3SeriesPts(slots, pm.key) });
+      }
+      if (weekForm && an.overall) series.push({ color: "", dashed: true, pts: spd3SeriesPts(slots, null) });
+    } else {
+      var solo = !multi && an.perModel && an.perModel.length === 1 ? spd3Color(an.perModel[0].key) : "";
+      series.push({ color: solo, dashed: false, pts: spd3SeriesPts(slots, null) });
+    }
+    var maxV = 0;
+    for (var m2 = 0; m2 < series.length; m2++) {
+      var pp = series[m2].pts;
+      for (var q = 0; q < pp.length; q++) if (pp[q] != null && pp[q] > maxV) maxV = pp[q];
+    }
+    if (!(maxV > 0)) return spd3ChartEmptyHTML(head);
+    var tk = spd3Ticks(maxV);
+    var yOf = function (v) { return TOP + (1 - v / tk.yMax) * PLOT; };
+    var r1 = function (x) { return Math.round(x * 10) / 10; };
+    var grid = "", xtxt = "", body = "", labels = [];
+    for (var g = 0; g < tk.ticks.length; g++) {
+      var ty = r1(yOf(tk.ticks[g]));
+      grid += '<line class="zu-sv3-gline"' + (tk.ticks[g] ? "" : ' data-base="1"') +
+        ' x1="' + GX + '" x2="' + (W - GR) + '" y1="' + ty + '" y2="' + ty + '"/>' +
+        '<text class="zu-sv3-gtxt" x="' + (GX - 6) + '" y="' + r1(ty + 3) + '" text-anchor="end">' + tk.ticks[g] + "</text>";
+    }
+    for (var xi = 0; xi < N; xi++) {
+      xtxt += '<text class="zu-sv3-xtxt" x="' + r1(cx(xi)) + '" y="' + (base + 11) + '">' +
+        spdEsc((slots[xi] && slots[xi].label) || "") + "</text>";
+    }
+    for (var si = 0; si < series.length; si++) {
+      var srs = series[si], d = "", seg = false;
+      for (var i3 = 0; i3 < srs.pts.length; i3++) {
+        if (srs.pts[i3] == null) { seg = false; continue; }
+        d += (seg ? " L " : " M ") + r1(cx(i3)) + " " + r1(yOf(srs.pts[i3]));
+        seg = true;
+      }
+      if (d) body += '<path class="zu-sv3-line' + (srs.color ? "" : " zu-sv3-nline") +
+        (srs.dashed ? " zu-sv3-oline" : "") + '"' + (srs.color ? ' stroke="' + srs.color + '"' : "") +
+        ' d="' + d + '"/>';
+      /* 近 7 天单模型实线：分段面积（模型色 12% 透明度，缺口不填充） */
+      /* v384 S6-MINOR5：多模型周视图纯折线+虚线总体（设计稿无面积；单模型保留） */
+      if (weekForm && !srs.dashed && srs.color && !(an.perModel && an.perModel.length > 1)) {
+        var area = "", seg2 = false, segStart = 0;
+        for (var i4 = 0; i4 <= srs.pts.length; i4++) {
+          var pv2 = i4 < srs.pts.length ? srs.pts[i4] : null;
+          if (pv2 == null) {
+            if (seg2) {
+              area += " L " + r1(cx(i4 - 1)) + " " + base + " L " + r1(cx(segStart)) + " " + base + " Z";
+              seg2 = false;
+            }
+            continue;
+          }
+          if (!seg2) {
+            area += (area ? " M " : "M ") + r1(cx(i4)) + " " + base + " L " + r1(cx(i4)) + " " + r1(yOf(pv2));
+            segStart = i4; seg2 = true;
+          } else area += " L " + r1(cx(i4)) + " " + r1(yOf(pv2));
+        }
+        if (area) body += '<path class="zu-sv3-area" fill="' + srs.color + '" d="' + area + '"/>';
+      }
+      /* 数据点：只落真实点（虚线总体不加点） */
+      if (!srs.dashed) for (var i5 = 0; i5 < srs.pts.length; i5++) if (srs.pts[i5] != null)
+        body += '<circle class="zu-sv3-pt' + (srs.color ? "" : " zu-sv3-npt") + '" cx="' + r1(cx(i5)) +
+          '" cy="' + r1(yOf(srs.pts[i5])) + '" r="2.5"' + (srs.color ? ' fill="' + srs.color + '"' : "") + "/>";
+      /* 末端数值标签：取各系列最后一个非空点 */
+      if (weekForm) for (var i6 = srs.pts.length - 1; i6 >= 0; i6--) if (srs.pts[i6] != null) {
+        labels.push({ y0: yOf(srs.pts[i6]), text: srs.pts[i6].toFixed(1), color: srs.color, dim: srs.dashed || !srs.color });
+        break;
+      }
+    }
+    /* 端标签上下错开 ≥12px：先向下推，越底再从末尾回推（全部钳在绘图区内） */
+    labels.sort(function (a, b) { return a.y0 - b.y0; });
+    var minY = TOP + 8, maxY = base - 3;
+    for (var e1 = 1; e1 < labels.length; e1++) if (labels[e1].y0 - labels[e1 - 1].y0 < 12) labels[e1].y0 = labels[e1 - 1].y0 + 12;
+    if (labels.length && labels[labels.length - 1].y0 > maxY) {
+      labels[labels.length - 1].y0 = maxY;
+      for (var e2 = labels.length - 2; e2 >= 0; e2--) if (labels[e2 + 1].y0 - labels[e2].y0 < 12) labels[e2].y0 = labels[e2 + 1].y0 - 12;
+    }
+    for (var e3 = 0; e3 < labels.length; e3++) {
+      var lb = labels[e3];
+      body += '<text class="zu-sv3-elabel' + (lb.dim ? " zu-sv3-olabel" : "") + '" x="' + (W - 2) +
+        '" y="' + r1(lb.y0 + 3) + '"' + (lb.color ? ' fill="' + lb.color + '"' : "") + ">" + lb.text + "</text>";
+    }
+    /* 命中列 + 同组十字参考线（CSS :hover/:focus-within 显现，零 JS 监听） */
+    var hits = "";
+    for (var hi = 0; hi < N; hi++) {
+      hits += '<g class="zu-sv3-hg"><line class="zu-sv3-xline" x1="' + r1(cx(hi)) + '" x2="' + r1(cx(hi)) +
+        '" y1="' + TOP + '" y2="' + base + '"/>' +
+        '<rect class="zu-sv3-hit" data-i="' + hi + '" x="' + (GX + hi * P) + '" y="' + TOP +
+        '" width="' + P + '" height="' + PLOT + '" tabindex="0" role="img" aria-label="' +
+        spdEsc(spd3HitAria(an, slots[hi])) + '"/></g>';
+    }
+    SPD_PORTAL = spd3PortalFor(slots, hoverIdx, o);
+    return SPD3_CHART_CSS +
+      '<div class="zu-speed-chart zu-sv3-chart">' + (head || "") +
+      '<div class="zu-sc-wrap" data-sv-end="1"><div class="zu-sc-plot" style="width:' + W + "px;height:" + H +
+      'px;margin-left:0;min-width:0">' +
+      '<svg class="zu-sv3-svg" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + " " + H + '">' +
+      grid + xtxt + body + hits + "</svg></div></div></div>";
+  }
+  /* ==================== ⑩ week：近 7 天（单模型线+面积 / 多模型线+总体虚线） ====================
+   * X 轴恒 7 个本地日（含无数据日：无点断线，不插值不假填）；缺失日合成空桶供命中
+   * 列与 aria（悬停无卡）。日历用本地 Date 运算，不减固定毫秒数。 */
+  function spd3WeekSlots(an) {
+    var dN = new Date(), nowMs = Date.now();
+    var byA = {};
+    for (var i = 0; i < an.items.length; i++) {
+      var it = an.items[i];
+      if (it && !it.empty) byA[it.a] = it;
+    }
+    var slots = [];
+    for (var k = 0; k < 7; k++) {
+      var t0 = new Date(dN.getFullYear(), dN.getMonth(), dN.getDate() - (6 - k)).getTime();
+      var it2 = byA[t0] || null;
+      if (!it2) it2 = { v: null, empty: true, label: spdLabel(t0, "day", true),
+        full: spdFull(t0) + " – " + spdFull(Math.min(t0 + 864e5, nowMs) - 1), a: t0, b: t0 + 864e5, models: [] };
+      slots.push(it2);
+    }
+    return slots;
+  }
+  function spd3WeekHTML(an, hoverIdx, o) {
+    var head = spd3ChartHeadHTML(an, "") || "";
+    return spd3LineHTML(an, hoverIdx, o, spd3WeekSlots(an), head, true);
+  }
+  /* ==================== ⑪ 三形态分发（唯一入口） ==================== */
+  function spd3ChartHTML(an, hoverIdx, o) {
+    SPD_PORTAL = "";   /* 每次构建先清悬停卡侧信道（消费即清纪律的写入侧对偶） */
+    if (!an || !Array.isArray(an.items)) return "";
+    if (an.period === "today") return spd3TodayHTML(an, hoverIdx, o);
+    if (an.period === "week") return spd3WeekHTML(an, hoverIdx, o);
+    if (an.period === "recent") return spd3RecentHTML(an, hoverIdx, o);
+    return "";   /* month/all 热力形态归 heat 分片，本函数不画 */
+  }
+  /* SPD_V3_CHARTS_END */
+  /* ---------- v384 生成速度 Tooltip V3：模型级速度统计核心（spd3 纯函数，无 DOM） ----------
+   * 数据契约 = specs/speed-tooltip-v3.md §1：轮表 msl 条目扩为 [mIdx,out,ms,n] 四元组
+   * （旧二元组兼容）+ 帧级 mkeys 身份表；新顶层 speed_days 全历史按日聚合（生产端
+   * 本地日界、550 天上限）。本分片只做解包/筛选状态机/聚合/管线，是 view/charts/heat
+   * （spec §5-§7，另分片实现）唯一的数据上游：消费入口 spd3Analyze(h, sd, sel) → an。
+   * 口径铁律（spec §0）：速度恒 = Σ有效输出 ÷ Σ有效生成窗口，绝不逐轮/逐模型算术
+   * 平均，绝不用「模型输出 ÷ 整轮耗时」充当模型速度。
+   * 只引用更早分片的存活符号（V3 集成后仍在）：L / SPD_L / TPS_BANDS / tpsBand /
+   * tpsBandText / spdEsc / spdNum / spd2 / spdDate / spdFull / spdLabel / spdBucket /
+   * spdNextBucket / spdShort / spdRangeText / spdCompactRange / SPD_RANGES /
+   * SPD_PERIODS / SPD_BARS_MAX。V2 专属函数（spdAnalyze/spdChartHTML/spdRebuildOr/
+   * speedSegsOf 等）随 V3 上线删除，本分片一律不引用；其余依赖一律本地 spd3 版本，
+   * 保证本文件可独立 node --check、可单独切片进 VM 夹具。 */
+  /* SPD_V3_CORE_BEGIN */
+  /* ==================== ① 轮表解包（spec §1.1/§1.3）：msl 新旧条目兼容 ==================== */
+  /* msl 条目 → 模型分量。二元组 [mIdx,out]（旧帧，无模型级窗口）与四元组
+   * [mIdx,out,ms,n]（v384 起，ms=该模型在本轮的 Σ有效生成窗口、n=已完成请求数）
+   * 兼容；日行五元组多出的 tn 取 p[4]（轮表条目无此位 → 0，聚合按每行 1 轮计）。
+   * 身份键（spec §1.3）：mkeys 在场且条目为非空字符串时 key=mkeys[idx]
+   * （provider_id\x1fmodel_id，provider 缺失为空段），否则退化为 "n\x1f"+name 按名称
+   * 识别。返回 null = 条目非法（只跳该条目，不弃整轮——纪律同 spdUnpackRaw）。 */
+  function spd3ModelOf(p, mnames, mkeys) {
+    /* 名字只拒绝 null/undefined（空串是合法显示名缺失）：兜底「未知模型」继续用
+     * mkeys/名称键识别身份，不再把空名整条丢弃（minor2） */
+    if (!p || typeof p[0] !== "number" || p[0] < 0 || mnames[p[0]] == null || !(spdNum(p[1]) > 0)) return null;
+    var name = mnames[p[0]] || SPD_L("未知模型", "Unknown model"), key, mpid = "", mmid = name;
+    if (mkeys && typeof mkeys[p[0]] === "string" && mkeys[p[0]]) {
+      key = mkeys[p[0]];
+      var cut = key.indexOf("\x1f");
+      if (cut >= 0) { mpid = key.slice(0, cut); mmid = key.slice(cut + 1); }
+    } else {
+      key = "n\x1f" + name;
+    }
+    return { key: key, name: name, pid: mpid, mid: mmid, o: spdNum(p[1]),
+      ms: (typeof p[2] === "number" && isFinite(p[2]) && p[2] > 0) ? p[2] : 0,
+      n: (typeof p[3] === "number" && isFinite(p[3]) && p[3] > 0) ? p[3] : 0,
+      tn: (typeof p[4] === "number" && isFinite(p[4]) && p[4] > 0) ? p[4] : 0 };
+  }
+  /* 轮表解包：t 是相对上一轮完成时刻的 delta（升序还原），s/msl 是索引表下标。
+   * t 缺失/非法整帧拒绝（fail-closed，minor3）：t 是 delta 累加基准，跳行续跑会让
+   * 后续所有轮的时间整体位移，宁可整体降级 V1 也不出错位统计；其余核心字段
+   * （out/ms/s）非法仍整轮丢弃，不让畸形远端/旧快照污染统计。
+   * 行携带 msAvail（任一模型分量 ms>0）= 该轮有模型级速度数据；全帧都没有时管线
+   * 判定降级模式（spec §4 msAvail=false）。 */
+  function spd3UnpackRaw(h) {
+    var sids = h.sids, snames = h.snames, pids = h.pids || [];
+    var mnames = Array.isArray(h.mnames) ? h.mnames : [];
+    /* 索引表一律 Array.isArray 校验：字符串等有 .length 的鸭子类型会把下标访问
+     * 变成字符索引（mnames='GLM-A' 时 mnames[0]==='G'），不能放行 */
+    var mkeys = Array.isArray(h.mkeys) ? h.mkeys : null;
+    var out = [], prev = 0;
+    for (var i = 0; i < h.turns.length; i++) {
+      var r = h.turns[i];
+      if (!r || typeof r.t !== "number" || !isFinite(r.t)) return null;
+      var t = prev + r.t;
+      prev = t;
+      var outv = spdNum(r.out), ms = spdNum(r.ms);
+      if (!(outv > 0 && ms > 0) || !(typeof r.s === "number" && sids[r.s])) continue;
+      var models = [], msAvail = false;
+      if (r.msl && typeof r.msl.length === "number") {
+        for (var j = 0; j < r.msl.length; j++) {
+          var m = spd3ModelOf(r.msl[j], mnames, mkeys);
+          if (!m) continue;
+          if (m.ms > 0) msAvail = true;
+          models.push(m);
+        }
+      }
+      var meta = pids[r.s] || ["", ""];
+      out.push({ s: r.s, sid: sids[r.s], sname: snames[r.s] || sids[r.s],
+        pid: meta[0] || "", pname: meta[1] || sids[r.s],
+        t: t, b: spdNum(r.b) || t, out: outv, ms: ms,
+        i: spdNum(r.i), o: spdNum(r.o), n: spdNum(r.n), models: models, msAvail: msAvail,
+        c: (typeof r.c === "number" && isFinite(r.c)) ? r.c : null, cf: !!r.cf });
+    }
+    return { turns: out, sid: h.sid || "", source: h.source || "", truncated: !!h.truncated };
+  }
+  /* 解包结果按帧对象引用缓存（纪律同 SPD_UNPACK_MEMO）：updateLive 心跳/悬停重编会
+   * 反复经 spd3Analyze 解包同一份轮表（6000 轮约 5ms/次）。同一帧内引用恒定；新帧是
+   * 新 JSON 对象自然失效，引用相等即内容相等，零陈旧风险。轮数守卫防同一对象被原地
+   * 追加后命中陈旧结果。结果只读：spd3Analyze 只 filter/slice 出新数组、不改行对象。 */
+  var SPD3_UNPACK_MEMO = new WeakMap();
+  function spd3Unpack(h) {
+    if (!h || !Array.isArray(h.turns) || !h.sids || !h.snames) return null;
+    var memo = SPD3_UNPACK_MEMO.get(h);
+    if (memo && memo.n === h.turns.length) return memo.res;
+    var res = spd3UnpackRaw(h);
+    SPD3_UNPACK_MEMO.set(h, { n: h.turns.length, res: res });
+    return res;
+  }
+  /* ==================== ② speed_days 解包（spec §1.2/§1.3） ====================
+   * days[i] = start 起第 i 个本地自然日（连续；日界由 Python 生产端按本地日历保证，
+   * 解包同样按本地日历 new Date(y,m,d+i) 推进，DST 日 23h/25h 与生产端天然对齐，
+   * 见 spd3UnpackDaysRaw 注释）。空日=[0,0,0,0,0,0] 跳过不产行，渲染层自己铺空格。
+   * 日行字段与轮表行对齐同形（b=t0、t=当日最后一毫秒、i/o 补 0、c=null），使
+   * spd3Aggregate/筛选重算无需分行处理；sid/pid 留空 = 日行无会话身份，范围筛选
+   * 天然只命中轮表行；t0 即日历零点，供日桶键直接使用（与轮表行 spdBucket 同源）。 */
+  function spd3UnpackDaysRaw(sd) {
+    var mnames = Array.isArray(sd.mnames) ? sd.mnames : [];
+    var mkeys = Array.isArray(sd.mkeys) ? sd.mkeys : null;
+    /* 日界从 start 的日历日期本地推进（new Date(y,m,d+i)，B1/S10）：DST 日 23h/25h
+     * 天然对齐 Python 生产端。固定 864e5 步长在跨 DST 帧上把日桶键推离日历零点
+     * （每次切换 ±1h 累计）：热力格按日历零点查 byDay 命中不了漂移键、合并接缝
+     * （endMs 漂到覆盖末日 23:00）还会把末日内晚轮双重计数。t1=次日日历零点，
+     * t=t1-1（约定不变）。rows[].t0 与轮表行 spdBucket 本地零点同源，聚合/热力
+     * 无需再分行处理。 */
+    var d0 = new Date(sd.start);
+    var y0 = d0.getFullYear(), mo0 = d0.getMonth(), dd0 = d0.getDate();
+    var rows = [];
+    for (var i = 0; i < sd.days.length; i++) {
+      var e = sd.days[i];
+      if (!e || typeof e.length !== "number") continue;
+      var outv = spdNum(e[0]), ms = spdNum(e[1]);
+      if (!(outv > 0 && ms > 0)) continue;   /* 空日（或全无效日）不产行 */
+      var t0 = new Date(y0, mo0, dd0 + i).getTime();
+      var t1 = new Date(y0, mo0, dd0 + i + 1).getTime();
+      var models = [], msAvail = false;
+      if (e[5] && typeof e[5].length === "number") {
+        /* v384 S1 打平形态：日行 msl 为五元组平铺序列 [mIdx,out,ms,n,tn, ...]
+         * （生产端 cap=8）；逐元素嗅探兼容旧嵌套形态（数组=嵌套条目步长 1，
+         * 数字=打平步长 5）。残缺尾部（不足一个五元组）丢弃不越界读。 */
+        var ml3 = e[5];
+        for (var j = 0; j < ml3.length;) {
+          var entry3, step3;
+          if (Array.isArray(ml3[j])) { entry3 = ml3[j]; step3 = 1; }
+          else if (typeof ml3[j] === "number" && j + 5 <= ml3.length) { entry3 = ml3.slice(j, j + 5); step3 = 5; }
+          else break;
+          j += step3;
+          var m = spd3ModelOf(entry3, mnames, mkeys);
+          if (!m) continue;
+          if (m.ms > 0) msAvail = true;
+          models.push(m);
+        }
+      }
+      rows.push({ t0: t0, t1: t1, t: t1 - 1, b: t0,
+        out: outv, ms: ms, n: spdNum(e[2]), turns: spdNum(e[3]), capped: !!e[4],
+        models: models, msAvail: msAvail, sid: "", pid: "", sname: "", pname: "",
+        i: 0, o: 0, c: null, cf: false });
+    }
+    /* end=覆盖末日次日日历零点（合并接缝界，B1/S10）：日行 t 恒 < end，晚于 end 的
+     * 轮表行才由 spd3Analyze 并入，无重叠无遗漏。 */
+    return { rows: rows, days: sd.days.length, start: sd.start,
+      end: new Date(y0, mo0, dd0 + sd.days.length).getTime(), truncated: !!sd.truncated };
+  }
+  /* 日桶解包同样按 sd 对象引用缓存，天数守卫防原地追加（纪律同 spd3Unpack）。 */
+  var SPD3_DAYS_MEMO = new WeakMap();
+  function spd3UnpackDays(sd) {
+    /* days 必须是真数组：字符串等有 .length 的鸭子类型会通过长度检查却不产行
+     * （'x'.length===1、'x'[0] 不是数组被静默跳过），宁可整帧拒绝 */
+    if (!sd || sd.v !== 1 || !Array.isArray(sd.days) ||
+        typeof sd.start !== "number" || !isFinite(sd.start)) return null;
+    var memo = SPD3_DAYS_MEMO.get(sd);
+    if (memo && memo.n === sd.days.length) return memo.res;
+    var res = spd3UnpackDaysRaw(sd);
+    SPD3_DAYS_MEMO.set(sd, { n: sd.days.length, res: res });
+    return res;
+  }
+  /* ==================== ③ 模型身份与颜色（spec §2） ====================
+   * 固定 10 色调色板（深浅主题共用，QA 验证过对比度）：纯哈希取色，跨范围/跨时间
+   * Tab/跨筛选稳定，与选择顺序和数据池无关；冲突靠名称/悬停明细区分。速度色阶仍
+   * 唯一来自 TPS_BANDS，两套颜色语义不混用（PRD 7.3）。 */
+  var SPD3_PALETTE = ["#4ea1ff", "#34d399", "#a78bfa", "#fbbf24", "#22d3ee",
+    "#f472b6", "#a3e635", "#fb923c", "#2dd4bf", "#f87171"];
+  /* FNV-1a 32 位哈希：offset basis 2166136261、FNV 质数 16777619，逐 UTF-16 码元
+   * 「先异或后乘质数」（Math.imul 保持 32 位乘法语义），>>>0 归一化为无符号后对
+   * 调色板长度取模。同 key 恒同色。 */
+  function spd3Color(key) {
+    var s = String(key == null ? "" : key), hsh = 2166136261;
+    for (var i = 0; i < s.length; i++) hsh = Math.imul(hsh ^ s.charCodeAt(i), 16777619) >>> 0;
+    return SPD3_PALETTE[hsh % SPD3_PALETTE.length];
+  }
+  /* 模型条目的稳定身份键：key 在场直接用（解包已保证），兜底按名称退化（spec §1.3），
+   * 供渲染层在 chips/图例/色点间统一取键，不假设条目一定来自 spd3 解包。 */
+  function spd3ModelKey(m) {
+    return m && typeof m.key === "string" && m.key ? m.key : "n\x1f" + ((m && m.name) || "");
+  }
+  /* ==================== ④ 筛选状态机（spec §3） ====================
+   * 实例状态 filt = {mode:"auto"|"sel", keys:[...]|null}：auto=跟随数据池全部模型；
+   * sel=显式集合（可为空=明确空态，不假装全选）。全部动作原地改属性并返回同引用，
+   * 不整体换对象（时间 Tab 切换保留筛选，会话切换与 speedSel 一同重置由调用方做）。
+   * 作用域=实例；新范围中无数据的选中模型保留选中，由 spd3Analyze 产出 selMissing
+   * 供 chips 标「无数据」。 */
+  function spd3FilterAuto() { return { mode: "auto", keys: null }; }
+  /* auto 下首次点击某模型=「只看该模型」（最小惊讶）；sel 下点击=toggle 该 key，
+   * 清空到 0 个时保持 sel 空数组=显式空态。 */
+  function spd3FilterToggle(f, key) {
+    if (!f) return f;
+    if (f.mode !== "sel" || !f.keys) { f.mode = "sel"; f.keys = [key]; return f; }
+    var i = f.keys.indexOf(key);
+    if (i >= 0) f.keys.splice(i, 1); else f.keys.push(key);
+    return f;
+  }
+  /* 显式只看一组模型（弹出层全选/搜索勾选批量用）；重复 key 去重保持签名稳定 */
+  function spd3FilterOnly(f, keys) {
+    if (!f) return f;
+    var out = [];
+    for (var i = 0; i < (keys || []).length; i++) if (out.indexOf(keys[i]) < 0) out.push(keys[i]);
+    f.mode = "sel"; f.keys = out;
+    return f;
+  }
+  /* 恢复默认=auto（spec §3 reset） */
+  function spd3FilterAll(f) {
+    if (!f) return f;
+    f.mode = "auto"; f.keys = null;
+    return f;
+  }
+  /* 显式空态（sel 且 0 个选中）≠ auto 全选 */
+  function spd3FilterIsEmpty(f) {
+    return !!f && f.mode === "sel" && (!f.keys || !f.keys.length);
+  }
+  /* 稳定签名串（spec §8 缓存键与 §7 横滚记忆键 filterSig）：keys 排序消除 toggle
+   * 顺序差，集合相等即同签名。显式空态（sel 且 0 个）签名 "sel:" 不得与 auto 塌缩
+   * 同串——两者池语义不同（空 vs 全部），memo/横滚键会互相碰撞。分隔符用 \x1e
+   * （记录分隔符）——key 内部已含 \x1f（provider\x1fmodel），再用 \x1f 连接会产生
+   * 歧义碰撞。 */
+  function spd3FilterSig(f) {
+    if (!f || f.mode !== "sel" || !f.keys) return "auto";
+    return "sel:" + f.keys.slice().sort().join("\x1e");
+  }
+  /* ==================== ⑤ 聚合器（spec §0 口径铁律） ====================
+   * 统一聚合器：任何桶/柱/overall 都走 Σ有效输出 ÷ Σ有效生成窗口，绝不逐轮/逐模型
+   * 算术平均。每模型分量按 key 累计 {name,o,ms,n}，模型级速度 tps 在输出时就地算出
+   * （ms=0 的分量 tps=null = 该模型无窗口数据，绝不拿整轮窗口冒充）。轮表行/日行
+   * 混合池（all+sd 合并）无需分行处理——日行解包时已对齐 b/t 同形。models 不截断：
+   * 模型数受生产端 msl ≤12 上限约束，悬停合成明细需要完整组成（V2 的 slice(0,8)
+   * 截断废弃，withNames 全量名单纪律保留）。 */
+  function spd3Aggregate(rows, withNames) {
+    var out = 0, ms = 0, i = 0, o = 0, n = 0, turns = 0, models = {}, c = 0, priced = false, costFull = true;
+    var t0 = Infinity, t1 = 0, last = 0;
+    for (var k = 0; k < rows.length; k++) {
+      var r = rows[k];
+      out += r.out; ms += r.ms; i += r.i; o += r.o; n += r.n;
+      /* 日行 turns=当日 distinct 轮数（解包带），轮表行每行恒 1 轮 */
+      turns += (typeof r.turns === "number" && isFinite(r.turns) && r.turns > 0) ? r.turns : 1;
+      if (r.b < t0) t0 = r.b;
+      if (r.t > t1) t1 = r.t;
+      if (r.t >= last) last = r.t;
+      for (var j = 0; j < r.models.length; j++) {
+        var m = r.models[j], e = models[m.key];
+        if (!e) e = models[m.key] = { key: m.key, name: m.name, pid: m.pid || "", mid: m.mid || "", o: 0, ms: 0, n: 0 };
+        e.o += m.o; e.ms += spdNum(m.ms); e.n += spdNum(m.n);
+      }
+      if (r.c !== null) { c += r.c; priced = true; costFull = costFull && r.cf; }
+      else costFull = false;
+    }
+    if (!rows.length || !ms) return null;
+    var ml = [];
+    for (var key in models) if (models[key].o > 0) {
+      var e2 = models[key];
+      ml.push({ key: e2.key, name: e2.name, pid: e2.pid, mid: e2.mid, o: e2.o, ms: e2.ms, n: e2.n,
+        tps: e2.ms > 0 ? e2.o / (e2.ms / 1000) : null });
+    }
+    ml.sort(function (a, b) { return b.o - a.o; });
+    var res = { v: out / (ms / 1000), out: out, ms: ms, i: i, o: o, n: n, turns: turns,
+      models: ml, modelCount: ml.length, t0: isFinite(t0) ? t0 : 0, t1: t1, last: last,
+      c: priced ? c : null, costFull: priced && costFull };
+    /* 整体口径额外产出全量模型名单（悬停列表不省略，纪律同 V2 withNames） */
+    if (withNames) res.modelNames = ml.map(function (x) { return x.name; });
+    return res;
+  }
+  /* 按模型分组（Σout/Σms/n/tn）→ out 降序数组。tn：轮表行每含该模型一轮计 1，
+   * 日行用解包带的 tn（当日含该模型的 distinct 轮数，缺席按 ≥1 计）。速度恒
+   * Σout÷Σms，ms=0 → tps=null（降级模式）。share（请求数占比，恰好 1）由调用方
+   * 按池内总请求数计算——本函数不掌握「分母是否该含池外模型」的语境。 */
+  function spd3PerModel(rows) {
+    var by = {};
+    for (var k = 0; k < rows.length; k++) {
+      var rm = rows[k].models;
+      for (var j = 0; j < rm.length; j++) {
+        var m = rm[j], e = by[m.key];
+        if (!e) e = by[m.key] = { key: m.key, name: m.name, pid: m.pid || "", mid: m.mid || "", out: 0, ms: 0, n: 0, tn: 0 };
+        e.out += m.o; e.ms += spdNum(m.ms); e.n += spdNum(m.n);
+        e.tn += (typeof m.tn === "number" && isFinite(m.tn) && m.tn > 0) ? m.tn : 1;
+      }
+    }
+    var ml = [];
+    for (var key in by) if (by[key].out > 0) {
+      var e2 = by[key];
+      ml.push({ key: e2.key, name: e2.name, pid: e2.pid, mid: e2.mid, out: e2.out, ms: e2.ms, n: e2.n, tn: e2.tn,
+        tps: e2.ms > 0 ? e2.out / (e2.ms / 1000) : null });
+    }
+    ml.sort(function (a, b) { return b.out - a.out; });
+    return ml;
+  }
+  /* ==================== ⑥ 聚合管线（spec §4，20 组合唯一入口） ====================
+   * 顺序固定（PRD 4.2）：范围池 → 自然时间窗 → 最近 N 轮（SPD_BARS_MAX=18，沿用
+   * 现值）→ 模型筛选 → 聚合。筛选只删分量不缩窗口：range=recent 先取最近 18 轮
+   * 窗口，再在窗口内按筛选分量重算（PRD 4.3，不向更早历史补轮）。
+   * 入参：h=speed_history 帧（可 null）、sd=speed_days 帧（可 null）、
+   * sel={range,period,sid,remote?,filt?,focus?}。sid 由调用点从本窗口/分栏可信身份
+   * 注入（同一帧推给所有窗，绝不用帧里 sid——纪律同 V2）；filt 是 spd3Filter* 维护
+   * 的同一可变对象（原地改属性后无需重建 sel）。
+   * 返回 an（view/charts/heat 的唯一上游契约，结果只读不得原地改）：
+   * { items, real, overall(+modelNames/models[].tps), perModel(+share), peak, low,
+   *   latest, unit("turn"|"hour"|"day"), title, range, period, spanA, spanB, notice,
+   *   truncated, msAvail, pool, selMissing, daysGrid?(仅 month) }
+   * items 每项 = spd3Aggregate 结果 + {label,full,a,b}，空桶 {v:null,...,empty:true}
+   * 不显 0 t/s；real=非空 items；peak/low/latest 按 real 的 v/last。 */
+  function spd3Analyze(h, sd, sel) {
+    sel = sel || {};
+    var range = SPD_RANGES.indexOf(sel.range) >= 0 ? sel.range : "all";
+    var period = SPD_PERIODS.indexOf(sel.period) >= 0 ? sel.period : "all";
+    var paneSid = sel.sid || "";
+    var now = Date.now();
+    var u = spd3Unpack(h);
+    var daysRows = sd ? spd3UnpackDays(sd) : null;
+    if (!u && !daysRows) return null;   /* h 与 sd 都缺（或都畸形）→ 调用方回退 V1 */
+    /* 远端身份 + 全部：本地库不能冒充远端历史，明确降级到本会话并提示（沿用 V2
+     * fail-closed）。降级先行：all+sd 合并池只在真「全部」范围组装，降级后自然走
+     * 轮表会话池（日行无 sid，会话筛选天然剔除）。 */
+    var remote = !!sel.remote;
+    if (remote && range === "all") range = "session";
+    var notices = [];
+    if (remote && sel.range === "all") notices.push(SPD_L("远端会话仅显示本会话历史", "Remote pane: local session history only"));
+    /* 数据池组装（spec §1.2 防重叠）：全部×全部 且 speed_days 可用 → 日行 + 晚于
+     * 覆盖末日次日日历零点（daysRows.end，B1/S10 日历化接缝）的轮表行；日行 t 恒 <
+     * 该分界，轮表行按 t >= 分界并入，无重叠无遗漏——固定 864e5 接缝在跨 DST 帧会
+     * 漂进覆盖末日，把末日内晚轮双重计数。其余组合池=轮表行。 */
+    var useDays = range === "all" && period === "all" && !!daysRows;
+    var pool;
+    if (useDays) {
+      var endMs = daysRows.end;
+      pool = daysRows.rows.slice();
+      if (u) for (var pi = 0; pi < u.turns.length; pi++) if (u.turns[pi].t >= endMs) pool.push(u.turns[pi]);
+      if (daysRows.truncated) notices.push(SPD_L("已截断 · 仅显示最近 " + daysRows.days + " 天",
+        "Truncated · last " + daysRows.days + " days only"));
+    } else {
+      pool = u ? u.turns : [];
+    }
+    /* 数据来源披露（M2/S8）：a) 无 speed_days 的「全部×全部」= 轮表窗口在冒充全历史；
+     * b) 轮表 6000 截断且本视图真以轮表为源（useDays 时日桶已覆盖全历史，截断无谓
+     * 再提示）。两类同义（「仅统计最近可用轮次」），互斥去重不叠报。 */
+    if (range === "all" && period === "all" && !daysRows) {
+      notices.push(SPD_L("仅统计最近可用轮次", "recent turns only"));
+    } else if (!useDays && u && u.truncated) {
+      notices.push(SPD_L("历史较长，仅统计最近可用轮次", "long history: recent turns only"));
+    }
+    /* 本会话 pid 从池内同 sid 行取（帧不携带调用方身份）；找不到=本会话不在历史中，
+     * 项目范围为空池并提示（spec §4：项目=本会话所在 pid 的全部会话）。 */
+    var panePid = "";
+    for (var pp = 0; pp < pool.length; pp++) if (pool[pp].sid === paneSid) { panePid = pool[pp].pid; break; }
+    if (range === "session" || range === "recent") {
+      pool = pool.filter(function (r) { return r.sid === paneSid; });
+    } else if (range === "project") {
+      if (!panePid) notices.push(SPD_L("当前会话不在历史中，项目范围无数据", "Current session not found in history; project scope is empty"));
+      pool = panePid ? pool.filter(function (r) { return r.pid === panePid; }) : [];
+    }
+    /* 自然时间窗：today/week/month 用本地日历运算（零点/当月一号），不减固定毫秒数
+     * （weekStart 同样日历化：today-6 个本地日，DST 日 23h/25h 与桶归属一致，M3/S8；
+     * 桶归属仍走 spdBucket 本地日历）。 */
+    var a = 0, b = 0, dNow = new Date(now);
+    var todayStart = new Date(dNow.getFullYear(), dNow.getMonth(), dNow.getDate()).getTime();
+    var weekStart = new Date(dNow.getFullYear(), dNow.getMonth(), dNow.getDate() - 6).getTime();
+    var monthStart = new Date(dNow.getFullYear(), dNow.getMonth(), 1).getTime();
+    if (period === "today") { a = todayStart; b = now; }
+    else if (period === "week") { a = weekStart; b = now; }
+    else if (period === "month") { a = monthStart; b = now; }
+    if (a) pool = pool.filter(function (r) { return r.t >= a && r.t <= b; });
+    /* 最近 N 轮：时间窗先行、N 轮上限在后（沿用 V2）；range=recent 与 period=recent
+     * 两处各切一次（同值幂等）——范围「最近」在该周期过滤之后取最近 18 个有效轮。 */
+    if (range === "recent") pool = pool.slice(-SPD_BARS_MAX);
+    if (period === "recent") pool = pool.slice(-SPD_BARS_MAX);
+    /* 降级提示的池规模判据（M1/S8）：取筛选前的原始池模型数——筛选只删分量，
+     * 池里「有没有第二个模型可比」不该随筛选翻转。 */
+    var rawPoolModelCount = 0, rawPoolKeys = {};
+    for (var rk = 0; rk < pool.length; rk++) {
+      var rkm = pool[rk].models;
+      for (var rkj = 0; rkj < rkm.length; rkj++)
+        if (!rawPoolKeys[rkm[rkj].key]) { rawPoolKeys[rkm[rkj].key] = 1; rawPoolModelCount++; }
+    }
+    /* 模型筛选（spec §4 顺序最末）：把每行 models 收窄为选中 key 子集，行级 out/ms/n
+     * 重算为筛选后分量和；行无选中分量 → 整行剔除。特例：所选分量全部无模型级窗口
+     * （旧二元组帧 fms=0）时保留整行 out/ms 画整轮值（spec §6 降级不缺柱），但
+     * models 清空（M1/S8）——无窗口分量不入 perModel/悬停组成，绝不拿「分量输出 ÷
+     * 整轮窗口」充当模型速度，柱走中性色、左卡单模型判定天然排除。 */
+    var filt = sel.filt, filtering = !!(filt && filt.mode === "sel" && filt.keys);
+    if (filtering) {
+      var selSet = {};
+      for (var si = 0; si < filt.keys.length; si++) selSet[filt.keys[si]] = true;
+      var fp = [];
+      for (var fi = 0; fi < pool.length; fi++) {
+        var row = pool[fi], fm = [];
+        for (var fj = 0; fj < row.models.length; fj++) if (selSet[row.models[fj].key]) fm.push(row.models[fj]);
+        if (!fm.length) continue;
+        if (fm.length === row.models.length) { fp.push(row); continue; }
+        var fo = 0, fms = 0, fn = 0;
+        for (var fk = 0; fk < fm.length; fk++) { fo += fm[fk].o; fms += fm[fk].ms; fn += fm[fk].n; }
+        /* 部分选中：有窗口分量按 spec §4 重算行级和；全无窗口（旧二元组帧）保留
+         * 整行 out/ms 画整轮值、models 清空（M1/S8，身份不再入分布/悬停卡）。
+         * 两种都拷贝新行对象——缓存的解包结果只读，绝不原地改行。 */
+        fp.push(fms > 0
+          ? Object.assign({}, row, { out: fo, ms: fms, n: fn, models: fm, msAvail: true })
+          : Object.assign({}, row, { models: [], msAvail: false }));
+      }
+      pool = fp;
+    }
+    /* 桶化：recent 每轮一项；today 恒小时全桶（00..当前小时，空桶保留显空位不显 0）；
+     * week/month/all 恒日桶（v291 起「全部」切历史热力，日粒度恒定）。month 另产
+     * an.daysGrid 覆盖当月全部日（含空日/未来日，日历铺格由渲染层做）。日行桶键
+     * 直接用契约 t0（不走 spdBucket 再归一化，见 ② 的 DST 口径注释）。 */
+    var items = [], daysGrid = null;
+    if (period === "recent") {
+      for (var ri = 0; ri < pool.length; ri++) {
+        var rrow = pool[ri], ragg = spd3Aggregate([rrow]);
+        /* 柱底只显时分，完整年月日时分秒留给 hover 信息卡（纪律同 V2） */
+        if (ragg) items.push(Object.assign(ragg, { label: spdShort(rrow.t, "turn"),
+          full: spdFull(rrow.b) + " – " + spdFull(rrow.t), a: rrow.b, b: rrow.t }));
+      }
+    } else {
+      var unit = period === "today" ? "hour" : "day";
+      var buckets = {}, bkeys = [];
+      if (pool.length) {
+        for (var w = 0; w < pool.length; w++) {
+          var prow = pool[w];
+          var bk = (unit === "day" && prow.t0 !== undefined) ? prow.t0 : spdBucket(prow.t, unit);
+          if (!buckets[bk]) { buckets[bk] = []; bkeys.push(bk); }
+          buckets[bk].push(prow);
+        }
+        bkeys.sort(function (x, y) { return x - y; });
+        if (period === "today") {
+          /* 00:00→当前小时全桶，无数据显空桶而非零速度；有效桶 ≤3 且全桶 ≥4 时默认
+           * 聚焦有效时段（收放条件读 sel.focus，沿用 V2 行为） */
+          bkeys = [];
+          for (var hr = 0; hr <= dNow.getHours(); hr++) bkeys.push(todayStart + hr * 3600000);
+          var fullKeys = bkeys.slice(), realKeys = [];
+          for (var fk = 0; fk < fullKeys.length; fk++) if ((buckets[fullKeys[fk]] || []).length) realKeys.push(fullKeys[fk]);
+          if (sel.focus !== "full" && realKeys.length && realKeys.length <= 3 && fullKeys.length >= 4) bkeys = realKeys;
+        }
+        for (var bi = 0; bi < bkeys.length; bi++) {
+          var bk2 = bkeys[bi], rows2 = buckets[bk2] || [], bg = spd3Aggregate(rows2);
+          var nb = spdNextBucket(bk2, unit);
+          items.push(bg ? Object.assign(bg, { label: spdLabel(bk2, unit, true),
+              full: spdFull(bk2) + " – " + spdFull(Math.min(nb, now)), a: bk2, b: nb })
+            : { v: null, label: spdLabel(bk2, unit, true), full: spdFull(bk2) + " – " + spdFull(nb),
+                a: bk2, b: nb, empty: true, models: [] });
+        }
+      }
+      if (period === "month") {
+        /* 当月每日键集（本地日历天数，含今天之后的未来日）：agg=null=空日/未来日，
+         * 热力格状态由渲染层区分（spec §5：未来遮罩/空日灰/有记录色阶/今天描边） */
+        daysGrid = [];
+        var dim = new Date(dNow.getFullYear(), dNow.getMonth() + 1, 0).getDate();
+        for (var dd = 1; dd <= dim; dd++) {
+          var g0 = new Date(dNow.getFullYear(), dNow.getMonth(), dd).getTime();
+          var g1 = new Date(dNow.getFullYear(), dNow.getMonth(), dd + 1).getTime();
+          var grows = buckets[g0] || [];
+          daysGrid.push({ t0: g0, t1: g1, agg: grows.length ? spd3Aggregate(grows) : null });
+        }
+      }
+    }
+    /* 设计稿五命名（spec §6）；N=items.length（recent 恒 = 柱数） */
+    var unit2 = period === "recent" ? "turn" : (period === "today" ? "hour" : "day");
+    var title = period === "recent" ? SPD_L("最近 " + items.length + " 轮 · 生成速度", "Last " + items.length + " turns · generation speed")
+      : period === "today" ? SPD_L("今天 · 按小时生成速度", "Today · hourly generation speed")
+      : period === "week" ? SPD_L("近 7 天 · 每日平均速度", "Last 7 days · daily average speed")
+      : period === "month" ? SPD_L("本月 · 日均生成速度", "This month · daily generation speed")
+      : SPD_L("全部 · 历史生成速度", "All history · generation speed");
+    /* v295 纪律沿用：顺序时间（旧→新，最新柱在最右）；real 与峰值/最低/最新按时间戳
+     * 比较不受顺序影响；spanA/spanB 取自筛选后池（沿用 V2 取法：时间窗优先）。 */
+    var real = items.filter(function (x) { return !x.empty; });
+    var overall = spd3Aggregate(pool, true);
+    var spanA = a || (pool.length ? pool[0].b : 0);
+    var spanB = b || (pool.length ? pool[pool.length - 1].t : 0);
+    if (period === "all" && pool.length) { spanA = pool[0].b; spanB = pool[pool.length - 1].t; }
+    var peak = null, low = null, latest = null;
+    for (var z = 0; z < real.length; z++) {
+      if (real[z].v == null) continue;
+      if (!peak || real[z].v > peak.v) peak = real[z];
+      if (!low || real[z].v < low.v) low = real[z];
+      if (!latest || real[z].last > latest.last) latest = real[z];
+    }
+    /* msAvail=筛选后池内是否存在 ms>0 的模型分量（spec §4 降级模式判据）；同时收集
+     * 池内模型 key 集（selMissing 判定基于筛选后的真实池）。 */
+    var msAvail = false, poolKeys = {};
+    for (var mi = 0; mi < pool.length; mi++) {
+      var rm2 = pool[mi].models;
+      for (var mj = 0; mj < rm2.length; mj++) {
+        if (rm2[mj].ms > 0) msAvail = true;
+        if (!poolKeys[rm2[mj].key]) { poolKeys[rm2[mj].key] = true; }
+      }
+    }
+    var selMissing = [];
+    if (filtering) {
+      for (var sm = 0; sm < filt.keys.length; sm++) if (!poolKeys[filt.keys[sm]]) selMissing.push(filt.keys[sm]);
+      if (selMissing.length) notices.push(SPD_L("已选 " + filt.keys.length + " 个模型中 " + selMissing.length + " 个在当前范围无数据",
+        selMissing.length + " of " + filt.keys.length + " selected models have no data here"));
+    }
+    /* 降级模式通知：判据=筛选后池无窗口分量 且 原始池（筛选前）有第二个模型可比
+     * （M1/S8：降级帧上筛选会清空全部身份，池模型数不能再当判据，单模型也无可
+     * 比较对象，spec §6/任务 §7） */
+    if (!msAvail && rawPoolModelCount > 1) notices.push(SPD_L("该历史数据缺少模型级生成耗时，暂无法按模型比较速度",
+      "Model-level timing missing in this history; per-model speed comparison unavailable"));
+    /* perModel：spd3PerModel 分组 + share（请求数占比，恰好 1；spec §6 左卡分布表。
+     * 占比按「该模型已完成请求数 / 池内总请求数」——单轮多模型会使 Σn>轮数，属
+     * 口径内（PRD §10 禁的是把 Token 占比或输出占比当请求占比，不是 n 占比）。 */
+    var perModel = spd3PerModel(pool), totalN = 0;
+    for (var tni = 0; tni < perModel.length; tni++) totalN += perModel[tni].n;
+    for (var shi = 0; shi < perModel.length; shi++) perModel[shi].share = totalN > 0 ? perModel[shi].n / totalN : 0;
+    var an = { items: items, real: real, overall: overall, perModel: perModel,
+      peak: peak, low: low, latest: latest, unit: unit2, title: title,
+      range: range, period: period, spanA: spanA, spanB: spanB,
+      notice: notices.join(SPD_L(" · ", " · ")), truncated: !!(u && u.truncated),
+      msAvail: msAvail, pool: pool, selMissing: selMissing };
+    if (daysGrid) an.daysGrid = daysGrid;
+    return an;
+  }
+  /* ==================== ⑦ 结果 memo（spec §8） ====================
+   * 按「帧对象引用 + sel 签名」缓存（WeakMap<h, 条目数组>）：帧未变+签名未变不重算。
+   * 每帧多槽（S10/B1 修复）：wire 在筛选激活时对同一帧连续算 sel/auto 两个签名、
+   * 多窗/多实例各持不同组合——单槽会逐拍互踢退化为每次全量重算。槽数组线性扫
+   * （≤SPD3_MEMO_CAP 条，数组在 VM 切片沙箱可用，Map 不在夹具原生名单内），超限
+   * 整清再存当前（纪律同 _AGG_CACHE 溢出整清）。命中另带 h.turns.length 守卫
+   * （同 spd3Unpack：防同一帧对象被原地追加后命中陈旧结果）。签名含分钟粒度时间片
+   * spd3NowBucket——today/week/month 时间窗与 month 日历都依赖 Date.now()，每分钟
+   * 失效一次（V2 每次悬停都全量重算，这里是纯增益）。speed_days 帧经 SPD3_SD_IDS
+   * 分配稳定序号进签名（WeakMap 键做不了字符串签名的一部分）。结果为共享只读对象：
+   * 调用方不得原地改 an（纪律同 spd3Unpack 行只读）。 */
+  var SPD3_MEMO = new WeakMap(), SPD3_SD_IDS = new WeakMap(), SPD3_SD_NEXT = 1;
+  var SPD3_MEMO_CAP = 8;
+  function spd3NowBucket() { return Math.floor(Date.now() / 60000); }
+  function spd3AnalyzeCached(h, sd, sel) {
+    var keyObj = h || sd;
+    if (!keyObj) return spd3Analyze(h, sd, sel);
+    sel = sel || {};
+    var sdId = 0;
+    if (sd) {
+      sdId = SPD3_SD_IDS.get(sd);
+      if (!sdId) { sdId = SPD3_SD_NEXT++; SPD3_SD_IDS.set(sd, sdId); }
+    }
+    var sig = [sel.range || "", sel.period || "", sel.sid || "", sel.remote ? 1 : 0,
+      spd3FilterSig(sel.filt), sel.focus || "", spd3NowBucket(), sdId].join("\u0001");
+    var n = (h && h.turns && typeof h.turns.length === "number") ? h.turns.length : -1;
+    var memo = SPD3_MEMO.get(keyObj);
+    if (memo) for (var i = 0; i < memo.length; i++)
+      if (memo[i].sig === sig && memo[i].n === n) return memo[i].res;
+    var res = spd3Analyze(h, sd, sel);
+    if (!memo) { memo = []; SPD3_MEMO.set(keyObj, memo); }
+    if (memo.length >= SPD3_MEMO_CAP) memo.length = 0;   /* 超限整清再存当前 */
+    memo.push({ sig: sig, n: n, res: res });
+    return res;
+  }
+  /* SPD_V3_CORE_END */
+  /* ---------- v384 生成速度 Tooltip V3：热力图（本月日历 / 全部历史） ----------
+   * spec §5 month/all 两行 + §2 两套颜色语义：速度色阶唯一来自 TPS_BANDS 档位类
+   * （格挂档位类，CSS color-mix 淡化混底，思路移植 V2 v294 已验证的对比度结论）；
+   * 模型身份色唯一来自 SPD3_PALETTE 纯哈希（格右上 ≤3 色点 + 「+N」），两套语义
+   * 不混用（PRD 7.3）。网格数学移植 V2 v291 段：month=7 列周日首列（行数=
+   * ceil((首日星期+天数)/7)，4~6 行，行数经 --zu-hm-rows 变量下发）；hist=行=星期
+   * （7 行周日..周六）、列=周（列头=周起始 MM/DD，跨月首列加亮；>14 列时隔列显
+   * 标签防挤、首列恒显），cell 最小 ~34px、超出容器宽经 .zu-sc-wrap 横滚。
+   * 格状态五态可区分（spec §5）：补位更暗不可交互 / 未来遮罩 / 无记录灰 / 有记录
+   * 档位混底 / 今天描边；绝不伪造 0 t/s。
+   * 纯字符串零 DOM：悬停日卡经模块外 SPD_PORTAL 侧信道（charts 纪律：构建前清空、
+   * 有悬停整体覆写 <div class="zu-sv-card …" data-i="N">、未悬停/无数据日=空串，
+   * 消费即清，跨帧/跨 tip 不串）。
+   * 引用边界：存活符号 L/SPD_L/TPS_BANDS/tpsBand/spdEsc/spdNum/spd2/spdDate/
+   * spdBucket + core 分片全部 spd3* 导出（spd3Color/spd3ModelKey）+ view 分片的
+   * spd3ChartHeadHTML（并行开发中）。V2 专属函数（spdMonthHeatmapHTML/
+   * spdHistoryHeatmapHTML/spdDayCardHTML 等）随 V3 上线删除，一律不引用；其余依赖
+   * 一律本地 spd3 版本，保证本文件可独立 node --check、可单独切片进 VM 夹具。 */
+  /* SPD_V3_HEAT_BEGIN */
+  var SPD3_WD_ZH = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+  var SPD3_WD_EN = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  var SPD3_MO_EN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  function spd3Wd(wd) { return SPD_L(SPD3_WD_ZH[wd], SPD3_WD_EN[wd]); }
+  /* 一位小数速度文本（整数不带小数点，纪律同 V2 spdFmt1） */
+  function spd3Fmt1(v) { return v % 1 ? v.toFixed(1) : String(v); }
+  /* 图例两端色（纯静态展示值，无用户数据不需转义）：低=TPS_BANDS 末档 hot 实色、
+   * 高=首档 ultra 渐变，与 06 分片档位调色板同值；档位选取走表序（tpsBand(0)=最低
+   * 档、TPS_BANDS[0]=最高档），表序变化自动跟随，未知类名回退 currentColor。 */
+  var SPD3_LEG_BG = { hot: "#ff6b57", "zu-ultra": "linear-gradient(100deg,#60a5fa 0%,#a78bfa 50%,#c084fc 100%)" };
+  /* 格 aria（spec §7）：完整日期 + 均速档位 + 模型数；无记录日显式说明，绝不 0 t/s */
+  function spd3CellAria(t, agg) {
+    var d = spdDate(t), wd = d.getDay();
+    var dateTxt = SPD_L(d.getFullYear() + "年" + (d.getMonth() + 1) + "月" + d.getDate() + "日 " + SPD3_WD_ZH[wd],
+      SPD3_WD_EN[wd] + ", " + SPD3_MO_EN[d.getMonth()] + " " + d.getDate() + " " + d.getFullYear());
+    if (!agg) return dateTxt + SPD_L("，无有效速度记录", ", no rated speed data");
+    var b = tpsBand(agg.v);
+    return dateTxt + SPD_L("，均速 ", ", avg ") + spd3Fmt1(agg.v) + SPD_L(" t/s", " t/s") +
+      (b ? SPD_L("，" + b.zh, ", " + b.en) : "") +
+      SPD_L("，" + agg.modelCount + " 个模型", ", " + agg.modelCount + (agg.modelCount === 1 ? " model" : " models"));
+  }
+  /* 格右上模型色点：当日 models（spd3Aggregate 已按 out 降序、不截断）取前 3 枚 +
+   * 剩余「+N」；单模型视图（an.perModel.length===1）不渲染重复色点（spec §5）。
+   * 点是身份标记不是速度，与 an.msAvail 无关；色值=spd3Color(模型 key) 纯哈希。 */
+  function spd3DotsHTML(agg, single) {
+    if (single || !agg || !agg.models || !agg.models.length) return "";
+    var n = Math.min(3, agg.models.length), s = "";
+    for (var i = 0; i < n; i++)
+      s += '<span class="zu3-mdot" style="background:' + spd3Color(spd3ModelKey(agg.models[i])) + '"></span>';
+    if (agg.models.length > 3) s += '<span class="zu3-mmore">+' + (agg.models.length - 3) + "</span>";
+    return '<span class="zu3-mdots">' + s + "</span>";
+  }
+  /* 池内逐日元数据（单趟扫描，month/hist 共用）：tnByDay[日零点][模型key]=当日
+   * distinct 轮数（speed_days 日行用 msl tn，轮表行每含该模型一轮计 1，同
+   * spd3PerModel 口径）；capByDay=生产端 capFlag（日行模型列表截断）。供日悬停卡
+   * 的「N 轮」与截断注记。日行键=契约 t0（与 an.items 桶键同源）；轮表行键=
+   * spdBucket 本地零点（跨 DST 时与固定步长 t0 有 ±1h 级偏差，属 core ② 既定口径）。 */
+  function spd3DayMeta(pool) {
+    var tnByDay = {}, capByDay = {};
+    for (var i = 0; i < (pool || []).length; i++) {
+      var r = pool[i];
+      if (!r || !r.models) continue;
+      var dk = (r.t0 !== undefined) ? r.t0 : spdBucket(r.t, "day");
+      if (r.capped) capByDay[dk] = true;
+      var dtn = tnByDay[dk];
+      if (!dtn) dtn = tnByDay[dk] = {};
+      for (var j = 0; j < r.models.length; j++) {
+        var k = spd3ModelKey(r.models[j]), tn = r.models[j].tn;
+        dtn[k] = (dtn[k] || 0) + ((typeof tn === "number" && isFinite(tn) && tn > 0) ? tn : 1);
+      }
+    }
+    return { tnByDay: tnByDay, capByDay: capByDay };
+  }
+  /* 周日..周六表头（month 列头 / hist 行首共用） */
+  function spd3WeekRow() {
+    var s = "";
+    for (var i = 0; i < 7; i++) s += "<span>" + spdEsc(spd3Wd(i)) + "</span>";
+    return s;
+  }
+  /* 底部图例行（spec §6）：左 较低→较高（TPS_BANDS 首末档色两枚小色块，纯静态）；
+   * 右 多模型=「颜色标记代表模型」、单模型=「<模型名> · 单模型」 */
+  function spd3LegendHTML(an) {
+    var loBg = SPD3_LEG_BG[tpsBand(0).cls] || "currentColor";
+    var hiBg = SPD3_LEG_BG[TPS_BANDS[0].cls] || "currentColor";
+    var right = (an.perModel && an.perModel.length === 1)
+      ? spdEsc(an.perModel[0].name) + SPD_L(" · 单模型", " · single model")
+      : SPD_L("颜色标记代表模型", "colors mark models");
+    return '<div class="zu3-lg"><span class="zu3-lg-l"><i>' + SPD_L("较低", "Lower") + "</i>" +
+      '<span class="zu3-lg-sw" style="background:' + loBg + '"></span>' +
+      '<span class="zu3-lg-sw" style="background:' + hiBg + '"></span>' +
+      "<i>" + SPD_L("较高", "Higher") + '</i></span><span class="zu3-lg-r">' + right + "</span></div>";
+  }
+  /* 内联样式：全部规则挂 .zu-sv3-root（V3 卡根，view 分片）或 .zu-sv-portal（body
+   * 级悬停 Portal 容器）作用域，不与 V2 遗留 .zu-hm-* 全局规则互染；档位混底/
+   * 今天描边/焦点描边/ultra 文字修正思路移植 V2 v294/v297 审查结论。静态串无用户
+   * 数据，不需转义。 */
+  function spd3HeatStyle() {
+    return "<style>" +
+      /* ---------- month（.zu3-hm）：7 列周日首列 × --zu-hm-rows 行 ---------- */
+      ".zu-sv3-root .zu3-hm{flex:1;min-height:0;min-width:0;display:flex;flex-direction:column}" +
+      ".zu-sv3-root .zu3-hm-week{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;margin-bottom:4px;" +
+        "text-align:center;font-size:9px;line-height:12px;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-sv3-root .zu3-hm-grid{flex:1;min-height:0;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));" +
+        "grid-template-rows:repeat(var(--zu-hm-rows,5),minmax(0,1fr));gap:6px}" +
+      ".zu-sv3-root .zu-hm-pad{display:block;min-height:1px}" +
+      ".zu-sv3-root .zu-hm-cell{position:relative;display:flex;flex-direction:column;justify-content:space-between;" +
+        "min-width:0;min-height:0;box-sizing:border-box;border-radius:7px;padding:3px 4px;" +
+        "background:rgba(255,255,255,.045);-webkit-text-fill-color:initial}" +
+      ".zu-light .zu-sv3-root .zu-hm-cell{background:rgba(0,0,0,.04)}" +
+      ".zu-sv3-root .zu-hm-cell::before{content:none}" +
+      ".zu-sv3-root .zu-hm-cell.zu-hm-void{color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-sv3-root .zu-hm-cell.zu-hm-fut{color:var(--color-tooltip-tag-foreground,#a6a6a6);opacity:.7;background:rgba(255,255,255,.02)}" +
+      ".zu-light .zu-sv3-root .zu-hm-cell.zu-hm-fut{background:rgba(0,0,0,.02)}" +
+      /* 有记录日：档位色 22% 混卡片底（V2 v294 对比度结论沿用）；今天=1.5px 内描边 */
+      ".zu-sv3-root .zu-hm-cell.zu-hm-data{background:color-mix(in srgb,currentColor 22%,var(--color-popover,#1c212b))}" +
+      ".zu-sv3-root .zu-hm-cell.zu-hm-today{box-shadow:inset 0 0 0 1.5px var(--color-popover-border,rgba(255,255,255,.4))}" +
+      ".zu-sv3-root .zu-hm-cell:hover{filter:brightness(1.07)}" +
+      ".zu-sv3-root .zu-hm-cell:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
+      ".zu-sv3-root .zu3-hd{display:flex;align-items:flex-start;justify-content:space-between;gap:2px;min-height:0}" +
+      ".zu-sv3-root .zu3-d{flex:0 0 auto;font-size:8px;line-height:1;font-weight:500;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-sv3-root .zu3-v{flex:0 0 auto;font-size:9px;line-height:1.1;font-weight:600;font-variant-numeric:tabular-nums;" +
+        "color:var(--color-tooltip-foreground,#fff);white-space:nowrap;overflow:hidden}" +
+      /* ---------- hist（.zu3-hh）：行=星期 7 行、列=周（column-major），横滚 ---------- */
+      ".zu-sv3-root .zu3-hh{flex:1;min-height:0;min-width:0;display:flex;flex-direction:column}" +
+      ".zu-sv3-root .zu3-hh-body{flex:1;min-height:0;display:flex;gap:6px;min-width:0}" +
+      ".zu-sv3-root .zu3-hh-wds{flex:0 0 auto;display:grid;grid-template-rows:repeat(7,1fr);gap:3px;padding-top:20px;" +
+        "font-size:9px;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-sv3-root .zu3-hh-wds span{display:flex;align-items:center;white-space:nowrap}" +
+      ".zu-sv3-root .zu3-hh-scroll{flex:1;min-width:0;display:flex;flex-direction:column;min-height:0}" +
+      ".zu-sv3-root .zu3-hh-cols,.zu-sv3-root .zu3-hh-grid{width:100%;min-width:calc(var(--zu3-cols,1)*37px)}" +
+      ".zu-sv3-root .zu3-hh-cols{display:grid;grid-template-columns:repeat(var(--zu3-cols,1),minmax(34px,1fr));" +
+        "gap:3px;height:14px;margin-bottom:3px}" +
+      ".zu-sv3-root .zu3-cl{grid-row:1;text-align:center;font-size:8px;line-height:14px;white-space:nowrap;" +
+        "font-variant-numeric:tabular-nums;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-sv3-root .zu3-cl.zu3-cl-mo{color:var(--color-tooltip-foreground,#fff);font-weight:600}" +
+      ".zu-sv3-root .zu3-hh-grid{flex:1;min-height:0;display:grid;grid-auto-flow:column;" +
+        "grid-template-rows:repeat(7,minmax(0,1fr));grid-auto-columns:minmax(34px,1fr);gap:3px}" +
+      ".zu-sv3-root .zu3-hh-grid .zu-hm-cell{border-radius:4px;padding:2px 3px;justify-content:flex-end;gap:1px}" +
+      /* v384 S6-MAJOR1：V2 的 .zu-hm-hist .zu-sc-wrap flex 列链未随 V3 类名迁移——
+       * wrap 塌缩到内容高，grid 的 minmax(0,1fr) 行随之压扁（S6 实测 gridH 122 vs 307） */
+      ".zu-sv3-root .zu3-hh .zu-sc-wrap{flex:1;min-height:0;width:100%;display:flex;flex-direction:column}" +
+      /* v384 S6-MAJOR2：hist 空日格补底色（否则周五/周六整行视觉消失） */
+      ".zu-sv3-root .zu3-hh-grid .zu-hm-cell.zu-hm-void{background:rgba(255,255,255,.04)}" +
+      ".zu-light .zu-sv3-root .zu3-hh-grid .zu-hm-cell.zu-hm-void{background:rgba(0,0,0,.045)}" +
+      /* v384 S6-MINOR3：V3 图表横滚条隐藏（06 旧规则只匹配 .zu-sv-chart） */
+      ".zu-sv3-root .zu3-hh .zu-sc-wrap::-webkit-scrollbar,.zu-sv3-root .zu3-hm .zu-sc-wrap::-webkit-scrollbar{display:none}" +
+      /* ---------- 共用：模型色点 / 图例 / 空态 ---------- */
+      ".zu-sv3-root .zu3-mdots,.zu-sv-portal .zu3-mdots{display:inline-flex;align-items:center;gap:2px;flex:0 0 auto}" +
+      ".zu-sv3-root .zu3-mdot,.zu-sv-portal .zu3-mdot{width:6px;height:6px;border-radius:50%;display:inline-block;flex:0 0 auto}" +
+      ".zu-sv3-root .zu3-mmore,.zu-sv-portal .zu3-mmore{font-size:7px;line-height:1;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-sv3-root .zu3-lg{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:8px;" +
+        "margin-top:6px;font-size:9px;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-sv3-root .zu3-lg-l{display:inline-flex;align-items:center;gap:4px}" +
+      ".zu-sv3-root .zu3-lg-l i{font-style:normal}" +
+      ".zu-sv3-root .zu3-lg-sw{width:14px;height:6px;border-radius:3px;display:inline-block}" +
+      ".zu-sv3-root .zu3-empty{flex:1;display:flex;align-items:center;justify-content:center;" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6);font-size:11px}" +
+      /* ---------- 日悬停卡（body 级 Portal 内，.zu-sv3-card 全自持样式） ---------- */
+      ".zu-sv-portal .zu-sv3-card{box-sizing:border-box;min-width:180px;max-width:260px;padding:8px 10px;border-radius:10px;" +
+        "background:var(--color-popover,#1c212b);border:1px solid var(--color-popover-border,rgba(255,255,255,.14));" +
+        "box-shadow:0 6px 24px rgba(0,0,0,.35);font-size:10px;line-height:1.5;color:var(--color-tooltip-foreground,#e9edf4)}" +
+      ".zu-sv-portal .zu-sv3-crow{display:flex;align-items:baseline;gap:6px;padding:1px 0}" +
+      ".zu-sv-portal .zu-sv3-crow>span{flex:0 0 auto;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-sv-portal .zu-sv3-chead{font-weight:600;margin-bottom:2px}" +
+      ".zu-sv-portal .zu-sv3-chead b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+      ".zu-sv-portal .zu-sv3-mrow{gap:5px}" +
+      ".zu-sv-portal .zu-sv3-mname{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}" +
+      ".zu-sv-portal .zu-sv3-mtn{flex:0 0 auto;font-style:normal;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-sv-portal .zu-sv3-mtps{margin-left:auto;font-variant-numeric:tabular-nums;white-space:nowrap}" +
+      ".zu-sv-portal .zu-sv3-capped{color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      "</style>";
+  }
+  /* 本月日历热力（spec §5 month 行）：数据源=an.daysGrid（core 已产当月全日格集，
+   * agg=null=空日/未来日，铺格由本层区分）。网格=7 列周日首列 × ceil((首日星期+
+   * 天数)/7) 行；补位格（邻月占位）不可交互、未来日 aria-hidden 遮罩、无记录灰、
+   * 有记录挂档位类（混底走 CSS）、今天描边。格内容=日号+日均速度（一位小数），
+   * 右上模型点见 spd3DotsHTML。头图 sub=聚合粒度说明；底部图例见 spd3LegendHTML。
+   * role=grid/row（display:contents 保网格布局）/gridcell；data-i=daysGrid 日序，
+   * 悬停重编按同序取日出卡。 */
+  function spd3MonthHTML(an, hoverIdx, o) {
+    SPD_PORTAL = "";
+    if (!an || !an.daysGrid || !an.daysGrid.length) return "";
+    var d0 = spdDate(Date.now());
+    var todayStart = new Date(d0.getFullYear(), d0.getMonth(), d0.getDate()).getTime();
+    var grid = an.daysGrid, nDays = grid.length;
+    var lead = new Date(grid[0].t0).getDay();   /* 周日=0 → 首列周日对齐 */
+    var rows = Math.ceil((lead + nDays) / 7);
+    var single = !!(an.perModel && an.perModel.length === 1);
+    var meta = spd3DayMeta(an.pool);
+    var flat = [], i, tabSet3 = false;   /* v384 M1：roving tabindex——每网格首格 0 其余 -1 */
+    for (i = 0; i < lead; i++) flat.push('<i class="zu-hm-pad" aria-hidden="true"></i>');
+    for (i = 0; i < nDays; i++) {
+      var g = grid[i], agg = g.agg || null;
+      var future = g.t0 > todayStart, today = g.t0 === todayStart;
+      var dn = spdDate(g.t0).getDate();
+      var cls = "zu-hm-cell";
+      if (future) cls += " zu-hm-fut";
+      else if (agg) { cls += " zu-hm-data"; var bd = tpsBand(agg.v); if (bd) cls += " " + bd.cls; }
+      else cls += " zu-hm-void";
+      if (today) cls += " zu-hm-today";
+      var head = '<span class="zu3-hd"><span class="zu3-d">' + dn + "</span>" + spd3DotsHTML(agg, single) + "</span>";
+      if (future) {
+        /* 未来日=遮罩占位：aria-hidden 不进读数、无 tabindex 不进 Tab 序（结构上仍
+         * 是 gridcell 保日历完整），绝不伪造速度 */
+        flat.push('<div class="' + cls + '" role="gridcell" aria-hidden="true" data-i="' + i + '">' + head + "</div>");
+      } else if (agg) {
+        flat.push('<div class="' + cls + '" role="gridcell" tabindex="' + (tabSet3 ? "-1" : "0") + '" data-i="' + i +
+          '" aria-label="' + spdEsc(spd3CellAria(g.t0, agg)) + '">' + head +
+          '<span class="zu3-v">' + spdEsc(spd3Fmt1(agg.v)) + "</span></div>");
+        tabSet3 = true;
+      } else {
+        flat.push('<div class="' + cls + '" role="gridcell" data-i="' + i +
+          '" aria-label="' + spdEsc(spd3CellAria(g.t0, null)) + '">' + head + "</div>");
+      }
+    }
+    /* 悬停日卡经 SPD_PORTAL 侧信道（空日/未来日/越界序号不出卡=保持空串） */
+    if (hoverIdx >= 0 && hoverIdx < nDays && grid[hoverIdx] && grid[hoverIdx].agg)
+      SPD_PORTAL = spd3DayCardHTML({ t: grid[hoverIdx].t0, agg: grid[hoverIdx].agg,
+        tn: meta.tnByDay[grid[hoverIdx].t0] || null, di: hoverIdx }, o);
+    var body = "";
+    for (var r2 = 0; r2 < rows; r2++)
+      body += '<div role="row" style="display:contents">' + flat.slice(r2 * 7, r2 * 7 + 7).join("") + "</div>";
+    return '<div class="zu-speed-chart zu-sv-chart zu3-hm">' + spd3HeatStyle() +
+      spd3ChartHeadHTML(an, SPD_L("按日聚合", "aggregated by day")) +
+      '<div class="zu-sc-wrap"><div class="zu3-hm-week">' + spd3WeekRow() + "</div>" +
+      '<div class="zu3-hm-grid" role="grid" style="--zu-hm-rows:' + rows + '">' + body + "</div></div>" +
+      spd3LegendHTML(an) + "</div>";
+  }
+  /* 全部历史热力（spec §5 all 行）：行=星期（周日..周六，与列首周日对齐，同 V2
+   * hist）、列=周（列头=周起始 MM/DD；跨月首列加亮——MM/DD 自带月份；>14 列时隔
+   * 列显标签防挤，首列恒显）。数据源=an.items 日桶（core 已合并 speed_days+晚于
+   * 覆盖末日的轮表行，无重叠无遗漏）；sd 仅用于截断披露（spec §1.2，N=days 长度，
+   * core 的 an.notice 同源提示由通知行承载）。窗口=首数据日 → 今天（今天无数据=灰
+   * 格照画；长空档如实显示空日，空=无数据）；cell 列宽 min ~34px，超出容器宽经
+   * .zu-sc-wrap 横滚（data-sv-end 供宿主首开滚到最新），列数经 --zu3-cols 下发。
+   * column-major 填格（一列=一周，V2 v292 复验教训），role=grid/row/gridcell，
+   * data-i=本视图日序（平铺顺序，补位不占号）。 */
+  function spd3HistHTML(an, sd, hoverIdx, o) {
+    SPD_PORTAL = "";
+    if (!an || !Array.isArray(an.items)) return "";
+    var todayStart = spdBucket(Date.now(), "day");
+    var byDay = {}, first = Infinity;
+    for (var i = 0; i < an.items.length; i++) {
+      var it = an.items[i];
+      if (!it.empty && it.a) { byDay[it.a] = it; if (it.a < first) first = it.a; }
+    }
+    var sub = SPD_L("按日聚合", "aggregated by day");
+    if (sd && sd.truncated && sd.days && typeof sd.days.length === "number")
+      sub = SPD_L("按日聚合 · 已截断 · 仅显示最近 " + sd.days.length + " 天",
+        "aggregated by day · truncated · last " + sd.days.length + " days only");
+    if (first === Infinity)
+      return '<div class="zu-speed-chart zu-sv-chart zu3-hh">' + spd3HeatStyle() +
+        spd3ChartHeadHTML(an, sub) + '<div class="zu3-empty">' +
+        SPD_L("暂无有效速度记录", "no rated speed data yet") + "</div></div>";
+    var fd0 = spdDate(first);
+    var fy = fd0.getFullYear(), fmo = fd0.getMonth(), fd = fd0.getDate();
+    var totalDays = Math.round((todayStart - first) / 864e5) + 1;
+    /* 网格起点=首数据日所在周的周日（行 r=0 恒周日，与 wds 行首标签对齐，V2 v292
+     * column-major 教训沿用）；首数据日周中的偏移补位由 ds<first 分支产出 */
+    var lead = new Date(fy, fmo, fd).getDay();
+    var cols = Math.ceil((lead + totalDays) / 7);
+    var single = !!(an.perModel && an.perModel.length === 1);
+    var meta = spd3DayMeta(an.pool);
+    var labelEvery = cols > 14 ? 2 : 1;
+    var flat = [], days = [], labels = "", lastMo = -1, tabSet3 = false;   /* v384 M1：roving tabindex */
+    for (var w = 0; w < cols; w++) {
+      var cs = new Date(fy, fmo, fd - lead + w * 7);   /* 列头=周起始日（周日） */
+      if (w === 0 || w % labelEvery === 0)
+        labels += '<span class="zu3-cl' + (cs.getMonth() !== lastMo ? " zu3-cl-mo" : "") +
+          '" style="grid-column:' + (w + 1) + '">' + spd2(cs.getMonth() + 1) + "/" + spd2(cs.getDate()) + "</span>";
+      if (cs.getMonth() !== lastMo) lastMo = cs.getMonth();
+      for (var r = 0; r < 7; r++) {
+        var ds = new Date(fy, fmo, fd - lead + w * 7 + r).getTime();   /* Date 构造器推进，DST 安全 */
+        if (ds < first || ds > todayStart) { flat.push('<i class="zu-hm-pad" aria-hidden="true"></i>'); continue; }
+        var it2 = byDay[ds] || null, bd2 = it2 ? tpsBand(it2.v) : null;
+        var di = days.length;
+        days.push({ t: ds, agg: it2, capped: !!meta.capByDay[ds] });
+        var cls2 = "zu-hm-cell " + (it2 ? "zu-hm-data" + (bd2 ? " " + bd2.cls : "") : "zu-hm-void") +
+          (ds === todayStart ? " zu-hm-today" : "");
+        var inner = '<span class="zu3-hd">' + spd3DotsHTML(it2, single) + "</span>";
+        if (it2) {
+          flat.push('<div class="' + cls2 + '" role="gridcell" tabindex="' + (tabSet3 ? "-1" : "0") + '" data-i="' + di +
+            '" aria-label="' + spdEsc(spd3CellAria(ds, it2)) + '">' + inner +
+            '<span class="zu3-v">' + spdEsc(spd3Fmt1(it2.v)) + "</span></div>");
+          tabSet3 = true;
+        }
+        else
+          flat.push('<div class="' + cls2 + '" role="gridcell" data-i="' + di +
+            '" aria-label="' + spdEsc(spd3CellAria(ds, null)) + '">' + inner + "</div>");
+      }
+    }
+    if (hoverIdx >= 0 && days[hoverIdx] && days[hoverIdx].agg)
+      SPD_PORTAL = spd3DayCardHTML({ t: days[hoverIdx].t, agg: days[hoverIdx].agg,
+        capped: days[hoverIdx].capped, tn: meta.tnByDay[days[hoverIdx].t] || null, di: hoverIdx }, o);
+    var rowsHtml = "", nRows = Math.ceil(flat.length / 7);
+    for (var r3 = 0; r3 < nRows; r3++)
+      rowsHtml += '<div role="row" style="display:contents">' + flat.slice(r3 * 7, r3 * 7 + 7).join("") + "</div>";
+    return '<div class="zu-speed-chart zu-sv-chart zu3-hh">' + spd3HeatStyle() +
+      spd3ChartHeadHTML(an, sub) +
+      '<div class="zu3-hh-body"><div class="zu3-hh-wds">' + spd3WeekRow() + "</div>" +
+      '<div class="zu-sc-wrap" data-sv-end="1"><div class="zu3-hh-scroll">' +
+      '<div class="zu3-hh-cols" style="--zu3-cols:' + cols + '">' + labels + "</div>" +
+      '<div class="zu3-hh-grid" role="grid" style="--zu3-cols:' + cols + '">' + rowsHtml + "</div>" +
+      "</div></div></div>" + spd3LegendHTML(an) + "</div>";
+  }
+  /* 日悬停卡（SPD_PORTAL 内容生产者，纯字符串）：item={t 日零点, agg spd3Aggregate
+   * 结果, tn? {key:当日轮数}, capped? 生产端模型列表截断, di? 悬停序号}。
+   * 标题「M/D（周X） · 模型明细」（多模型）/「M/D（周X）」；行1 日均速度（档位色）；
+   * 随后每模型行=色点+名+N轮+均速（模型分量无窗口 → tps=null 只显轮次，绝不冒充
+   * 速度，spec §6 降级模式）；tn 缺席时回退 n（单模型轮 n≈轮数）。capped 日尾注：
+   * 生产端 msl ≤12 截断后真实总数不可知，定性披露不编数字。空 item/无有效速度 →
+   * 空串不出卡。动态内容（模型名）一律 spdEsc 转义。 */
+  function spd3DayCardHTML(item, o) {
+    if (!item || !item.agg || !(item.agg.v > 0) || !item.t) return "";
+    var agg = item.agg, d = spdDate(item.t), wd = d.getDay();
+    var dayTxt = (d.getMonth() + 1) + "/" + d.getDate() + SPD_L("（", " (") + spd3Wd(wd) + SPD_L("）", ")");
+    var models = agg.models || [];
+    var multi = (agg.modelCount || models.length) > 1;
+    var bd = tpsBand(agg.v);
+    var s = '<div class="zu-sv-card zu-sv3-card" role="tooltip"' +
+      (typeof item.di === "number" ? ' data-i="' + item.di + '"' : "") + ">" +
+      '<div class="zu-sv3-crow zu-sv3-chead"><b>' +
+      spdEsc(dayTxt + (multi ? SPD_L(" · 模型明细", " · model detail") : "")) + "</b></div>" +
+      '<div class="zu-sv3-crow"><span>' + SPD_L("日均速度", "Day avg") + '</span><b class="zu-sv3-cval' +
+      (bd ? " " + bd.cls : "") + '">' + spdEsc(spd3Fmt1(agg.v)) + SPD_L(" t/s", " t/s") + "</b></div>";
+    for (var i = 0; i < models.length; i++) {
+      var m = models[i], key = spd3ModelKey(m), mb = tpsBand(m.tps);
+      var tn = item.tn ? (spdNum(item.tn[key]) || 0) : spdNum(m.n);
+      s += '<div class="zu-sv3-crow zu-sv3-mrow"><span class="zu3-mdot" style="background:' +
+        spd3Color(key) + '"></span><b class="zu-sv3-mname" title="' + spdEsc(m.name || "") + '">' +
+        spdEsc(m.name || SPD_L("未知模型", "Unknown model")) + "</b>" +
+        '<i class="zu-sv3-mtn">' + tn + SPD_L(" 轮", " turns") + "</i>" +
+        (m.tps > 0 ? '<b class="zu-sv3-mtps' + (mb ? " " + mb.cls : "") + '">' +
+          spdEsc(spd3Fmt1(m.tps)) + SPD_L(" t/s", " t/s") + "</b>" : "") +
+        "</div>";
+    }
+    if (item.capped)
+      s += '<div class="zu-sv3-crow zu-sv3-capped">' + SPD_L("另有更多模型未列入", "more models not listed") + "</div>";
+    return s + "</div>";
+  }
+  /* SPD_V3_HEAT_END */
+  /* ---------- v384 生成速度 Tooltip V3：卡外壳视图层（spd3 纯字符串构建器，零 DOM） ----------
+   * spec = specs/speed-tooltip-v3.md §6（920×480 布局）+ §3（chips/弹出层）+ §7（i18n/转义）。
+   * 本分片是 V3 卡的全部 HTML/CSS 外壳：头部双 Tab 组、模型筛选条与搜索弹出层、左摘要卡
+   * （单/多模型两态）、图表标题栏与整卡装配。图表本体（柱/线/热力）由 charts/heat 分片
+   * 产出，经 spd3CardHTML 的 <!--CHART--> 占位替换注入——本文件恒原样保留该占位符。
+   * 数据上游 = 04-speed-v3-core.js 的 spd3Analyze（an 只读，绝不原地改）。
+   * 只引用更早分片的存活符号：L / SPD_L / TPS_BANDS / tpsBand / tpsBandText / spdEsc /
+   * spdNum / spd2 / spdDate / spdFull / spdRangeText / spdRangeFull / SPD_RANGES /
+   * SPD_PERIODS / SPD_BARS_MAX + core 的 spd3*（spd3Color / SPD3_PALETTE / spd3ModelKey /
+   * spd3FilterSig / spd3FilterAuto 等）。V2 专属函数（spdAnalyze / spdLeftHTML /
+   * spdHeadHTML / spdTabRow / spdChartHeadHTML / speedCardV2HTML 等）随 V3 上线删除，
+   * 一律不引用；视觉基准取自 V2 同名结构，但样式全部自带——.zu-sv3-root 作用域的内联
+   * <style>（.zu-light 祖先类切浅色），不依赖 06 分片的 V2 专属规则，V2 删除后零残留。
+   * 纪律（spec §7）：模型 key 不进 className（只进 data-k）；动态文本一律 spdEsc；全部
+   * 文案走 SPD_L；颜色语义两套不混用——模型身份色 = spd3Color（SPD3_PALETTE），速度
+   * 色阶 = TPS_BANDS 档位类（zu-ultra/ok/warm… 全局色规则继承）。
+   * 集成契约：spd3LeftHTML 第三参 expanded（多模型分布表展开态，调用方传布尔）；覆盖
+   * 范围五值读可选 an.cov={recent,today,week,month,all}（集成方按五个 period 各跑一次
+   * spd3AnalyzeCached 汇总轮数，缺席显 —）；筛选 chips 池缺省取 an.perModel+an.selMissing，
+   * 筛选激活时集成方应传 ctx.pool=未筛选全量模型（否则 chips 收缩为已选集，无法点回）。 */
+  /* SPD_V3_VIEW_BEGIN */
+  var SPD3_SVG_FUNNEL = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8v5l-4 2v-7L3 5Z"/></svg>';
+  var SPD3_SVG_SEARCH = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>';
+  var SPD3_SVG_CUBE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>';
+  /* 数值格式沿用 V2 口径：整数直显、小数留 1 位、空值 em dash（绝不显 0 t/s） */
+  function spd3FmtV(x) { return x == null ? "—" : (x % 1 ? x.toFixed(1) : String(x)); }
+  /* chips/弹出行共用：色点 + 名称（超长 ellipsis，全文走 title） */
+  function spd3DotAndName(key, name) {
+    return '<i class="zu-sv3-dot" style="background:' + spd3Color(key) + '" aria-hidden="true"></i>' +
+      '<span class="zu-sv3-chip-name">' + spdEsc(name) + "</span>";
+  }
+  /* 缺失 key 的显示名：身份键 = provider\x1fmodel（provider 缺失为空段），取 model 段；
+   * 无 \x1f 整串即名（名称退化键 "n\x1fname" 同规则）；空段兜底「未知模型」。 */
+  function spd3KeyName(key) {
+    var s = String(key == null ? "" : key), cut = s.indexOf("\x1f");
+    var mid = cut >= 0 ? s.slice(cut + 1) : s;
+    return mid || SPD_L("未知模型", "Unknown model");
+  }
+  /* ==================== ① 头部：标题 + 范围/时间双 Tab 组（V2 spdTabRow/spdHeadHTML 同构改名） ==================== */
+  function spd3TabRow(group, list, cur, labels) {
+    var out = '<div class="zu-sv-tabs" data-sv-group="' + group + '">';
+    for (var i = 0; i < list.length; i++) {
+      out += '<button type="button" class="zu-sv-tab' + (list[i] === cur ? " on" : "") +
+        '" data-sv-group="' + group + '" data-sv-val="' + spdEsc(list[i]) + '"' +
+        (list[i] === cur ? ' aria-pressed="true"' : ' aria-pressed="false"') + ">" +
+        spdEsc(labels[list[i]]) + "</button>";
+    }
+    return out + "</div>";
+  }
+  function spd3HeadHTML(an) {
+    an = an || {};
+    var rl = { recent: SPD_L("最近", "Recent"), session: SPD_L("会话", "Session"),
+      project: SPD_L("项目", "Project"), all: SPD_L("全部", "All") };
+    var pl = { recent: SPD_L("最近", "Recent"), today: SPD_L("今天", "Today"),
+      week: SPD_L("近 7 天", "7 days"), month: SPD_L("本月", "Month"), all: SPD_L("全部", "All") };
+    return '<div class="zu-sv-head"><div class="zu-sv-title">📈 ' + spdEsc(SPD_L("生成速度", "Generation speed")) + "</div>" +
+      '<div class="zu-sv-filter"><span class="zu-sv-flabel">' + spdEsc(SPD_L("范围", "Scope")) + "</span>" +
+      spd3TabRow("range", SPD_RANGES, an.range, rl) +
+      '<span class="zu-sv-time"><span class="zu-sv-flabel">' + spdEsc(SPD_L("时间", "Time")) + "</span>" +
+      spd3TabRow("period", SPD_PERIODS, an.period, pl) + "</span></div></div>";
+  }
+  /* ==================== ② 筛选条（spec §3）：漏斗 + chips + 计数 + 搜索入口 ====================
+   * pool = [{key,name,n?,missing?}]（spd3ChipPool 产出）；o = {selMissing?, pop?}。
+   * 选中态 = filt.mode==="sel" 且含该 key；无数据模型（missing / o.selMissing 命中，
+   * 含 pool 外的 selMissing key 兜底补一枚）加 .zu-sv3-chip-empty + 「无数据」标记。
+   * ≤6 枚全显、超出收 +N；≥9 模型才渲染搜索按钮；pool 为空不渲染整条。 */
+  function spd3FilterBarHTML(pool, filt, o) {
+    pool = pool || [];
+    o = o || {};
+    var rows = pool.slice(), seen = {}, i;
+    for (i = 0; i < rows.length; i++) seen[rows[i].key] = true;
+    var miss = o.selMissing || [];
+    for (i = 0; i < miss.length; i++) if (!seen[miss[i]]) {
+      seen[miss[i]] = true;
+      rows.push({ key: miss[i], name: spd3KeyName(miss[i]), missing: true });
+    }
+    if (!rows.length) return "";
+    var isOn = function (k) { return !!(filt && filt.mode === "sel" && filt.keys && filt.keys.indexOf(k) >= 0); };
+    var chips = "", MAX = 6, onCount = 0;
+    for (i = 0; i < rows.length && i < MAX; i++) {
+      var p = rows[i], on = isOn(p.key), empty = !!p.missing || miss.indexOf(p.key) >= 0;
+      if (on) onCount++;
+      chips += '<button type="button" class="zu-sv3-chip' + (on ? " on" : "") + (empty ? " zu-sv3-chip-empty" : "") +
+        '" data-k="' + spdEsc(p.key) + '"' + (on ? ' aria-pressed="true"' : ' aria-pressed="false"') +
+        ' title="' + spdEsc(p.name) + '" aria-label="' + spdEsc(p.name + (empty ? SPD_L("（无数据）", " (no data)") : "")) + '">' +
+        spd3DotAndName(p.key, p.name) +
+        (empty ? '<em class="zu-sv3-chip-miss">' + spdEsc(SPD_L("无数据", "no data")) + "</em>" : "") + "</button>";
+    }
+    var hidden = rows.length - Math.min(rows.length, MAX);
+    if (hidden > 0) chips += '<span class="zu-sv3-chip-more" title="' +
+      spdEsc(SPD_L("其余 " + hidden + " 个模型，可搜索查看", hidden + " more models — use search")) + '">+' + hidden + "</span>";
+    var selCount = filt && filt.mode === "sel" && filt.keys ? filt.keys.length : rows.length;
+    var count = filt && filt.mode === "sel"
+      ? SPD_L("已选 " + selCount + "/" + rows.length, "Selected " + selCount + "/" + rows.length)
+      : SPD_L("全部 " + rows.length, "All " + rows.length);
+    var search = rows.length >= 9 ? '<button type="button" class="zu-sv3-fsearch" aria-haspopup="dialog" aria-expanded="' +
+      (o.pop && o.pop.open ? "true" : "false") + '" title="' + spdEsc(SPD_L("搜索模型", "Search models")) +
+      '" aria-label="' + spdEsc(SPD_L("搜索模型", "Search models")) + '">' + SPD3_SVG_SEARCH + "</button>" : "";
+    return '<div class="zu-sv3-fbar"><span class="zu-sv3-fico">' + SPD3_SVG_FUNNEL + "</span>" +
+      '<span class="zu-sv3-flabel">' + spdEsc(SPD_L("模型筛选", "Model filter")) + "</span>" +
+      '<div class="zu-sv3-chips">' + chips + "</div>" +
+      '<span class="zu-sv3-fcount">' + spdEsc(count) + "</span>" + search + "</div>";
+  }
+  /* ==================== ③ 筛选弹出层（spec §3 ≥9 模型）：搜索 + 列表 + 全选/清空/恢复默认 ====================
+   * 行 button 带 data-k（选中态 aria-pressed）；query 按名称/身份键不区分大小写过滤，
+   * >60 行只渲染前 60 并提示「输入以搜索更多」（轻量截断，不做虚拟化）。 */
+  function spd3FilterPopHTML(pool, filt, query) {
+    pool = pool || [];
+    var q = String(query == null ? "" : query).toLowerCase();
+    var rows = [];
+    for (var i = 0; i < pool.length; i++) {
+      var p = pool[i];
+      if (q && String(p.name).toLowerCase().indexOf(q) < 0 && String(p.key).toLowerCase().indexOf(q) < 0) continue;
+      rows.push(p);
+    }
+    var CAP = 60, capped = rows.length > CAP;
+    if (capped) rows = rows.slice(0, CAP);
+    var isOn = function (k) { return !!(filt && filt.mode === "sel" && filt.keys && filt.keys.indexOf(k) >= 0); };
+    var list = "";
+    for (var j = 0; j < rows.length; j++) {
+      var r = rows[j], on = isOn(r.key);
+      list += '<button type="button" class="zu-sv3-fpop-row' + (on ? " on" : "") + '" data-k="' + spdEsc(r.key) + '"' +
+        (on ? ' aria-pressed="true"' : ' aria-pressed="false"') + ' title="' + spdEsc(r.name) + '">' +
+        spd3DotAndName(r.key, r.name) +
+        '<span class="zu-sv3-fpop-n">' + spdEsc(String(spdNum(r.n))) + "</span></button>";
+    }
+    var box = '<input type="text" class="zu-sv3-fpop-input" aria-label="' + spdEsc(SPD_L("搜索模型", "Search models")) +
+      '" placeholder="' + spdEsc(SPD_L("搜索模型…", "Search models…")) + '" value="' +
+      spdEsc(query == null ? "" : String(query)) + '">';
+    var acts = '<div class="zu-sv3-fpop-acts">' +
+      '<button type="button" class="zu-sv3-fpop-btn" data-sv3-all>' + spdEsc(SPD_L("全选", "Select all")) + "</button>" +
+      '<button type="button" class="zu-sv3-fpop-btn" data-sv3-none>' + spdEsc(SPD_L("清空", "Clear")) + "</button>" +
+      '<button type="button" class="zu-sv3-fpop-btn" data-sv3-reset>' + spdEsc(SPD_L("恢复默认", "Reset")) + "</button></div>";
+    return '<div class="zu-sv3-fpop" role="dialog" aria-label="' + spdEsc(SPD_L("模型筛选", "Model filter")) + '">' + box +
+      '<div class="zu-sv3-fpop-list">' + (list ||
+        '<div class="zu-sv3-fpop-cap">' + spdEsc(SPD_L("无匹配模型", "No matching models")) + "</div>") + "</div>" +
+      (capped ? '<div class="zu-sv3-fpop-cap">' + spdEsc(SPD_L("输入以搜索更多", "Type to search more")) + "</div>" : "") +
+      acts + "</div>";
+  }
+  /* ==================== ④ 左摘要卡（spec §6 单/多模型两态） ====================
+   * 单模型判定 = an.perModel（筛选后池内有输出分量模型）恰 1 个（无数据模型不计）。
+   * 多模型分布行序按 share（请求数占比）降序、最多 6 行 + data-sv3-more 展开按钮
+   * （expanded 由调用方传）；msAvail=false 降级：隐藏「均速」列（表格退两列），
+   * 绝不出现 t/s 假值。覆盖范围单值随 an.period 直读（v384 M4：an.cov 五值契约废除）。 */
+  function spd3LeftTitle(an) {
+    var n = an && an.items ? an.items.length : 0;
+    var t = an && an.period === "recent" ? SPD_L("最近 " + n + " 轮", "Last " + n + " turns")
+      : an && an.period === "today" ? SPD_L("今天", "Today")
+      : an && an.period === "week" ? SPD_L("近 7 天", "Last 7 days")
+      : an && an.period === "month" ? SPD_L("本月", "This month")
+      : SPD_L("历史", "History");   /* v384 S6-MINOR6：设计稿措辞「历史平均速度」 */
+    return t + SPD_L("平均速度", " · average speed");
+  }
+  function spd3StatHTML(lb, x, dayLabel) {
+    var b2 = x && x.v != null ? tpsBand(x.v) : null;
+    return '<span class="zu-sv3-stat"><i>' + spdEsc(dayLabel || lb) + "</i><b" +
+      (b2 ? ' class="' + b2.cls + '"' : "") + ">" + spdEsc(spd3FmtV(x ? x.v : null)) + "</b></span>";
+  }
+  function spd3BandHTML(bd) {
+    return '<div class="zu-sv3-band"><b class="' + bd.cls + '" style="font-weight:600">' +
+      spdEsc(tpsBandText(bd)) + "</b></div>";
+  }
+  function spd3LeftHTML(an, live, expanded) {
+    an = an || {};
+    var overall = an.overall || null;
+    var models = an.perModel || [];
+    var bd = overall ? tpsBand(overall.v) : null;
+    var dayLbl = an.unit === "day";
+    var headRow = '<div class="zu-sv3-title-row"><span class="zu-sv3-ltitle">' + spdEsc(spd3LeftTitle(an)) + "</span>" +
+      (live && live.statusText ? '<span class="zu-sv3-sub">' + spdEsc(live.statusText) + "</span>" : "") + "</div>";
+    var stats = '<div class="zu-sv3-stats">' +
+      spd3StatHTML(SPD_L("峰值", "Peak"), an.peak, dayLbl ? SPD_L("最高日均", "Best daily") : "") +
+      spd3StatHTML(SPD_L("最低", "Low"), an.low, dayLbl ? SPD_L("最低日均", "Worst daily") : "") +
+      spd3StatHTML(SPD_L("最新", "Latest"), an.latest, dayLbl ? SPD_L("最近日均", "Latest daily") : "") + "</div>";
+    if (!models.length || !overall) {
+      /* 空池/显式空筛选：标题 + em dash 主数字 + 峰最低最新，绝不造 0 t/s */
+      return '<div class="zu-sv3-left">' + headRow +
+        '<div class="zu-sv3-main-num"><span class="dim">—</span><span class="zu-sv3-unit">t/s</span></div>' + stats + "</div>";
+    }
+    if (models.length === 1) {
+      var m = models[0];
+      /* v384 M4：覆盖范围单值直读本视图（an.cov 五值生产者无人实现，砍掉）；
+       * m3：补「本期统计」组标题（设计稿单模型态三行 kv 的分组标签） */
+      var covLbl = an.period === "recent" ? SPD_L("最近 " + (an.items ? an.items.length : 0) + " 轮", "Last " + (an.items ? an.items.length : 0) + " turns")
+        : an.period === "today" ? SPD_L("今天", "Today")
+        : an.period === "week" ? SPD_L("近 7 天", "Last 7 days")
+        : an.period === "month" ? SPD_L("本月", "This month")
+        : SPD_L("全部历史", "All history");
+      return '<div class="zu-sv3-left">' + headRow +
+        '<div class="zu-sv3-main-num"><span class="' + (bd ? bd.cls : "dim") + '">' + spdEsc(spd3FmtV(overall.v)) +
+        '</span><span class="zu-sv3-unit">t/s</span></div>' +
+        (bd ? spd3BandHTML(bd) : "") +
+        '<div class="zu-sv3-model">' + spd3DotAndName(m.key, m.name) +
+        '<em class="zu-sv3-only">' + spdEsc(SPD_L("唯一模型", "Only model")) + "</em></div>" +
+        '<i class="zu-sv3-cov-h">' + spdEsc(SPD_L("本期统计", "This period")) + "</i>" +
+        '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("请求轮次", "Turns")) + "</i><b>" +
+        spdEsc(spdNum(overall.turns) + SPD_L("轮", " turns")) + "</b></div>" +
+        '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("当前模型", "Model")) + '</i><b title="' + spdEsc(m.name) + '">' +
+        spdEsc(m.name) + "</b></div>" +
+        '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("覆盖范围", "Coverage")) + "</i><b>" + spdEsc(covLbl) + "</b></div>" +
+        stats + "</div>";
+    }
+    /* ---- 多模型态：计数行 → 档位胶囊 → 所选模型分布（堆叠条+表格）→ 峰最低最新 ---- */
+    var shareSorted = models.slice().sort(function (a, b) { return (b.share || 0) - (a.share || 0); });
+    var turns = spdNum(overall.turns);
+    var bar = "";
+    for (var bi = 0; bi < shareSorted.length; bi++) {
+      var bm = shareSorted[bi];
+      bar += '<i style="background:' + spd3Color(bm.key) + ";width:" + (Math.max(0, (bm.share || 0) * 100)) + '%"></i>';
+    }
+    var msAvail = an.msAvail !== false;
+    var thead = "<tr><th>" + spdEsc(SPD_L("模型", "Model")) + "</th>" +
+      (msAvail ? "<th>" + spdEsc(SPD_L("均速", "Avg speed")) + "</th>" : "") +
+      "<th>" + spdEsc(SPD_L("占比", "Share")) + "</th></tr>";
+    var shown = expanded ? shareSorted : shareSorted.slice(0, 6);
+    var rowsHtml = "";
+    for (var ri = 0; ri < shown.length; ri++) {
+      var rm = shown[ri];
+      rowsHtml += '<tr><td><span class="zu-sv3-dmodel">' + spd3DotAndName(rm.key, rm.name) + "</span></td>" +
+        (msAvail ? "<td>" + (rm.tps != null ? spdEsc(spd3FmtV(rm.tps) + SPD_L(" t/s", " t/s")) : "—") + "</td>" : "") +
+        '<td class="zu-sv3-pct">' + spdEsc(String(Math.round((rm.share || 0) * 1000) / 10)) + "%</td></tr>";
+    }
+    var more = "";
+    if (shareSorted.length > 6) {
+      more = '<button type="button" class="zu-sv3-more" data-sv3-more aria-expanded="' + (expanded ? "true" : "false") + '">' +
+        spdEsc(expanded ? SPD_L("收起", "Show less")
+          : SPD_L("展开全部 " + shareSorted.length + " 个模型", "Show all " + shareSorted.length + " models")) + "</button>";
+    }
+    return '<div class="zu-sv3-left">' + headRow +
+      '<div class="zu-sv3-count">' + SPD3_SVG_CUBE + "<span>" +
+      spdEsc(SPD_L("已选 " + models.length + " 个模型 · " + turns + " 轮",
+        models.length + " models · " + turns + " turns")) + "</span></div>" +
+      (bd ? spd3BandHTML(bd) : "") +
+      '<div class="zu-sv3-dist-h">' + spdEsc(SPD_L("所选模型分布 · 按请求数", "Selected models · by requests")) + "</div>" +
+      '<div class="zu-sv3-dbar" aria-hidden="true">' + bar + "</div>" +
+      '<table class="zu-sv3-dtab">' + thead + rowsHtml + "</table>" + more + stats + "</div>";
+  }
+  /* ==================== ⑤ 通知行（spec §6 仅在有内容时渲染，非常驻说明条） ====================
+   * core 管线已把 selMissing 计数并入 an.notice（「已选 N 个模型中 M 个在当前范围无
+   * 数据」），这里直接透传避免重复上报；仅当 notice 缺席而 selMissing 在场（部分
+   * 构造的 an）时合成兜底句。 */
+  function spd3NoticeHTML(an) {
+    if (!an) return "";
+    if (an.notice) return an.notice;
+    var miss = an.selMissing && an.selMissing.length ? an.selMissing.length : 0;
+    if (miss) return SPD_L(miss + " 个所选模型在当前范围无数据", miss + " selected models have no data in this scope");
+    return "";
+  }
+  /* ==================== ⑥ 图表标题栏（V2 spdChartHeadHTML 同构：标题+t/s+档位入口+区间） ==================== */
+  function spd3ChartHeadHTML(an, sub) {
+    an = an || {};
+    var ico = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/></svg>';
+    /* Speed Bands SVG（细圆环 + 三级递增速度柱）逐字沿用 V2，档位说明浮层链（spdLegendTip）不变 */
+    var qico = '<svg viewBox="0 0 20 20" width="18" height="18" fill="none" aria-hidden="true" focusable="false">' +
+      '<circle cx="10" cy="10" r="8.15" stroke="currentColor" stroke-width="1.3" stroke-opacity="0.72"/>' +
+      '<path d="M6.35 13.2V10.9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-opacity="0.68"/>' +
+      '<path d="M10 13.2V8.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-opacity="0.88"/>' +
+      '<path d="M13.65 13.2V6.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>' +
+      "</svg>";
+    return '<div class="zu-sc-head"><span class="zu-sc-title">' + spdEsc(an.title || "") + "</span>" +
+      '<span class="zu-sc-unit">t/s</span>' +
+      '<button type="button" class="zu-sv-legend-btn" data-sv-band="' + (an.overall ? tpsBand(an.overall.v).cls : "") +
+      '" aria-haspopup="true" aria-expanded="false" title="' + spdEsc(SPD_L("查看速度档位说明", "View speed bands")) +
+      '" aria-label="' + spdEsc(SPD_L("查看速度档位说明", "View speed bands")) + '">' + qico + "</button>" +
+      (sub ? '<span class="zu-sc-sub zu-hm-sub">' + spdEsc(sub) + "</span>" : "") +
+      '<span class="zu-sv-range" title="' + spdEsc(spdRangeFull(an.spanA, an.spanB)) + '">' + ico +
+      "<span>" + spdEsc(spdRangeText(an.spanA, an.spanB)) + "</span></span></div>";
+  }
+  /* ==================== ⑦ 内联样式块（全部 .zu-sv3-root 作用域；.zu-light 祖先类切浅色） ==================== */
+  function spd3StylesHTML() {
+    return "<style>" +
+      /* 根：920×480 基准定宽，高度自适应；--zu-sv3-w/--zu-sv3-h 暴露给集成方钳制 */
+      ".zu-sv3-root{position:relative;display:flex;flex-direction:column;box-sizing:border-box;" +
+        "width:var(--zu-sv3-w,min(920px,calc(100vw - 24px)));min-height:min(480px,calc(100vh - 16px));" +
+        "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);" +
+        "color:var(--color-foreground,#e9edf4)}" +
+      ".zu-sv3-root,.zu-sv3-root *{box-sizing:border-box}" +
+      ".zu-light .zu-sv3-root{color:var(--color-foreground,#1c212b)}" +
+      /* ---- 头部：标题居左，范围/时间双 Tab 组整体靠右（V2 .zu-sv-head 视觉契约） ---- */
+      ".zu-sv3-root .zu-sv-head{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px;margin-bottom:10px}" +
+      ".zu-sv3-root .zu-sv-title{font-weight:700;font-size:calc(var(--ui-font-size,14px) + 6px);letter-spacing:.2px;min-width:0}" +
+      ".zu-sv3-root .zu-sv-filter{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-left:auto;justify-content:flex-end}" +
+      ".zu-sv3-root .zu-sv-flabel{font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6);flex:0 0 auto}" +
+      ".zu-sv3-root .zu-sv-time{display:flex;align-items:center;gap:6px;margin-left:14px}" +
+      ".zu-sv3-root .zu-sv-tabs{display:flex;flex:0 1 auto;flex-wrap:wrap;gap:2px;padding:2px;border-radius:9px;" +
+        "background:rgba(255,255,255,.045);border:1px solid var(--color-popover-border,rgba(255,255,255,.1))}" +
+      ".zu-light .zu-sv3-root .zu-sv-tabs{background:rgba(0,0,0,.04)}" +
+      ".zu-sv3-root .zu-sv-tab{appearance:none;border:0;background:transparent;color:var(--color-tooltip-tag-foreground,#a6a6a6);" +
+        "font-family:inherit;font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.4;font-weight:600;padding:6px 10px;" +
+        "border-radius:7px;cursor:pointer;white-space:nowrap}" +
+      ".zu-sv3-root .zu-sv-tab:hover{color:var(--color-foreground,#e9edf4);background:rgba(255,255,255,.06)}" +
+      ".zu-light .zu-sv3-root .zu-sv-tab:hover{background:rgba(0,0,0,.05)}" +
+      ".zu-sv3-root .zu-sv-tab.on{background:rgba(255,255,255,.07);color:var(--color-foreground,#e9edf4);" +
+        "box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}" +
+      ".zu-light .zu-sv3-root .zu-sv-tab.on{background:rgba(0,0,0,.06);color:var(--color-foreground,#1c212b);" +
+        "box-shadow:inset 0 0 0 1px rgba(15,23,42,.08)}" +
+      ".zu-sv3-root .zu-sv-tab.on:hover{background:rgba(255,255,255,.09)}" +
+      ".zu-light .zu-sv3-root .zu-sv-tab.on:hover{background:rgba(0,0,0,.07)}" +
+      ".zu-sv3-root .zu-sv-tab:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
+      /* ---- 筛选条：漏斗+标签 | chips | 计数+搜索 ---- */
+      ".zu-sv3-root .zu-sv3-fbar{display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:5px 10px;margin-bottom:10px;" +
+        "border:1px solid var(--color-popover-border,rgba(255,255,255,.1));border-radius:9px;background:rgba(255,255,255,.03)}" +
+      ".zu-light .zu-sv3-root .zu-sv3-fbar{background:rgba(0,0,0,.03);border-color:rgba(15,23,42,.1)}" +
+      ".zu-sv3-root .zu-sv3-fico{display:inline-flex;flex:0 0 auto;opacity:.75;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-sv3-root .zu-sv3-flabel{font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6);flex:0 0 auto}" +
+      ".zu-sv3-root .zu-sv3-chips{display:flex;flex:1 1 auto;flex-wrap:wrap;gap:4px;min-width:0}" +
+      ".zu-sv3-root .zu-sv3-chip{appearance:none;border:1px solid var(--color-popover-border,rgba(255,255,255,.12));" +
+        "background:transparent;color:var(--color-tooltip-tag-foreground,#a6a6a6);display:inline-flex;align-items:center;gap:5px;" +
+        "font-family:inherit;font-size:calc(var(--ui-font-size,14px) - 3px);line-height:1.3;padding:3px 9px;border-radius:999px;" +
+        "cursor:pointer;max-width:170px;white-space:nowrap}" +
+      ".zu-sv3-root .zu-sv3-chip:hover{color:var(--color-foreground,#e9edf4);background:rgba(255,255,255,.05)}" +
+      ".zu-light .zu-sv3-root .zu-sv3-chip:hover{background:rgba(0,0,0,.04)}" +
+      ".zu-sv3-root .zu-sv3-chip.on{color:var(--color-foreground,#e9edf4);background:rgba(255,255,255,.07);" +
+        "box-shadow:inset 0 0 0 1px rgba(255,255,255,.1)}" +
+      ".zu-light .zu-sv3-root .zu-sv3-chip.on{background:rgba(0,0,0,.06);box-shadow:inset 0 0 0 1px rgba(15,23,42,.1)}" +
+      ".zu-sv3-root .zu-sv3-chip:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
+      ".zu-sv3-root .zu-sv3-dot{display:inline-block;width:8px;height:8px;border-radius:50%;flex:0 0 auto}" +
+      ".zu-sv3-root .zu-sv3-chip-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+      ".zu-sv3-root .zu-sv3-chip-miss{font-style:normal;font-size:calc(var(--ui-font-size,14px) - 4px);" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6);opacity:.85;flex:0 0 auto}" +
+      ".zu-sv3-root .zu-sv3-chip-empty{border-style:dashed;opacity:.8}" +
+      ".zu-sv3-root .zu-sv3-chip-more{display:inline-flex;align-items:center;font-size:calc(var(--ui-font-size,14px) - 3px);" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6);padding:3px 6px;flex:0 0 auto;font-variant-numeric:tabular-nums}" +
+      ".zu-sv3-root .zu-sv3-fcount{margin-left:auto;font-size:calc(var(--ui-font-size,14px) - 3px);" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6);font-variant-numeric:tabular-nums;flex:0 0 auto;white-space:nowrap}" +
+      ".zu-sv3-root .zu-sv3-fsearch{appearance:none;border:1px solid var(--color-popover-border,rgba(255,255,255,.12));" +
+        "background:transparent;color:var(--color-tooltip-tag-foreground,#a6a6a6);width:24px;height:24px;border-radius:7px;" +
+        "display:inline-flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto;padding:0}" +
+      ".zu-sv3-root .zu-sv3-fsearch:hover{color:var(--color-foreground,#e9edf4);background:rgba(255,255,255,.06)}" +
+      ".zu-light .zu-sv3-root .zu-sv3-fsearch:hover{background:rgba(0,0,0,.05)}" +
+      ".zu-sv3-root .zu-sv3-fsearch svg{width:13px;height:13px}" +
+      ".zu-sv3-root .zu-sv3-fsearch:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
+      /* ---- 主区：左卡 250px 固定 + 右图表自适应（≤760px 视口左卡收 220px） ---- */
+      ".zu-sv3-root .zu-sv3-main{display:flex;gap:12px;align-items:stretch;flex:1;min-height:0}" +
+      ".zu-sv3-root .zu-sv3-left{flex:0 0 250px;min-width:0;display:flex;flex-direction:column;min-height:0;" +
+        "border:1px solid var(--color-popover-border,rgba(255,255,255,.14));border-radius:12px;padding:10px 12px}" +
+      ".zu-light .zu-sv3-root .zu-sv3-left{border-color:rgba(15,23,42,.14)}" +
+      ".zu-sv3-root .zu-sv3-chart{flex:1 1 0;min-width:0;max-width:100%;display:flex;flex-direction:column;min-height:0;" +
+        "border:1px solid var(--color-popover-border,rgba(255,255,255,.14));border-radius:12px;padding:10px 12px}" +
+      ".zu-light .zu-sv3-root .zu-sv3-chart{border-color:rgba(15,23,42,.14)}" +
+      "@media (max-width:760px){.zu-sv3-root .zu-sv3-left{flex:0 0 220px}}" +
+      /* ---- 图表标题栏（.zu-sc-* 基类属 V1 共享，这里只做 V3 作用域覆写） ---- */
+      ".zu-sv3-chart .zu-sc-head{margin-left:0;align-items:center;flex-wrap:wrap;row-gap:2px}" +
+      ".zu-sv3-chart .zu-sc-title{font-weight:600;font-size:calc(var(--ui-font-size,14px) + 2px);line-height:1.3;" +
+        "min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+      ".zu-sv3-chart .zu-sc-unit{margin-left:9px;background:rgba(255,255,255,.05);border-radius:5px;padding:2px 7px;" +
+        "font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6);flex:0 0 auto}" +
+      ".zu-light .zu-sv3-chart .zu-sc-unit{background:rgba(0,0,0,.05)}" +
+      ".zu-sv3-chart .zu-sv-legend-btn{appearance:none;border:0;background:transparent;" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6);width:26px;height:26px;padding:0;margin-left:4px;border-radius:7px;" +
+        "display:inline-flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto;align-self:center}" +
+      ".zu-sv3-chart .zu-sv-legend-btn svg{width:18px;height:18px}" +
+      ".zu-sv3-chart .zu-sv-legend-btn:hover,.zu-sv3-chart .zu-sv-legend-btn:focus-visible{" +
+        "color:var(--color-foreground,#e9edf4);background:rgba(255,255,255,.06)}" +
+      ".zu-light .zu-sv3-chart .zu-sv-legend-btn:hover,.zu-light .zu-sv3-chart .zu-sv-legend-btn:focus-visible{" +
+        "background:rgba(0,0,0,.05)}" +
+      ".zu-sv3-chart .zu-sv-legend-btn:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
+      ".zu-sv3-chart .zu-sc-sub{font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6);flex:0 0 auto}" +
+      ".zu-sv3-chart .zu-sv-range{display:inline-flex;align-items:center;gap:5px;flex:0 0 auto;max-width:60%;margin-left:auto;" +
+        "font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) - 3px);" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6);white-space:nowrap}" +
+      ".zu-sv3-chart .zu-sv-range svg{width:13px;height:13px;flex:0 0 auto;opacity:.75}" +
+      ".zu-sv3-chart .zu-sv-range span{overflow:hidden;text-overflow:ellipsis}" +
+      /* ---- 左卡内部 ---- */
+      ".zu-sv3-root .zu-sv3-title-row{display:flex;align-items:center;gap:6px;min-width:0}" +
+      ".zu-sv3-root .zu-sv3-ltitle{font-weight:600;font-size:calc(var(--ui-font-size,14px) - 1px);" +
+        "color:var(--color-foreground,#e9edf4);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+      ".zu-sv3-root .zu-sv3-sub{flex:0 0 auto;white-space:nowrap;font-weight:400;font-size:calc(var(--ui-font-size,14px) - 3px);" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6);opacity:.85}" +
+      ".zu-sv3-root .zu-sv3-main-num{margin-top:8px;font-variant-numeric:tabular-nums;" +
+        "font-size:calc(var(--ui-font-size,14px) + 22px);font-weight:700;line-height:1.1;white-space:nowrap}" +
+      ".zu-sv3-root .zu-sv3-main-num .zu-sv3-unit{font-size:calc(var(--ui-font-size,14px) + 4px);font-weight:600;" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6);margin-left:4px}" +
+      ".zu-sv3-root .zu-sv3-main-num .dim{color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-sv3-root .zu-sv3-band{display:inline-block;margin-top:8px;font-size:calc(var(--ui-font-size,14px) - 3px);" +
+        "border:1px solid var(--color-popover-border,rgba(255,255,255,.16));border-radius:999px;padding:2px 10px;" +
+        "white-space:nowrap;align-self:flex-start}" +
+      ".zu-light .zu-sv3-root .zu-sv3-band{border-color:rgba(15,23,42,.16)}" +
+      ".zu-sv3-root .zu-sv3-model{display:inline-flex;align-items:center;gap:6px;max-width:100%;min-width:0;margin-top:8px;" +
+        "padding:2px 10px;border:1px solid var(--color-popover-border,rgba(255,255,255,.14));border-radius:999px;" +
+        "background:rgba(255,255,255,.03)}" +
+      ".zu-light .zu-sv3-root .zu-sv3-model{border-color:rgba(15,23,42,.14);background:rgba(0,0,0,.04)}" +
+      ".zu-sv3-root .zu-sv3-only{font-style:normal;font-size:calc(var(--ui-font-size,14px) - 4px);" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6);flex:0 0 auto}" +
+      ".zu-sv3-root .zu-sv3-count{display:flex;align-items:center;gap:6px;margin-top:8px;min-width:0;" +
+        "font-size:calc(var(--ui-font-size,14px) - 1px);font-weight:600}" +
+      ".zu-sv3-root .zu-sv3-count svg{flex:0 0 auto;opacity:.85}" +
+      ".zu-sv3-root .zu-sv3-kv{display:flex;align-items:baseline;justify-content:space-between;gap:8px;" +
+        "font-size:calc(var(--ui-font-size,14px) - 2px);margin-top:6px;min-width:0}" +
+      ".zu-sv3-root .zu-sv3-kv i{font-style:normal;color:var(--color-tooltip-tag-foreground,#a6a6a6);flex:0 0 auto}" +
+      ".zu-sv3-root .zu-sv3-kv b{font-weight:600;font-variant-numeric:tabular-nums;min-width:0;overflow:hidden;" +
+        "text-overflow:ellipsis;white-space:nowrap;text-align:right}" +
+      /* v384 M4：覆盖范围改单值 kv（.zu-sv3-kv 承载），五值结构 CSS 删除 */
+      ".zu-sv3-root .zu-sv3-cov-h{font-style:normal;color:var(--color-tooltip-tag-foreground,#a6a6a6);display:block;margin-top:10px}" +
+      ".zu-sv3-root .zu-sv3-dist-h{margin-top:10px;font-size:calc(var(--ui-font-size,14px) - 3px);" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-sv3-root .zu-sv3-dbar{display:flex;height:8px;border-radius:4px;overflow:hidden;margin-top:6px;" +
+        "background:rgba(255,255,255,.06)}" +
+      ".zu-light .zu-sv3-root .zu-sv3-dbar{background:rgba(0,0,0,.06)}" +
+      ".zu-sv3-root .zu-sv3-dbar i{display:block;height:100%}" +
+      ".zu-sv3-root .zu-sv3-dtab{width:100%;border-collapse:collapse;margin-top:6px;" +
+        "font-size:calc(var(--ui-font-size,14px) - 3px);font-variant-numeric:tabular-nums}" +
+      ".zu-sv3-root .zu-sv3-dtab th{font-weight:400;color:var(--color-tooltip-tag-foreground,#a6a6a6);text-align:left;padding:2px 0}" +
+      ".zu-sv3-root .zu-sv3-dtab td{padding:3px 0;color:var(--color-foreground,#e9edf4);min-width:0}" +
+      ".zu-sv3-root .zu-sv3-dtab th:nth-child(n+2),.zu-sv3-root .zu-sv3-dtab td:nth-child(n+2){text-align:right;white-space:nowrap}" +
+      ".zu-sv3-root .zu-sv3-dtab .zu-sv3-dmodel{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:150px}" +
+      ".zu-sv3-root .zu-sv3-dtab .zu-sv3-dmodel .zu-sv3-chip-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+      ".zu-sv3-root .zu-sv3-more{appearance:none;border:0;background:transparent;color:var(--color-brand,#a3cfff);" +
+        "font-family:inherit;font-size:calc(var(--ui-font-size,14px) - 3px);padding:4px 0 0;margin:0;cursor:pointer;text-align:left}" +
+      ".zu-sv3-root .zu-sv3-more:hover{text-decoration:underline}" +
+      ".zu-sv3-root .zu-sv3-more:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
+      ".zu-sv3-root .zu-sv3-stats{display:flex;gap:10px;margin-top:auto;padding-top:12px}" +
+      ".zu-sv3-root .zu-sv3-stat{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:2px}" +
+      ".zu-sv3-root .zu-sv3-stat i{font-style:normal;font-size:calc(var(--ui-font-size,14px) - 3px);" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-sv3-root .zu-sv3-stat b{font-weight:600;font-variant-numeric:tabular-nums;" +
+        "font-size:calc(var(--ui-font-size,14px) + 2px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
+      ".zu-sv3-root .zu-sv3-notice{margin-top:8px;font-size:calc(var(--ui-font-size,14px) - 3px);" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      /* ---- 筛选弹出层：absolute 于卡内右下 ---- */
+      ".zu-sv3-root .zu-sv3-fpop{position:absolute;right:10px;bottom:10px;z-index:6;width:280px;max-width:calc(100% - 20px);" +
+        "max-height:320px;display:flex;flex-direction:column;padding:8px;border-radius:10px;" +
+        "border:1px solid var(--color-popover-border,rgba(255,255,255,.16));background:var(--color-popover,#1c212b);" +
+        "box-shadow:0 8px 28px rgba(0,0,0,.35)}" +
+      ".zu-light .zu-sv3-root .zu-sv3-fpop{background:var(--color-popover,#ffffff);border-color:rgba(15,23,42,.16);" +
+        "box-shadow:0 8px 28px rgba(15,23,42,.18)}" +
+      ".zu-sv3-root .zu-sv3-fpop-input{width:100%;appearance:none;border:1px solid var(--color-popover-border,rgba(255,255,255,.16));" +
+        "background:rgba(255,255,255,.05);color:var(--color-foreground,#e9edf4);font-family:inherit;" +
+        "font-size:calc(var(--ui-font-size,14px) - 2px);border-radius:7px;padding:5px 8px;flex:0 0 auto}" +
+      ".zu-light .zu-sv3-root .zu-sv3-fpop-input{background:rgba(0,0,0,.04)}" +
+      ".zu-sv3-root .zu-sv3-fpop-input:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
+      ".zu-sv3-root .zu-sv3-fpop-list{overflow-y:auto;margin-top:6px;min-height:0}" +
+      ".zu-sv3-root .zu-sv3-fpop-row{display:flex;align-items:center;gap:6px;width:100%;appearance:none;border:0;" +
+        "background:transparent;color:var(--color-foreground,#e9edf4);font-family:inherit;" +
+        "font-size:calc(var(--ui-font-size,14px) - 3px);padding:4px 6px;border-radius:6px;cursor:pointer;text-align:left}" +
+      ".zu-sv3-root .zu-sv3-fpop-row:hover{background:rgba(255,255,255,.06)}" +
+      ".zu-light .zu-sv3-root .zu-sv3-fpop-row:hover{background:rgba(0,0,0,.05)}" +
+      ".zu-sv3-root .zu-sv3-fpop-row.on{background:rgba(255,255,255,.08)}" +
+      ".zu-light .zu-sv3-root .zu-sv3-fpop-row.on{background:rgba(0,0,0,.07)}" +
+      ".zu-sv3-root .zu-sv3-fpop-row:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
+      ".zu-sv3-root .zu-sv3-fpop-row .zu-sv3-chip-name{flex:1 1 auto}" +
+      ".zu-sv3-root .zu-sv3-fpop-n{color:var(--color-tooltip-tag-foreground,#a6a6a6);font-variant-numeric:tabular-nums;flex:0 0 auto}" +
+      ".zu-sv3-root .zu-sv3-fpop-cap{margin-top:4px;font-size:calc(var(--ui-font-size,14px) - 4px);" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-sv3-root .zu-sv3-fpop-acts{display:flex;gap:6px;margin-top:6px;padding-top:6px;flex:0 0 auto;" +
+        "border-top:1px solid var(--color-popover-border,rgba(255,255,255,.1))}" +
+      ".zu-sv3-root .zu-sv3-fpop-btn{flex:1 1 0;appearance:none;border:1px solid var(--color-popover-border,rgba(255,255,255,.12));" +
+        "background:transparent;color:var(--color-tooltip-tag-foreground,#a6a6a6);font-family:inherit;" +
+        "font-size:calc(var(--ui-font-size,14px) - 3px);padding:4px 0;border-radius:7px;cursor:pointer;white-space:nowrap}" +
+      ".zu-sv3-root .zu-sv3-fpop-btn:hover{color:var(--color-foreground,#e9edf4);background:rgba(255,255,255,.06)}" +
+      ".zu-light .zu-sv3-root .zu-sv3-fpop-btn:hover{background:rgba(0,0,0,.05)}" +
+      ".zu-sv3-root .zu-sv3-fpop-btn:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
+      /* v384 B1：V2 的 :has 定宽释放规则随 V2 块删除——V3 卡 920 基准必须压过 .tip 基类
+       * 560 帽与 tpsTip 内联 520 帽，否则整卡被 tip 宽度裁剪（红队 BLOCKER） */
+      ".tip:has(.zu-sv3-root),.zusage-tps-tip:has(.zu-sv3-root){width:min(920px,calc(100vw - 24px))!important;" +
+        "max-width:min(920px,calc(100vw - 24px))!important}" +
+      "</style>";
+  }
+  /* ==================== ⑧ chips 池与整卡装配 ====================
+   * chips 池缺省 = an.perModel（out 降序）+ an.selMissing 兜底补枚；筛选激活时集成方
+   * 传 ctx.pool（未筛选全量模型）覆盖，保证被筛掉模型仍可从 chips/弹出层点回。
+   * 弹出层随 ctx.pop={open,query} 整卡携带（absolute 定位，交互委托由集成方接管）。 */
+  function spd3ChipPool(an, ctx) {
+    var src = ctx && ctx.pool ? ctx.pool : ((an && an.perModel) || []);
+    var seen = {}, pool = [];
+    for (var i = 0; i < src.length; i++) {
+      var e = src[i], key = spd3ModelKey(e);
+      if (seen[key]) continue;
+      seen[key] = true;
+      pool.push({ key: key, name: e.name || spd3KeyName(key), n: spdNum(e.n) });
+    }
+    var miss = (an && an.selMissing) || [];
+    for (var j = 0; j < miss.length; j++) if (!seen[miss[j]]) {
+      seen[miss[j]] = true;
+      pool.push({ key: miss[j], name: spd3KeyName(miss[j]), n: 0, missing: true });
+    }
+    return pool;
+  }
+  function spd3CardHTML(an, ctx) {
+    if (!an) return "";
+    ctx = ctx || {};
+    var sel = ctx.sel || {};
+    var filt = sel.filt || null;
+    var key = spdEsc((an.range || "") + "|" + (an.period || "") + "|" + spd3FilterSig(filt));
+    var pool = spd3ChipPool(an, ctx);
+    var notice = spd3NoticeHTML(an);
+    var pop = ctx.pop && ctx.pop.open ? spd3FilterPopHTML(pool, filt, ctx.pop.query) : "";
+    return '<div class="zu-sv3-root" data-sv-key="' + key + '">' + spd3StylesHTML() +
+      spd3HeadHTML(an) +
+      spd3FilterBarHTML(pool, filt, { selMissing: an.selMissing, pop: ctx.pop }) +
+      '<div class="zu-sv3-main">' + spd3LeftHTML(an, ctx.live, !!ctx.expanded) +
+      '<div class="zu-speed-chart zu-sv3-chart" data-sv3-chart><!--CHART--></div></div>' +
+      (notice ? '<div class="zu-sv3-notice">' + spdEsc(notice) + "</div>" : "") +
+      pop + "</div>";
+  }
+  /* SPD_V3_VIEW_END */
+  /* ==================== v384 生成速度 Tooltip V3：装配层（wire） ====================
+   * 纯函数桥，替代 V2 的 spdRebuildOr/spdChartFor（已随 V2 块删除）。职责只有两件：
+   * ①按时间 Tab 把 an 分发给 charts（recent/today/week）或 heat（month/all）；
+   * ②spd3RebuildOr 镜像 V2 spdRebuildOr 契约——无轮表返回 null（调用方回退 V1 旧卡），
+   *   有则返回闭包 (curHover, curSel) → "\x01"+整卡串，实例状态全部由调用方显式传入
+   *   （IIFE 顶层函数读不到 spawnInstance 闭包，VM 切片纪律同 V2）。
+   * SPD3_POOL 是最近一次重建的未筛选模型池（spd3AnalyzeCached 以 filt=auto 另算一份，
+   * memo 命中近乎零成本），供筛选弹出层「全选」与搜索列表消费——与 SPD_PORTAL 同款
+   * 「构建时写模块级变量」侧信道先例。 */
+  var SPD3_POOL = [];
+  function spd3ChartFor(an, sd, hoverIdx, o) {
+    if (!an) return "";
+    if (an.period === "month") return spd3MonthHTML(an, hoverIdx, o);
+    if (an.period === "all") return spd3HistHTML(an, sd, hoverIdx, o);
+    return spd3ChartHTML(an, hoverIdx, o);
+  }
+  function spd3RebuildOr(h, sd, sel, hover, liveOrSess, o, paneSess) {
+    if (!h || !h.turns || typeof h.turns.length !== "number" || !h.turns.length) {
+      /* v261 同款：null 原因取证（typeof FATAL 守卫，VM 切片夹具无 FATAL 不炸）。 */
+      try { if (typeof FATAL !== "undefined" && FATAL) FATAL.spdNull =
+        { t: Date.now(), hType: typeof h, hasTurns: !!(h && h.turns),
+          len: h && h.turns ? h.turns.length : -1 }; } catch (_) { }
+      return null;
+    }
+    var sess = paneSess || null;
+    var live = liveOrSess || null;
+    var dftFilt = function () {
+      return (typeof spd3FilterAuto === "function") ? spd3FilterAuto() : { mode: "auto", keys: null };
+    };
+    /* 串级 memo（M4/S10，闭包局部）：V3 卡不含逐拍走字（live 只进 statusText 状态
+     * 词），an 引用与呈现态全等的拍产物逐字节恒等——每拍重拼 259KB 级串纯浪费。
+     * 键=[an 引用, hover, expanded, pop.open, pop.query, live.statusText]：交互路径
+     * （柱 hover/chips/Tab/弹出层/会话相位变化→an 引用变）自然失效。缓存命中须同时
+     * 保鲜 SPD_PORTAL 侧信道（消费即清后重挂同一悬停卡，否则悬停中下一拍 Portal
+     * 被清空收起）。 */
+    var lastAn = null, lastTail = null, lastOut = "", lastPortal = "";
+    return function (curHover, curSel) {
+      var cur = curSel || sel;
+      var hi = (typeof curHover === "number" ? curHover : hover);
+      var core = { range: (cur && cur.range) || "recent", period: (cur && cur.period) || "recent",
+        sid: (sess && sess.sid) || "", remote: !!(sess && sess.remote),
+        filt: (cur && cur.filt) || dftFilt() };
+      var an = spd3AnalyzeCached(h, sd, core);
+      if (!an) return null;
+      /* 未筛选池：仅显式筛选时另算（memo 多槽各自缓存，S10/B1），供 chips 全集与弹出层。 */
+      var poolAn = an;
+      if (core.filt && core.filt.mode === "sel")
+        poolAn = spd3AnalyzeCached(h, sd, { range: core.range, period: core.period,
+          sid: core.sid, remote: core.remote, filt: dftFilt() }) || an;
+      SPD3_POOL = (poolAn && poolAn.perModel) || [];
+      var pop = (cur && cur.pop) || { open: false, query: "" };
+      var tail = [hi, cur && cur.expanded ? 1 : 0, pop.open ? 1 : 0, pop.query || "",
+        (live && live.statusText) || ""].join("\u0001");
+      if (lastAn === an && lastTail === tail) {
+        SPD_PORTAL = lastPortal;
+        return lastOut;
+      }
+      var chart = spd3ChartFor(an, sd, hi, o);
+      var html = spd3CardHTML(an, {
+          sel: core, hover: hi, live: live, o: o,
+          expanded: !!(cur && cur.expanded),
+          pop: pop,
+          pool: SPD3_POOL
+        }).replace("<!--CHART-->", chart);
+      lastAn = an; lastTail = tail; lastOut = "\x01" + html; lastPortal = SPD_PORTAL;
+      return lastOut;
+    };
+  }
   /* ==================== Status Rotator & Whale Tail (v268 移植；后按用户规格收敛) ====================
    * 移植自 dsh-status-rotator，收敛定案：
    * 1. 挂载唯一位置=消息流 loading 行（chat）；状态条速度格完全保持原生（闪电图标+档位色
@@ -10892,7 +12175,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v385";   //v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）→ v91 设置页/权限面板冒条修复（PR #44：inSettingsView 三处派发排除 + anchorCardOf 面板锚点改判）收编收尾：排除标记并集（settings-page testid + content/panel 双 frame）、track 显隐第四处防御 → v92 ⚙ 更新区固定显示可复制的重装口令（源码安装无法自动更新时引导用户发给 agent）→ v93 原生上下文按钮（chat-context-usage-trigger）增强：环填充/四档色/右侧百分比镜像状态条上下文格（ctxBandOf 同源），cw 缺失还原原生形态 → v94 状态条删除「上下文容量」格（UI+tooltip，该口径由原生按钮增强承载），⚙ 面板同步去掉「上下文」开关，子代理格改始终展示（零值也显示）→ v95 ⚙ 更新区去掉 v92 重装口令提示块（源码清单的仓库来源改由宿主插件管理器直接更新，不再报渠道不一致），更新来源文案增「仓库源码」分支→ v96 套餐额度 chip（默认关）：挂原生上下文按钮左侧（wrapper 内前插，与按钮增强同款双 reapply/还原），数据来自主进程 quota 字段（解密宿主 OAuth 凭据直查 monitor 端点，账号级套餐池口径），会话首个 main_turn 完成前不显示；自绘 tooltip 走 rateTip 独立浮层模式；chip 改多窗分段：每窗一段（中文 5小时/7天，英文 5h/7d）各自按 80/95/100 档位色，分隔符 |；余额类型单段渲染就绪（余额 ¥100.00，阶段 3 数据源接入即用）；去掉环形，容器不着色 → v97 子代理速率（T1+T2）：zusage sub 汇总加 rate_avg/每子代理 tps_avg（已完成段加权平均，口径同 _turn_rate），子代理格 tooltip/明细面板展示；Agent 运行期主 chip 附加「子代理运行中 · 估 X t/s」——turn-stats 透传 subagent 行 childSessionId，overlay 据此用同款 zuTryBindStore 绑子代理会话 store 做字符增量估算（运行中请求未入库，DB 无实时数据；150s 采样实锤零 running 行），思考文本不进 rows 时退回纯状态词；工具动词「正在运行子智能体」压成「子代理运行中」（web 同步文案）；同日多槽位化：turn-stats 暴露 runningSubagents 全集（并行时 rowId 前 8 个），每子代理独立绑定/2s 节流，主 chip 显示合计速率（并行 ≥2 时动词后缀 ×N），chip tooltip 与子代理明细面板逐个实时展示运行中估算（tooltip 随原地改字同步 __tip 重画；面板 800ms tick 原地刷新 .subrate，汇总页运行块含 DB 尚无记录的新子代理） → v98 额度实时选源恢复（v4-model-config 观察 + quota-providers 全窗快照上报 + byProvider 定向刷新、空选择 fail-closed）与 sub2api 额度 UI（今日/本月窗口、窗口行内金额明细、Key 总额度、订阅截止、账户余额标题） → v99（主线并流）tooltip 伪边界 leave 过滤：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave，tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别，仍悬停在本档具体元素上即伪 leave 一律忽略交回 mousemove 流（主线 v100 滚动豁免=本链 v106 同义，不另列） → v99.1（主线并流）apiKey 模式 BigModel/Z.ai（bigmodel-api[-N]/zai-api[-N]）额度 chip 标题家族判定（issue #68；数据链在 quota-client） → v99.2 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，空格分隔、零段照旧省略）；回答末尾行采样时刻改完整中文日期时间（⏱ 2026 年 10 月 23 日 11 点 20 分 28 秒，token_rate.py format_turn_line 同步改版） → v100 设置面板分区导航（ZCode 设置侧栏同款：左栏三组分区导航 + 内容区单分区显隐，激活项 aria-current="page"，选择持久化 zusage3.sec；面板窄于 620px 时导航收成 icon rail） → v101 设置面板高度在打开瞬间按内容自然高锁定（切分区不再抖动，resize 只收紧不放大） → v102 额度源预设模板（CC Switch/magpie 同款选模板只填 Key：官方域变体 chip 一键写入 secrets baseUrl，minimax 可信域机制推广到 siliconflow 币种随域；deepseek/openrouter/kimi/anthropic/mimo/volcano 附控制台取 Key 链接，走 openExternal 桥） → v103 额度源列表卡片化布局（每源圆角卡片+间距，凭据框限宽 420px，长说明段落补水平边距；纯 CSS，结构行为不变） → v104 源状态文案补 disabled=已关闭映射 + 主进程对显式关闭源统一报 disabled（修「开关已关却显示待查询」矛盾）；刷新/获取 Key 按钮补 title 提示，关闭源的刷新按钮禁用 → v105 「上下文容量」弹层（hover-card-content）内压缩上下文按钮：命中率行下方全宽胶囊按钮（原生 secondary 配色全走客户端语义变量），弹层关即卸载（Radix 无 forceMount）故 body MutationObserver + heavy 对账双触发、DOM 存在性幂等（多实例安全），插入锚=「剩余额度」border-t 段前（缺则容器尾）+位置兜回；点击弹原生 AlertDialog 视格确认框（遮罩/Esc/外点关闭、Enter 确认），确认后优先走 fiber 上原生残留的 onSendCompressionCommand("/compact")（SessionPane 压缩入口，不动输入框草稿），缺失回落官方 E2E 输入桥 __zcodeLexicalInputE2E.setText + 发送键（Lexical 直写 DOM 不生效，禁用该路径；草稿非空拒绝） → v106 额度 tooltip 滚动豁免：hideTipsOnScroll 不再收 quotaTip（chip 固定 composer 工具行与 gitTip 同理），修思考中流式输出自动滚动致悬停弹出即灭；chip 随宿主重建 detach（无 mouseleave）由 scanRateLines 加 isConnected 健康检查兜底收起 → v107 压缩确认框补行为提示：压缩进行中发送新消息/停止会打断压缩（实测 16:27 新 turn 启动同秒 compact turn TURN_CANCELLED，cancelled_by_user=1；引擎对该次摘要流挂起 134s 无首 token 也不重试 retryable=0），确认框加 hint 行中性告知 → v108 压缩主通道按用户指定改为字面 "/compact" 输入提交（E2E 桥 setText+发送键；流式中 v4-stop 可见/草稿非空/发送键 disabled 三重拒绝），fiber 命令信封降兜底；hint 升级为「通常需 2-4 分钟且无进度反馈」（DB 实证：全库 compact 请求无首 token 但正常完成，72s-9.6min，14:44 同会话同模型 165s 成功先例；16:25/16:43 两次「卡住」实为 2m20s 被新消息 TURN_CANCELLED，非故障） → v109 压缩主通道按用户指定改回直接调会话发送接口（fiber onSendCompressionCommand 命令信封：不碰输入框/发送键、流式中交引擎排队，修字面输入通道在生成中被发送键禁用卡住的问题），字面 "/compact" 输入提交降兜底（三重门控仅作用于兜底） → v110 压缩提交函数改在弹框打开瞬间（弹层必存活、锚点几何可信）解析并缓存，修复确认时弹层已被 Radix 卸载、几何重解析退化为「离视口左上角最近」致多分栏把 /compact 发进错误会话（P1）；兜底字面输入通道的流式/发送键/草稿三重门控全部前置到 setText 之前（拒绝不再残留草稿）；Enter 确认限定焦点在弹框内（无焦点陷阱下防焦点外 Enter 误触发确认） → v111 额度 chip 默认展示：quota_enabled 缺省开（显式 false 才关，真值链在 inject-main）；chip 二级门控 not_configured/unsupported 从静默隐藏改中性灰提示「额度 未配置/暂不支持」（源被 ⚙ 显式关闭仍隐藏），tooltip 补 info 分支引导配置 → v112 Start Plan 免费档池（quota-client 新增 zcode-start 适配器走 zcode.z.ai billing/balance 独立链，与 coding plan 的 monitor 端点分池；选源路由与 quotaFamily 判定补 start-plan 分支修 start-plan pane 误读 GLM Coding Max 池；chip 增「套餐」分段（windows.plan，one_time 发放池聚合已用%），tooltip 套餐池行按 expires 标记切「到期」措辞） → v113 夜间审计加固：quotaBalanceText 内建转义（currency 是远程响应字符串，chip/tooltip 双 innerHTML sink；parts label/amount 单次转义修双重转义；「其他源」行标签转义归位；aria-label 走 plain 纯文本变体不读实体）→quotaTip 补内容签名幂等 __zuTipSig（同 gitTip，悬停期间周期对账不再打断文本选择）→子代理明细面板数据签名幂等（滚动位置/选择不被每 1.5s 推送整面板重建重置；运行中估算仍由面板 800ms tick 原地刷新）→额度 chip 签名重写保留 zu-qbusy（点击刷新动画不被推送截断，同 git chip）→⚙ 源列表 id/label/preset/keyUrl 属性级转义 aEsc（custom:<providerId> 可含用户自定义名）→live 速度 span 的 speedView.text 过 ttEsc（工具名是宿主/MCP 可控字符串）→渲染桥两处订阅回调尾部 updateLive() try 包裹（异常不冒进宿主 store 通知分发，诊断键 subLiveErr/bridgeLiveErr 记录） → v114 积压清单清扫：remoteCache/remoteTodayCache/richTextCache/richTextAttempts 上限淘汰（长会话防无界增长）；dispose 清理补 __zusageDeliverTurnText/__zusageSidWs/__zusagePaneScopes（旧代闭包自卫之外的清理完整性）；诊断 lsVals 只转储 zusage 命名空间的 localStorage 键（宿主其余键值不进 diag 文件） → v115 渲染循环省电（上游 xhwxt PR #26/#28 同源问题）：幽灵子树/遮挡命中/模态判定加 TTL 缓存（120/150ms，命中绑定元素矩形+模式），track 在 document.hidden 时整帧跳过；未采纳其 600ms↔2s 调度降频（heavy 600ms 对账是与 render 并列的 React 重写兜底契约，降频会让增强节点裸奔 2s） → v116 「思考中」卡死修复（源码复核定案）：v87 合成分支条件收紧——仅「空窗口非终态（draft 空窗，v87 本意）或 control.phase=running」才合成思考中，删除「行非空」析取项（宿主 wire 快照 rows.window 恒为全序尾 60 行，末轮超窗的闲置会话整窗无 turnHeader，旧条件使其永久点亮思考中、切回重绑重新计时）；思考计时锚定 turnHeader.startedAt（宿主创建 header 恒写入，重绑不清零，缺字段回退首观测）→ v117 悬停命中区扩到整栏（fork lliangworld b21e3cf0 同源收编）：条目空隙/分隔符按 sep 中线就近归属、尾部空隙归末位条目，⚙ 与空条面维持保持不动；防闪烁改由节流+幂等承担 → v118 无障碍与主题重构（并行会话批次）：条目可聚焦（span tabindex / zu-sub 真按钮 + aria-label）、键盘可达 tooltip（focusin/focusout + Escape 收起）、focus-visible 焦点环、SVG 图标与思考动画改 currentColor 随主题、⚙ 面板请求-回执协议（requestId + __zusagePluginResult，feedbackVersion 1）、quota 源操作错误语义、统计行开关即时重扫 → v119 插件自动检查改为每 1 小时，更新区双语提示更新器变更需完全退出并重开 → v120 Git 手动刷新改请求-回执协议（askGitRefresh 带 path/requestId，主桥 gitTick 完成后经 __zusagePluginResult 回执、在途请求合并等待，按请求 path 校验结果）+ 状态条 aria-live sr-only 播报区（套餐额度查询中/Git 刷新状态）+ ⚙ 面板高度上限 82vh→90vh + 模态判定改按可见 dialog（display/visibility/opacity 过滤） → v121 状态条 .ico 与 ⚙ 齿轮图标盒由 calc(字号+4px) 改为等宿主字号（24 格线性图标墨迹只占盒 75–83%，18px 顶满 1.3 行盒显大，且加法常量令比例随字号漂移 1.33×→1.20×；用户实机定 1.0×，.eb .ico 12px 特例不变） → v122 Git chip 展开测量完整宽度并留 32px 迟滞余量，切断宿主 compact 反馈环（issue #100） → v123 Git chip 锚点按电脑操作→上下文→模式→思考回退，排除隐藏探针并随可见锚点迁移（issue #103） → v124 Git chip 固定左侧操作区，移除右侧上下文/思考回退 → v125 思考计时中文全紧邻「7分16秒」（时段间空格去除，用户要求；英文「7 m 16 s」不动） → v126 思考计时英文数字与单位紧邻「7m 16s」（时段间留空格，用户要求） → v127 tok/s 速度十档色（TPS_BANDS 唯一事实源，原始值分档含下限不含上限：<40 低速红 / 40–70 一般黄 / 70–150 流畅绿沿用原三档类名与实测色，150 起新增蓝紫系 zu-teal/zu-sky/zu-azure/zu-violet/zu-purple/zu-magenta，≥2000 Ultra 静态蓝紫渐变 + ✦ 星点（::before content:"✦"/"" AT 静音、@supports 外纯紫回退，浅色组同名覆盖渐变）；估算态与完成态同表分档（用户规格，原「估算态不分档」废止），无效值（负数/NaN/±∞）一律中性 dim 或回退 DB 绝不判低速，DB 回退分支负数/非有限不再渲染 chip；tooltip 档位行改动态「名称 · lo–hi t/s」消解 toFixed 舍入边界歧义，另加静态「颜色对照」图例（十档数值↔颜色升序一览，档位类与条面同源随主题切换）；额度正常态改额度蓝 #78a9ff/浅 #315fc4（.zu-qseg 专属基色，不碰全局 .ok——上下文与速度前三档仍绿），周期标签拆 zu-qlabel 子节点中性次级色常规字重（textContent/aria/tooltip 不变），quotaSegs 补 isFinite 门防 NaN/±∞ 落正常蓝；正常态再改 CCometixLine 同源柔和低饱和（用户规格）：普通窗灰蓝 #8abbd0/浅 #276f86、7 天窗按 quotaSegs 结构化 key 挂 zu-qweekly 淡紫 #b69ad8/浅 #76509f（不匹配显示文本），周期标签与数值同色成组仅标签降字重，上下文按钮正常绿改 #72c9a2/浅 #187b58（限按钮作用域，速度与全局 .ok 不动）） → v129 模型拉取分区（收编 HHQ-666/zcode-model-puller，MIT）：⚙ 基础组新分区列宿主 provider_config.json 的 API Key 型自定义供应商，经主进程拉取其 /models（候选端点探测、OpenAI data/Ollama models/顶层数组形状解析、Bearer+x-api-key 双头），弹窗勾选（已添加/新模型徽标、搜索过滤、全选/清空/仅选新、选中计数）后经 model-pull-apply 最小写回（personalModelIds+modelOrder 追加、providerModelRules 复制同供应商模板条目、同目录原子替换+滚动备份 .zusage-bak、未知键保留）；key 只在主进程内存、只发该 baseUrl 本域，不回渲染端不进日志；请求回执 20s 兜底超时（旧主进程无 action 时提示完全重启而非永久 loading） → v130 拉取算法吸收 GLQQX/zcode-model-discovery-patch 与 linguo2625469/zcode-patcher：字段别名全集（id/modelId/name/model、context_length/contextWindow/context_window/limit/limits、max_completion_tokens/max_output_tokens/maxOutputTokens/limit/limits/top_provider、payload 增 result 形状）、多模态感知（architecture.input_modalities/input_modalities/modalities.input + vision/supports_vision 布尔 ⇒ 宿主 inputFormat 稀疏能力位，缺位写实 false）、思考档位感知（supported_efforts 去重截 16 ⇒ reasoningLevel.values）、models.dev 公共目录补缺（并行拉取 5s 超时失败静默降级、id 精确→basename 唯一匹配、字段级供应商优先、key 与本机数据绝不发往目录、进程内 1h 缓存）、applyModels 按模型写实 config（contextWindow/inputFormat/optionSpecs；元数据走主进程 fetchCache 闭环、渲染端只回传 id 无法注入字段；模板带 map 表达式的 optionSpecs 整体不覆盖防 values 换名失配；无依据字段保持模板原样、不编造默认值）；弹窗行新增 ctx/out 可见小字与档位 title，分区说明补 models.dev 联网披露；review 修复：勾选表/已添加表/metaById 改 null 原型（模型 id 来自远端，__proto__ 等键静默失败丢勾选态）、实例 dispose 同步摘除模型拉取弹窗与 Esc 监听（原仅整体 dispose 摘除，pane 关闭后弹窗跨代泄漏且确认回调 inactive 早退卡保存中文案）、重开面板停在模型拉取分区时立即刷新列表、请求兜底超时 20s→25s（主进程最坏双端点 20s 防假超时）、主进程响应体 8MB 限长解析与 tmp 文件名带 pid 防双实例竞写 → v131 额度/上下文五档色（用户规格 2026-10-27）：CTX_BANDS/QUOTA_BANDS 唯一事实源（{min,cls} 有序表，bandOf 从高到低首个命中），阈值 30/50/80/90（含下限不含上限）——额度 calm/norm/mid/high/crit=emerald/sky/amber/orange/rose（暗 400/浅 700），上下文 calm/norm/mid/high/crit=slate/indigo/violet/orange/red；data-zusage-band 与 zu-qb-* CSS 双主题成对；pct span 与 SVG 环一律继承按钮 currentColor（.zu-ctxpct.ok 系独立色废止）；tabular-nums 原已覆盖 .zu-quota/.zu-ctxpct；v92 百万窗口提前预警（40/60）与 v127 额度正常态灰蓝/7 天窗淡紫（按窗口类型着色）随「仅按百分比」规格废止；额度 ≥100% 满档保留呼吸闪烁特效（zu-qb-exc，用户规格；90–99 为 crit 纯色）；压缩过程态（exc）优先档保留；余额/Key 额度段挂 calm 档色 → v132 模型拉取挂载点迁移（用户指令）：⚙ 设置分区删除（ZU_SECTIONS/section/ensureMpProviders/syncMpList/startMpFetch/mpFeedback 全撤），改挂官方「模型设置⇒自定义供应商」的「+ 添加模型」按钮左侧（锚 data-testid=model-provider-add-model-button，额度 chip 同款 enhance/restore 契约：render/heavy 双对账+位置兜回+自清选择器 .zu-mp-host）；供应商归属优先读设置页表单 http(s) Base URL 归一化匹配（唯一命中直拉），否则单供应商直用/多供应商弹 zu-mp-pick 选择列表/无供应商弹提示；按钮视觉复刻原生 secondary 视格（同页 Tailwind utility bg-secondary h-7 rounded-lg），⚡ 图标 stroke currentColor；弹窗抽通用壳 openMpShell（勾选弹窗/供应商选择/错误提示共用），apply 成功关弹窗由宿主自动刷新列表；供应商归属改主判定=当前选择的供应商（读宿主源码定案：导航项 testid=model-provider-nav-item-<nodeKey>、custom 项 nodeKey=custom:<providerId>、选中项 data-state=selected），providerId 精确匹配不受编辑草稿影响；Base URL 匹配降兜底（专用 testid model-provider-base-url-input 优先于表单启发式），弹窗对齐 HHQ 形态（⚡统计标题/搜索占位/仅选新模型计数/已选中 n 个模型/蓝实底确认钮）并自带 .zu-light 随宿主主题实时换装；review 二轮修复：上下文按钮浅色档补 data-zusage-armed 特异性（浅色主题 norm~crit 曾被暗色 0,3,0 规则恒胜）、model-puller 非 ok 响应体显式 cancel（undici 连接卫生）、宿主按钮 ml-auto（锚容器 justify-between 三子项均匀分布致按钮居中）、确认钮改固定蓝 #3B82F6/#2563EB（客户端 --color-brand 深色主题是白系，白底白字隐形）、拉取按钮仅在选中的是 custom 供应商时挂载（锚 testid 全局唯一，内置/套餐页同 testid）、拉取中按钮文本「拉取中…」+图标旋转（原透明度脉冲无感知） → v133 Git 计数缩写（用户规格 2026-10-28）：chip/tooltip 的行数·条目·↑↓·冲突计数 <1万原值，≥1万 中文（cnUnits 判定）万/亿、英文 k/M/B（k 门槛刻意抬到 1万，与 token fmt 的 K≥1000 不同，小写 k 至多两位小数去尾零紧邻）；仓库个数与 aria 播报保持原值 → v134 额度与上下文保留既有阈值并统一绿黄红三档视觉；统一字号为宿主基准减 1px，周期标签加粗并微调分隔符 → v136 编辑项目弹窗源文件夹行在名称下方显示完整路径（纯 CSS ::after attr(title)，零 DOM 注入 React 无感；.truncate 限定本地行、排除 fixedFolder break-all 全路径行防重复，多文件夹每行各取各的 title；长路径自动换行不做省略号（宿主 truncate 的 nowrap 继承进伪元素须显式 white-space:normal）；规则挂条样式表、由 <html> data-zusage-pp 门控，⚙ 通用区「项目完整路径」开关 zusage3.projPath 默认开即时生效；顺带清理未提交编辑遗留的 spawnInstance 陈旧重复块 566 行死代码并复原被覆写的 issue #55 注释） → v137 源文件夹行点击即用系统文件管理器打开该目录（用户规格 2026-10-28，mac/Win 双平台）：主通道宿主桥 openInFileManager（Windows shell.openPath / macOS open 带 Finder 与 shell 双回退，raw path 免编码），旧主进程降级 openExternalFile、openExternal(file:)（白名单含 file:）；远程项目编辑器按 virtual-project-existing 标记排除，fixedFolder 行不在选择器内；多 pane 重复委托 500ms 同路径去重，document click 监听随实例 dispose 摘除；行加 cursor:pointer → v138 重置卡倒计时改时分秒全档恒显（并行会话 rstmerge 线并流收编，用户规格 2026-10-28：精确到秒、随 600ms 对账实时逐秒跳动，rstSpanText 中文数字单位紧邻「3时05分30秒」、英文数字单位紧邻+时段间空格「3h 05m 30s」；rst tooltip 补 Escape 收起（v118 键盘可达契约）；⚙ 倒计时阈值语义不变——并流时保留 rstCdh 持久化，对方运行目录构建因旧基线缺失而误删，其 18:42 rstmerge 部署曾覆盖本项目 v136/v137 后经本线合并恢复） → v139 合并 fork/main v1.5.5 线（PR #121 重置卡徽标、#122 倒计时秒级、#123 templateRules 回填、安装修复与 v1.5.5 发版）时收编遗漏的 model-puller 套餐源判定（4e431cc：detectSelectedCustomProviderId 带 anchor，BigModel 付费套餐详情页按 GLM Coding Max 付费卡区分放行、Start Plan 免费卡页不放行；挂载门控 btn 先查 + mpAnchor 诊断）——本项目快照缺该段曾致 overlay-model-pull 挂载契约测试红；overlay 版本线自此与对方 v136 撞号线并流，按合入顺序顺延 → v140 收口审查修复：openProjFolder 对 invoke 通道（openInFileManager/openExternalFile）挂空 catch——旧主进程无 handler 时异步 reject 会刷 unhandled rejection；review-fix-merge 流程产物 → v141 ⚙ 更新区在 API 限流且渠道清单兜底也失败时引导 GitCode 镜像口令（清单兜底本体在 plugin-updater/plugin-release 主进程链） → v142 ⚙ 通用「状态条样式」双主题 opt-in（zusage3.theme 独立持久化，默认关=现状）：药丸形态=所属输入卡下方居中、内容定宽，.zu-pill 经 --zu-pill-* 逐项拷贝所属视觉表面（Highspeed 外壳优先）计算样式，随宿主主题/hover/focus/Highspeed 实时跟随——pillSurface 统一取色/定位/让位锚点，body 子树 MutationObserver + 祖先属性观察捕捉外壳原位增删与搬移（不依赖 600ms 对账），80ms 过渡采样按目标计数、表面搬离自动停止；条面精简：缓存命中率/请求次数/轮数/耗时/首字收进 tooltip（0 命中也显示 0%），窄窗 .zu-main 横向滚动 + focusin 滚入可视区、切回默认复位 scrollLeft，不触发默认态收缩/渐隐；⚙ 面板宽度在药丸下跟随所属卡（不再跨分栏），主题 radio 按实例分组 name 防多面板互斥；数据重建先绑 __tip 再恢复焦点，aria-describedby/tooltip 不丢；modalOpen 豁免 zusage-panel 自有面板（修设置面板被误判宿主模态整条收起） → v143 药丸收口审查（review-fix-merge）：8px 双间距按宿主实测几何收敛——adjustPillBottom 沿所属 pane/dock 实测矩形补足让位并带 floor/不增长护栏，无法让位的绝对定位布局 visibility 安全隐藏（无每帧显隐抖动）；pillMarginTarget 落在 .chat-composer-input-surface，Highspeed 退出后默认卡重解析（composerCardOf 优先原生 data-testid 输入框）、宿主 margin 变更原值+优先级还原；悬停 tooltip 在 pill 下实时刷新隐藏明细并保留选区/滚动，焦点恢复区分 Escape 关闭与悬停接管；modalOpen 纳入 alertdialog；协调器候选补可见性过滤且已绑定输入框豁免 45% 阈值（上下分栏不再反复挂卸）；表面祖先观察改快照重建防泄漏 → v144 ⚙ radio 对齐修复：.zu-settings-langs/.zu-theme-options 的 label 显式声明 flex+align-items:center+gap:6px——原 label 继承 .panel label 的 flex-start 顶对齐（gap 14px），radio 圆钮相对文字中线偏上约 4.5px；新规则 (0,2,1) 特异性覆盖 (0,1,1) 基础规则，实测居中 delta=0 → v145 切回默认主题补还原 bar.style.visibility（pillUnsafe 安全隐藏是 pill 专属态，写入点仅 track 的 pill 分支；此前 pill 隐藏态下切回默认条永久不可见，十路评审 P1） → v146 精简模式（theme 第三档 compact）：条永久隐藏但保留 DOM（<style>/ariaLive 随条存活、heavy 保条对抗 React 清子树）；生成速度改挂工具行 .zu-tsb（重置卡左侧，挂载/位置兜回/签名幂等照重置卡同款），内容=zuBarSpeedView 桥两态或 tpsBand DB 回退、无有效样本不渲染（用户拍板）；tooltip=速度读数+状态条摘要（本轮/会话/工具/今日/子代理，逐格开关继续生效、子代理行点击开明细）+tpsBandLegend+「打开设置」按钮（镜像齿轮开启分支，面板精简下贴输入卡定位）；updateLive 10Hz 心跳原地跟随；非精简主题 syncTpsChip 门控摘除；诊断 mode=compact → v147 精简模式速率 chip 挪前导区（用户规格）：git chip 左侧——git 在时插其前、git 不在时占其锚位（cua-entry 后方/前导区末尾），两侧位置兜回收敛为 [锚][速率][git]（git 兜回容忍速率占相邻位防逐拍拉锯）；前导区发现失败回落尾随区（重置卡/额度组左侧） → v148 精简速率 tooltip「打开设置」按钮右对齐（用户规格）：footer 改 flex 布局，说明文本 tps-note-t 占据剩余宽度、按钮 margin-left:auto 推至最右，长文本换行不断布局 → v149 精简速率 tooltip 摘要行单位 tok→token（用户规格，与回答末尾统计行的 token 措辞对齐） → v150 修复精简模式 git chip 永不挂载（用户报告）：v147 的 git 兜回容忍条款（速率占锚位时不挪）误拦首次挂载——速率 chip 常驻锚位时 enhanceGitChip 每拍判"已就位"跳过插入；改为 chip 未连入 DOM 时无条件首挂（落速率后再由速率兜回收敛 [锚][速率][git]），容忍只用于已挂载的位置保持 → v151 工具状态词改版（用户规格）：Bash 动词「正在执行」→「工作中」，未知工具回退同改（正在执行 X→工作中 X）；工具计时分隔去中点（正在读取 · 4.3s→正在读取 4.3s 一并生效） → v152 工具动词 Read「正在读取」→「读取中」（用户规格） → v153 工具执行状态词定稿（用户规格）：Bash 与未知工具回退「工作中」→「执行中」（无名词回退英文 Working→Executing 对齐） → v154 工具动词全面改「X中」体例（用户规格）：写入中/编辑中/搜索中/获取网页中/更新待办中/读取待办中/运行技能中/读取上下文中/发送消息中/获取任务输出中/停止任务中/编写工作流中（Read 读取中、Bash 执行中、Agent 子代理运行中此前已改；英文标签不变） → v155 审查修复批（review-fix）：①compact 下 positionSubPanel 被隐藏条僵尸 .zu-sub 抢锚（零矩形把明细面板钉左上角）——chip 优先锚；②速率 tooltip 内容含秒表，悬停中 10Hz 整片重建吃掉「打开设置」/子代理行点击——显示中内容变化冻结只跟位置；③track compact 早退补两面板周期跟随；④自清选择器补 .zu-tsb、跨代采纳 chip 统一挂装（__zuWired 防重）修复热更后悬停/键盘失效；⑤closeSettings 焦点归还校验 offsetParent（compact 下不落隐藏 gear）；⑥enhanceGitChip 重复 var slotNode 清理。Web 同批：①③⑤（mousemove chips 归属校验只接本实例）+chip focus/blur 键盘可达对齐桌面 → v156 上下文按钮增强开关（issue #141）：⚙ 通用区新增「上下文按钮增强」checkbox（localStorage zusage3.ctxEnh，缺省开、仅显式 "0" 关），关闭走 enhanceCtxButton 关闭分支还原原生环/百分比且重置卡徽标继续维护（restore 顺带清徽标后立即重挂） → v157 修复精简→默认切换残留空壳细线（用户报告）：compact 期 render 短路会让空壳条面（热更占位/清子树后未填过）因签名相等一直存活、切回默认露出细线数十秒；①离开精简立即恢复 display（compactHid 区分初载 none，初载不提前露条保 pill 定位契约）；②离开精简强制条面重建一次（lastHtml 清空）；③compact 短路加 main.children.length 门——空壳先补一次完整渲染（条隐藏不可见）；④render 公共尾部补 syncTpsChip（短路/直通两路都经）→ v158 并流 fork/main cmdkW 线（PR #140，原线 v146 与主线 v146 精简模式撞号按合入顺序顺延）：宿主命令中心（⌘K 搜索弹框）加宽加高开关（⚙ 通用区，zusage3.cmdkW 缺省开）：条样式表规则 max-width:max(32rem,80vw)!important（原生上限=宿主 quickPickDialogClassName 的 max-w-lg=512px，弹框基础类自带 w-full 窄窗本就满宽，故小窗保持原样）与高度同规格（弹框根 max(90dvh,calc(100dvh-6rem)) 不低于原生上限，cmdk 列表 440px 硬顶放宽为 max(440px,calc(90dvh-15rem)) 小窗保底），<html> data-zusage-cmdk 属性门控（applyCmdkW，与 v136 projPath 同款），:has(>[data-slot=command][cmdk-root]) 只命中 cmdk 弹框——命令中心/任务搜索/快捷指令共用该样式常量一并放宽，设置页等普通 Dialog 不受影响 → v159 重启提醒开关（issue #139）：⚙ 插件更新区新增「更新后提醒重启」复选框（zu-restart-notice），经主桥 restart-notice 动作原子写运行时 config.json 的 restart_notice（缺省开、显式 false 才关、异常值不静默）；session-start hook 的 session_notice 读同一键，关闭后每个新会话不再注入 🔴 重启/安装提醒引用块（/install-overlay 命令行输出与自动安装失败、桥补装的故障提示不受控）——工作流模式多会话不再被逐会话植入提醒  → v160 Skill 运行期状态词显示「技能名·执行中」（用户规格，如「查阅·执行中」+计时）：turn-stats runningTool 透出截 160 字的 inputText，overlay 端 zuSkillName 提取 JSON name 字段（正则兜底、控制字符拒绝、超 24 字省略号截断），取不到回退「运行技能中」→ v161 状态条新增「项目累计」格：会话累计右侧渲染本项目（session.project_id）全部会话聚合（含子代理，口径同 session_usage；远端/不在本地库无字段不渲染），⚙ 状态条显示加「项目累计」开关（show.proj，默认开），精简摘要加同款行 → v162 状态词流光（用户规格）：速率 chip 纯状态词态（思考中…/工具动词/技能名·执行中）复刻宿主 .zcode-loading-label 同款流光——subtle→foreground→subtle 渐变 background-clip:text、1.4s 横向扫光、reduced-motion 停用；类名/关键帧自有命名（zu-shimmer/zu-loading-shimmer）不依赖宿主全局类；带 t/s 数值的估算/真实/DB 回退态不含 → v163 会话累计/项目累计 tooltip 增按模型明细行（top 8 按总量降序 + 「另有 N 个模型」，轻量行无 models 字段不显示）→ v164 tooltip 收口（用户规格）：模型明细全量展示去「另有」折叠、总和行置顶、键列自适应宽不换行、时间范围行 sticky 吸底（rt-pin，五个 tooltip 统一）→ v165 模型明细表格化对齐（rt-models display:table，整块共享最宽键列，token/次数列纵向对齐）→ v166 会话累计/项目累计时间范围精确到秒（fmtStartS，用户规格；其余三格保持到分）→ v167 模型行去 rt-atom（Chromium 表格内在宽度在 inline-block 边界断行致数值折行，真实浏览器实测）+ 带 rt-models 的 tooltip 宽度帽放宽 860px（zu-tip-wide，取最宽一行）→ v168 格面计数改 fmt 万/亿口径（用户规格：≥1万 N.NN万、≥1亿 N.NN亿；本轮次/会话轮次/项目会话次/工具总数四处，tooltip 与精简摘要保持原值）→ v169 同容器双条去重（Windows 用户报告：最小化/还原窗口来回切出现两根状态条）——宿主窗口状态切换可能短暂保留旧视图副本/重建编辑框，协调器瞬态出现两实例两根条落进同一张卡；heavy 对账每拍扫描：同卡可见 .zusage-root >1 或两根 body 兜底条矩形重叠过半时，data-zusage-slot 大者 hideBar 让位（对手消失经 track 自动复显；拆分窗格各卡各条不受影响） → v170 tooltip 计数同口径（用户规格）：各 tooltip 标题/规模/工具/请求行与模型行、精简摘要行的次数/轮数/会话数全部走 fmt；子代理明细面板保持原值 → v171 修 issue #147（社区 @Mc-GrowlR 报告并给出方案，Windows 10 + ZCode 3.17.1）：划词 side chat 面板容器无 data-pane-id，被协调器 auto 兜底键当作独立 pane，同窗出现第二条状态条（Radix presence 常驻挂载，面板收起后幽灵 composer 仍持续命中扫描）；窗口存在真实 pane 键时丢弃 auto 键——老宿主全部候选均为 auto（单键）单实例行为不变、shadow/iframe 空文档兜底不受影响 → v172 待重启/待更新改由 ⚙ 齿轮红点提醒（restartNotice 开关改为控制红点；会话内文字重启提醒取消，plugin-updater 推送 markerAt 作红点代际，点进「插件更新」分区记为已查看）+ ⚙ 更新页「重启 ZCode」按钮（二次确认，主进程 relaunch 动作）+ 移除自动安装开关（hook 未注入一律自动装，auto_enabled/INSTALL_MESSAGE 会话出口删除）   // 悬停 ⚙ 面板可见；版本号随代际递增 → v173 强制 K/M/B 单位开关 → v174 辅助对话独立状态条（宿主 tabId 成键 + 实例配额 4+1、桥 scope 精确绑定、确定性统计行按会话根归属）→ v175 辅助对话回答末尾富文本与主分栏同规则（显式本地 scope + isCurrentTurn 活跃轮限定 + --current 的 promptTs 守卫；修宿主 modelDurationMs 只累计高速供应商致占位行永久「生成时长缺失」；富文本收集后统一发起、同 SID 只追活跃轮且 epoch 粘滞防多轮搅动） → v177 review 修复批（10-agent 全量 review 闭环）：双条去重抑制不再被 track 每帧复显打穿（v169 Windows 双条场景实际失效的根因，复显前查 dupSuppress、heavy 每拍重评估解除）；精简下速率 chip 被摘除后子代理明细面板保持原位（不再回落隐藏条内全零 .zu-sub 抢锚钉视口左上角，web v103 同款）；精简短路块恢复 syncTpsChip 数据点 reapply（2976478 挪公共尾部后短路 return 到不了、与 git chip 不对称）；relaunch 无回执 4s 提示主进程可能是旧版需手动完全退出（旧 pollPluginRequests 白名单外动作静默丢弃）；待办红点指纹改分量级比较（更新装完后 latestVersion 分量退出不再误复亮）且 ack 幂等早退前先收敛本窗口红点；cnNum 切换补富文本 unitEpoch 在途竞态守卫（同 forceKmb）；detRootEl 落在宿主 data-session-id 写入窗口期时 heavy 按拍补算自愈；精简说明文案对齐 v147 挂载位（前导区 Git 左侧）→ v179 自动压缩阈值注入：⚙ 开关+模式+数值+状态行（enginePatch 随插件状态回推，__zusagePluginState 种子+拷贝行同 v172 纪律），主进程 engine-patch.cjs 按引擎 SHA256 白名单对 glm/zcode.cjs 打阈值改道补丁（锚点唯一性+use strict 指令位校验 fail-closed，hook 缺席/返回空双兜回 fail-open），阈值 autocompact.json 由引擎 hook 每轮决策 mtime 缓存读取——数值热生效、补丁冷生效（已运行 agent 子进程下个 spawn 起用）；ctx 按钮 hover 面板加「自动压缩 ~X%」行（acInfoText 按标称窗口口径，21K 预留近似还原）；关闭开关=按当前内容反向还原引擎字节；阈值任何形式钳 1% effective 地板防连环压缩→rapid-refill 熔断→ v180 重启按钮错位守卫（issue #158）：主进程 pushPluginState 携带 relaunchSupported 能力标记（与 relaunch 分支同文件、天然同步），浮层缺标记时隐藏按钮并显示「完全退出后重开」指引（syncUpdate + 点击守卫双处）；主进程 pollPluginRequests 白名单外动作兜底回执 unknown action，重启回执明确区分「主进程是旧版本」 → v183 子代理行内实时速率 chip（v4 Agent 行 testid 后缀即 childSessionId、与 v97 槽位键同源：运行期读槽位估算、完成后读泵快照 sub.list 真实加权速率；TPS 十档色；悬停 tooltip） → v184 ⚙ 新增「子代理行内速率」开关（state.show.subRate，zusage3.show 整包持久、默认开；只门控行内展示） → v185 实机修复批+review 修复批：后台子代理在宿主注册表无现成 store（运行期估算自 v97 起从未真正工作）→桥 v2 acquire 访问器按已验证 scope 解析子会话租约（仅 sess_subagent_ 前缀+本地）；tooltip 构建器改收数据包（buildTip(el.__zuT) 约定）；截断改从尾部取（保最新派发 8 个）；SUBRATE_DIAG 提模块级；诊断按 handle 判绑定；实例 dispose 摘行内 chip→ v186 本会话平均 token/s（PR #157 收编）：状态栏完成态主数字改会话加权平均（zusage avg_tps：Σ有效输出÷Σ生成窗口，main_turn 段、不含子代理），「均」前缀+按均值分档，最近一段/最近一轮退 tooltip；速率行/CLI 加「会话均」，精简 chip 同步；updateLive 会话归属取本 pane 行（lastView.session），缺席回退原行为→ v187 补回 v181 工具组状态词（PR #161 合并时 turn-stats runningGroupOf 块与 overlay 消费分支遗漏入库，仅存于运行目录热修副本）：turn-stats 复刻宿主 exploreGroup/executeGroup 合成规则（≥2 连续同类行成组、半截 JSON defer 透明、startedAt 锚定组首行），运行行落组尾时状态词显「查阅·执行中/终端·执行中」替代逐工具动词，计时从组头起算 → v188 自动压缩阈值注入按验收反馈简化：开关默认开（主进程 auto_compact_patch 缺省开、显式 false 关）；UI 只留百分比数值（留空=跟随引擎默认），模式下拉移除（引擎层 enabled:false/tokens/buffer 协议保留兼容，配置文件手写仍生效）；标题改「自动压缩上下文阈值注入/压缩上下文阈值数值」；状态行补 14px 水平内边距与 label 文本对齐 → v189 hover 面板阈值信息行移到「压缩上下文」按钮上方并追加下划线「调整」链接：点击复用 gear.click 完整路径打开 ⚙、切「通用」分区、scrollIntoView(nearest) 定位阈值数值行并高亮 3 秒（.zu-ac-flash，计时器实例级归属 dispose 清理）；info 结构改首文本节点+常驻链接（整行 textContent 覆盖会抹掉链接） → v190 三处验收微调：hover 阈值行 text-align:left（与卡内其它行对齐）；高亮改琥珀左条+淡底（--color-brand 在宿主主题是白色系，outline 描边观感像输入框焦点）；⚙ 注入开关关闭或主进程未加载时数值行整行 hidden → v191 hover 阈值行 token 数改走 fmt()：万/亿/K·M·B 与状态条、tooltip 同一转换链（跟随中文单位开关与强制 KMB 开关，中文至多两位小数去尾零） → v192 hover 阈值行布局：去掉自加 6px 下边距（间距交给宿主 space-y-3 的 12px 节奏，与「平均缓存命中率」行 pt-3 距分割线一致）；行改 flex 两端对齐，「调整」链接居右 → v193 修 v192 贴按钮：宿主 space-y-3 是 Tailwind v4 :where() 零权重 margin-bottom，行上自写 margin 会按类名权重压掉它（v190 的 6px 显挤、v192 的 margin:0 贴紧同因）——删掉 margin 声明整段回落容器原生 12px 节奏 → v194 阈值百分比改总窗口口径+数值行 30-99 校验：设置 91=原生按钮走到 91% 触发、hover 显示 91%（旧口径按扣除 21K 输出预留后的有效窗口算，设置值与显示差约 2 个点被判为割裂）；引擎 hook 以 eff+21K 近似还原标称窗口并钳在 eff 内，writeConfig 白名单收紧 30-99，已打补丁引擎下次启动按 PROLOGUE_V1 原位换装新 hook；⚙ 数值超范围实时提示并拒绝提交 → v195 hover 卡新增新手说明行：阈值行下方小字（.zu-ac-hint，随行同生命周期）解释口径与后果——「按窗口总量计算（与顶部百分比同口径）；走到该比例时客户端会自动压缩较早的对话内容以腾出空间」；margin-top 收紧 space-y 间距（space-y v4 只写 margin-bottom，top 无冲突） → v196 「调整」失灵诊断面包屑（下版移除）：openAcThresholdSettings 在 enter/after-gear/+150ms/row 各点写 __zusageDiag.acOpen（面板态、gear 可见性、条 display、分区、代际），closeSettings 写 acClose 调用者栈；v197 实证 acOpen 为空=点击未到达处理函数 → v198 修「调整」失灵：链接监听改 pointerdown（宿主疑似 mousedown 即关 hover 卡、click 到来前链接已被摘）+ 行级 click 兜底 + 捕获期点击写 localStorage 并在说明行回显（命中标绿/落空标红，诊断下版移除） → v199 清理 v196-v198 诊断：acOpen/acClose/acClick 面包屑、localStorage 回显、命中/落空着色全摘；保留 v198 修复本体（pointerdown 主监听 + 行级 click 委托兜底），实机验收=电脑操作点击「调整」面板弹出且阈值行琥珀高亮 → v200 上下文按钮增强显示层优先镜像原生 aria-label 已用/总量（宿主 taskUsage，压缩后立即回落；issue #172 曾停在 DB 最近完成请求旧值 16.4%），解析不出回退 lastBand DB 口径（ctxOv/nativeCtxVal 优先级只作用兜底），exc 过程态档位仍优先，还原路径共用同一解析器（英文 UI restore 顺带修对） → v201 合流：v200 撞号顺延（v200 已被并行线 issue #174 压缩按钮开关占用，8e6e1c0 先合入） → v202 预估费用行：四格 tooltip（本轮/会话/项目/今日）按 models.dev 官方牌价估算费用（token_pricing.py 内置表 326 条 + serve 内 12h 同步 models.dev 与 er-api 汇率，pricing-cache.json 落盘），快照加 cost_usd（USD）与 fx，展示层 ×汇率显 ¥（无汇率降级 $），会话/项目模型明细行尾加各模型费用，「价格来源 models.dev」脚注可点（openExternal），费用行尾空心问号图标悬停弹说明小气泡（价格来源/计算公式/汇率来源三行，fxTip 独立浮层 + mouseover/out 委托 + 180ms 悬停桥，主 tip 收起/重建时同步收），汇率源主源失败兜底 exchangerate.fun（自定义 fx.url 不启用），⚙ 通用区开关默认开，本库口径：裸输入=input−cache_read−cache_creation 全价、缓存分价、output 已含思考不另计 → v203 红点仅承载待重启（发现新版未安装、更新成功且已热重载均不亮；分量级已读比较保留以兼容旧 seen 串）+ ⚙ 带待重启红点点击直接落「插件更新」分区（激活即 ack）+ 设置页新增「已更新成功，点击重启 ZCode 即可生效」提示条（旧主进程降级回原文字指引），分区切换提取 activateSettingsSec 单一出口 → v209 额度 chip .zu-quota 与重置卡徽标 .zu-ctxrst 左右内边距 6px→3px + 模型选择触发按钮（chat-model-select-trigger）左内边距减半：文本态 8→4px、图标态 6→3px（!important 压宿主 group 变体）（用户规格 2026-11-02） → v210 时间范围行全部精确到秒（v166 会话/项目累计先行的 fmtStartS 扩展到本轮/今日合计与速率 tooltip 最近一段；fmtStart 仅剩「最后活动」行）（用户规格 2026-11-02） → v211 本轮 tooltip「单次耗时/首字延迟」改「平均耗时/平均延迟」（zusage 快照 last_turn 新增 avg_duration_ms/avg_ttft_ms，对 model_usage 该轮已完成 main_turn 行 >0 样本求均值；turn_usage.ttft_ms 聚合列实测口径不明不可依赖，旧快照缺字段整行不渲染）+ 本轮格面移除时长/首字两段（耗时只在 tooltip），精简摘要「本轮」行时长随同改平均（用户规格 2026-11-02） → v212 Git chip 分隔符 .zu-git-sep 间距收紧：字面「 · 」改纯点+左右 2px 内边距（多仓段与 ?N 未跟踪段两处同源；用户规格 2026-11-02） → v213 状态条格序调整：今日合计提前到会话累计之后（速度→本轮→会话→今日→项目→工具→子代理→⚙），速率 tooltip「状态条摘要」行序随同对齐（用户规格 2026-11-02） → v214 项目累计统计卡改版：tooltip 重构为「标题+统计范围（全部请求·含子代理）、总用量/请求次数/预估费用三 KPI（费用旁统一说明问号）、输入(命中率)/输出(含思考)/缓存写入明细、会话·轮·工具·重试规模行、模型四列表格（默认 6 项可展开全部，排序对副本）、时间范围（em dash）」，作用域 .zu-project-tip + :has 样式（不动共享 .tip/.rt-* 规则），展开态实例级归属键（sid:started）局部更新不重建整卡，触发项 zu-pj-item 标记，卡片内 Escape 关闭并归还焦点，focusout 进卡片不误关，positionTip 钳底边，费用全链复用 v202（0 有效/缺失 —/开关关整格收） → v215 六统计卡统计卡化：本轮/会话累计/今日合计/子代理四格 tooltip 统一 zu-stat-tip 视觉体系（速度统计卡公共构造：scope 标签+双读数 hero 主读数档位色、两行五列网格窄窗重排、速度卡宽帽 760px :has 作用域；明细面板内模型行问号图标弹费用说明气泡，复用 fxTip 单例同款委托）（用户规格 2026-11-02） → v215.1 速度卡去费用行与模型明细（用户规格：速度 tooltip 只留读数与时间范围，费用唯一承接处=各卡明细面板与 fxTip 气泡） → v217 子代理统一浮层：.zu-sub-pop 双栏单组件替代「悬停五段卡 tooltip+点击独立明细面板」两套旧 UI（preview/pinned 状态机：悬停预览、首次点击固定、面板内操作转固定、Escape/关闭/外点统一收且焦点归还+500ms 悬停抑制；选中按 sid 维护、运行中未入库槽位进导航、签名幂等重建保滚动、会话切换即关、入口断连即关；任务页 _sub_item 逐任务模型用量表/预估费用/平均速率档色行/最后活动全格式时间，zusage sub.list 单项同步扩展；精简入口 chip.__zuOpenSub 归一指向同一浮层）（实机验收 2026-11-03） → v218 速度卡三修（实机反馈）：悬停冻结 updateLive tipFor 判定改 contains（旧恒 false 致悬停中 tooltip 不冻结）；右格「最近一段」改读 lastView.last.tps（zuBarSpeedView 无 latest 字段恒缺）；图例 ≥2000 Ultra 改渐变圆点并禁 ✦ 伪元素（星点破形） → v219 ⚙「状态条样式」（默认/药丸/精简单选+精简说明行）从「通用」分区移入「状态条显示」分区卡首，纯分区归属调整，控件与持久化行为不变 → v222 速度卡 tooltip 补「时间范围」行（用户规格，参考四格 tooltip 同款式）：主数字为会话均/桥态取会话累计口径（started→last_at，与会话累计 tooltip 同源），「最近一段」回退态保持段范围；起点缺失整行不渲染（半程范围无意义）；三处 speedCardHTML 调用点（桥态 buildLiveTip/DB 回退/精简 chip）同批生效 → v223 ⚙ 面板关闭按钮命中区外扩（原并行线编号 v220，合入顺延；::after inset:-6px、hover 反馈同步，约 20×24px→32×36px）：按钮四周 head 空白点击原本无反应，用户实测「悬停 × 上点不动、不灵敏」；CDP 真实点击定责为命中区过小（事件链与面板几何均无缺陷），纯命中区修复，不改布局与视觉 → v224 速度卡悬停实时刷新二次修复（实机反馈）：v218 只改了 tipFor 判定，新 tip 串仍写到格内 .zu-live span，而 __tip 宿主与 drawTip 读取都在 .it 格元素上——条件每 tick 命中、重画的仍是整条渲染时的旧串，悬停中「当前读数」冻结在最后一次整条渲染的值（chip 已跳动、tooltip 停在「思考中…2秒」）；改写回格元素（liveEl.closest(".it")），悬停中每 tick 跟手重画，未悬停也保持新鲜 → v225（v224 并行线 PR #198 先合入，本线顺延）⚙ 自动压缩状态行区分「引擎被单独热更」（issue #191）：桌面 build 已登记而引擎 sha 脱钩时明示热更事实与漂移 sha 前 12 位（引擎补丁新增 drifted 字段，主进程传入 appVersion 按点分界前缀匹配登记表），替代误导性的"版本不在支持名单"；lastError 后缀此时与 sha 重复不再拼接；fail-closed 判定不变 → v226 ⚙ 两项（用户需求 2026-11-03；v226 已被并行线自动压缩状态行占用，顺延）：①六格显示开关（本轮/会话累计/项目累计/工具调用/今日合计/子代理）全部关闭时样式自动转精简（边缘触发只在「变得全关」那一拍切档，zusage3.autoCompact 记录来源主题 default|pill，重开任一格恢复、面板手动改档即解除；药丸来源同样触发）②默认样式新增「水平对齐」三选一（zusage3.barJust：均分 space-between 缺省不挂类/居左 flex-start/居右——居右不用字面 flex-end，LTR 下 start 侧溢出不可滚动也不计入 scrollWidth 会废掉收缩检测与 .zu-clip 渐隐，改首格 margin-left:auto 等效右聚拢、溢出方向与兜底不变；设置块仅默认档显示，applyBarTheme 随档显隐并同步条上 zu-just-* 类） → v227 预估费用说明气泡悬停保活（fxTip 是 body 级独立浮层、挂在主 tip 之外：指针从 ? 图标移入气泡被文档 mousemove「条外」分支按 left-bar 强制收主 tip、hideTip 同步收气泡，v202 起悬停说明气泡即灭；子代理浮层路径同被 preview-leave 倒计时收走面板。mousemove 处理器节流前新增分支：fxTip 显示中且目标在气泡内视同仍在 tooltip 上——保住主 tip 与气泡、取消越顶宽限与子代理面板延迟关闭，离开气泡回落原判定） → v228 速度 chip 完成态去「· 近X」尾缀（用户规格；编号顺延避让已合并的 v226(PR #200)与 v227(PR #202 fx-tip-keepalive)）：条面格与精简 chip 同批去掉 dbTps 尾缀，主数字只显会话均（或最近一段）；「最近一段」读数保留在 tooltip 右格不受影响 → v230 压缩轮不再显示「本轮统计不可用」（编号顺延：原 v238 号，v229 已由并行合入的 PR #207 占用、v231 起由并行未合线自占）：上下文压缩（手动/自动同链）是 query_source='compact' 的辅助轮（DB 有完整数字且已计入今日/会话累计，但消息流无正文、header 零输出），旧逻辑按 v74 零输出明示规则误插误导占位——实测压缩轮投影=turnHeader+timelineMarker(marker.type='compact') 而 header.executionKind 恒 'agent'（ek 探针证伪初版假设），turn-stats get() 以 isCompact 识别，overlay 对压缩完成轮不新插/撤下已插行（宿主「上下文已压缩」提示已承载语义）；kinds/tmr 为 det 诊断字段；v74 真实零输出轮行为不变 → v231 统计卡标题拼接名称与垂直居中（用户规格三轮迭代一并入库；编号顺延避让并行已合入的 v229(PR #207, issue #205)——v228 后 overlay 台账实际未占用，按共享代际台账撞号声明让号）：①项目累计卡拼项目名——zusage _project_usage 附 name=启动目录末段（正反斜杠归一，缺目录/旧快照判空不渲染），.zu-pj-pname 字号颜色同规模行 .zu-pj-scale；②会话累计卡拼会话名——快照行 title 三处本就产出，纯渲染端：statHead 加可选第三参仅会话累计卡传、/\s+/g 压空白、缺 title 判空不渲染，.zu-st-name 360px 省略号；③名称与标题垂直居中——标题容器带名称时切 .zu-tt-name（display:flex;align-items:center），行内 baseline/bottom 对齐会被 18px 大字 descent 拖得视觉偏低（实机指认），flex 子项自动块化、省略号仍成立 → v232 速度 tooltip「最近 20 段」柱状图：zusage 快照 session 行新增 speed_segs=最近 ≤20 条已完成 main_turn 有效速度段（_row_gen_ms 窗口与 avg_tps 同款口径、辅助源/子代理/碎段不计，v 保留原始浮点供档位与柱高按原始值判断；speedCardHTML 带 segs 时切「左读数卡+右图表」布局——左卡=当前读数/档位胶囊/加权平均说明，「最近一段」右格由最新柱承载，无 segs 的旧快照/远端旧版保持 v215 原布局），柱顶读数恒一位小数与柱同轴心、最新段加粗，Y 轴 0 起整洁刻度并按「信息卡横向覆盖最右约 1/3 柱」约束迭代刻度保证最高柱读数不被压住，X 轴=分段真实完成时间本地时区 MM-DD HH:mm 稀疏显示、首末恒留，最新段描边高亮+「最新」徽标，柱体颜色沿用 TPS_BANDS 档位类（ultra 渐变深浅主题显式 border-box 覆盖防 clip:text 裁没），段值 ≥1000 t/s（读数 6 字符）或窄窗口（plot min-width+横滚）保读数永不重叠；柱级悬停/键盘焦点弹信息卡——tip 本体委托 + 实例闭包存悬停段下标经 speedTipRebuild 编进串（签名幂等重建不丢状态、离开回落最新段、会话切换重置），render 接管对速度格补 drawTip 使打开中随快照跟手（焦点/选区在 tip 内时跳过），图表横滚位置跨重建保留；精简 chip tooltip 不带图表 → v233 速度卡三删+读数自适应（用户规格）：①删「统计会话全部已完成请求：工具等待不计，不含子代理。」口径行（DB 回退与精简摘要两处，Σ输出÷Σ生成耗时等其余口径保留）；②删柱状图「最新」徽标（最新段描边与加粗读数保留，plot 高 200→184）；③删「每段完成后更新；不足 20 段时显示实际数量。」脚注（live/回退两处）；④左卡「当前读数」估宽分级自适应（超长状态词降字号+允许换行，不再被 156px 左卡裁切；分级实现见同批改动） → v234 柱状图 20 段→14 段、释放空间给左卡（用户规格）：zusage 新常量 _SPEED_SEGS_MAX=14（与 last.tps 回查的 _TPS_LOOKBACK 分离，扫描窗 42 行凑 14 条有效段）+ speedSegsOf 渲染端截 14 + 两处口径行「最近 20 段：…」改 14；左卡 156→300px（内宽 278），主数字删 +12px 覆盖回基础 ui+22 大字，估宽分级阈值重算 ≤7.5/≤11.5、fit2 +6→+10px；plot min-width 600→420（pitch≥30）、wide 780→560、xEvery 估算基数 620→460/最小标签距 44→30（14 柱满宽全显时间标签） → v235 速度 tooltip 多状态结构化重构（用户设计图规格）：zuBarSpeedView 追加结构化字段 kind/statusText/nameText/nameFull/elapsedText/speedValue/speedIsEstimated/speedSource/activeCount/noteText（八类 tool/toolgroup/skill/subagent/thinking/estimate/avg/real，text/cls/phase/band/latest 逐字保留、状态判断不解析文案）；speedCardHTML 新增 o.status 分层左卡模板（zu-sl-status 状态标题+子代理 ×N 徽标 / zu-sl-name 名称两行省略+title 全名 / zu-sl-main 主数值或计时 / zu-sl-unit / zu-sl-note 辅助），数值型走档位色、工具/Skill/思考/子代理保持 dim，o.main 拼装路径为精简 chip 等旧调用方保留；子代理估速前缀 ≈、无效估速显「估算中…」不补 0；buildLiveTip/fallback 传结构化状态，scope 标签按真实状态映射（工具执行中/工具组执行中/Skill 执行中/子代理运行中/思考中/生成中估算/会话平均/本轮真实速度），思考态左卡内嵌脑动效图标；柱状图 14→17 段（_SPEED_SEGS_MAX=17、渲染端截 17、口径行改 17），plot min-width 420→500/wide 560→680/xEvery 基数 460→500/最小标签距 30→29 配平左卡 300→250px → v236 速度 tooltip 三修（用户实机反馈）：①信息卡改为悬停/键盘聚焦柱体时才渲染（默认不再常驻最新段上方，cur 高亮随之仅悬停态、latest 描边保留）；②X 轴时间标签最小距 29→44（17 柱 pitch≈29 必隔列、间距 ×2，修复标签拥挤）；③非 wide 图表删 plot min-width（随容器压缩+稀疏标签兜底），任何窗口宽度不出横向滚动条（wide ≥1000 t/s 保留横滚），速度卡宽帽 860→1040 → v237 修时间标签裁半（用户实机截图）：v236 的 border-box 配平让 X 轴行内容区只剩 20px、两行时间（25px）被 wrap 的 overflow-y:hidden 裁掉半行——X 行 24→29px（4 padding+25 两行）、plot 高 184→189，列配平随之 160+29 → v239 速度 tooltip 100% 复刻设计图（用户拍板以设计图为准，撤销 v233 删口径/v236 悬停才显卡）：信息卡恒在（默认最新段带「（最新）」+虚线引线连柱，悬停切段）、左卡状态图标+「当前读数」标签+档位色状态标题、颜色对照单行横排、统计口径左标题右分段+时间范围同卡、带图表时不渲染脚注 → v240 柱状图 17→10 段（zusage _SPEED_SEGS_MAX=10、渲染端截 10、口径文案同改）、柱宽 max-width 22→15px（-30%）、信息卡恢复仅悬停/聚焦才显示（撤销 v239 常驻）、左卡下半区加「峰值/最低/最新」概览填空、速度卡宽帽 1040→860、plot min-width 500→340 → v241 速度 tooltip 按设计图复刻：柱状图取当前会话最近 10 次（可跨天）、左卡标题行/主读数/说明行文案按设计图对齐（工具组「查阅」、Skill「执行中」、说明行统一「X · 正在执行」）、前缀「估/均」小号灰字、主体区垂直居中填空 → v242 速度 tooltip review 修复批（十 subagent 审查）：focusout/mouseout relatedTarget 守卫修 Tab 跨柱焦点断裂与双重建闪烁、render 接管 pill 主题补焦点守卫、wide 横滚复活（plot 420）、spanFrom 收严最坏一半 + CARD_H 36（实高 35.6 校准）、real 去档位胶囊、skill 标题统一无空格「·执行中」、工具组 statusText 回归完整短语、liveScopeMap real/estimate 用词对齐、「当前读数」标签与有效数值同门（修 subagent 数值误杀回归）、左卡 border-box 250/双规则合并/padding 12、标题档位色与单行省略、浅色 ultra 图例圆点 clip 修正、hero :has 单列、柱 role=img、17 段/常驻卡/帽 1040 等过期注释清理、测试补八态直调/概览三格/前缀/（最新）角标/图例行/几何不重叠断言 → v243 更新日志「发布页」链接 GitCode 渠道改指 /releases 列表页（tag 深链页对本项目 API 创建的 Release 一律「找不到或无权限」，GitCode 平台路由 bug 2026-11-04 实测；GitHub 渠道保持精确 tag 深链；镜像/未核实回退路径同规） → v244 重启按钮反馈与延迟（用户报告「点击没反应、等很久才退出」——大头是宿主 app.quit 优雅退出链要关窗并逐个终止会话/扩展子进程，可达数十秒，插件无法绕过）：确认发送即「正在重启…」+禁用+预期文案替代「发出即恢复」伪装无反应，4s 无回执/失败/90s 仍存活三路还原（ok 后挂 90s 兜底防 quit 被会话/扩展阻止永久卡死；4s 超时已还原则不再挂）；syncUpdate 重绘保持禁用与提示；主进程 relaunch 固定 300ms 延迟改回执送达后 30ms 退出（800ms 渲染端无响应硬兜底）；v245（同批提交）quit 前 hide 全部窗口——退出屏障期窗口不再可见干等，主进程 15s unhide 哨兵在 quit 未发生时恢复可见 → v246 用户手改批：速度图未悬停（hoverIdx<0）不渲染信息卡、span 只按 capOut 留柱顶读数净空，刻度基数补 6/7.5 防跳档空旷；X 轴同日去重（仅首枚显示标签柱与跨日首柱渲染日期行，其余同日只显 HH:mm）；本轮/今日合计首格改「总用量」、今日缓存命中率并入 grid3 输入列副行、本轮平均耗时/延迟/总耗时行改 --sub 弱化段、会话累计 scale 行分隔符改前缀式并删末项请求数、工具表 <50ms 显「<0.1s」弱化、子代理浮层 KPI 副行改命中率/含思考/缓存写入+平均速率并入 KPI、项目卡范围+scope 合并单胶囊+隐藏「按用量排序」+子代理浮层模型表去底色改行线、本轮输出速度单位 tok/s→t/s、图例 ultra 点隐藏与 inline 间距收紧、tbody scrollbar-gutter:stable → v247 悬浮窗口激活方式（issue 用户反馈：滑过误触遮挡）：⚙ 通用新增「点击激活悬浮窗口」开关（zusage3.tipClick 缺省关=停留 1 秒、仅显式 "1" 开=点击）；统计卡/子代理浮层 closed→open 改由独立 1000ms 定时器承接（排程置于 150ms 节流之前防快速滑入静止后永不触发、按命中元素 key 去重续期、到点按当前坐标 elementFromPoint 重命中抗 render 1.5s 重建 + :hover 最深元素复核），已开 tip 切相邻格保持即时，键盘 focusin 即时打开不变，取消统一落 hideTip/各 return 分支，定时器随 dispose 清理；点击模式 bar.click 接管 .it 并用 focusTipAt 避开 focusin→click 首击抵消（复用移出条面/Escape 关闭链，不另起 pin），fxTip/速度信息卡/工具栏 chip 与宿主原生 hover-card 不在本次范围→ v248 预估费用说明气泡「当前模型」随卡携带模型上下文（上一会话已完成、已部署未提交，与已合入的 v249（PR #224）并行开发，随本批补录入库）：四个统计卡与子代理浮层汇总的 KPI 费用问号随卡携带模型上下文（fxqIcon：data-model/data-rates=按用量最多模型+data-mcount+data-mscope），单模型显该模型四价、多模型沿项目卡口径显「计价范围」、无模型明细不显模型行，default 借 last 分支删除 → v249 用户裁定简化：「点击激活悬浮窗口」关闭（缺省）不再做停留 1 秒，恢复即时悬停原语义（v247 的 1000ms 定时器链 HOVER_OPEN_DELAY_MS/hoverSchedule/hoverCheck/hoverCancel 整体移除，mousemove 恢复 v246 逐行为）；开关开启仍为点击激活（bar.click 接管 .it + focusTipAt 防首击抵消、子代理 preview 关闭改 pinned 打开），设置项/文档口径同步为「悬停立即显示 ↔ 点击才打开」两态 → v250 速度柱状图按轮聚合+悬停卡全格式时间与轮明细+柱间距收紧（用户三项规格；编号顺延避让已合入的 v249「点击激活简化」PR #224）：zusage _speed_segments 改按 turn_id 合并一次提问的全部请求（v=Σ有效输出÷Σ生成窗口、逐问同口径），随段携带 m/i/o/n/c 供悬停信息卡渲染 模型/Token 用量（含输入·输出拆分）/请求次数/预估费用（数字格式化经 o.fmtTok/fmtCnt/fmtMoney 回调，费用随 state.cost 门控，旧快照缺字段按行省略，CARD_H 按实际明细行数校准）；悬停卡时间改全格式 yyyy-MM-dd HH:mm:ss；X 轴每个显示标签恒带月日两行（同日去重废止）；柱宽 calc(20%+12px) 使柱白任意宽度恒精确收紧 20%；段→轮措辞（最近 N 轮/第 N 轮） → v251 套餐额度显示口径开关（⚙ 套餐额度分区「显示剩余额度」，zusage3.quotaRemain 缺省关=已用%，纯渲染偏好不进 config.json）：开启后 chip 面分段数字与 aria、tooltip 窗口行/Key 总额度行/其他源摘要行改按剩余%（100−已用 同一窗口池补数，quotaRemainPct 钳 [0,100]）打头，绝对值窗口行内 已用/剩余 明细互换顺序；档位色恒按已用原始值判定（quota.md 契约）不随口径反转；余额/Key 剩余额度单段与团队/未配置/错误形态不受影响 → v252 模型拉取同步提供商侧配置（issue #236）：零兄弟供应商首拉写实最小骨架+有据元数据（contextWindow/inputFormat/档位/输出上限），档位按强度梯排序（宿主默认档=values 末项），Copilot capabilities 别名，api.json 档位目录按需后台补缺（大体量不阻塞，缓存后下次拉取生效），套餐源接目录补缺；弹窗行「未获取配置」中性提示+脚注披露只增不覆盖；档位索引落运行目录缓存（24h stale-while-revalidate 跨重启复用），目录后台补拉时行内「档位补拉中…」状态+脚注说明 → v253 本轮/今日合计 tooltip 模型明细改项目卡式四列表格（zu-pj-mhead+statTable，费用列随 state.cost 门控；本轮 rt-models 行式退役，精简摘要保留）+ 本轮 tooltip 删「速度＝Σ…未参与测速」口径行（unrated_output 字段照旧生产） → v254 生成速度 Tooltip 全面重构（范围/时间双 Tab 共 20 组合 + 按时间/会话/项目维度：zusage 新增真实库有界轮表 speed_history（短键+索引表+2s 缓存，单一 Σ有效输出÷Σ生成窗口口径，旧 speed_segs 契约不动），渲染端纯函数聚合；16 根细柱定宽居中、十档 TPS_BANDS 同源、删除均值虚线/统计口径大段/底部时间行/图表预览；右上角日历时间胶囊（title 全格式）、左卡历史均值与生成中估算分离、柱 hover 五字段自定义卡（时间区间/档位速度/多模型/Token 总量含输入输出/预估费用缺失态）、单行十档图例、空桶显空柱不显 0、远端身份下「全部」清晰降级、旧快照/精简 chip 回退原布局；Tab/dim/柱 hover 全走 tip 本体既有事件委托与签名幂等重建，不新增 IPC/定时器/全局监听） → v255 真实宿主验收三修（X 轴短时分标签+30px 裁切杜绝长时间戳重叠、左卡实时状态降为独立 note 且标题中性化「当前筛选 · 历史统计」避免工具执行中配历史均值语义错位、V2 实时状态变量更名 spdLiveStatus 与 buildLiveTip 旧局部同名隔离） → v256 修复「速度 Tooltip 有时新、有时旧」（用户实机报告）：根因=统一轮表只在 serve 常驻链产出，主进程常驻进程空闲回收/重启/降级时回退 zusage.py json 一次性帧缺 speed_history，spdRebuildOr 返回 null 整卡回退旧版；①zusage snapshot 增显式 include_speed_history 门控，serve 与桌面 json 都产出轮表（远端子进程 ZUSAGE_REMOTE_CHILD=1 排除，CLI/MCP/远端 stdout 契约不变）；②overlay __zusageUpdate 粘性保留最近一份有界轮表，缺字段帧不再闪回旧卡（空轮表不粘性）；③精简模式 tpsChipTipHTML 与 tpsTip 浮层补齐 V2 接线（双 Tab/维度/柱 hover 全走浮层本体委托、状态落 chip 数据包、V2 卡放行签名重建），V2 宽帽规则补 .zusage-tps-tip 宿主；冷文件 inject-main 未改，热重载即生效 → v257 追堵「首帧缺轮表」（用户 11:21 再现旧卡，渲染端 diag 实证已 v256）：v256 粘性只在代际内有效，热重载/重启后的新代际粘性为空，而 `_speed_history_safe` 在完成轮瞬间的 WAL 写窗口偶发抛错返回 None——首帧恰逢失败时无值可粘，仍回退旧卡。①safe 失败先短重试一次（50ms，新常驻进程首查撞写窗口时多半已放行；缓存 TTL 内不重扫），再失败跨 dbkey 回退最近一次成功轮表（`_SPEED_HISTORY_STALE_MS` 10 分钟上限，轮表是历史统计分钟级陈旧可接受，下一帧成功即覆盖）；②`__zusageUpdate` 帧级诊断 `FATAL.spdFrame`（has/sticky/turns，原地更新）——再出现象 diag 直接区分「数据链缺帧」与「粘性未建立」，不再靠截图反推 → v258 spdTip 取证诊断（用户 11:37 在 v257+首帧 has=1 下仍见旧卡，数据/代码/本地模拟三查均无异常，纯推理到头）：buildLiveTip/html(d)/tpsChipTipHTML 三条速度 tooltip 路径在 V2 成功时记 `FATAL.spdTip={t,src:"v2-live|v2-html|v2-chip",turns}`、回退时记 `{src:"fb-live|fb-html|fb-chip",turns,range,period,sid尾8}`，spdRebuildOr null 分支加 `FATAL.spdNull`（typeof FATAL 守卫不破坏 VM 切片）——diag 直接给出真实路径与当时轮表长度，定位后移除 → v259 宿主多视图顶部 48px [app-region:drag] 标题栏拖拽条穿透上层浮层（Electron 拖拽区按几何命中，覆盖层未显式 no-drag 不阻挡）：面板 top:8px 时头部 ✕ 落在条内，真实点击被窗口拖拽吞掉（新建任务页实报「设置关闭无效」，面板内导航点击正常与症状吻合）；.zusage-panel（设置+子代理浮层）/.tip（全部 tooltip 根）/.zu-mp-ov/.zu-compact-dlg/.zu-rot-pk-dlg 显式 -webkit-app-region:no-drag，把自身矩形从拖拽区减掉（宿主自家浮层与全屏屏障同款修法，app.asar 实证） → v260 静态桥缺席兜底（同内容仓库版记 v258，合入时按合入顺序归一；G2 跨版本免重打桥）：readFiberPaneScope 沿 React fiber 回溯 SessionPane 作用域（detOwnerOf/sidePaneKeyOf 的 tabId 同款兜底；限深 24、撞外层会话/分栏根止步、多候选歧义拒绝，校验与静态属性分支同规）；turn-stats.js 运行时合成 BRIDGE_TEMPLATE v2 同契约三访问器（Map.prototype 一次性探针捕获宿主注册表 + installRuntimeBridge 注入口） → v261 spdRender 取证补强（老会话完成态仍见旧卡而 spdTip 恒被 v2-live 每 tick 覆盖，hover 瞬间的整条渲染记录无法存活）：html(d) 整条渲染专记 `FATAL.spdRender={t,src:v2-html|fb-html,pane,sid尾8,turns,hasH,range,period,dim}`（独立字段不被覆盖），spdTip/spdRender 均带 pane 实例标识（多实例共享 diag 分不清写入者），spdRebuildOr null 分支补 spdNull 原因取证（typeof FATAL 守卫）；本版=运行目录 v260 合流超集基线 + 本诊断（v260 已含速度线全部修复与并行线 v259/v260 桥兜底） → v262 根治「空渲染污染共享数据」（spdRender 铁证定案：用户复现时刻整条渲染 hasH:false / spdNull hType:undefined，而前后帧 has=1——`render(d)` 首行无条件 `state.data = d`，实例 spawn 首渲染/桥空窗的 `render(state.data || {session:{},...})` 把空对象写进共享数据、抹掉统一轮表，窗口内 hover 即 fb-html 旧卡；切会话 tab 触发 pane 重建恰好高频制造该窗口，故「老会话旧卡、新会话正常」）：render 改条件写 `if (d && d.session && d.session.sid) state.data = d`——空对象渲染不再抹掉轮表，spawn 实例后续 updateLive 直接用上一真帧渲染（比旧行为更快出 V2）；真帧写入链（__zusageUpdate 外层）不变 → v263 根治「范围/时间 Tab 点击无效」（用户实报 P0）：①根因=生成中 updateLive 每 100ms 重编 V2 整卡（估算/计时走字让 tipSig 每 tick 变化），mousedown 命中的按钮在 mouseup 前被 innerHTML 替换、click 落到共同祖先 closest(".zu-sv-tab") 为 null；Tab 切换提前到 tip pointerdown 委托（重建窗口前同步生效，click 保留键盘/兜底，同值幂等共存），按下即进 600ms 交互冻结保下拉展开；②updateLive 冻结扩 mouseInBar（悬停保活不整卡重绘，数字冻结在进入时刻，typeof 守卫兼容 VM 切片）；③compact tpsTip 面：Tab 同款 pointerdown（tpsTabActivate）+ showTpsTip 撤销 v255 对 V2 卡的冻结放行（悬停中统一冻结，交互路径清 __zuTipSig 天然放行）；④视觉 12 项（视觉审查 Agent 实测截图清单）：Tab 选中态纯白改柔和强调 rgba(87,200,255,.14)+恒字重 600 防跳动、hover 补背景反馈，左卡删「Σ有效输出 ÷ Σ生成耗时」公式行、标题改弱化「历史统计 · 不含进行中请求」（.zu-sl-title 仅本卡作用域覆写，旧八态卡不动）、主数字 +22px，X 轴跨日首柱两行 MM/DD+HH:mm 且跨日柱稀疏化必显、xEvery 8⇒6 收紧标签间隙，图例 Ultra 补 ✦，维度下拉补 ▾ chevron，标题 +6px/时间胶囊 padding 4px 10px，间距归 8/12 节奏，柱组居中+删 --zu-sv-n 死配置 → v264 第二根因收口（实机点击仍关 tooltip 定案）：tip 内控件点击 ⇒ pointerdown 处理器同步重编 innerHTML ⇒ 被点按钮 detach ⇒ 焦点跌落 body ⇒ focusout(relatedTarget=null) 曾无条件 mouseInBar=false + hideTip(true,"focus-leave") 强制关 tooltip——切换生效了用户也看不见（旧版 click-only 同样中招，这是「Tab 点击无效」体感的第二半）。修复：mouseInBar（指针悬停在条面/tooltip 上）时降级 hideTip(false) 交总闸拦截，指针真正移开由 mousemove 判定；纯键盘 mouseInBar 已 false 维持原强制关。行为级回归：切片派发 focusout 断言悬停中 [false,"focus-leave"]/离场 [true,"focus-leave"] → v265 按下即建总闸（实机第 4 次点击实验定案的第三根因）：tooltip 常经 focusin 打开（点击 .it 聚焦），快速移动/合成指针下 mousemove 采样可能全部被 150ms 节流丢弃、mouseInBar 停留 false，随后一次快照推送的 render-orphan 接管失败即关掉正在交互的 tooltip，点击 Tab 落在消息区；pointerdown 委托开头 mouseInBar=true + cancelTipGrace，「指针按在 tip 内」先于一切判定生效，render-orphan 受总闸拦截，下一 mousemove 重新判定 → v266 render-orphan 悬停保留（第三根因彻底收口）：生成中宿主 phase 切换（思考↔工具↔正文）每次走 render 慢路径整条重建条面，条目结构变化时接管失败曾直接 hideTip(false,"render-orphan")——快速移动/合成指针下 mouseInBar 常 false（mousemove 采样被 150ms 节流丢弃，tooltip 经 focusin 打开），悬停中的 tooltip 随每次 phase 切换闪断、点击 Tab 落在消息区（实机第 4/5 次点击实验定案）。修复：mousemove 处理器开头（节流前）记 lastPt；接管失败时指针仍在 tip 覆盖矩形内则保留旧内容原地显示（不重画、不收），指针一动由 mousemove 重新判定；条外维持原收起 → v267 lastPt typeof 守卫（v266 裸引用打破 overlay-fx-tip-keepalive/overlay-tip-activation 的 mousemove 切片沙箱，与 v265 mouseInBar 同款教训：实例作用域新增变量一律 typeof 守卫或同步补切片夹具） → v268 粘性跨代际（用户实报「速度 tooltips 现在变成老版本了」定案）：v255 粘性是模块级变量，热重载/重启后新代际为 null，新代际首帧恰逢 serve 空闲回收/重启窗口（本地实测 serve pid 数分钟内 8576⇒11362 频繁重启；json 链本地实测 1268 轮/197 会话产出正常）即回退旧卡；修复 = 粘性写 window.__zusageSpdSticky（旧实例不清除、新实例继承，跨热重载/重启持久）+ 四处 V2 消费点（buildLiveTip v2h / html(d) spdRebuildOr / tpsTip 数据包）统一 lastSpeedHistory 兜底——帧缺轮表时以最近一份有界轮表顶上（历史统计分钟级陈旧可接受，v257 同取舍），下一帧成功即覆盖 → v269 lastSpeedHistory typeof 守卫（第三次同款教训：v268 三处裸引用打破 overlay-speed-chart 旧图切片沙箱 3 例——实例/模块新增变量被切片引用必须 typeof 守卫已三令五申） → v270 用户实机验收四修：①「项目」范围按用户口径重定义=全部项目对比（原当前项目与「会话」差异过小，用户实报「应该是取 zcode 所有的项目」；默认维度按项目，dims=[project,time]，不再按 panePid 过滤，切到项目时 session 维度归 project）；②维度切换后 Tab 无效——结合①数据差异过小造成「无反应」假象，随①消除；③右上时间胶囊月日前带年（跨年两端各自带年）；④hover 卡时间行同日区间压缩（右侧只补时分秒）+ zu-sv-twrap 允许换行，长区间不再省略号截断 → v271 点击任意位置关闭根治（用户实报）：tip 内按压后 1.2s 硬保活窗——hideTip 对非 win-leave/escape 的 force 一律降级交总闸（left-bar 命中区边缘误判/焦点跌落/宿主重渲染等任何路径）、focusout 在窗内直接不关；pointerdown 记 lastTipDownAt（typeof 守卫兼容切片）；win-leave（真失焦）与 Escape 保留立即收 → v272 维度切换功能移除（用户裁定）：图表恒按时间聚合——删图表头维度下拉（tip+tpsTip 两处 change 委托、dimSel 拼装、四条 CSS）、speedTabActivate/tpsTabActivate 的 dim 归位规则；「项目」范围恢复当前项目语义（恒时间维度下「全部项目」与「全部」完全等价），标题加「当前项目 ·」前缀；speedSel.dim 结构保留恒 time（会话切换重置兼容） → v273 自适应布局+稀疏可视化+筛选栏重设计（用户 8 张截图 Goal）：①plot 自适应——删 inline 定宽，in-flow spacer（max(240, n*30+12)px）撑宽 + min-width:calc(100% - 30px) 拉满容器，柱组 flex 居中，多桶 spacer 触发横滚，网格/Y 轴/hover 共享同一 plot 坐标系（少柱不再左侧堆积大空白）；②hover 卡锚点改中心相对式 left:calc(50% + off)（plot 宽不再可算）；③today 有效桶 ≤3 且全桶 ≥4 默认聚焦有效时段，图表头「显示完整时间轴/仅显示有记录时段」次级按钮切换（speedSel.focus，切筛选重置，不改统计口径），聚焦带「仅显示有记录时段」提示；④数据覆盖提示 zu-sc-cov：今天「有记录 x/M 小时」、近 7 天「仅 x/7 天有记录」、本月「本月 x/N 天有记录」（分母=已发生时段，不含未来）；⑤筛选工具栏两端对齐——范围组左、时间组右（.zu-sv-time margin-left:auto），删分隔符，与统计卡/图表两缘对齐；⑥左卡精简——删「不含进行中请求」，实时状态并入标题行右侧轻量 zu-sl-sub（不再混入指标间），单柱时峰值/最低/最新 zu-sl-solo 弱化；⑦时间胶囊智能格式——同日「MM/DD HH:MM – HH:MM」、跨日不带年、跨月/跨年两端带年（v270 全带年撤销）；会话切换 speedSel.focus 重置 → v274 完整规格补齐（第二轮 Goal）：①spdChartLayout 统一布局参数入口（colPitch/spacerW/xEvery/valEvery 单处决定）；②柱顶数值稀疏化 valShown——n>8 按 ceil(n/8) 抽稀、首末与悬停柱恒显，16 柱不再数值重叠（hover 卡兜底完整值）；③最新柱 latest 弱化描边；④单点/双点 coverage 追加「暂无足够数据观察趋势」；⑤空态追加「尝试选择更长时间范围」弱化引导；⑥bkeys 截尾仅剩 recent（v273 聚焦改造时已自然移除非 recent 截断，超宽由 spacer 横滚承接不丢桶） → v275 点击偶发关闭+快速切换卡死双修（用户实报）：①tip 原生 pointermove 直接保活（mousemove 处理器 150ms 节流采样盲区让 mouseInBar 停留 false，left-bar 等 force 路径就能关掉交互中 tooltip；pointermove 高频纯赋值绕开节流盲区，总闸始终可靠）；②整卡重编 rAF 合并 scheduleSpeedRebuild——快速来回切 Tab 每次指针按下同步 innerHTML 重建形成重建风暴（卡死体感），同帧多次切换只重建一次，切片沙箱无 rAF 自动退回同步（既有 pointerdown 契约测试不变）；③dispose 取消待合并 rAF；④tipStats.hideSeq 最近 8 次收起原因序列（diag 定性偶发关闭） → v276 撤销 v275 的 rAF 合并（用户实报「会话切到项目卡死」定案）：被遮挡窗口的渲染帧暂停让 rAF 永不执行（本机 ZCode 常被 Chrome/飞书遮挡），切 Tab 排程的重编永不落地、tooltip 僵在旧内容；恢复同步重编（单次 1-3ms 可承受，「重建风暴」为伪问题），保留 v275 的 pointermove 保活与 hideSeq 诊断——遮挡环境一切交互路径必须同步落地 → v277 win-leave 降级可取消宽限（用户实报「点击 tab 仍自动关闭」，hideSeq 铁证 win-leave）：点击 Tab 引发的合成 documentElement mouseleave/瞬态 blur 与真离开在触发点无法区分，tipBoundaryHide 立即 force 关把正常交互打死；降级为 400ms 可取消宽限（cancelTipGrace 共用定时器，pointermove/mousemove 落回即取消），真离开半秒后收；取证 cause 带触发源（blur/edge）与 document.hasFocus 焦点态 → v278 更新失败可见性（issue #247）：updater 检查/安装失败落盘 plugin-update.json lastError（成功即清），⚙ 更新区在非 error 相位显示「上次更新失败」行；hook 链按 HOST_TARGETS 判已装版本 × 宿主 build 未登记适配时强制立即升级 + 会话明确提示（去重），marketplace 刷新重试 + 清单新鲜度校验点名宿主 CLI 静默失败 → v279 速度卡 Header 单行重构（第三轮 UI Goal §3/§5/§7）：标题居左、范围/时间双 Tab 组成连续操作区整体靠右，旧独立筛选行与顶部时间胶囊删除，窄窗 flex-wrap 整体降级不裁剪；统计时间迁至图表标题栏右端轻量文字（calendar 图标 + 紧凑区间 + title 完整 YYYY-MM-DD HH:mm:ss 区间），单位 t/s 紧随图表标题；左卡标题层改「平均速度」+ 小号「历史统计」标识（.zu-sl-k 行删除）；旧图共享类仅 .zu-sv-root/.zu-sv-chart 作用域覆写不受影响 → v280 速度卡横滚位置记忆（用户实报 全部×全部 拉到末尾、关闭 tooltip 再开回到开头）：speedCardV2HTML 根节点携带 data-sv-key=范围|时间 选择键；tpsTip 重编分支（showTpsTip 非冻结路径）重建前从旧 DOM 捕获 .zu-sc-wrap scrollLeft 连同键存储、键同才回填（hover/心跳重编不跳回头部、关闭再开含数据刷新后恢复原位、切范围/时间键变自动归零）；全量 tip drawTip 横滚保留从 keepTop-only 扩展到重开路径并加同键守卫（v232 盲恢复改键同回填，V1 旧图无 zu-sv-root 键按空串键行为不变） → v281 速度卡专项双修（第三轮专项 Goal）：P1 图表列宽稳定——V2 注入样式由仅钳 max-width 改 width+max-width 同值 !important（width=min(960px,calc(100vw-24px))、border-box，压过 .tip 的 width:max-content 与 tpsTip 内联 max-width:520），右图表列 flex:1 1 0 + min-width:0、滚动容器定宽 100%，列宽不再随 plot spacer（n×30+12）与图表头文案反向撑缩，Tab 切换整卡宽度恒定（视口足宽恒 960、窄窗恒 vw-24）；P0 hover 信息卡裁剪根治——卡从 .zu-sv-plot（被 .zu-sc-wrap overflow 滚动容器裁剪）移到 body 级 Portal .zu-sv-portal（模块单例、类名挂 .zusage-quota-tip 复用 boot 旧代清理链、pointer-events:none、z-index 同 tooltip 层 2147483646 且 DOM 序在后），内容经 SPD_PORTAL 侧信道（纯字符串、VM 切片安全、消费即清）由 showTpsTip/zuSpeedChartPick/speedRebuildNow 渲染定位，按柱体 getBoundingClientRect 右上⇒左上⇒钳边避让视口（safe 10px），横向滚动 capture 相重定位（柱滚出 wrap 视口即收），切 Tab/hover=-1/收起路径（hideTpsTip/hideTip）立即隐藏不留孤儿 → v282 档位说明浮层与 Tab 低对比选中专项（第四轮 UI Goal）：底部常驻十档图例整体移除（.zu-sv-legend 包装/分割线/占位全删，整卡高度由 Header+统计主体决定），改由图表标题栏「单位：t/s」旁问号按钮承载——hover/focus 即显不点击、Escape 只收浮层、icon→卡保活（延时收+卡内取消）、柱体 Portal 互斥（双方 show 互收防双层浮窗）、按柱体 rect 下方→上方→钳边定位、body 级浮层脱离 overflow 裁剪 + 显示移尾（B1 同款）+ dispose/热更双清理链；十档内容 spdLegendCardHTML 自 TPS_BANDS 升序生成（颜色/星标/边界与柱体、chip 同源唯一事实），当前档位高亮读按钮 data-sv-band（整卡重编自动更新、空数据不高亮）；Tab 选中态对齐 Hover 低对比背景（去 rgba(87,200,255) 蓝块：on=白 .07/浅色黑 .06 + 发丝内描边区分持续选中，on:hover .09/.07 轻微提亮，字重恒 600 维持 v263 防选中加宽纪律） → v283 档位说明浮层微调（用户反馈）：最大宽度 560→800px（仍钳 calc(100vw-24px)）；显示时左缘对齐宿主 conversation-bottom-dock-transition（composer 容器）而非整窗口/图标锚定，dock 缺失回退图标左缘、越出右缘钳边（与 v282 避让策略叠加） → v284 主卡定宽 800+左缘对齐宿主 dock（用户反馈澄清：上轮 800/dock 对齐实为主 tooltip 而非档位浮层）：V2 注入样式定宽 960→800（width+max-width 同值 !important 不变）；tpsTip 链 showTpsTip 在 V2 卡圤位后左缘改对齐 conversation-bottom-dock-transition（缺失回退 chip 锚定，垂直不变）；全量 tip 链 drawTip 渲染 V2 内容时写 tip.__zuDockLeft、positionTip 每帧消费（rAF 跟随不回退回 chip 锚定），非 V2 内容 null 走原锚定 → v285 速度卡左缘对齐锚元素（用户反馈：热重载后仍居中，指定基于 .it 速度格左侧对齐）：废弃 v284 的 conversation-bottom-dock-transition 宿主类名依赖（实测未生效），改为 positionTip 在 V2 卡（tip.__zuAlignLeft，drawTip 按 .zu-sv-root 置位）时 left=锚元素（.it 格）左缘钳边；tpsTip 紧凑链删 v284 dock 覆盖（原本就是 chip 左缘钳边）；档位说明浮层左缘改对齐主 tooltip 容器左缘（与主卡构图一致，替换 v283 dock 对齐） → v286 图表标题栏精修（第五轮 UI Goal）：标题 600/+2（V2 作用域覆写，不过重）；「单位：t/s」收为轻量「t/s」徽章（弱化前景+微亮底+圆角 5px，视觉优先级 标题＞单位＞档位入口）；问号换专用 Speed Bands SVG（细圆环+三级递增速度柱，currentColor 继承按钮色态，18px 视觉/26px 命中），aria-label 改「查看速度档位说明」；十档浮层/互斥/保活/清理链全部沿用 v282 机制不变 → v287 修复批：速度卡远端判定改只认快照 remote 标（本地 scoped 行也带 workspace_identity，旧判定把本地 pane 选「全部」误降级为本会话并显「远端会话仅显示本会话历史」）；精简链 tpsTabActivate 聚焦按钮改 t0.speedHover=-1（原 t.speedHover 在声明前引用必抛 TypeError，0 也会误高亮第 0 柱） → v288 会话累计模型明细费用列随 ⚙ 预估费用开关门控（原 v215 内联四列表漏门控，v253 共享 statModelsTable 收编时漏掉本卡——开关关闭后仍渲染「预估费用」表头与 ¥ 单元格；换 statModelsTable(sess.models) 与本轮/今日同源，关时收三列、空明细整块不渲染） → v289 火山方舟额度修复（issue #260/#261）：tooltip「其他源」行抽公共 helper otherSourcesRow 并在 info（未配置/暂不支持）分支同样渲染——主源不可展示时后台已查询成功的源（如火山 AK/SK）不再被提前 return 吞掉；其他源标签对复合源 id（vendor:providerId）回退裸厂商键查找；剩余口径（quotaRemain）在其他源行保持不变 → v290 速度卡交互与标签（2026-11-08 用户规格）：图表区滚轮横滚（tpsTip 本体 wheel 委托，deltaY→scrollLeft，不可横滚不拦截）；每柱恒显时间标签（8px 下 5 字符可容纳，稀疏化废弃） → v291 速度历史热力图（本月月历/全部历史 GitHub 风格双形态，档位色同源 TPS_BANDS、无记录中性灰、未来弱日期号）+ FATAL.gen 代际号进 diag（重注入取证不依赖计数字段归零）+ 首开/键变滚到最右 → v292 月历定稿第一轮：标题去粒度词改「范围 · 时间 · 平均速度」三段式；整卡定高 315px 四形态同高；跨月占位不越出星期对齐 → v293 月历设计图规格：列头周首日号与格中心对齐、7 行 1fr 铺满、滚动条样式落元素本体（v293.1） → v294 月历格专项：低饱和档位底 22% 混卡片色（v294.1 拍板去左色条靠底色辨档）、文字统一吃前景色、space-between 布局+min-height 治越界、容器查询三档字号 → v295 月历布局铺满（6 列×行 1fr 均分、紧凑态隐数字 hover 兜底）+ 柱状图系列修订八项：顺序时间恢复（v295.7 撤 v290 倒序）、柱距 24px 恒显时间（v295.17）、Y 轴刻度列外移滚动容器（v295.18）、首开滚最右（v295.13）等 → v296 热力图「全部历史」改最近 365 天窗口（周日起对齐补齐、窗外透明占位、无数据卡覆盖统计 v296.1）+ 方格随容器宽自适应横滚 → v297 热力图动态字号（6~14px 纯算术择优、宿主量测 __zusageSpdMonRect 一次回写、今日格加深 v297.1、分段高度诊断 v297.2、⚙ 面板同款 v297.3） → v298 chip 主数字改最后一轮真实速度（去「均」前缀，tooltip 左卡保留会话加权均，两处各自成立；无最后一轮真实值时面留空不显会话均）+ Y 轴刻度锁定柱区基线（v298.1）+ 左卡标题随时间 Tab 五命名（v298.2）+ 档位徽标下模型名（v298.4）+ 量测时机挂 display:block 后（08） → v299 本轮 tooltip 紧凑化（三行 KPI 家族首卡：statKpi 辅助行参数、模型表 headRight/tableOnly、工具/重试迁模型标题行右） → v300 会话累计卡紧凑化（同三行 KPI 形态）+ 会话总耗时跨会话长时长换算 + zusage 会话级平均耗时/平均首字延迟/Σ生成耗时聚合（>0 门控，旧快照降级） → v301 今日合计卡紧凑化 + 三张统计卡共用 KPI SVG 图标（KPI_ICON_PATHS）+ zusage 今日聚合扩平均耗时/首字延迟列 + 缓存命中率入输入格副行 → v302 统计卡行结构定名（请求次数/请求轮数/请求会话层级行、「总耗时」「平均输出速度」统一命名）+ zusage 今日去重会话数与 Σ工具调用（v302.2）+ 会话/今日模型标题行右并入工具统计（v302.3） → v303 项目累计卡紧凑化（根类并入 .zu-stat-tip--project 统计卡家族）+ zusage _project_usage 新聚合（平均耗时/平均首字延迟/总耗时/跨分片合成 avg_tps）+ 刻度列外移联动（v303.3/v303.4） → v304 工具调用卡紧凑化（定宽四列+sticky 表头+行 hover）+ statKpi 标题图标参数 + zusage 子代理单任务耗时/轮数聚合（v304.1）+ 模型名立方体 SVG 胶囊（v304.2） → v305 收口审查修复批（review-fix-merge）：轮播可视化编辑器 when: 键白名单+提示行转义（堵存储型注入面）；手写显式 false 高级条件保存保留、false 不再渲染为勾选态；热力图「共 N 天」覆盖统计 var 提升修复（原恒退兜底文案）且分母对齐可视窗口；今日 tooltip 轮数/会话数旧远端缺字段显 —；今日/项目 avg 耗时与项目 avg_tps 过滤 main_turn（与 avg_tps 同口径）；devKeepTip 持久化+re-click 放行；__zusageSpdMonRect 代际清理；speed_v2 聚焦切换测试随功能移除删除；未编号同批内容——轮播自定义短语可视化编辑器+文本模式、内置词包拆独立分片 04-rotator-builtin-packs.js（16 包）、⚙ 轮播分区「原作者」按钮、速度卡覆盖提示/聚焦按钮移除（2026-11-07 文案批） → v306 精简 tooltip 幽灵行框修复（\x01 结构化 HTML 哨兵只在主链 drawTip 被 tip.firstChild.slice(1) 剥除，精简链 showTpsTip 直塞 innerHTML 不剥——控制字符落成文本节点被 .tip 的 white-space:pre-line 撑出 ~20px 幽灵行框，V2 卡定高 300+overflow:hidden 下整卡下坠、底部被裁，实报上下 padding 不对称；补齐同语义 charCodeAt 剥除）+ 状态轮播主开关默认关闭（2026-11-09 用户规格：新用户/从未写过设置的用户不自动启用，显式开/关过的存量配置经 loadRotatorConfig 布尔覆盖原样保留）+ 速率 chip 右键直开设置（2026-11-09 用户规格：精简下 chip 是唯一常驻入口，contextmenu 镜像 .tps-cfg 路径——先收 tooltip 再开面板，并压掉宿主原生右键菜单） → v307 速度 tooltip 左卡「生成中估 X t/s」note 行删除（2026-11-09 用户规格）：生成中估算只留标题旁「生成中（估算）」徽标，瞬时估算值不再与历史均值同卡并列；完成态会话均被误标「生成中估」的边界（v298 speedValue 保留 avg 语义 × v263 门控只看 speedValue>0）一并消失（.zu-sl-note CSS 保留——旧版 speedCardHTML 回退卡仍用）；未编号同批内容——速度卡模型行原生 title 改纯 CSS data-tip 伪元素气泡（2026-11-09 用户实报：宿主内原生 title 不弹——生成期重建打断驻留 + Electron 宿主对 title 气泡不可靠，同轮播 zu-rot-tipt 先例）+ 悬停模型列表不省略（spdAggregate 增 withNames 仅整体口径产出全量 modelNames，消费点唯一带 fallback）+ 模型行补 aria-label 全名单（伪元素 content:attr 不进可访问树） → v308 切换任务主线程阻塞修复（用户实报「来回切换任务卡很久才反应」）：gitMount 的 live() 幽灵判定从裸 inGhostSubtree 改走 ghostOf 120ms TTL 缓存——裸调用逐祖先 getComputedStyle 强制样式重算，恰在切换的 React 重挂风暴（样式树最脏）里被 render/heavy 高频触发，CDP CPU 采样归因 inGhostSubtree 436ms/9.4s 近乎全部经 gitMount→live（每次切换聚集 ~48ms，与长任务 72-102ms 时刻逐一吻合），缓存路径实测仅 2ms；判定语义与 track 每帧 ghostOf(composer) 同款；未编号同批内容——.zu-sv-bars 由 space-between 改 flex-start + 两侧 5px padding（修少柱如「最近 3 轮」柱顶 nowrap 数值越缘撑出 ~2px 横向滚动）+ 单柱 zu-sl-solo 弱化移除（2026-11-09 用户规格，含 CSS）+ 合入审查撤销同批误入的 hovFreeze 悬停冻结（08 分片 render 接管链：与已合并 v224「悬停中 tooltip 随快照跟手刷新」契约冲突致 pill-theme 4 例红，其原生 title 驻留动机已被 v307 data-tip 气泡消解，净 diff 与 fork/main 逐字节一致） → v309 拉取模型「确认添加并保存」先探测后保存（用户实报 OpenHub-Gemini Base URL 少 /v1：宿主实际请求 {base}/chat/completions 得 405，界面报 "Model request failed."）：勾选 ≤24 个时逐模型 model-pull-probe （主进程按宿主同款 URL 语义发最小对话请求——openai 两型不自动补 /v1、anthropic 归一化补 /v1 拼/messages、套餐源=套餐 baseUrl+messages+Bearer；刻意不走 candidateUrls 兼容改写以复现宿主真实路径），行内状态 chip （检测中/可用+延迟/失败，title=分类原因+实际 URL+脱敏摘录）并发 4 刷新，全过自动写入、有失败自动取消勾选保留弹窗（可重新勾选强制添加，旧主进程 unknown action 降级直接保存；inject-main 白名单加 model-pull-probe，model-puller 增 probeModel/分类/脱敏） → v310 拉取模型探测体验收口（用户实测两报）：①失败原因悬停不显示——v309 在 chip 上挂的原生 title 在 Electron 宿主内不弹（v307 同款实证），改 data-tip 伪元素气泡（从 chip 左侧水平弹出、行内垂直居中，避开 .zu-mp-items 的 overflow:auto 裁剪，双语 aria-label 同步）；②路径错配自动修复而非红字提示——主进程探测 404/405 时对 ±/v1 邻域候选实测，命中即把新 Base URL 读-改-原子写回 provider_config（与 applyModels 共享 applyBusy 写闸、同供应商单飞：全选模型同 URL 全失败只测一轮只写一次），模型按新 base 重试，弹窗绿字披露 「已自动修复 Base URL 并写入供应商配置」（.zu-mp-fix），修复候选也失败时失败原因附「已尝试自动修复」；探测 ask 兜底 25s 改 65s（探测+修复+重试最坏约 45s 不能被错杀）；修复限定 openai 两型（anthropic 型宿主自动补 /v1 无此错配、套餐源 baseUrl 不代改） → v311 辅助档位写实（用户实报：添加后宿主「测试模型」报 reasoning_effort "none" 被上游拒绝——宿主 testModelConnectivity 绑 values[0] 最低档，openai 两型内置 catch-all 把默认最低档 disabled 映射成 wire "none"（zcode-builtin.json modelApiRules[2]/[3] 同款语义），Gemini 严格上游只收 minimal..max；探测链基础连通后追加辅助档位验证：按 catch-all 同款语义发 values[0] 等效 wire 值，被 400 拒绝时从错误文案解析上游接受集（解析失败退化为逐候选实测），验证后写实合法档位表——模型规则已存在直接写规则（values-only 稀疏合法、带 map 自洽结构不动），未落盘模型写 fetchCache 元数据由 applyModels 统一落盘（绝不在探测路径新建规则防双写重复），绿字披露「思考档位写入 minimal/…」；失败新增 reasoning 类文案附上游接受集；错误摘录保留完整脱敏文本供解析 → v312 输入类型/模型能力自动匹配（用户实报：拉取后能力区全空）。宿主侧定案（源码+内置配置审计）：modelRules 的 `.*` catch-all 对所有模型显式设保守默认（text-only、json-schema/联网/中段系统全 false），**无协议级推导**、能力位必须逐模型证据；个人稀疏规则字段级覆盖合法。证据源三路：①目录一致性收割——同名模型多 provider 收录的歧义守卫改为「可加证据字段全命中一致才采纳」（modalities 收 inputFormat 含 PDF；tool_call 只采显式 false；structured_output 只采 true），mergedMeta 第三参最低优先级并入；②确认流能力实测（caps 标志显式携带才跑，仅 chat-completions、仅正证据 2xx 写 true、4xx/网络失败不写保守默认）：图片 content part / response_format json_schema / 对话中 system 消息三项 6s 探测（2026-11-09 真实中转实测三项可判定；PDF 的 OpenAI wire type:"file" 部分中转不认故 PDF 只走目录；视频/音频/联网搜索无廉价如实验证不探测），写目标与 v311 同款双路径（已存在规则合并 properties 叶子且用户显式 false 不覆盖；未落盘写 fetchCache 由 applyModels 落盘）；③弹窗行内徽标（图/PDF/JSON）+ 绿字披露「能力匹配：图片/结构化输出/中段系统消息」；探测兜底 65s 放宽 90s → v313 工具历史回灌探测（用户实报：配置就绪后真实对话 Turn execution failed 400001——实弹二分定位为 OpenHub 中转全部 Gemini 系通道（3.5/3.7/3.8，流式与否）拒收 assistant tool_calls + role:tool 历史形状（C4-C7 全变体 400），与插件写入无关（裸形状同样拒），Anthropic 线同病；工具结果折进 user 消息反而 200（Gemini 原生映射）；同站 qwen3.8-max 正常=通道级缺陷。宿主侧无配置解（supportsToolCall:false 会令宿主对带工具请求直接报错更糟），落为警告性质：确认流第 4 项 6s 探测发最小工具历史形状，4xx 确定性拒绝才警告（超时/网络/5xx 不定不警），琥珀 .zu-mp-warn 披露「代理任务在工具轮次会失败，纯对话可用」，绝不写任何配置位，结论按拉取会话 fetchCache 去重（裸探测无会话不去重） → v314 规格补全（用户实报 maxOutputTokens 89642 超上游 65536 上限 400）：宿主预算链定案——wire 输出预算 baseline=已解析 optionSpecs.maxOutputTokens.max（未写=内置 catch-all 128000），预轮 cap=min(baseline, 窗口−用量−1000) 只下调不设上限（model-token-limits.ts resolveModelStepMaxOutputTokens），超 spec.max 是宿主侧硬拒绝非钳制——所以「不写输出上限规格」会让请求预算完全脱缰。applyModels 是 append-only：先添加的模型在目录证据迟到时永远拿不到写实，v314 在确认流探测路径用拉取会话元数据补「缺失」键（properties.contextWindow / optionSpecs.maxOutputTokens.max，绝不覆盖已写数值、带 map 自洽结构不动、applyBusy 写闸），绿字披露「规格补全：输出上限/上下文窗口」；当日已手修用户配置 max=65536（上游 400 报错自证上限，中转 max_tokens=65536 实测 200）；收口审查补齐：禁止凭据重定向并按实际 key 脱敏、供应商来源与档位 CAS 守卫、缓存身份绑定及已验证路径迁移、自定义 map 不猜测、供应商显式能力优先且 false 保留、修复后补规格、工具限流不误警告、确认单批互斥和逐项强制添加、关键披露停留至再次确认、关窗清理等待与模块 dispose 失效 → v315 「原作者」悬停提示被滚动区顶缘裁剪修复（用户实报截图：气泡向上弹、只露底边一线）——cap 内触发点（原作者/自定义短语模式切换）气泡翻到触发元素下方 `bottom:auto;top:calc(100% + 6px)`，右对齐保留；cap 贴 .zu-settings-body（overflow:auto）顶缘是根因；向下弹常规布局落进分区卡片区域可见，纯 CSS 无视口碰撞翻转、cap 滚动至贴滚动区底缘时对称受限（v310 .zu-mp 左弹先例同款取舍） → v316 「压缩上下文」按钮视格重做（用户规格）：全宽 40px 胶囊、无边框、中性深灰半透明底（暗色=白叠加 6.5%/hover 10%/active 14%，浅色=黑叠加 5%/8%/12%，html.dark 分组自动跟随明暗与 zai 主题）、13px/600 文字（字号走 --ui-font-size 令牌 calc(-1px)，随宿主界面字号缩放）+ 18px 收缩双箭头 SVG（currentColor，flex+gap 8px 图文整体居中、nowrap）、focus-visible 焦点环（宿主无 --color-focus-ring 走 fallback）与 :disabled 半透明；reduced-motion 组整体移到全部受控规则之后（@media 不增特异性，置于按钮 transition/弹框 animation 基础规则之前会被同特异性后置规则压成死代码，review 实锤修复），弹框动画一并恢复实效；注入/判定/确认弹框/提交通道逻辑全不动 → v317 ⚙ 面板上层 body 级弹框内按下不再联动关闭设置面板（用户实报：词包「查看」弹框点遮罩/✕ 连设置一起关）——面板外点 mousedown 判定按 e.target 向上匹配弹框根类名（.zu-rot-pk-dlg/.zu-mp-ov）：遮罩关闭监听与面板判定同在 mousedown、target 阶段先执行并已把 rotPkDlg/mpModal 置 null，变量 contains 守卫对遮罩路径失效（✕ 走 click 判定故 contains 版已好、遮罩仍坏），closest 沿已 detach 的残留子树仍命中；弹框外点击照常关面板、无 closest 的 target 按弹框外处理 → v318 chip 字体切 sans（用户实报 Windows 上 chip 数字与中文大小不一，mac 无此问题，最终方案）：宿主 --font-mono 首选 ui-monospace——Windows 落到 Consolas（内置浏览器实测 13px 数字墨迹约 8px），中文回退 Microsoft YaHei UI（11~12px），条/chip/tooltip 内中文显大 ~40%；原生 UI 无此问题靠 sans 配对（Segoe 数字 10px + 雅黑 11~12px，配比 1.1）。缩放面路线三轮实机回退后整体废弃：ZuCJKFit CJK 面（90/82/76%；82% 真机像素测量实测配比仍 1.2 嫌数字小，76% 后数字锐利但配比失衡）与 ZuNumFit 数字面（ASCII 110%，实报数字边缘发虚——size-adjust 缩放路径光栅化比原生整数尺寸软，canvas 拉普拉斯方差实测低于原生面）全部删除。定稿=条/chip/tooltip 全部 30 处 mono font-family 换 var(--font-sans,…)+ 既有 tabular-nums 保留（含 01 模块 rateTip 内联 cssText 兜底，被 quotaTip/rstTip/tpsTip 整体复制）：Windows Segoe tnum 实测生效（13px 同 7 位任意数字恒 56.12px）数字刷新不抖宽，Segoe 数字 10px + 雅黑 11~12px 配比 1.1 与原生同源，零缩放零模糊零调参；mac SF Pro+苹方天然同构（用户实测无失衡），Linux system-ui tnum 未实机验收；⚙ mono 域（06 设置面板 .zu-src-field、.zu-mp-*、.zu-notes-* 与 05 rotator 编辑器 .zu-rot-*）仍走 mono 令牌 → v319 速度格数字与单位加距 4px（用户实报 "158.9t/s" 贴字，且「修改过程中对的、判定生效又变回去」——两条渲染路径只有一条有空格）：①实时桥路径 zuBarSpeedView text="… t/s" 有空格但切 sans 后 Segoe 空格 7.15px→~3.7px 视觉贴字，.zu-live 加 word-spacing:4px（用户实机逐档对比定稿）；②无桥 DB 回退路径 chipFace（07）数字直拼 '<span class="dim">t/s</span>' 根本无空格字符、word-spacing 对其无效——补空格后与①渲染一致；用户看到的「忽对忽错」=生成中走①、完成/无桥走② → v320 「不在本地库」提示与 ⚙「数据库统计」注记不再写死 ~/.zcode 路径（issue #279：宿主 dataBaseDir 迁移后旧提示误导）：tooltip 改中性描述并指引重装/更新、⚙ 注记改「只读本地用量库（默认 ~/.zcode/...，跟随宿主 dataBaseDir 迁移）」；用量链 DB 路径解析本体在 zusage.py / token_rate.py / inject-main.cjs（非浮层），此为配套文案 → v321 速度格贴字真根因修复：`.zusage-root .it>span:not(.eb)` 的 inline-flex 把速度格也 flex 化，flex 剥离文本 item 尾随空格——数字态（数字+span.dim 两 item）空格 spaceW=0、v319 的 word-spacing 无效（CDP 实测墨迹间隙 0），状态词态单文本 item 不受影响故「动态对、停止贴」；选择器豁免 .zu-live（外部 flex item 布局块化等价、零变化），空格与 word-spacing:4px 恢复生效，间隔与动态态一致 ~7.7px → v322 速度格 word-spacing 4px→2px（用户实机目测：7.7px 偏宽，收窄到 ~5.7px） → v323 速度格 word-spacing 2px→1px（用户实机继续收窄：~4.7px） → v324 完成态数字与 t/s 零间隔：chipFace 去除空格字符（7.7→5.7→4.7px 逐档后用户定稿 0）。动态态（单文本 "… t/s"）仍空格+word-spacing:1px ~4.7px；word-spacing 对完成态无空格文本不再生效（CSS 保留无害） → v325 动态态 word-spacing 1px→4px（用户实机回定；完成态零间隔不受影响——无空格字符可加距） → v326 数字与 t/s 间距改用 inline-flex+gap:5px+baseline：去除 word-spacing（用户实测调值无视觉变化——完成态无空格、动态态单文本）。动态态整条渲染（07 render live 分支）与原地更新（08）统一走 zuLiveFaceHtml 拆「数字+dim」两 item，gap 才有 item 可分；状态词态保持单文本。完成态 v324 曾零间隔，v326 起与动态态统一 5px（用户屏幕验证接受）；函数声明必须实例级（html(d) 分支块内是 Annex B 块级声明，live 分支 TypeError / 08 ReferenceError，实测 44 测试红） → v327 V2 左卡标题行防破版（另一台机器实报截图：--ui-font-size≈20px 浅色主题下「最近18轮平均速度」截断+「思考中」竖排折行）：标题行需求宽随字号线性增长而卡内宽固定 184px（实测 14px 需 151.1 余量 33、ui≥17 必溢出），.zu-sv-root .zu-sl-sub 加 flex:0 0 auto+white-space:nowrap——状态词永不收缩竖排，溢出收缩由标题独享 ellipsis 降级；本机默认字号视觉零变化，CSS 契约断言锁定 → v328 宿主卡顿治理（specs/perf-lag-reduction.md）：流式期间插件在宿主渲染线程的工作量与会话文本量/历史轮数解耦——①turn-stats ingest 字符计数改无分配码点计数+按行缓存（原 Array.from(text).length 整串拆数组，单次 0.35→4.1ms 且跑在宿主 store 通知链内，现 0.02→0.4ms）；②spdUnpack 按 speed_history 引用 WeakMap 缓存（6000 轮单次 ~5ms，占速度卡生成 95%）；③updateLive 快路径未悬停本格不再每拍白建整张 V2 速度卡（只记 view 标失鲜，drawTip 打开瞬间 liveTipRefresh 补建，兜底 1s 保鲜；悬停仍每拍）；④非 live 会话数据帧未变时 500ms 内心跳不重复整条 render（原每 100ms 全量重建 tooltip 串+五个 enhance*）；⑤轮播主开关关闭态 65ms 帧步降为 1s（仅剩遗留 DOM 还原的整文档查询） → v329 修复项目累计 tooltip 点击「查看全部模型」异常收起与同模型大小写重复：①根因=按钮未在 pointerdown/mousedown 阶段阻止默认/冒泡，且 hideTip 1.2s 保活因 mouseInBar=false 被绕过导致 left-bar 误杀 tooltip；在 pointerdown/mousedown 增加对 .zu-pj-more 的委托与阻止默认行为，hideTip/tipLeaveAt/mousemove 硬保活 1.2s 不受 mouseInBar 干扰；②zusage.py 聚合与计费统一对 model_id 大小写归一化（优先保留大写/官方名，合并同模型如 GLM-5.3 与 glm-5.3，费用累加不漏）。 → v330 宿主 3.18.0 loading 行结构适配：①chat-loading 行 label 类由 .zcode-loading-label 换成 .animated-gradient-text、spinner 图标位由 span.grid 换成带 data-chat-loading-icon 属性的 span（.font-mono 耗时格未变），轮播挂载/还原选择器双兼容（chatLoadingLabelOf/chatLoadingPixelGridOf，旧结构优先），label 未命中时不再隐藏宿主耗时格（宿主再改结构时退化为保留原生计时）；②「我方最后写入」基准由模块级单例改挂 label 自身 data-zu-last-text 属性，修多个 loading 行并存（多分栏并发请求）时后处理行的宿主文案快照被词组污染；③「拉取模型」选中套餐源而列表暂不含它（套餐 token 的解密密钥异步到位）时重问一次、仍没有则提示凭据暂不可用，不再落到「只有一个供应商就用它」而改投别的供应商；⚙ 额度披露文案补充钥匙串密钥的读取。 → v331 项目累计 Tooltip 双范围统计（specs/all-projects-usage.md）：zusage 新增 _all_projects_usage 全库聚合（归属单元=会话、parent 链取根环守卫、项目键=(project_id,归一化目录) 承 issue #248、未归属单列桶、totals==Σ projects 对账；桌面快照链顶层 all_projects，serve/桌面 json 带、CLI/MCP/远端子查询不带；_PROJ_CACHE 水位缓存，实测 2.6GB 库 ~210ms/次）；渲染端头部右上「当前项目/全部项目」双 Tab 替代范围胶囊（低对比选中对齐 v282，pointerdown 同步重编+click 幂等吞掉，归属键变化重置），输入格新增「含缓存」副行（cache_read 原值、同「含思考」层级、两模式同规则），全部项目模式新增四列项目明细表（模型明细之前、默认前 5、projTipProjExpanded 独立展开、未归属显本地化文案、名称转义+title 目录、截断 500 提示、空态不渲染表头），缺帧显「全部项目统计暂不可用」不借当前项目冒充。 → v332 工作流支持（specs/workflow-support.md）：zusage 把 sess_dwf-*（宿主动态工作流子代理，query_source='workflow_child'）归入子代理类——sub.list/明细/费用/速率聚合四处 query_source 门扩展、is_sub+sub_kind 字段、任务名从 dwf_actor.name 反查、快照池分桶防挤占主会话 top-6、_sub_item 下发 tps_out/tps_gen 速率分量；渲染端在会话流工作流卡（workflow-card data-workflow-run-id）注入 .zu-wfrun 汇总 chip（token 合计 + Σout÷Σgen 完成态聚合速率 + DOM 实时运行状态，悬停出逐执行者 tooltip，复用 subTip 浮层与委托监听），⚙ 新增「工作流卡汇总」开关；08 分片顺手去除 v176 以来整段重复定义的子代理 chip 块（两份 138 行逐字节相同，行为不变）。 → v333 智能体后台运行的状态同步（specs/agent-background-support.md）：后台智能体（AgentProfile 后台子代理）会话身份与前台子代理同构（sess_subagent_* / query_source='subagent'），DB 统计链天然覆盖零改动；修复实时面缺口——①运行中子代理集合在消费侧并入桥快照 backgroundWorks（kind='subagent' status='running'，事件驱动 state 键、窗口无关）补给，后台智能体把启动行滚出父会话 60 行窗口后槽位估算与「子代理运行中 ×N」计数不再丢失；②宿主状态面板 Agents 分区行（v4-running-subagent-item + data-child-session-id）注入 .zu-substat 速率 chip（槽位估算→「估 X t/s」、tps_avg 回填、无数据显「运行中」，tooltip 复用 subRowTipHTML 与 subTip 委托），render 尾部 + heavy 双对账点，共用 subRate 开关。 → v334 审查修复批（review-fix-merge 四路并行审查）：①zusage latest 候选与 CLI current 排除工作流 actor 会话（run 进行中多个 actor 轮流活跃会把顶层 session/current 顶成 run 视角，此前分桶注释声称已防而 latest/current 实未防）；②renderSubAgentRows 关门收浮层条件收窄到 .zu-subrate——原宽条件在 subRate 关 + wfChip 开时把悬停中的 .zu-wfrun/.zu-substat tooltip 每拍杀掉（闪烁）；③dispose 摘净链与 00 启动自清列表补 .zu-wfrun/.zu-substat（pane 回收后 chip 冻结 + 死实例 tooltip）；④renderWorkflowCards 不满足渲染条件的卡摘旧 chip（run 失败后「运行中」残留）+ tooltip 数据包每拍重写（requests/actor 名不进 sig 的打开瞬间新鲜度）+ 状态行去内层 ttEsc 防双重转义；⑤subRunningList 加快照 sessionId 校验（切会话一拍内不并入上一会话后台清单）；⑥substat「运行中」兜底态独立 run tooltip 口径 + chip 回位守卫 + 用例钉住 3s 新鲜度门与工作流卡防漂移负向夹具；⑦zusage _TASK_CACHE 失效键补 dwf_actor 维度（动态新建 actor 名字有界丢失）；⑧specs 与文档漂移同步（chip 面无状态点、开关持久化形态、CLI stdout 增量字段措辞、补给槽位优先级取舍）。 → v335 第二轮复审修复：①zusage 池分桶回归修复——v334 改 latest 候选时把 normal 桶误改 ranked[:6]（含普通子代理），恢复 normal=主会话独占、子代理/dwf 同入子代理桶（防挤占主会话 top-6 的 v332 语义）；②_TASK_CACHE 失效键改 greatest(time_created,time_updated) 覆盖纯改名；③renderWorkflowCards 的 runIds 收集循环对被宿主剥掉 runId 的卡也摘残留（空 runIds 早退前执行，wfChipStale 定义上移至循环前）；④测试设防：关门收窄行为锁（宽条件即红）、dispose/00 启动表三类 chip 源码契约、_TASK_CACHE astamp 失效用例、正常子代理不占 normal 桶用例；⑤spec §6.1 残留「运行中状态点」措辞清理。 → v337 后台智能体的主格速度关联（specs/agent-background-support.md §3）：后台槽位经 backgroundWorks 补给在跑而主会话自身无实时轮（空闲/上一轮已完成）时，updateLive 合成 runningTool=Agent 态让速度格走既有子代理分支（「子代理运行中 · 估 X t/s」×N；槽位绑定中/思考期降级状态词），后台全部结束（槽位解绑）自动回落会话均——主格不再静态；主会话自己的轮在跑时优先原 stats（v87 合成分支先行）。 → v338 项目累计卡体验批（用户规格四连；v331 迭代）：①分区名并入首列表头（项目明细/模型明细=各自首列 th，独立标题行删除；工具调用·重试与截断注记降级为 .zu-pj-mnote 右对齐 note 行、仅有值时渲染，「按用量排序」占位删除——v331/v332 批已落基线，此处汇总声明）；②高度自下而上——切 Tab/展开明细的高度变化底边固定（projTipPrevBottom 基线 + projTipPositionGrowUp 反推 top，max-height 钳制保证 top≥8；首次弹出无基线回退原锚定，仅项目卡路径）；③表体视口帽——项目卡 .tbody 破共享 60vh 帽，覆写 max-height:calc(100vh-36px)=视口帽扣根纵向可达 chrome（上边框1+上内距10+下边框1），内容不超窗完整展示无内滚、超窗转表体内滚（其它统计卡维持 60vh）；④全部项目模式行四第一列=项目数量格（KPI folder 图标，计数=projects_total 截断前真实数或列表长度；费用可见三格 .zu-turn-kpis--trio 3 列网格、费用关退 --duo 两格）。 → v339 详情卡点击空白/Esc 关闭（issue #297）：document mousedown 捕获外点判定（tipOutsideDown）——target 落在自绘浮层本体/条面/设置面板/各弹框之外即收，主 tip cause="outside" 进 hideTip 硬保活窗白名单（v271/v329 的 1.2s 窗不再吞「点过 Tab 后点空白」；devKeepTip 常驻模式契约不变仍只认 Escape/齿轮/再点同格），额度/速率/重置卡/子代理行内/git chip tooltip 与费用说明/档位说明浮层一并收（柱体 Portal pointer-events:none 无需排除）；document keydown 冒泡全局 Escape 兜底（tipGlobalEsc）——焦点在 body 时既有元素级 Esc 链收不到，此处一次收一个且不 preventDefault/stopPropagation 不吞宿主语义，冒泡挂载保住 tip 内「先收档位说明不关卡」分层。 → v340 心跳不再深拷贝整窗快照（issue #309，长会话卡顿；规格 specs/perf-lag-reduction.md 规则 10–12）：桥 v2 的 getState() 每次都是整窗深拷贝（本机 374 行 ≈1ms，报告者 6868 行 ≈86ms），而 100ms 心跳里 bridgeTick 健康检查与 updateLive→subRunningList 每拍各读一次（无 stats 时「思考中」合成再读一次）、每次 store 通知还有 subscribeStore 与 overlay 回调各读一次，v2 桥下 ≥20 次整窗拷贝/秒。三处修复且与桥代际无关（v2/v3 均有效）：①心跳经 handleSnapshot 读 handle 上的快照记录（通知回调写入，超 SNAP_FRESH_MS=2s 才回源一次并兼作 store 关闭/换代探活，时钟回拨按陈旧）；②turn-stats.js subscribeStore 把本次已读 state 传给 changed(state)，回调不再二读；③通知处理按实测成本自适应合并（上次处理 ≥8ms 时间隔 min(1s, cost×9)，占比 ≤~10%，尾部定时器归订阅持有、退订即清；廉价会话逐字不变）。pane 切会话仍由 handle.sid/sideKey 即时重绑；不改桥模板与 BRIDGE_GEN（冷路径）。 → v341 issue #309 复审补修：子代理槽位通知回调复用 changed(state) 不再二读；通知处理同步分支作废迟到的尾部定时器；全局 setTimeout/clearTimeout 缺席时不抛进宿主通知链（退回同步处理）；订正「窗口恒 60 行」旧注释（reducer 增量不截）。 → v342 ⚙ 面板底栏「反馈问题」左侧新增「联系我」按钮：点击经 openMpShell 复用 .zu-mp-ov 弹窗外壳（收窄 .zu-ct-ov 卡宽）展示维护者微信二维码远程直链（http 直链经实测可用；https 不可达；宿主渲染页 file:// 无混合内容拦截），加载失败隐藏图片换文字兜底；Esc/遮罩/✕ 关闭沿用壳协议，外部点击豁免走既有 .zu-mp-ov 白名单。随批修复既有潜在缺陷：openMpShell 系自有弹层被 modalOpen（v62）误判宿主模态——body 直挂全屏遮罩+内部 role=dialog 完整命中两层判定 ⇒ track 收条连带 closeSettings（用户实报：点「联系我」/关弹框后设置面板被关）；modalOpen 两层扫描与 isOwnOverlay 豁免清单补 .zu-mp-ov/.zu-rot-pk-dlg/.zu-compact-dlg，宿主真模态判定不变。复审补修：.zu-ct-img 补 [hidden] 显式隐藏（作者 display:block 压过 UA [hidden]，同 .zu-update-progress 先例）；mp 壳 Esc 升捕获相+stopPropagation 对齐 rotPkKey 协议（焦点在面板内按 Esc 曾关面板留弹窗）；error 守卫改 isConnected；img 补宽高属性防加载回流；09 面板外点白名单补 .zu-compact-dlg；⚙ 联网边界披露「联系我」图床拉图。 → v343 turn-text 回推诊断计数（issue #321「生成时长缺失，暂不显示速率」每轮常驻且零可观测）：完成态占位行的速率来自数据库富文本回推（token_rate.py --turn --current），此前回推失败全静默——空交付不区分「主进程没回（旧冷文件/通道断）」与「Python spawn 失败、15s 超时、非零退出」及「库没追上」。渲染端新增页面存活期单调计数 rt（sent、ok、empty、miss、stale，空交付原因细分 spawn/timeout/pyerr）随 FATAL.det.rt 落 diag-*.json；miss=请求 20s 无回执（略大于主进程 15s 超时），stale=未匹配在途请求的设计内淘汰回执；主进程空交付带原因标签属 inject-main.cjs 冷文件改动，需完全重启才细分，旧主进程回退落 empty 桶。 → v344 增强提示词按钮（specs/prompt-enhance.md）：模型 chip（chat-model-select-trigger，空配置「管理模型」分支同名）左侧 ✦ 按钮，chip 缺位回退用量圆环左侧；点击读 composer 草稿（__zcodeLexicalInputE2E，Lexical 直写 DOM 不进 EditorState 的唯一官方写通道）经 pluginRequest("prompt-enhance") 主进程按会话模型凭据（v4-model-config 实时选择优先、快照 last 兜底）一次性非流式改写后回填前重读草稿比对防覆盖用户编辑，再以 setText 替换，20 秒内按钮变撤销态恢复原文；增强中忽略再点（主进程 60s 超时 + 渲染端 75s 兜底）；警示态 4s 自愈（空草稿/模型未识别/失败原因/冲突）。实现落 model-puller.cjs enhanceText（三协议非流式 POST、套餐源 planTokenOf 解密、api-key 型自定义供应商、错误摘录脱敏）+ inject-main 白名单三动作（prompt-enhance / prompt-enhance-cancel 取消 / enhance 开关，enhance_enabled 缺省开显式 false 关、推送面 enhanceEnabled）+ ⚙ 面板「回答统计」分区开关行。增强中再点按钮=取消在途请求；主进程不认识新动作的旧版本回 unknown action，按钮按失败警示不挂起。 → v345 issue #327 回答末尾统计行逐拍消失/重现加固：scanDeterministicLines 在 owner 令牌取不到的单拍里对已验证归属的行整块 remove 且当拍 continue 不重建，令牌逐拍抖动即呈约 0.5s 一档的亮灭、块高归零下方内容跳动。现对「证据缺席」型空令牌（owner 无归属实例 / sid 实例暂无会话）且行仍属同一 tid（新增 __zuDetTid）宽限：连续 3 拍且跨过 1s 才撤（拍数防回执爆发耗尽、墙钟防后台节流拉长，同一扫描内多 box 命中同一行只计一次，时钟回拨视为到期，恢复一拍清零）；scope 与 sid 不符或侧聊远端（属于别的会话的反证）、归属换成另一个有效令牌（SID/scope 切换）、无 __zuDetOwner/__zuDetTid 的遗留行仍即时撤，fail-closed 对这些情形不松动。带行 box 令牌为空的原因拍数（owner/sid/scope）、宽限放行数 grace、空令牌撤行数 removed、非空令牌换代撤旧数 swap 与本代起算时刻 since 累计进 FATAL.det.nullOwner 随 diag 落盘，供报告者回传定位是哪个写入方在抖动。未证因果：本机复现不了，宽限属加固而非已确认根因的修复。 → v346 手机远控中继（specs/mobile-relay.md、specs/mobile-userscript-build.md）：asar 双段注入（stash 捕获宿主 relayProtocol 合法 send 入口，seq/ack/分片全归宿主协议栈；uplink 钩子包裹 onRawTransportPayload，带 zuUp 标记的手机上行帧在 acceptPayload 严格 seq 校验前被消费）；按宿主报告的 mobileTaskView 精确 target 推送完整快照；触发模型与桌面同源（DB 写入 fs.watch 300ms 去抖事件驱动 + 30s 兜底心跳 + config.activity_min_ms 同一限频），手机上行配置达成消费门控（clientReady）后才查库推送、按 zusage3.show 裁剪 chips；油猴接收端改为编译产物（src/mobile 分片 + 桌面 06/07 锚点提取构建，一次产出正式/调试双版本，锚点缺失构建报错） → v347 状态轮播附加工作时长与悬停提示（specs/status-rotator-work-duration.md；性能预算 specs/perf-lag-reduction.md 规则 17）：①appendWorkDuration 开关（默认 true、显式 false 保留，存 zusage3.rotator2）开启且 labelSource=phrases 时在 loading 行 label 后追加宿主同款「工作中 X 分 X 秒」兄弟 span（.zu-rotator-elapsed，格式逐句对齐宿主 formatConversationWorkDuration：max(1,round(ms/1000)) 拆天/时/分/秒非零入列至多两段、中文值与单位间空格；起点锚 turnHeader.startedAt 与宿主折叠头计时逐秒一致，宿主文案节点在虚拟滚动内无生产 API 故自算）；②悬停纯 CSS tooltip（data-tip + zu-rot-livetip 伪元素，内容同款文案）独立于开关①恒随轮播，零监听零布局读取，气泡静态 pointer-events:none 防偷 hover 抖动；③写入纪律（规则 17）：span 判位 nextElementSibling O(1) 零新增文档级查询、textContent/data-tip/classList 带比较前置判断按整型秒门控（同秒内 tick 零 DOM 写、每行至多 1 写/秒，不在打字机 15Hz 写流上叠加），文案缓存挂 rotatorRuntime 随热重载换代，restore 名单并入既有 querySelectorAll 选择器串；④⚙ 面板「追加工作时长」checkbox（.zu-rot-append-duration，启用行之后）走既有 setCb/change 尾缀统一保存链，底部预览卡不联动；⑤两轮用户实报修复——文字隐形根因=宿主 gradient label 的 -webkit-text-fill-color:transparent 是继承属性压过规则 color 使气泡文字全透明（CDP computed 实证，pointer-events 实测 auto 排除禁点），气泡显式重置 -webkit-text-fill-color:var(--color-tooltip-foreground) 堵继承；红色泛光根因=宿主 label 自带 filter:drop-shadow(rgba(255,0,85,.45) 辉光)（255,0,85=宿主渐变首色，shimmer 固有）不继承但作用整棵子树，气泡作为 label 伪元素子盒被整体泛光——data-tip/类改挂行容器 [data-testid="chat-loading"] 脱离作用域，label 旧代际属性每拍清退防热重载双气泡，还原名单行级摘除；样式对齐宿主原生 TooltipContent 视格（asar 实证 rounded-lg border-border bg-tooltip px-3 py-1.5 text-ui-sm，原生即无阴影——用户点名去阴影）：去 box-shadow、--color-tooltip/--color-tooltip-foreground 反色变量、var(--color-border) 边框、圆角 8px、padding 6px 12px。 → v348 速度与统计浮层适配大字号（specs/speed-tooltip-adaptive-layout.md、specs/stat-tooltip-large-text.md；开发早于 v347、晚于其合入，代际号按合入时间线顺延取 v348）：①速度卡 spdFitTip（02 分片）——固定 760×300 改 CSS 变量驱动（--zu-sv-width/--zu-sv-height/--zu-sv-left-width 注入 tip，未设置时 fallback 精确回落旧值），字号异常增大先按 14px 基准整体 zoom（下限 0.8），只按筛选栏/左卡量尺寸不读图表横滚内容，空间不足再按内容扩高（>300 加 12px 呼吸间距）并经 tip 纵滚到达，视口变化经既有定位周期 reset 重算、字号变化留待下次重建经 previous（__zuSpeedSize，含 font）失效重算，同视口同字号内 previous 防悬停中逐拍重建的尺寸抖动；②统计/模型名 fitModelNames（02 分片）——.zu-model-fit 按实际宽度缩字号至不低于 10px、仍放不下保留省略+title 全名，接入速度卡/统计卡模型表/项目卡/fxTip/子代理浮层（子代理浮层 td 补 max-width 帽让 fit 在表级溢出档生效）；③统计卡「输入」标签 .zu-kpi-label nowrap + .zu-stat-k flex-wrap（07 分片），命中率徽标允许换行不重叠；④多柱（n≥10）柱组 .zu-sv-bars--spread 均匀铺满、柱宽不拉粗（部分恢复 v273⑤ 废止的 space-between，仅多柱档）；⑤图表横滚位置 __zuChartScroll 关闭时捕获/重开同键回填（修隐藏态 scrollLeft 恒 0），root overflow:visible + tip overflow-y:auto、wheel 到边放行默认滚动，键盘 Tab 进滚动明细区（role=region）+Shift+Tab 归还；QA 门 ZU_GEOMETRY_ONLY（tests/speed-tooltip-host）覆盖 14/17/20px 字号与重叠断言。 → v349 宿主定时器慢拍缓释（issue #342，性能预算 specs/perf-lag-reduction.md 规则 18）：报告者（Windows/内置浏览器面板活动期）只读定时器归因记录到 bridgeTick 51–93ms、heavy 55–75ms、coordinator 54–63ms、flush 55–92ms 单拍——规则 10–12 后正常拍已 <5ms，慢拍=正常工作被宿主主线程争用拉长 + 长窗口会话 2s 回源一次的整窗深拷贝（≈86ms/次）。两处自适应缓释，只在实测单拍超预算时介入、廉价环境逐字不变：①handleSnapshot 回源实测 ≥8ms（规则 12 同阈值，perfMs=performance.now 优先缺位回退 Date.now）时本 handle 新鲜窗逐档退避 2s→4s→8s（h.freshMul），<8ms 立即回 1 档，影响面仅静默期思考合成 phase/后台清单与探活的陈旧上限 ≤8s（「已观察 Xs」走字按 bornAt 推进不受影响）；②heavy/coordinator 600ms 对账单拍 ≥16ms（含界）时跳拍（lvl∈{0..3} 每实跑升档后封顶、跳拍窗 600×lvl 右开；lvl=1 稳态不跳拍只吸收「前拍拉长后拍准点」尖峰，稳态有效降频自 1.2s 起、封顶 1.8s），<16ms 立即回 600ms（heavyLvl/heavyRunAt 实例闭包、coordLvl/coordRunAt 协调器闭包，setInterval 拓扑与 dispose 不变），降频期最坏影响 chip 兜回/pane 自藏延迟 ≤1.8s。诊断随 diag-*.json 新增 snapSrcMs/heavyCost/coordCost 三个数值字段供报告者归因。有意不做：bridgeTick 100ms 不降频（规则 1 跟手契约）、flush 已有 ≤10% 占空比上界、visibilityState 门控无增益（隐藏窗 Chromium 本就降到 ≈1Hz，报告者场景宿主窗口可见）。 → v350 增强历史「查看全部」浮层表格版视觉修复（specs/prompt-enhance.md 契约更新）：①高度自适应——面板 height:auto + max-height min(85dvh,760px)（内联与 CSS 双写），去掉固定 height:min(640px,80vh) 与表区 flex:1 1 auto 撑满，数据少时内容自然撑开、多时表区独立滚动，单页/空态不渲染分页页脚；②Header 左右分组——左=图标+标题+总数徽标，右=清空记录（图标文字横排、hover 危险色）+关闭按钮（32×32 命中、EH_ICON.close，Escape 同效）；③筛选行——搜索框带图标弹性填充（flex:1 1 240px、placeholder 完整），四个筛选器统一 34px 高/圆角/边框（来源 112/供应商 150/模型 140/时间 118px）；④表格对齐——表头与行共用 <colgroup> 列宽（chev 32px/来源 56px/操作 64px 固定 + 百分比弹性列，table-layout:fixed），去掉按 td 类的宽度声明；⑤供应商友好名——EH_PLAN_LABELS 内置 6 个套餐 id→显示名映射（与 model-puller PLAN_SOURCES 同源），表格/详情/筛选下拉显示友好名，title 悬浮完整原始 id，非套餐 id 原样不虚构；⑥展开详情——三栏 minmax(0,.85fr)/minmax(0,1.5fr)/minmax(0,1.5fr)（≈22/39/39），增强正文棕色背景改中性卡色+边框，正文 max-height 240px 内滚、详情块不再二次限高，元信息标签 11px/值 12px 行距 7px、长模型名 overflow-wrap:anywhere；⑦响应式——面板 container-type:inline-size，按面板实际宽度渲染时列裁剪（<900px 合并供应商/模型列、<640px 再隐摘要列，colspan 同步 10/9/7），容器查询 <900px 详情转两栏+元信息横排、<640px 详情纵向，resize 期间 150ms debounce 重排版（监听随关闭移除）；⑧行为修复——ehFullCache 补显式 var 声明（原隐式全局）、enhance-history-add 同步失效全量缓存、复制按钮统一按记录 id 定位（详情行经 detail-row 前一行）+check 反馈，删除死代码（重复 delete/copy 分支、无 data-expand 按钮），摘要列 title 悬浮全文（去 JS 60 字截断，CSS ellipsis 承担）。同批追加：⑫筛选下拉自绘箭头（appearance:none + data-URI 背景统一，右距 10px 与文字左距对称，原生箭头贴边且各端不一致）；⑬面板 min-height 60vh（用户口径：数据少时面板不显矮，上限仍 min(85dvh,760px)）；⑭关闭按钮 margin-right:-8px 收紧贴右上（icon 距面板右缘 12px）；⑮排序箭头 svg 显式 display:inline-block（宿主全局 svg 块化样式把 th 裸 svg 挤到第二行，按钮内图标被 inline-flex 吸收无此症）；⑯展开详情来源/Token/时间/耗时四对合并为三栏下方一行元信息（分隔线横排，左栏只留供应商/模型，minmax(0,.85fr) 栏宽放不下四对才上移全宽）；⑰确认类交互统一 zuConfirm 自绘弹框（复用压缩确认 .zu-compact-dlg 全套外壳样式，替换 overlay 全部 6 处 window.confirm：增强历史删除/清空 ×4 + 设置页移除 Key/重载丢弃修改 ×2；Esc/遮罩/Enter 协议同压缩弹框，规则沉淀 overlay-ui.md §4）。⑱增强历史双入口设置按钮（用户 2026-11-15 点名）：悬停面板 footer 与全量面板 header 右上新增「设置」（EH_ICON.gear 齿轮 + .zu-eh-cfg 同清空按钮外形中性 hover），点击经 openEnhanceSettings 复用齿轮官方完整开启路径（gear.click）+ activateSettingsSec("enhance-provider")，与增强按钮右键同款。⑳增强 Provider 分区 footer（状态+重新载入/保存按钮）改 sticky 吸底（用户 2026-11-15：矮屏用户不知道要滚到底部才能保存）——position:sticky bottom:-20px（负值补偿 .zu-settings-body 底 padding 20px 使视觉贴面板底缘）+ 水平负 margin=body padding clamp 值盖满面板宽 + 实色背景 var(--color-card) 防透出 + 上阴影分层；滚到底时回到自然位置，其他分区不受影响（.zu-ep-footer 类名仅该分区使用）。㉑修复重开面板误报「配置未保存」（用户实报）：保存成功回调只更新了 epSavedRevision 未刷新 epSavedFormJson 基准，重开面板 epSyncDirtyStatus 用旧基准比对恒脏——保存成功（含移除 Key）即以当前表单 JSON 为新已保存基准；保存失败/其他窗口 conflict 保留旧基准（脏标记语义不变）。⑲删除「撤销增强，恢复原文」状态（用户拍板去掉该展示）：应用成功（写入确认）后按钮直接回 idle，不再有 20s 撤销窗/撤销点击/自愈守卫（ENHANCE_UNDO_MS、ENH_SVG_UNDO、enhanceEnhanced/State、undo 点击分支与 heavy 对账块全拆），聊天历史采集时机不变（应用成功即记录）；回填前的会话与草稿比对守卫保留。独立 review 三修（2026-11-15）：⑨修复排序列点击不可达（th 非 button，data-sort 判断提到 button 判空前——首版表格即坏未报过）；⑩删除改缓存就地滤除+res.ok 门控+小浮层缓存失效（原 cache 置 null 后 build 清空整表，直到重开才恢复），失败删除不清表；⑪cssText 复制补 bottom:auto（小浮层动态 bottom 残留会把 fixed 面板高度压死，悬停→查看全部主路径必现）+disposeOverlay 摘除面板 keydown/resize 监听+两 handler 热更 stale 自卫+搜索 debounce 改模块级随关闭清理+首开「正在读取历史…」占位防闪白+sticky 表头（长列表滚动表头常驻，box-shadow 补 collapse 边框）。 → v351 状态轮播词库同步上游 01Virex/dsh-status-rotator（PR #179/#181/#184/#186/#188，仅 04-rotator-builtin-packs.js 数据）：community +3（「用户特么的…」thinking、「正在驾驶EVA~~…」「听见你说~…」running；#184 的 4 条已在存量）、internet-memes +4 相（「token来！！token来！！token来！！…」thinking/running/long 三相 + 「正在创作隐晦物品…」running）；star-ask 与上游一致未动；star-route 不随上游（用户拍板取本项目星标者）：GitHub 152 人 + GitCode 镜像 2 人 = 154 人，zh/en 镜像 308 条，替换过期旧快照 134 人，包头注明名单来源（两端 stargazers API）与刷新方式。范围外漂移保留：western-ai GPT-7 文案、coding/slacking/daily 的 weight 对象在本地转纯字符串（本项目不支持权重对象）。无增删包，ZU_ROTATOR_PACK_META 与 enabledPacks 种子不动。 → v352 状态栏项目排序、优先级与自动折叠（specs/statusbar-layout.md）：①数据模型 zusage3.barOrder（数组白名单归一：非法剔除/去重/缺项按 ZU_BAR_KEYS 补尾）+ zusage3.barPriority（high|normal|low 枚举，非法回缺省；缺省按设计稿 速度/本轮=高、会话/今日/项目=普通、工具/子代理=低）；排序决定显示序、优先级决定折叠序，两字段独立、定向写（persistBarOrder/persistBarPriority 不搭全量 persist，防跨窗口互覆），storage 监听对两键归一化回读同步。②条面排序：html() 每格带 data-zu-key（remote/not_local=system 恒置顶），经 zuBarSortItems 按用户序重排，tips 与 .it 下标对应不变。③自动折叠（仅 default 档）：真实布局测量 scrollWidth>clientWidth+1；折叠序=zuBarFoldOrder 纯函数（低先收、同级右先收；system 与 speed 不折叠——speed 是设计稿「固定（始终显示）」语义，有有效数据才渲染，不伪造 0）；宽/字号(含 font-family)/优先级签名+foldDirty 门控重算，每帧另测一次溢出探测流式内容变宽；恢复带 24px 迟滞带防阈值震荡；折叠集变化关菜单并收锚定 tip，折叠格 data-zu-folded display:none，sep 同步隐藏，全折仍超宽 .zu-clip 渐隐兜底；「···」入口带折叠计数，data-zu-visible 门控显隐。④「···」菜单（body 级 .zu-more-panel，实例级闭包）：图标+格名(ZU_BAR_TITLES)+实时值（原地 textContent 同步，不整卡重建不抢焦点），点击=从活格现取 __tip 锚定 ⋯ 按钮弹原有 tooltip、sub 项开子代理浮层（pinned 可再点关闭）；键盘=打开焦点入首项、↑↓/Home/End 循环、Escape（按钮/菜单两处）关闭归还焦点；外点 pointerdown 捕获关闭；hideBar/dispose 摘除，boot 旧代清理串补 .zu-more-panel，no-drag 联合规则挂载。⑤设置页排序卡（.zu-layout-card 嵌套卡，barOrderSettingsHtml 单根输出整卡替换）：拖拽手柄 SVG+格图标(与条面同 path)+两行名称说明+显示开关(speed 行为「固定（始终显示）」徽标替代)+三段优先级 radio(高|普通|低，:has 选中柔和主题底+内描边，speed 锁高禁用)+↑↓ 键盘排序（disabled 边界焦点回退对向按钮，aria-live 播报）+重置；HTML5 DND 仅手柄行可拖、交互控件排除，dragover 高亮 prevRow 记忆；syncPanel 双回填（radio 态+行序漂移整卡重建）。⑥v66 分级收缩机制整体退役（shrink/fadeOn 死变量与三处恒空三目删除），窄宽行为由折叠接管；既有 8 个切片测试的沙箱补 zuBarSortItems/ZU_BAR_KEYS 桩，data-k 契约断言转运行时求值 barOrderSettingsHtml。 → v354 draft 会话增强放行（specs/prompt-enhance.md；让位说明：运行目录 2026-11-16 00:19 已被并行会话先行占用 v356=排序卡布局重做（PR #349 线在途），本代跳号避免同号两义）：宿主新会话未发首条消息时 data-session-id="draft"（SessionPane `sessionId ?? "draft"`），归属链自 v90 起 draft 一律拒绝致增强按钮必报「未识别当前会话」；现 readPaneScope/readFiberPaneScope 加第 4 参 allowDraft（默认关，:112 fiber 兜底透传），仅增强链 enhanceCurrentScope 显式传 true 放行——发起身份键="draft"+workspace scope（scope 属性与 sessionId 无关），回填闸 draft→draft 一致放行、在途晋升（draft→真实 sid）走既有「会话已切换」丢弃；quota 上报/状态条/远端路由/getScope 等其余各处调用不传参行为不变，draft scope 绝不进上报链。主进程 prompt-enhance 链不消费 sid/scope，零改动。 → v355 增强历史悬停面板视口钳位（用户实报截图：多条卡片时面板顶缘越出窗口顶部，「最近增强记录」标题行被裁剪）：showEnhanceTip 原 bottom 锚定只保证底边间距、垂直零钳制，内容高超过按钮上方可用空间即顶部溢出。新增 placeEnhanceTip（ehRender 尾部接线，加载完成/清空/删除等高度变化后重钳）：按实测高三档放置——上方够→bottom 锚定（原行为）；上方不够而下方够（≥min(h,320)）→翻到按钮下方（zu-eh-flip：箭头 order:-1 移顶+border 翻向，v315 cap 翻转先例）；两侧都不够→上方贴边+钳 inline maxHeight 让 .zu-eh-scroll 内滚（flex:1 min-height:0 已就绪）。offsetHeight 桩环境缺席→0 恒走原分支，切片测试与既有行为不变。 → v356 系统状态一等显示格（issue #338，specs/statusbar-system-status.md）：①数据链——主进程新增 sysmon-client.cjs 热模块（CPU os.cpus() tick 差分、内存三平台口径 Linux /proc/meminfo+macOS vm_stat/sysctl+Windows os.totalmem/freemem、磁盘 fs.statfs+卷枚举 Linux /proc/self/mounts 白名单+macOS df -klP+Windows 盘符探测带超时、项目卷 st_dev 精确归卷），订阅制轮询（渲染端 pluginRequest sysmon-sub {want,cfg,projectPath}，want>0 才采样、末订阅停表），帧经 pushOnce 同款信任门推 window.__zusageSysmon；只推订阅窗口。②渲染端——ZU_BAR_KEYS 加 sysmon（第 8 格，缺省序补尾、show 默认关、优先级默认低），配置 zusage3.sysmonCfg 独立可校验模型（metrics/format/interval/disk 目标/阈值 clamp），纯函数 sysmonFaceHtml（full/compact/minimal 三面+阈值含等号判定+连续 2 拍预警确认/危险立即生效/回落 1 拍还原防抖）与 sysmonTipHtml（440px 结构化卡：CPU 整机使用率+Load、内存已用/总量+Wired/Swap、磁盘多卷表格项目卷高亮、动态阈值图例、过期注记；样式随内容内联 <style> zu-sys-* 前缀），条面格仅本地 scope 渲染（!d.remote && !d.not_local）。③自适应——format:"auto" 随窄宽档位映射（zu-tight→紧凑、zu-narrow→极简，档位切换钩子驱动 sysmonApplyFace 原地重绘，无新探针；显式档不自动改写，空间不足走既有折叠链）；折叠与「···」菜单由 ZU_BAR_TITLES 数据驱动自动纳入，菜单点击锚定 ⋯ 弹原格 tooltip。④精简模式——工具行 .zu-sysm chip（git chip 同款模板：防双挂复用/签名幂等/双 reapply/restore），收敛位 [锚][速率][git][sysmon]（git 兜回容忍 sysmon 收尾防拉锯），sysTip body 级浮层（gitTip 同款单例：签名幂等+保滚动+浅色档+Esc/离开/代际清理三链收起），点击=立即刷新（pluginRequest sysmon-refresh）+弹完整卡。⑤⚙ 设置——排序卡自动出现系统状态行（descs/icons 表同步），新增「系统状态」配置卡（显示内容/格式四选/双间隔/磁盘目标/预警开关+六阈值数字输入，双回填+panel 级 change 委托+真实数据预览行），zusage3.sysmonCfg 定向写+storage 跨窗同步（06 监听器新分支），boot 清理串补 .zu-sysm/.zusage-sysmon-tip；旧冷主进程无帧时格显 loading 态（—），无轮询无报错。 → v357 v1.5.19..HEAD 合并 PR 的 Windows 兼容性复审修复批（6 路 subagent 并行 review 收口；原拟 v354 与并行会话同号，rebase 让位顺延）：①折叠↔窄宽探针解耦（specs/statusbar-layout.md）——脱离布局探针克隆剥 data-zu-folded 后量未折叠自然宽，原样克隆让折叠格在探针里 display:none 把 fullWidth 量缩、shrink 档误判「完整宽装得下」随即反复展/折叠约 2Hz 震荡闪现（v352 探针写于折叠机制之前，两线串联时未教它剥折叠态）；②居右对齐 endlead 修正——dataset 驼峰键误写（zuEnd*Lead 大写 L 生成 data-zu-end-lead），与 CSS/清理的 data-zu-endlead 永不匹配，居右+首格折叠时剩余可见格被 space-between 摊满整条不右聚拢，统一为小写连字符拼法；③heavy/coordinator 跳拍门补时钟回拨守卫（负差值视为到期，防 NTP 步进/手动改时后 600×lvl 门恒真、对账冻结到墙钟追回；与 08 快照 age 门、v345 宽限的回拨口径一致）；④子代理浮层 positionSubPop 的 fitModelNames 补 __zuModelFitWidth 宽度门控（浮层打开期间逐帧强制布局读写，Windows 低配/高 DPI 帧预算紧；与 positionTip 同款，buildSubPop 重建归零重跑）；⑤增强回填读回校验换行归一（模型回包含 CRLF、宿主 E2E 桥读回规范化 LF 时逐字比对恒不等→每次误报「写回输入框失败或草稿已变化」且撤销窗不开）；⑥增强历史全量面板搜索 IME 修复（specs/prompt-enhance.md）——200ms debounce 整面板 innerHTML 重建会销毁聚焦搜索框：中文输入停顿即强制取消拼音组合、焦点打回 body、后续按键落进宿主草稿框；现组合期间（isComposing/委托 compositionstart 撤销待触发 debounce）挂起重建、compositionend 后同款 debounce 刷新、关面板复位 hold，重建后恢复焦点与光标位置；⑦Windows 增强供应商/历史落盘平台限制如实化（specs/prompt-enhance.md）——enhanceProviderView 增 platformLimited 字段，EP 分区不可用文案按平台区分（不再误导 Windows 用户「检查权限或重启 ZCode」），enhance-provider-save 主进程分支补 win32 对称早退门（models 分支已有；省一次必败 python 子进程），models/save 错误映射补 unsupported platform，「在本机保存增强历史」说明注明 Windows 仅本次运行内存；⑧速度卡 .zu-turn-models 补 ::-webkit-scrollbar 8px 窄条回退（scrollbar-width 需 Chromium 121+，旧宿主 Windows 经典滚动条约 17px 挤占表格；新 Chromium 忽略 webkit 伪元素双写无冲突）；同批契约顺手项：model-puller 1.2s 重试退避定时器补 unref（超时兜底定时器契约）；tests/test_config_transactions.py 增强供应商事务类按平台拆分跳过（update_enhance_provider 在 Windows 有意 fail-closed 恒 raise，原 4 例在 Windows 必红、CLI 用例拆出保留退出码传播覆盖）；scripts/install_workbuddy_plugin.py CLI 入口 stdout/stderr errors=replace（非 UTF-8 控制台打印登记文件生僻字符不再 UnicodeEncodeError）。矮窗钳高项已由并行 v355（placeEnhanceTip 三档放置）以更完善实现收口，本批不再重复。v353 空号由在途 PR #349（.zu-layout 排序卡重做）预留，按合入顺序后合者改号。 → v359 排序卡布局系统重做（原占 v353，后合两轮让位顺延：v353 空号留给主线批次、v358 被 PR #353 主进程段占用；真实宿主 CDP computed 实证根因=通用 .zu-settings label(0,1,1 后置)/label>span(0,1,2) 以同分或更高特异性压制排序卡单类规则：.zu-layout-ico 被 flex:1 拉成 129-167px 造成图标-名称大空白、prio label 被 padding:12px 14px 撑成 48px 高大格、body gap/align 被污染）：①全部 .zu-layout-* 规则加 .zu-settings 前缀升特异性（沿用 v144 radio/EP 分区/轮播 05:849 先例），对抗属性逐条显式声明不靠继承巧合，无 !important；②行布局改 Grid 五列（手柄 10px|信息组 minmax(0,1fr)|显示开关或固定徽标|优先级|排序钮），全部子项显式 grid 坐标免疫通用 checkbox order:2 重排，min-height:52 只托底不封顶；③名称区 label for/id（zu-show-<slot>-<key>）与开关显式关联（点名称即切换语义保留，speed 行无开关改 div），开关移出 label 独立成列纵向对齐；④「固定（始终显示）」徽标精简为「固定」胶囊（完整语义移 title），图标补显式 11px 尺寸（宿主 svg 块化防护）；⑤三段优先级选中态改 10% 主题 tint 无描边（废止 16%+inset 亮框）、分段 flex 等宽+min-height:24 防大字号垂直裁切（20px 实测裁切修复）、选中交界隐分隔线；⑥↑↓ 换 SVG 带杆箭头（规避 U+2191/93 Windows 字形偏差）26px、disabled .35；⑦容器查询降级：卡片 container-name:zu-layout，≤440px 两行排布（prio 左下/↑↓ 右下），容器宽度不随 nav rail 折叠误判；⑧turn 行说明文案过期修正（首字延迟已随 v211 移除）；⑨重置按钮 title 注明还原范围。配套：09 applyLayoutOrder 置 foldDirty（折叠候选序与排序变更联动，消同窗/跨窗不对称）；测试结构锁+级联锁更新。独立 review 修复批（合入前复审）：级联锁断言重写（原 lookbehind 正则 `\\.` 双重转义恒真、对本 PR 要防的前缀剥除变异全绿——改为穷举规则头回溯选择器段（逗号分段）查 .zu-settings 前缀 + 正反自证桩）；结构锁补 Grid 五列模板与子项坐标 token（此前列数/坐标变异零覆盖）；.zu-layout-card 补 .zu-settings 前缀（唯一裸规则，使「全部前缀化」声明为真）；speed 固定徽标 title 与 00/12 注释及 spec 的「不参与折叠」口径统一改「最后候选折叠」（zuBarFoldOrder rank -1 实为降序末位、极端挤压下照折，与实现及测试注释一致）。 → v360 turn-text 回推「零入队」可观测 + 桥补装 pending 重启标记（issue #321 后续诊断；代际让位：v358 被 PR #353 sysmon 主进程段注释占用、v359 已被 PR #349 排序卡布局重做占用且合入时间线在前，顺延 v360）：报告者 v1.5.19 实证 det.rt 全 0（sent=0）而占位行每轮常驻——v343 的桶全在「入队之后」，收集/flush 门控的静默拒绝不留痕。①richTextDiag 增 noKey/noSid/notCur/noInst 四桶（02 分片 zuRequestTurnText/zuFlushRichTextWants 门控处计数，按轮键 pid|tid 借 richTextBlocked 只计一次防逐拍翻倍，入队即解封、zuResetRichText 换代清空），noKey=富文本身份拒绝（静态桥补装 pending——Windows asar 被运行中客户端占用转待替换链——期间 scope 属性缺席、无桥回退再被远端证据 fail-closed 拒（#40 契约）时的典型落点）；det.rt（03 分片）同步落盘。②bridgeInfo 增 scopeAttrs（12 分片）：沿 wantedEl 上溯会话根查 data-zusage-scope-version=1（与 readPaneScope 同一门），0=静态桥缺席——与 noKey 对读即知「占位常驻且零入队」是否桥 pending 所致。③安装链（plugins/zcode-token-usage-statusbar/overlay_install.py）：ensure_renderer_bridge 的 replace-failed→pending 路径 publish 落定后按主安装同语义 record_restart({state:"pending-install",installation:{asar,entryHash=sha256(entry_bytes_of(stage))}}) 写 .plugin-restart-required——v172 取消会话文字提醒后红点是 pending 唯一用户可见信号，缺它则「桥 pending→scope 属性缺席→富文本 fail-closed」整条链零可诊断（报告者「升级后重启仍未见红点」即此缺口）；swap 时经 publish_install 记 publishedAt、下次启动 loader ack 销账，生命周期与主安装一致（tests/test_bridge_pending.py 全链锁定）。 → v361 重置卡刷新提速+事件触发（借宿主 Coding Plan 提醒链模式）：①主进程 quota-client——RESET_TTL_MS 5min→2min（status 只读查询），bigmodel 个人链列表增强子链独立 RESET_LIST_TTL_MS=10min（尝试即计时，force 仍必打，团队分支 list 即主链不受限），新增 pokeReset()（仅 ok 态、fetchedAt 旧于 RESET_POKE_GAP_MS=30s 的族置 nextAt=0 借 tickReset 守卫拉新，失败退避/auth 冻结/idle 族不唤醒——事件不越过退避与冻结，返回唤醒族数，门控关=0）。②主桥——pluginRequest 新 action quota-poke（冷文件，respond {ok,poked}；门控全在 pokeReset 内，不设 quotaEnabled 条件）。③渲染端——document visibilitychange 变 visible 且 state.resetBadge 时发 quota-poke（11 分片末尾 listenGlobal 随实例 dispose 摘除）；悬停重置卡徽标 showRstTip 入口同发（查看即拉新，对应宿主「订阅者挂载即投影」）；tooltip 图例文案同步新节奏。chip 点击 quota-refresh 强制语义不变；旧渲染端不发 poke、旧主进程回 unknown 均无害。 → v362 系统状态设置页与 Tooltip 深度优化（specs/statusbar-system-status.md UI 批；原拟 v357 与 PR #352 Windows 兼容批同号顺延 v359 后，PR #349 排序卡重做线又占 v359、v360/v361 相继被 turn-text 与重置卡批次占用，再顺延 v362）：①设置卡 Grid 重构——监控指标/显示方式/采样频率/磁盘监控范围分组小节标题（.zu-syscfg-cap），阈值改三列表（.zu-syscfg-ths：指标|预警|危险，%固定后缀 .zu-syscfg-unit），数字输入框显式边框/背景/28px 高（v356 基线 computed 实证 border:0px+透明背景），checkbox 显式 order:0 抵消 .zu-settings input[type=checkbox]{order:2}（v356 基线实证开关被排到文字后面），显示格式 option 短文案（详细说明移帮助行）；真实预览 sysmonPreviewHtml 共享函数（06 buildPanel 与 07 sysmonApplyFace 同一产出）：跟随显示格式（auto 以 full 演示）、全关显空状态、无帧加「采集中」尾注；阈值关系校验（00 分片 sysThresholdIssues：CPU/内存 warn<crit、磁盘 warn>crit）——非法候选不写入不悄悄交换，回填原生效值+行内红字（.zu-syscfg-therr）+输入框红边（.zu-syscfg-bad），合法写入回填 clamp 后实际生效值（HTML min/max 不拦键入）。②Tooltip 紧凑重构——三区改「标签列|主数值|右侧辅助」Grid（.zu-sys-grid），CPU 主数值直读百分比（去「整机使用率」前缀）、Load 恒两位小数，磁盘区去重复挂载点行（主卷角色并入区头右侧「当前：系统卷」），APFS 共享容器卷不重复容量（后端 sysmon-client 仅 / 与 /System/Volumes/Data 同 diskN 前缀时标 container 字段；前端同容器首行带徽记、后续行显「共享容器空间」，两行相同数值曾误导「磁盘翻倍」），当前监控卷高亮改轻背景+左 2px 强调线（.zu-sys-vrowon 替代 .zu-sys-cur 大灰底），阈值图例精简为三色点一行+ⓘ 按钮（data-zu-sys-th 点击切换内联展开区 data-zu-sys-thexp，明细动态读 cfg 且关系非法标红；只挂 click 不进 pointerdown——toggle 非同值幂等会翻回去；tip.__zuSysExp 跨重建保留、hideTip 清零），刷新说明换时钟图标（纯说明非按钮），warnColors 关时点转中性灰+注明「颜色提示已关闭」，Swap 有效 0 值显示（number 判定替代 >0）。③接线——drawTip 重建后恢复 sysmon 展开态、全量 tip click/mousedown 委托加 [data-zu-sys-th] 分支、01 sysTip 同款三链、09 syncPanel 同步阈值提示；chip blur 加 relatedTarget 守卫（焦点入浮层不收卡，ⓘ click 可达）。 → v363 增强历史默认开启落盘（用户 2026-11-16 拍板；specs/prompt-enhance.md 持久化契约同步）：「在本机保存增强历史」缺省视为开启——配置无 saveHistory 键即读盘+落盘 enhance-history.json，仅显式保存过 false 才回退仅内存保留（关闭态重启即清空契约不变）。四处缺省判定同批翻转：enhanceProviderView 归一化由「=== true」改「!== false」、loadEnhanceHistoryDisk 读盘门由「!== true」改「=== false」、persistEnhanceHistory 落盘门由「!saveHistory」改「=== false」、enhance-history-list 回执 saveHistory 字段由「=== true」改「!== false」，渲染端 EP 分区复选框初始化同步（09 分片）；「自动降级模型」开关本就缺省开启（!== false）不变。Windows 平台门恒拒落盘的既有限制不变。review 修复批：读回同走 30 天/100 条裁剪并在裁剪发生时回写磁盘；本分片勾选说明补「默认开启」与「关闭后已落盘文件保留、重新开启后可在历史面板清空」披露；新增 inject-enhance-history 回归测试 6 例。版本号顺延说明：v360/v361/v362 已被并行批次占用，直接取下一空号。 → v364 系统状态 Tooltip 三处修订（用户实测反馈；specs/statusbar-system-status.md 同步）：①去 .zu-sys-tip 内层 padding（原 11px 14px 12px）——宿主通用 .tip 容器自带 10px 13px，双叠加曾致内容离框过远；②当前监控卷高亮去左 2px 强调线（.zu-sys-vrowon 仅保留品牌色 8% 轻背景，用户主题下 inset 线显白被当瑕疵）；③Load 1m/5m/15m 与 Wired / Swap 数值加悬停解释：.zu-sys-hint 点状下划线 + 纯 CSS :hover 向下弹 .zu-sys-hintpop 小气泡（300px 宽、双语 L() 文案）——零事件链，不碰全量 tip click/mousedown 委托与 pointerdown 断言；宿主 .tip 容器 overflow:auto，absolute 气泡向下弹留在内容区内不触发滚动区域；帧重建后 :hover 实时重算气泡不丢。 → v365 系统状态磁盘表三处间距修订（用户实测反馈，接 v364）：①表行 .zu-sys-vr padding 右 6px 归 0（改 3px 0 3px 6px）——数值列右缘贴内容区右缘，与「14 核」「64%」「当前：系统卷」等右侧辅助列对齐；左 6px 保留供卷名缩进与高亮背景不贴左。②表头 .zu-sys-vh 加 margin-bottom:4px——高亮数据行背景曾紧贴表头分割线（无间距），表头与数据行拉开 4px。③.zu-sys-vols 去 scrollbar-gutter:stable——常显滚动条系统（macOS「总是显示」）该属性恒留 15px 槽，是行右侧空隙大头；去掉后 >6 卷滚动时滚动条占位列宽微跳（罕见场景可接受），≤6 卷（绝大多数）完全贴右。 → v366 磁盘表行 padding 左右对称（用户实测反馈，修正 v365①）：.zu-sys-vr 恢复 padding:3px 6px——v365 把右侧归 0 后高亮背景左 6px 右 0px 不对称；用户要求左右一致。v365 的实质（去 scrollbar-gutter:stable 槽与表头间距）保持不变。 → v367 系统状态设置卡内容边距统一（用户实测反馈）：.zu-syscfg.zu-layout-card 卡根加 padding:0 12px 12px，作用域内 .zu-layout-head/.zu-layout-note 自带水平 12px 归零（垂直保留）——此前卡根无内边距、仅通用 head/note 有 12px，预览/分组标题/行/阈值表全部贴卡边框，与标题错位。源顺序在通用 .zu-settings .zu-layout-head 之后、同特异性覆盖成立。 → v368 水平对齐说明左边距修复（用户实测反馈）：.zu-just-block 里的对齐 pnote 曾贴左缘——「仅默认样式生效…」包在 .zu-just-block 容器内，吃不到 .zu-settings-card>.pnote（直接子选择器）的 12px；补 .zu-settings .zu-just-block .pnote{padding:2px 12px 4px} 与卡直接子 pnote、.zu-theme-options 的 12px 对齐。同卡「精简」说明是直接子元素本就有 padding，不受影响。 → v369 系统状态 Tooltip 按《深色系统状态概览面板》设计稿图标化（specs/statusbar-system-status.md 同步）：①三区指标行统一图标区 .zu-sys-lead（grid-row:1/3 跨主数值/sub 两行 align-self:center）= .zu-sys-mico 28px 圆角 7px 中性轻背景（foreground 6% color-mix，非品牌非状态色）容器 + 15px 线性 SVG（SYSMON_ICONS 新增 cpu/mem/db 三个 lucide 同款 path + sysMicoSvg 统一属性模板）+ .zu-sys-k 标签升 13px——经 .zu-sys-tip .zu-sys-k 作用域覆写实现（.zu-sys-k 同时是条面格 seg() 标签共享类，基础规则保持 -2px 并加 white-space:nowrap 不动条面；review M1）+ 阈值表数值列宽 52px→56px（review N2 补记）；图标是采集范围标识不随预警变色。②主数值列/sub 行左缘加 1px 竖分隔线（border-left+padding-left:12px，grid 改 auto minmax(0,1fr) auto、row-gap 归 0 由 sub padding-top:3px 承接间距，分隔线连续）；.zu-sys-dhead 对齐 baseline→center（inline-flex lead 的基线落在图标底缘，baseline 对齐曾把「当前：」顶高）。③磁盘表套低对比外框（.zu-sys-vols 1px 边框+8px 圆角+3px 内衬，表头底线框内、高亮行内嵌）。④阈值展开表按行分容器：.zu-sys-tht-h 表头行带底线 / .zu-sys-tht-r 数据行（role=row/rowheader/cell 语义补全），右对齐选择器改 .zu-sys-tht-r>span:not(:first-child) 行内作用域——旧扁平 grid 的 :not(:first-child) 把数据行指标名也右对齐（对齐 bug）。⑤磁盘 other 角色卷名不拼「卷」前缀（「卷 Data」→「Data」，设计稿裸名；project/system 角色前缀保留）；「当前：」中文冒号后空格移除（空格只留英文串 current:）。⑥顺手修复 v367 遗留的 v359 级联锁违例（overlay-statusbar-layout bareLayoutRules 抓到 .zu-syscfg.zu-layout-card/.zu-layout-head/.zu-layout-note 三条裸规则头）——补 .zu-settings 前缀，特异性 (0,3,0) 高于通用 head/note，覆盖不再依赖源顺序，计算样式不变；该失败在 v367 会话即存在（未跑全套件），非本批引入。 → v370 会话累计卡标题行超长会话名布局修复（用户实测截图：大字标题被挤成「会话累/计」两行、名称溢出紧凑卡；specs/stat-tooltip-large-text.md 同步）：根因=.zu-tt-name 容器作为 .zu-stat-head 的 flex 子项 min-width:auto 解析为 min-content（标题文字+8px+名称 min-content），450px 紧凑卡内标题列被压到 min-content 以下，「会话累计」四字逐字折行、名称 360px 帽仍超剩余宽。修复四处（均 06 基础规则，项目卡 .zu-pj-title 同名容器一并受益）：.zu-stat-title 加 white-space:nowrap+min-width:0（标题文字恒单行——nowrap 继承给匿名 flex item 保其不缩；标题列保持缺省 flex:0 1 auto 可收缩，收缩额度全让给名称。初版曾加 flex:0 0 auto 锁死标题列，实机量测发现名称 360px 帽仍把范围胶囊顶出卡外，改回可收缩）、.zu-stat-scope 加 flex:0 0 auto（范围胶囊不压缩）、.zu-tt-name 加 min-width:0（解除 auto 最小尺寸）、.zu-st-name 加 flex:0 1 auto+min-width:0（名称在剩余宽度内收缩进既有 ellipsis，360px 仍为上限）；正常长度名称不触发收缩、排版不变。 → v371 其它浮层长动态文本防护批（v370 同根因全面排查，两路审计+逐项核实；specs/stat-tooltip-large-text.md 同步）：①增强历史小浮层 .zu-eh-phase 补 min-width:0+overflow:hidden+ellipsis——相位可含上游错误原文（长 URL/服务端消息），nowrap 无裁切曾撑破头部（与 v370 同型）。②精简摘要 .tip .rt-models .rt-row b 补 max-width:300px——table-cell 上 zu-model-fit 的 ellipsis 与 fitModelNames 缩字号兜底在无宽度帽的 auto 布局 cell 上双双失效，超长模型名曾把摘要卡撑出横滚；口径同项目表首列帽。③子代理任务页 .zu-spsub 由 flex:0 0 auto 改 flex:0 1 auto+min-width:0+max-width:45%+ellipsis，渲染端补 title 全名——长 agent 名曾把任务名 h3 挤到逐字折行。④额度浮层 .qt-h 补 overflow-wrap:anywhere（远端可控套餐/供应商名，同浮层数据行/qt-note 本就有、唯标题漏配）。⑤四处 data-tip 伪元素气泡补 overflow-wrap:anywhere（.zu-mp-tst 探测状态含 URL/错误原文必现溢出；.zu-sl-model 单个超长模型 id；.zu-rot-tipt/.zu-rot-livetip 防护性补齐）。⑥词包弹窗 .zu-rot-pk-title 补 min-width:0+ellipsis+nowrap、JS 补 title 全名（packId 回退长名）。⑦速度 V1 估宽分级 fit2/fit3 作用域扩 .zu-speed-hero——legacy hero（精简 chip 旧快照回退卡）o.main 可含 MCP 长工具动词，此前分级类只挂 .zu-speed-left 永不命中，36px nowrap 大字溢出 KPI 卡；短读数不带 fit 类排版不变。⑧工作流 run chip tooltip 作用域前缀 .zusage-wfrun-tip 改 .zusage-subrate-tip——浮层宿主类名恒为后者（showSubTip 从不挂前者），旧前缀整段 CSS 是死代码，wf-name 单行省略/数值右对齐从未生效（靠继承 anywhere 折行侥幸不破）；wf-* 类仅该构建器产出，改前缀无串扰。已充分防护无需动：Git tooltip（break-all）、sysmon 卷表（minmax(0,1fr)+ellipsis）、项目卡 pname（v303 compact 已齐）、fxTip 模型行（inline-block+帽）、V2 左卡标题/模型/时间胶囊、增强历史全量表格（fixed+ellipsis）。 → v372 统计卡/项目卡标题行外层垂直居中（用户实机指认）：.zu-stat-head 与 .zu-pj-head 的 align-items 由 baseline 改 center——baseline 把范围胶囊/Tab 中心拖低 ~2.5px（CDP 量测 cy 490.3 vs 标题 487.8）；只改外层 head 行对齐，六统计卡与项目卡同样生效，无名称的卡（本轮/今日/工具）居中无副作用。标题容器内部（.zu-tt-name）本就 center；项目卡内部 .zu-pj-title 的 baseline!important 遗留由 v373 单独修。 → v373 修复收尾两处审查 MINOR（review-fix-merge 第一轮）：①项目卡内部标题+项目名垂直居中——07 分片 statCompactStyle("project") 的 .zu-stat-tip--project .zu-pj-title 由 align-items:baseline!important 改 center!important（v290–v304 遗留，CDP 量测项目名中心比大标题低 ~1.7px，同 v372 根因；ellipsis/收缩链不变）；②工作流 run tooltip 补 .zusage-subrate-tip .sub-agent 灰色小字徽标样式（两个构建器共用 subTip DOM、各注入自己的 style，旧仅 subRowTipHTML 携带，wf 的 runShort 命中不到——既存问题，v371 改作用域后同段收尾）。 → v374 会话名省略号补 title 全名（PR 最终自审 F1）：截断项契约对齐项目名/词包标题/agent 名—— .zu-st-name 渲染时 title=压缩后的全名（escAttr 属性转义），发版条目「鼠标悬停可看全名」落地。 → v375 统计 tooltip 模型明细表新增「平均速度」列（specs/model-detail-avg-tps.md）：本轮/会话 累计/今日/项目累计/子代理统一浮层五列表（模型/Token用量/请求/平均速度/预估费用，费用关收四列）， 精简摘要行式明细同步追加 X.X t/s；值=zusage 快照逐模型 avg_tps（Σ有效输出÷Σ有效窗口，同 KPI）， 非 number/≤0 显 —；后端 _turn_rate 顺带按模型累加、会话/今日缓存改携带结构零新增扫描。 → v376 回答末尾统计行（specs/turn-text-cost-and-format.md）：生成耗时分级中文（<60s 保持一位 小数、≥60s 「分/秒」、≥1h 「时/分/秒」）；本轮模型 id 去重前置到 token/s(本轮) 之前； 累计后拼本轮预估费用（¥/$，受 state.cost 经 turn-text 请求 --no-cost 门控）；费用开关切换 bump richTextUnitEpoch 刷代谢行；⏱ 采样时刻/上轮行格式不变。 → v377 手机远控中继统一桌面 overlay（specs/mobile-unified-overlay.md；移动端原 v363/v364 与主线撞号，按合入顺序顺延 v377）：目标数值投影与匿名 binding 隔离；移动接收端内嵌唯一桌面 overlay，本地/WSL/SSH 共用相同状态条、设置和 tooltip。 → v378 清理手机中继无消费者分片与冗余移动分支（specs/mobile-relay.md；原 v350/v364 与主线撞号，按合入顺序顺延 v378）：删除 13-mobile-chips（桌面 DOM chips 采集已无消费者，主进程目标发现改读宿主 preload 状态）、移动端不启动 10Hz 桥心跳、去掉 speed_history 与移动缓存清空的空转守卫、删除 06/07 旧手机提取锚点（zm-cell-css/zm-band-css/zm-band-css-light/zm-show-rows/zm-ico；当前构建直接内嵌完整 overlay）；桌面渲染与既有移动快照语义不变。 → v379 ⚙ 设置面板底栏新增「重启 ZCode」按钮（用户规格；本地曾占 v377，因主线 v377/v378 已被手机中继批占用按合入顺序顺延）：置于滚动提示左侧，与「插件更新」分区内同名按钮共用 data-update=relaunch 点击状态机（二次确认/正在重启/回执三路还原），两枚按钮 armed/sent/禁用/待重启高亮同步；旧主进程缺 relaunchSupported 时同款降级隐藏。review 加固：5s 确认定时器发送/dispose 两路清理；ok 守卫读当前 DOM sent（非闭包旧节点）+ relaunchSeq 代际丢弃过期回执，防面板重建后迟到 ok 重挂 90s alive 误清新一轮重启。 → v380 命中层视觉透明豁免（用户实报：主窗口开模型选择器，右侧辅助对话状态条消失、弹层关闭即恢复）：宿主模型菜单 Radix DropdownMenu modal 开启时另挂「fixed 全屏 + 无底色 + 仅 pointer-events:auto」透明层拦 webview 插件外侧点击，body 同时被设 pointer-events:none 令应用树被命中测试跳过——z 序低于该层的 composer（辅助对话 pane 无主 Composer 的 z-20 抬升）中心命中该层，v65 部分遮挡豁免因整体罩住不成立，迟滞 400ms 后整条收起。hitSelf 在 v65 豁免后补「无底色、无背景图、无 backdrop-filter 的命中层不算视觉遮挡」，与 modalOpen「遮罩必带底色」同哲学；带底色/模糊的真模态遮罩行为不变，coverOK/cardHitOK 无 v65 豁免链路不动（on 判定为 reallyVisible||coverOK 的 OR，第二腿 false 无碍）。 → v381 撤销 v87/v116 的「draft 空窗合成思考中」（用户实报：什么都没干的辅助对话永久假「思考中…4分30秒」走字）：宿主 product-projection.ts onTurnStarted 复核——userInput/turnHeader 行与 phase:"running" 在同一 reducer 批次原子生效，draft 且窗口为空 ⇔ 会话从未有过任何输入，不是「已发送待 header」的瞬态；辅助对话（createSelectionSideSession）新建后宿主即建好 store（draft+空窗），pane 一开桥就绑上，v87/v116 合成立即触发并按绑定时长（bornAt）走字。合成条件收窄为仅 phase==="running"；发送动作到 TurnStarted 事件的亚秒级窗口速度格退回 DB 静态数字，可接受。场景⑤断言随语义翻转，①-④/⑥ 守卫保留。 → v382 套餐额度 chip 工具栏四级响应式（specs/quota-chip-responsive.md）：按 trailing 行真实可用宽度在 L0 完整→L1 紧凑→L2 摘要（主窗口+N）→L3 图标+值→L3I 纯图标→hidden 极限隐藏间选级，展开迟滞 20px/收缩即时/hidden 回展同门控；可用宽度按「锚点间距+当前宽」不变式测量（trailing 行右对齐贴内容，禁用容器宽−内容式相减，曾致 chip 摘除后永久隐藏黑洞）；lead 右缘锚 [data-composer-leading-content] 回退 Git chip，双缺失 fail-safe 保持 L0。窗口标签全档统一短标签（用户拍板终态=今日/5时/7天/月/套餐，tooltip 窗口行保留全称）；测量探针镜像各档盒模型（L1 gap、+N 字号）；档位色/口径/tooltip 数据全沿旧链。收口 review：quotaLeadingRight/HYST 入测试缝、L3/L3I 补 ⚠、缝随实例 dispose 清理、quotaRemainPct 单一实现。 → v383 Git 状态 chip 工具栏四级响应式（specs/git-chip-responsive.md）：按前导区真实可用宽度在 L0 完整→L1 紧凑（既有 zu-compact）→L2 摘要（风险短标+工作段+⋯）→L3 最小（图标+状态点+风险短标）→L3I 纯图标（点色承载风险）→hidden 极限摘除间选级，复用额度 chip 泛型选级（展开迟滞 20/收缩即时/hidden 回展同门控）；可用宽度=「leadA 宽 −（leadC 宽 − chipW）」反自指不变式（leadA 为 flex-1 窗口驱动，实机恒等式取证），未标定结构 fail-safe 保留旧两态（gitChipCompactLegacy：宿主 compact 强制 + 32px 迟滞，绝不隐藏——pill 夹具实证伸缩行会把行内求和压成伪 0）；风险（冲突/操作中/过期）各级保留，aria 恒全量，绝不拼接 ins/del 假汇总；候选宽按「等级|候选串|语言|字号」缓存，零宽不缓存。 → v385 OpenCode Go 模型口径换算（issue #382；本分支曾占 v382，与主线额度 chip 响应式撞号按合入顺序顺延）：官方按模型给月度额度（opencode.ai/go "allowances vary by model"）而 /console/api/go/status 的 meters 是账户基线池（Go 档 $60/月实测），DeepSeek V4.1 Flash（$100/月）会少显示 40%。渲染端 11 分片新增 quotaOpencodeModelView：源 id 为 opencode（含复合源）+ 模型命中 opencode.ai/go 快照表（2026-11-17，28 款）+ 月窗 total 恰等于 Go 档基线 60（档位锚定；Plus 基线未验证不换算）时，5h/周/月窗口总额=模型月度额度×活接口窗占比（不硬编码 20%/50%）、used 是账户实际花费保留原值、percent 重算钳 [0,100]、remaining 重算，原对象不变异；锚不上（未知模型/表过期/兜底链无金额锚点）一律显示活接口基线绝不伪造；chip 面分段与 chip.__zuQ.q 同吃换算视图，tooltip 页脚换模型口径披露；数据链/协议/重查零改动（「模型不入键」取舍不变）。规格 specs/opencode-model-allowance.md。
+    var VERSION = "v386";   //v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）→ v91 设置页/权限面板冒条修复（PR #44：inSettingsView 三处派发排除 + anchorCardOf 面板锚点改判）收编收尾：排除标记并集（settings-page testid + content/panel 双 frame）、track 显隐第四处防御 → v92 ⚙ 更新区固定显示可复制的重装口令（源码安装无法自动更新时引导用户发给 agent）→ v93 原生上下文按钮（chat-context-usage-trigger）增强：环填充/四档色/右侧百分比镜像状态条上下文格（ctxBandOf 同源），cw 缺失还原原生形态 → v94 状态条删除「上下文容量」格（UI+tooltip，该口径由原生按钮增强承载），⚙ 面板同步去掉「上下文」开关，子代理格改始终展示（零值也显示）→ v95 ⚙ 更新区去掉 v92 重装口令提示块（源码清单的仓库来源改由宿主插件管理器直接更新，不再报渠道不一致），更新来源文案增「仓库源码」分支→ v96 套餐额度 chip（默认关）：挂原生上下文按钮左侧（wrapper 内前插，与按钮增强同款双 reapply/还原），数据来自主进程 quota 字段（解密宿主 OAuth 凭据直查 monitor 端点，账号级套餐池口径），会话首个 main_turn 完成前不显示；自绘 tooltip 走 rateTip 独立浮层模式；chip 改多窗分段：每窗一段（中文 5小时/7天，英文 5h/7d）各自按 80/95/100 档位色，分隔符 |；余额类型单段渲染就绪（余额 ¥100.00，阶段 3 数据源接入即用）；去掉环形，容器不着色 → v97 子代理速率（T1+T2）：zusage sub 汇总加 rate_avg/每子代理 tps_avg（已完成段加权平均，口径同 _turn_rate），子代理格 tooltip/明细面板展示；Agent 运行期主 chip 附加「子代理运行中 · 估 X t/s」——turn-stats 透传 subagent 行 childSessionId，overlay 据此用同款 zuTryBindStore 绑子代理会话 store 做字符增量估算（运行中请求未入库，DB 无实时数据；150s 采样实锤零 running 行），思考文本不进 rows 时退回纯状态词；工具动词「正在运行子智能体」压成「子代理运行中」（web 同步文案）；同日多槽位化：turn-stats 暴露 runningSubagents 全集（并行时 rowId 前 8 个），每子代理独立绑定/2s 节流，主 chip 显示合计速率（并行 ≥2 时动词后缀 ×N），chip tooltip 与子代理明细面板逐个实时展示运行中估算（tooltip 随原地改字同步 __tip 重画；面板 800ms tick 原地刷新 .subrate，汇总页运行块含 DB 尚无记录的新子代理） → v98 额度实时选源恢复（v4-model-config 观察 + quota-providers 全窗快照上报 + byProvider 定向刷新、空选择 fail-closed）与 sub2api 额度 UI（今日/本月窗口、窗口行内金额明细、Key 总额度、订阅截止、账户余额标题） → v99（主线并流）tooltip 伪边界 leave 过滤：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave，tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别，仍悬停在本档具体元素上即伪 leave 一律忽略交回 mousemove 流（主线 v100 滚动豁免=本链 v106 同义，不另列） → v99.1（主线并流）apiKey 模式 BigModel/Z.ai（bigmodel-api[-N]/zai-api[-N]）额度 chip 标题家族判定（issue #68；数据链在 quota-client） → v99.2 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，空格分隔、零段照旧省略）；回答末尾行采样时刻改完整中文日期时间（⏱ 2026 年 10 月 23 日 11 点 20 分 28 秒，token_rate.py format_turn_line 同步改版） → v100 设置面板分区导航（ZCode 设置侧栏同款：左栏三组分区导航 + 内容区单分区显隐，激活项 aria-current="page"，选择持久化 zusage3.sec；面板窄于 620px 时导航收成 icon rail） → v101 设置面板高度在打开瞬间按内容自然高锁定（切分区不再抖动，resize 只收紧不放大） → v102 额度源预设模板（CC Switch/magpie 同款选模板只填 Key：官方域变体 chip 一键写入 secrets baseUrl，minimax 可信域机制推广到 siliconflow 币种随域；deepseek/openrouter/kimi/anthropic/mimo/volcano 附控制台取 Key 链接，走 openExternal 桥） → v103 额度源列表卡片化布局（每源圆角卡片+间距，凭据框限宽 420px，长说明段落补水平边距；纯 CSS，结构行为不变） → v104 源状态文案补 disabled=已关闭映射 + 主进程对显式关闭源统一报 disabled（修「开关已关却显示待查询」矛盾）；刷新/获取 Key 按钮补 title 提示，关闭源的刷新按钮禁用 → v105 「上下文容量」弹层（hover-card-content）内压缩上下文按钮：命中率行下方全宽胶囊按钮（原生 secondary 配色全走客户端语义变量），弹层关即卸载（Radix 无 forceMount）故 body MutationObserver + heavy 对账双触发、DOM 存在性幂等（多实例安全），插入锚=「剩余额度」border-t 段前（缺则容器尾）+位置兜回；点击弹原生 AlertDialog 视格确认框（遮罩/Esc/外点关闭、Enter 确认），确认后优先走 fiber 上原生残留的 onSendCompressionCommand("/compact")（SessionPane 压缩入口，不动输入框草稿），缺失回落官方 E2E 输入桥 __zcodeLexicalInputE2E.setText + 发送键（Lexical 直写 DOM 不生效，禁用该路径；草稿非空拒绝） → v106 额度 tooltip 滚动豁免：hideTipsOnScroll 不再收 quotaTip（chip 固定 composer 工具行与 gitTip 同理），修思考中流式输出自动滚动致悬停弹出即灭；chip 随宿主重建 detach（无 mouseleave）由 scanRateLines 加 isConnected 健康检查兜底收起 → v107 压缩确认框补行为提示：压缩进行中发送新消息/停止会打断压缩（实测 16:27 新 turn 启动同秒 compact turn TURN_CANCELLED，cancelled_by_user=1；引擎对该次摘要流挂起 134s 无首 token 也不重试 retryable=0），确认框加 hint 行中性告知 → v108 压缩主通道按用户指定改为字面 "/compact" 输入提交（E2E 桥 setText+发送键；流式中 v4-stop 可见/草稿非空/发送键 disabled 三重拒绝），fiber 命令信封降兜底；hint 升级为「通常需 2-4 分钟且无进度反馈」（DB 实证：全库 compact 请求无首 token 但正常完成，72s-9.6min，14:44 同会话同模型 165s 成功先例；16:25/16:43 两次「卡住」实为 2m20s 被新消息 TURN_CANCELLED，非故障） → v109 压缩主通道按用户指定改回直接调会话发送接口（fiber onSendCompressionCommand 命令信封：不碰输入框/发送键、流式中交引擎排队，修字面输入通道在生成中被发送键禁用卡住的问题），字面 "/compact" 输入提交降兜底（三重门控仅作用于兜底） → v110 压缩提交函数改在弹框打开瞬间（弹层必存活、锚点几何可信）解析并缓存，修复确认时弹层已被 Radix 卸载、几何重解析退化为「离视口左上角最近」致多分栏把 /compact 发进错误会话（P1）；兜底字面输入通道的流式/发送键/草稿三重门控全部前置到 setText 之前（拒绝不再残留草稿）；Enter 确认限定焦点在弹框内（无焦点陷阱下防焦点外 Enter 误触发确认） → v111 额度 chip 默认展示：quota_enabled 缺省开（显式 false 才关，真值链在 inject-main）；chip 二级门控 not_configured/unsupported 从静默隐藏改中性灰提示「额度 未配置/暂不支持」（源被 ⚙ 显式关闭仍隐藏），tooltip 补 info 分支引导配置 → v112 Start Plan 免费档池（quota-client 新增 zcode-start 适配器走 zcode.z.ai billing/balance 独立链，与 coding plan 的 monitor 端点分池；选源路由与 quotaFamily 判定补 start-plan 分支修 start-plan pane 误读 GLM Coding Max 池；chip 增「套餐」分段（windows.plan，one_time 发放池聚合已用%），tooltip 套餐池行按 expires 标记切「到期」措辞） → v113 夜间审计加固：quotaBalanceText 内建转义（currency 是远程响应字符串，chip/tooltip 双 innerHTML sink；parts label/amount 单次转义修双重转义；「其他源」行标签转义归位；aria-label 走 plain 纯文本变体不读实体）→quotaTip 补内容签名幂等 __zuTipSig（同 gitTip，悬停期间周期对账不再打断文本选择）→子代理明细面板数据签名幂等（滚动位置/选择不被每 1.5s 推送整面板重建重置；运行中估算仍由面板 800ms tick 原地刷新）→额度 chip 签名重写保留 zu-qbusy（点击刷新动画不被推送截断，同 git chip）→⚙ 源列表 id/label/preset/keyUrl 属性级转义 aEsc（custom:<providerId> 可含用户自定义名）→live 速度 span 的 speedView.text 过 ttEsc（工具名是宿主/MCP 可控字符串）→渲染桥两处订阅回调尾部 updateLive() try 包裹（异常不冒进宿主 store 通知分发，诊断键 subLiveErr/bridgeLiveErr 记录） → v114 积压清单清扫：remoteCache/remoteTodayCache/richTextCache/richTextAttempts 上限淘汰（长会话防无界增长）；dispose 清理补 __zusageDeliverTurnText/__zusageSidWs/__zusagePaneScopes（旧代闭包自卫之外的清理完整性）；诊断 lsVals 只转储 zusage 命名空间的 localStorage 键（宿主其余键值不进 diag 文件） → v115 渲染循环省电（上游 xhwxt PR #26/#28 同源问题）：幽灵子树/遮挡命中/模态判定加 TTL 缓存（120/150ms，命中绑定元素矩形+模式），track 在 document.hidden 时整帧跳过；未采纳其 600ms↔2s 调度降频（heavy 600ms 对账是与 render 并列的 React 重写兜底契约，降频会让增强节点裸奔 2s） → v116 「思考中」卡死修复（源码复核定案）：v87 合成分支条件收紧——仅「空窗口非终态（draft 空窗，v87 本意）或 control.phase=running」才合成思考中，删除「行非空」析取项（宿主 wire 快照 rows.window 恒为全序尾 60 行，末轮超窗的闲置会话整窗无 turnHeader，旧条件使其永久点亮思考中、切回重绑重新计时）；思考计时锚定 turnHeader.startedAt（宿主创建 header 恒写入，重绑不清零，缺字段回退首观测）→ v117 悬停命中区扩到整栏（fork lliangworld b21e3cf0 同源收编）：条目空隙/分隔符按 sep 中线就近归属、尾部空隙归末位条目，⚙ 与空条面维持保持不动；防闪烁改由节流+幂等承担 → v118 无障碍与主题重构（并行会话批次）：条目可聚焦（span tabindex / zu-sub 真按钮 + aria-label）、键盘可达 tooltip（focusin/focusout + Escape 收起）、focus-visible 焦点环、SVG 图标与思考动画改 currentColor 随主题、⚙ 面板请求-回执协议（requestId + __zusagePluginResult，feedbackVersion 1）、quota 源操作错误语义、统计行开关即时重扫 → v119 插件自动检查改为每 1 小时，更新区双语提示更新器变更需完全退出并重开 → v120 Git 手动刷新改请求-回执协议（askGitRefresh 带 path/requestId，主桥 gitTick 完成后经 __zusagePluginResult 回执、在途请求合并等待，按请求 path 校验结果）+ 状态条 aria-live sr-only 播报区（套餐额度查询中/Git 刷新状态）+ ⚙ 面板高度上限 82vh→90vh + 模态判定改按可见 dialog（display/visibility/opacity 过滤） → v121 状态条 .ico 与 ⚙ 齿轮图标盒由 calc(字号+4px) 改为等宿主字号（24 格线性图标墨迹只占盒 75–83%，18px 顶满 1.3 行盒显大，且加法常量令比例随字号漂移 1.33×→1.20×；用户实机定 1.0×，.eb .ico 12px 特例不变） → v122 Git chip 展开测量完整宽度并留 32px 迟滞余量，切断宿主 compact 反馈环（issue #100） → v123 Git chip 锚点按电脑操作→上下文→模式→思考回退，排除隐藏探针并随可见锚点迁移（issue #103） → v124 Git chip 固定左侧操作区，移除右侧上下文/思考回退 → v125 思考计时中文全紧邻「7分16秒」（时段间空格去除，用户要求；英文「7 m 16 s」不动） → v126 思考计时英文数字与单位紧邻「7m 16s」（时段间留空格，用户要求） → v127 tok/s 速度十档色（TPS_BANDS 唯一事实源，原始值分档含下限不含上限：<40 低速红 / 40–70 一般黄 / 70–150 流畅绿沿用原三档类名与实测色，150 起新增蓝紫系 zu-teal/zu-sky/zu-azure/zu-violet/zu-purple/zu-magenta，≥2000 Ultra 静态蓝紫渐变 + ✦ 星点（::before content:"✦"/"" AT 静音、@supports 外纯紫回退，浅色组同名覆盖渐变）；估算态与完成态同表分档（用户规格，原「估算态不分档」废止），无效值（负数/NaN/±∞）一律中性 dim 或回退 DB 绝不判低速，DB 回退分支负数/非有限不再渲染 chip；tooltip 档位行改动态「名称 · lo–hi t/s」消解 toFixed 舍入边界歧义，另加静态「颜色对照」图例（十档数值↔颜色升序一览，档位类与条面同源随主题切换）；额度正常态改额度蓝 #78a9ff/浅 #315fc4（.zu-qseg 专属基色，不碰全局 .ok——上下文与速度前三档仍绿），周期标签拆 zu-qlabel 子节点中性次级色常规字重（textContent/aria/tooltip 不变），quotaSegs 补 isFinite 门防 NaN/±∞ 落正常蓝；正常态再改 CCometixLine 同源柔和低饱和（用户规格）：普通窗灰蓝 #8abbd0/浅 #276f86、7 天窗按 quotaSegs 结构化 key 挂 zu-qweekly 淡紫 #b69ad8/浅 #76509f（不匹配显示文本），周期标签与数值同色成组仅标签降字重，上下文按钮正常绿改 #72c9a2/浅 #187b58（限按钮作用域，速度与全局 .ok 不动）） → v129 模型拉取分区（收编 HHQ-666/zcode-model-puller，MIT）：⚙ 基础组新分区列宿主 provider_config.json 的 API Key 型自定义供应商，经主进程拉取其 /models（候选端点探测、OpenAI data/Ollama models/顶层数组形状解析、Bearer+x-api-key 双头），弹窗勾选（已添加/新模型徽标、搜索过滤、全选/清空/仅选新、选中计数）后经 model-pull-apply 最小写回（personalModelIds+modelOrder 追加、providerModelRules 复制同供应商模板条目、同目录原子替换+滚动备份 .zusage-bak、未知键保留）；key 只在主进程内存、只发该 baseUrl 本域，不回渲染端不进日志；请求回执 20s 兜底超时（旧主进程无 action 时提示完全重启而非永久 loading） → v130 拉取算法吸收 GLQQX/zcode-model-discovery-patch 与 linguo2625469/zcode-patcher：字段别名全集（id/modelId/name/model、context_length/contextWindow/context_window/limit/limits、max_completion_tokens/max_output_tokens/maxOutputTokens/limit/limits/top_provider、payload 增 result 形状）、多模态感知（architecture.input_modalities/input_modalities/modalities.input + vision/supports_vision 布尔 ⇒ 宿主 inputFormat 稀疏能力位，缺位写实 false）、思考档位感知（supported_efforts 去重截 16 ⇒ reasoningLevel.values）、models.dev 公共目录补缺（并行拉取 5s 超时失败静默降级、id 精确→basename 唯一匹配、字段级供应商优先、key 与本机数据绝不发往目录、进程内 1h 缓存）、applyModels 按模型写实 config（contextWindow/inputFormat/optionSpecs；元数据走主进程 fetchCache 闭环、渲染端只回传 id 无法注入字段；模板带 map 表达式的 optionSpecs 整体不覆盖防 values 换名失配；无依据字段保持模板原样、不编造默认值）；弹窗行新增 ctx/out 可见小字与档位 title，分区说明补 models.dev 联网披露；review 修复：勾选表/已添加表/metaById 改 null 原型（模型 id 来自远端，__proto__ 等键静默失败丢勾选态）、实例 dispose 同步摘除模型拉取弹窗与 Esc 监听（原仅整体 dispose 摘除，pane 关闭后弹窗跨代泄漏且确认回调 inactive 早退卡保存中文案）、重开面板停在模型拉取分区时立即刷新列表、请求兜底超时 20s→25s（主进程最坏双端点 20s 防假超时）、主进程响应体 8MB 限长解析与 tmp 文件名带 pid 防双实例竞写 → v131 额度/上下文五档色（用户规格 2026-10-27）：CTX_BANDS/QUOTA_BANDS 唯一事实源（{min,cls} 有序表，bandOf 从高到低首个命中），阈值 30/50/80/90（含下限不含上限）——额度 calm/norm/mid/high/crit=emerald/sky/amber/orange/rose（暗 400/浅 700），上下文 calm/norm/mid/high/crit=slate/indigo/violet/orange/red；data-zusage-band 与 zu-qb-* CSS 双主题成对；pct span 与 SVG 环一律继承按钮 currentColor（.zu-ctxpct.ok 系独立色废止）；tabular-nums 原已覆盖 .zu-quota/.zu-ctxpct；v92 百万窗口提前预警（40/60）与 v127 额度正常态灰蓝/7 天窗淡紫（按窗口类型着色）随「仅按百分比」规格废止；额度 ≥100% 满档保留呼吸闪烁特效（zu-qb-exc，用户规格；90–99 为 crit 纯色）；压缩过程态（exc）优先档保留；余额/Key 额度段挂 calm 档色 → v132 模型拉取挂载点迁移（用户指令）：⚙ 设置分区删除（ZU_SECTIONS/section/ensureMpProviders/syncMpList/startMpFetch/mpFeedback 全撤），改挂官方「模型设置⇒自定义供应商」的「+ 添加模型」按钮左侧（锚 data-testid=model-provider-add-model-button，额度 chip 同款 enhance/restore 契约：render/heavy 双对账+位置兜回+自清选择器 .zu-mp-host）；供应商归属优先读设置页表单 http(s) Base URL 归一化匹配（唯一命中直拉），否则单供应商直用/多供应商弹 zu-mp-pick 选择列表/无供应商弹提示；按钮视觉复刻原生 secondary 视格（同页 Tailwind utility bg-secondary h-7 rounded-lg），⚡ 图标 stroke currentColor；弹窗抽通用壳 openMpShell（勾选弹窗/供应商选择/错误提示共用），apply 成功关弹窗由宿主自动刷新列表；供应商归属改主判定=当前选择的供应商（读宿主源码定案：导航项 testid=model-provider-nav-item-<nodeKey>、custom 项 nodeKey=custom:<providerId>、选中项 data-state=selected），providerId 精确匹配不受编辑草稿影响；Base URL 匹配降兜底（专用 testid model-provider-base-url-input 优先于表单启发式），弹窗对齐 HHQ 形态（⚡统计标题/搜索占位/仅选新模型计数/已选中 n 个模型/蓝实底确认钮）并自带 .zu-light 随宿主主题实时换装；review 二轮修复：上下文按钮浅色档补 data-zusage-armed 特异性（浅色主题 norm~crit 曾被暗色 0,3,0 规则恒胜）、model-puller 非 ok 响应体显式 cancel（undici 连接卫生）、宿主按钮 ml-auto（锚容器 justify-between 三子项均匀分布致按钮居中）、确认钮改固定蓝 #3B82F6/#2563EB（客户端 --color-brand 深色主题是白系，白底白字隐形）、拉取按钮仅在选中的是 custom 供应商时挂载（锚 testid 全局唯一，内置/套餐页同 testid）、拉取中按钮文本「拉取中…」+图标旋转（原透明度脉冲无感知） → v133 Git 计数缩写（用户规格 2026-10-28）：chip/tooltip 的行数·条目·↑↓·冲突计数 <1万原值，≥1万 中文（cnUnits 判定）万/亿、英文 k/M/B（k 门槛刻意抬到 1万，与 token fmt 的 K≥1000 不同，小写 k 至多两位小数去尾零紧邻）；仓库个数与 aria 播报保持原值 → v134 额度与上下文保留既有阈值并统一绿黄红三档视觉；统一字号为宿主基准减 1px，周期标签加粗并微调分隔符 → v136 编辑项目弹窗源文件夹行在名称下方显示完整路径（纯 CSS ::after attr(title)，零 DOM 注入 React 无感；.truncate 限定本地行、排除 fixedFolder break-all 全路径行防重复，多文件夹每行各取各的 title；长路径自动换行不做省略号（宿主 truncate 的 nowrap 继承进伪元素须显式 white-space:normal）；规则挂条样式表、由 <html> data-zusage-pp 门控，⚙ 通用区「项目完整路径」开关 zusage3.projPath 默认开即时生效；顺带清理未提交编辑遗留的 spawnInstance 陈旧重复块 566 行死代码并复原被覆写的 issue #55 注释） → v137 源文件夹行点击即用系统文件管理器打开该目录（用户规格 2026-10-28，mac/Win 双平台）：主通道宿主桥 openInFileManager（Windows shell.openPath / macOS open 带 Finder 与 shell 双回退，raw path 免编码），旧主进程降级 openExternalFile、openExternal(file:)（白名单含 file:）；远程项目编辑器按 virtual-project-existing 标记排除，fixedFolder 行不在选择器内；多 pane 重复委托 500ms 同路径去重，document click 监听随实例 dispose 摘除；行加 cursor:pointer → v138 重置卡倒计时改时分秒全档恒显（并行会话 rstmerge 线并流收编，用户规格 2026-10-28：精确到秒、随 600ms 对账实时逐秒跳动，rstSpanText 中文数字单位紧邻「3时05分30秒」、英文数字单位紧邻+时段间空格「3h 05m 30s」；rst tooltip 补 Escape 收起（v118 键盘可达契约）；⚙ 倒计时阈值语义不变——并流时保留 rstCdh 持久化，对方运行目录构建因旧基线缺失而误删，其 18:42 rstmerge 部署曾覆盖本项目 v136/v137 后经本线合并恢复） → v139 合并 fork/main v1.5.5 线（PR #121 重置卡徽标、#122 倒计时秒级、#123 templateRules 回填、安装修复与 v1.5.5 发版）时收编遗漏的 model-puller 套餐源判定（4e431cc：detectSelectedCustomProviderId 带 anchor，BigModel 付费套餐详情页按 GLM Coding Max 付费卡区分放行、Start Plan 免费卡页不放行；挂载门控 btn 先查 + mpAnchor 诊断）——本项目快照缺该段曾致 overlay-model-pull 挂载契约测试红；overlay 版本线自此与对方 v136 撞号线并流，按合入顺序顺延 → v140 收口审查修复：openProjFolder 对 invoke 通道（openInFileManager/openExternalFile）挂空 catch——旧主进程无 handler 时异步 reject 会刷 unhandled rejection；review-fix-merge 流程产物 → v141 ⚙ 更新区在 API 限流且渠道清单兜底也失败时引导 GitCode 镜像口令（清单兜底本体在 plugin-updater/plugin-release 主进程链） → v142 ⚙ 通用「状态条样式」双主题 opt-in（zusage3.theme 独立持久化，默认关=现状）：药丸形态=所属输入卡下方居中、内容定宽，.zu-pill 经 --zu-pill-* 逐项拷贝所属视觉表面（Highspeed 外壳优先）计算样式，随宿主主题/hover/focus/Highspeed 实时跟随——pillSurface 统一取色/定位/让位锚点，body 子树 MutationObserver + 祖先属性观察捕捉外壳原位增删与搬移（不依赖 600ms 对账），80ms 过渡采样按目标计数、表面搬离自动停止；条面精简：缓存命中率/请求次数/轮数/耗时/首字收进 tooltip（0 命中也显示 0%），窄窗 .zu-main 横向滚动 + focusin 滚入可视区、切回默认复位 scrollLeft，不触发默认态收缩/渐隐；⚙ 面板宽度在药丸下跟随所属卡（不再跨分栏），主题 radio 按实例分组 name 防多面板互斥；数据重建先绑 __tip 再恢复焦点，aria-describedby/tooltip 不丢；modalOpen 豁免 zusage-panel 自有面板（修设置面板被误判宿主模态整条收起） → v143 药丸收口审查（review-fix-merge）：8px 双间距按宿主实测几何收敛——adjustPillBottom 沿所属 pane/dock 实测矩形补足让位并带 floor/不增长护栏，无法让位的绝对定位布局 visibility 安全隐藏（无每帧显隐抖动）；pillMarginTarget 落在 .chat-composer-input-surface，Highspeed 退出后默认卡重解析（composerCardOf 优先原生 data-testid 输入框）、宿主 margin 变更原值+优先级还原；悬停 tooltip 在 pill 下实时刷新隐藏明细并保留选区/滚动，焦点恢复区分 Escape 关闭与悬停接管；modalOpen 纳入 alertdialog；协调器候选补可见性过滤且已绑定输入框豁免 45% 阈值（上下分栏不再反复挂卸）；表面祖先观察改快照重建防泄漏 → v144 ⚙ radio 对齐修复：.zu-settings-langs/.zu-theme-options 的 label 显式声明 flex+align-items:center+gap:6px——原 label 继承 .panel label 的 flex-start 顶对齐（gap 14px），radio 圆钮相对文字中线偏上约 4.5px；新规则 (0,2,1) 特异性覆盖 (0,1,1) 基础规则，实测居中 delta=0 → v145 切回默认主题补还原 bar.style.visibility（pillUnsafe 安全隐藏是 pill 专属态，写入点仅 track 的 pill 分支；此前 pill 隐藏态下切回默认条永久不可见，十路评审 P1） → v146 精简模式（theme 第三档 compact）：条永久隐藏但保留 DOM（<style>/ariaLive 随条存活、heavy 保条对抗 React 清子树）；生成速度改挂工具行 .zu-tsb（重置卡左侧，挂载/位置兜回/签名幂等照重置卡同款），内容=zuBarSpeedView 桥两态或 tpsBand DB 回退、无有效样本不渲染（用户拍板）；tooltip=速度读数+状态条摘要（本轮/会话/工具/今日/子代理，逐格开关继续生效、子代理行点击开明细）+tpsBandLegend+「打开设置」按钮（镜像齿轮开启分支，面板精简下贴输入卡定位）；updateLive 10Hz 心跳原地跟随；非精简主题 syncTpsChip 门控摘除；诊断 mode=compact → v147 精简模式速率 chip 挪前导区（用户规格）：git chip 左侧——git 在时插其前、git 不在时占其锚位（cua-entry 后方/前导区末尾），两侧位置兜回收敛为 [锚][速率][git]（git 兜回容忍速率占相邻位防逐拍拉锯）；前导区发现失败回落尾随区（重置卡/额度组左侧） → v148 精简速率 tooltip「打开设置」按钮右对齐（用户规格）：footer 改 flex 布局，说明文本 tps-note-t 占据剩余宽度、按钮 margin-left:auto 推至最右，长文本换行不断布局 → v149 精简速率 tooltip 摘要行单位 tok→token（用户规格，与回答末尾统计行的 token 措辞对齐） → v150 修复精简模式 git chip 永不挂载（用户报告）：v147 的 git 兜回容忍条款（速率占锚位时不挪）误拦首次挂载——速率 chip 常驻锚位时 enhanceGitChip 每拍判"已就位"跳过插入；改为 chip 未连入 DOM 时无条件首挂（落速率后再由速率兜回收敛 [锚][速率][git]），容忍只用于已挂载的位置保持 → v151 工具状态词改版（用户规格）：Bash 动词「正在执行」→「工作中」，未知工具回退同改（正在执行 X→工作中 X）；工具计时分隔去中点（正在读取 · 4.3s→正在读取 4.3s 一并生效） → v152 工具动词 Read「正在读取」→「读取中」（用户规格） → v153 工具执行状态词定稿（用户规格）：Bash 与未知工具回退「工作中」→「执行中」（无名词回退英文 Working→Executing 对齐） → v154 工具动词全面改「X中」体例（用户规格）：写入中/编辑中/搜索中/获取网页中/更新待办中/读取待办中/运行技能中/读取上下文中/发送消息中/获取任务输出中/停止任务中/编写工作流中（Read 读取中、Bash 执行中、Agent 子代理运行中此前已改；英文标签不变） → v155 审查修复批（review-fix）：①compact 下 positionSubPanel 被隐藏条僵尸 .zu-sub 抢锚（零矩形把明细面板钉左上角）——chip 优先锚；②速率 tooltip 内容含秒表，悬停中 10Hz 整片重建吃掉「打开设置」/子代理行点击——显示中内容变化冻结只跟位置；③track compact 早退补两面板周期跟随；④自清选择器补 .zu-tsb、跨代采纳 chip 统一挂装（__zuWired 防重）修复热更后悬停/键盘失效；⑤closeSettings 焦点归还校验 offsetParent（compact 下不落隐藏 gear）；⑥enhanceGitChip 重复 var slotNode 清理。Web 同批：①③⑤（mousemove chips 归属校验只接本实例）+chip focus/blur 键盘可达对齐桌面 → v156 上下文按钮增强开关（issue #141）：⚙ 通用区新增「上下文按钮增强」checkbox（localStorage zusage3.ctxEnh，缺省开、仅显式 "0" 关），关闭走 enhanceCtxButton 关闭分支还原原生环/百分比且重置卡徽标继续维护（restore 顺带清徽标后立即重挂） → v157 修复精简→默认切换残留空壳细线（用户报告）：compact 期 render 短路会让空壳条面（热更占位/清子树后未填过）因签名相等一直存活、切回默认露出细线数十秒；①离开精简立即恢复 display（compactHid 区分初载 none，初载不提前露条保 pill 定位契约）；②离开精简强制条面重建一次（lastHtml 清空）；③compact 短路加 main.children.length 门——空壳先补一次完整渲染（条隐藏不可见）；④render 公共尾部补 syncTpsChip（短路/直通两路都经）→ v158 并流 fork/main cmdkW 线（PR #140，原线 v146 与主线 v146 精简模式撞号按合入顺序顺延）：宿主命令中心（⌘K 搜索弹框）加宽加高开关（⚙ 通用区，zusage3.cmdkW 缺省开）：条样式表规则 max-width:max(32rem,80vw)!important（原生上限=宿主 quickPickDialogClassName 的 max-w-lg=512px，弹框基础类自带 w-full 窄窗本就满宽，故小窗保持原样）与高度同规格（弹框根 max(90dvh,calc(100dvh-6rem)) 不低于原生上限，cmdk 列表 440px 硬顶放宽为 max(440px,calc(90dvh-15rem)) 小窗保底），<html> data-zusage-cmdk 属性门控（applyCmdkW，与 v136 projPath 同款），:has(>[data-slot=command][cmdk-root]) 只命中 cmdk 弹框——命令中心/任务搜索/快捷指令共用该样式常量一并放宽，设置页等普通 Dialog 不受影响 → v159 重启提醒开关（issue #139）：⚙ 插件更新区新增「更新后提醒重启」复选框（zu-restart-notice），经主桥 restart-notice 动作原子写运行时 config.json 的 restart_notice（缺省开、显式 false 才关、异常值不静默）；session-start hook 的 session_notice 读同一键，关闭后每个新会话不再注入 🔴 重启/安装提醒引用块（/install-overlay 命令行输出与自动安装失败、桥补装的故障提示不受控）——工作流模式多会话不再被逐会话植入提醒  → v160 Skill 运行期状态词显示「技能名·执行中」（用户规格，如「查阅·执行中」+计时）：turn-stats runningTool 透出截 160 字的 inputText，overlay 端 zuSkillName 提取 JSON name 字段（正则兜底、控制字符拒绝、超 24 字省略号截断），取不到回退「运行技能中」→ v161 状态条新增「项目累计」格：会话累计右侧渲染本项目（session.project_id）全部会话聚合（含子代理，口径同 session_usage；远端/不在本地库无字段不渲染），⚙ 状态条显示加「项目累计」开关（show.proj，默认开），精简摘要加同款行 → v162 状态词流光（用户规格）：速率 chip 纯状态词态（思考中…/工具动词/技能名·执行中）复刻宿主 .zcode-loading-label 同款流光——subtle→foreground→subtle 渐变 background-clip:text、1.4s 横向扫光、reduced-motion 停用；类名/关键帧自有命名（zu-shimmer/zu-loading-shimmer）不依赖宿主全局类；带 t/s 数值的估算/真实/DB 回退态不含 → v163 会话累计/项目累计 tooltip 增按模型明细行（top 8 按总量降序 + 「另有 N 个模型」，轻量行无 models 字段不显示）→ v164 tooltip 收口（用户规格）：模型明细全量展示去「另有」折叠、总和行置顶、键列自适应宽不换行、时间范围行 sticky 吸底（rt-pin，五个 tooltip 统一）→ v165 模型明细表格化对齐（rt-models display:table，整块共享最宽键列，token/次数列纵向对齐）→ v166 会话累计/项目累计时间范围精确到秒（fmtStartS，用户规格；其余三格保持到分）→ v167 模型行去 rt-atom（Chromium 表格内在宽度在 inline-block 边界断行致数值折行，真实浏览器实测）+ 带 rt-models 的 tooltip 宽度帽放宽 860px（zu-tip-wide，取最宽一行）→ v168 格面计数改 fmt 万/亿口径（用户规格：≥1万 N.NN万、≥1亿 N.NN亿；本轮次/会话轮次/项目会话次/工具总数四处，tooltip 与精简摘要保持原值）→ v169 同容器双条去重（Windows 用户报告：最小化/还原窗口来回切出现两根状态条）——宿主窗口状态切换可能短暂保留旧视图副本/重建编辑框，协调器瞬态出现两实例两根条落进同一张卡；heavy 对账每拍扫描：同卡可见 .zusage-root >1 或两根 body 兜底条矩形重叠过半时，data-zusage-slot 大者 hideBar 让位（对手消失经 track 自动复显；拆分窗格各卡各条不受影响） → v170 tooltip 计数同口径（用户规格）：各 tooltip 标题/规模/工具/请求行与模型行、精简摘要行的次数/轮数/会话数全部走 fmt；子代理明细面板保持原值 → v171 修 issue #147（社区 @Mc-GrowlR 报告并给出方案，Windows 10 + ZCode 3.17.1）：划词 side chat 面板容器无 data-pane-id，被协调器 auto 兜底键当作独立 pane，同窗出现第二条状态条（Radix presence 常驻挂载，面板收起后幽灵 composer 仍持续命中扫描）；窗口存在真实 pane 键时丢弃 auto 键——老宿主全部候选均为 auto（单键）单实例行为不变、shadow/iframe 空文档兜底不受影响 → v172 待重启/待更新改由 ⚙ 齿轮红点提醒（restartNotice 开关改为控制红点；会话内文字重启提醒取消，plugin-updater 推送 markerAt 作红点代际，点进「插件更新」分区记为已查看）+ ⚙ 更新页「重启 ZCode」按钮（二次确认，主进程 relaunch 动作）+ 移除自动安装开关（hook 未注入一律自动装，auto_enabled/INSTALL_MESSAGE 会话出口删除）   // 悬停 ⚙ 面板可见；版本号随代际递增 → v173 强制 K/M/B 单位开关 → v174 辅助对话独立状态条（宿主 tabId 成键 + 实例配额 4+1、桥 scope 精确绑定、确定性统计行按会话根归属）→ v175 辅助对话回答末尾富文本与主分栏同规则（显式本地 scope + isCurrentTurn 活跃轮限定 + --current 的 promptTs 守卫；修宿主 modelDurationMs 只累计高速供应商致占位行永久「生成时长缺失」；富文本收集后统一发起、同 SID 只追活跃轮且 epoch 粘滞防多轮搅动） → v177 review 修复批（10-agent 全量 review 闭环）：双条去重抑制不再被 track 每帧复显打穿（v169 Windows 双条场景实际失效的根因，复显前查 dupSuppress、heavy 每拍重评估解除）；精简下速率 chip 被摘除后子代理明细面板保持原位（不再回落隐藏条内全零 .zu-sub 抢锚钉视口左上角，web v103 同款）；精简短路块恢复 syncTpsChip 数据点 reapply（2976478 挪公共尾部后短路 return 到不了、与 git chip 不对称）；relaunch 无回执 4s 提示主进程可能是旧版需手动完全退出（旧 pollPluginRequests 白名单外动作静默丢弃）；待办红点指纹改分量级比较（更新装完后 latestVersion 分量退出不再误复亮）且 ack 幂等早退前先收敛本窗口红点；cnNum 切换补富文本 unitEpoch 在途竞态守卫（同 forceKmb）；detRootEl 落在宿主 data-session-id 写入窗口期时 heavy 按拍补算自愈；精简说明文案对齐 v147 挂载位（前导区 Git 左侧）→ v179 自动压缩阈值注入：⚙ 开关+模式+数值+状态行（enginePatch 随插件状态回推，__zusagePluginState 种子+拷贝行同 v172 纪律），主进程 engine-patch.cjs 按引擎 SHA256 白名单对 glm/zcode.cjs 打阈值改道补丁（锚点唯一性+use strict 指令位校验 fail-closed，hook 缺席/返回空双兜回 fail-open），阈值 autocompact.json 由引擎 hook 每轮决策 mtime 缓存读取——数值热生效、补丁冷生效（已运行 agent 子进程下个 spawn 起用）；ctx 按钮 hover 面板加「自动压缩 ~X%」行（acInfoText 按标称窗口口径，21K 预留近似还原）；关闭开关=按当前内容反向还原引擎字节；阈值任何形式钳 1% effective 地板防连环压缩→rapid-refill 熔断→ v180 重启按钮错位守卫（issue #158）：主进程 pushPluginState 携带 relaunchSupported 能力标记（与 relaunch 分支同文件、天然同步），浮层缺标记时隐藏按钮并显示「完全退出后重开」指引（syncUpdate + 点击守卫双处）；主进程 pollPluginRequests 白名单外动作兜底回执 unknown action，重启回执明确区分「主进程是旧版本」 → v183 子代理行内实时速率 chip（v4 Agent 行 testid 后缀即 childSessionId、与 v97 槽位键同源：运行期读槽位估算、完成后读泵快照 sub.list 真实加权速率；TPS 十档色；悬停 tooltip） → v184 ⚙ 新增「子代理行内速率」开关（state.show.subRate，zusage3.show 整包持久、默认开；只门控行内展示） → v185 实机修复批+review 修复批：后台子代理在宿主注册表无现成 store（运行期估算自 v97 起从未真正工作）→桥 v2 acquire 访问器按已验证 scope 解析子会话租约（仅 sess_subagent_ 前缀+本地）；tooltip 构建器改收数据包（buildTip(el.__zuT) 约定）；截断改从尾部取（保最新派发 8 个）；SUBRATE_DIAG 提模块级；诊断按 handle 判绑定；实例 dispose 摘行内 chip→ v186 本会话平均 token/s（PR #157 收编）：状态栏完成态主数字改会话加权平均（zusage avg_tps：Σ有效输出÷Σ生成窗口，main_turn 段、不含子代理），「均」前缀+按均值分档，最近一段/最近一轮退 tooltip；速率行/CLI 加「会话均」，精简 chip 同步；updateLive 会话归属取本 pane 行（lastView.session），缺席回退原行为→ v187 补回 v181 工具组状态词（PR #161 合并时 turn-stats runningGroupOf 块与 overlay 消费分支遗漏入库，仅存于运行目录热修副本）：turn-stats 复刻宿主 exploreGroup/executeGroup 合成规则（≥2 连续同类行成组、半截 JSON defer 透明、startedAt 锚定组首行），运行行落组尾时状态词显「查阅·执行中/终端·执行中」替代逐工具动词，计时从组头起算 → v188 自动压缩阈值注入按验收反馈简化：开关默认开（主进程 auto_compact_patch 缺省开、显式 false 关）；UI 只留百分比数值（留空=跟随引擎默认），模式下拉移除（引擎层 enabled:false/tokens/buffer 协议保留兼容，配置文件手写仍生效）；标题改「自动压缩上下文阈值注入/压缩上下文阈值数值」；状态行补 14px 水平内边距与 label 文本对齐 → v189 hover 面板阈值信息行移到「压缩上下文」按钮上方并追加下划线「调整」链接：点击复用 gear.click 完整路径打开 ⚙、切「通用」分区、scrollIntoView(nearest) 定位阈值数值行并高亮 3 秒（.zu-ac-flash，计时器实例级归属 dispose 清理）；info 结构改首文本节点+常驻链接（整行 textContent 覆盖会抹掉链接） → v190 三处验收微调：hover 阈值行 text-align:left（与卡内其它行对齐）；高亮改琥珀左条+淡底（--color-brand 在宿主主题是白色系，outline 描边观感像输入框焦点）；⚙ 注入开关关闭或主进程未加载时数值行整行 hidden → v191 hover 阈值行 token 数改走 fmt()：万/亿/K·M·B 与状态条、tooltip 同一转换链（跟随中文单位开关与强制 KMB 开关，中文至多两位小数去尾零） → v192 hover 阈值行布局：去掉自加 6px 下边距（间距交给宿主 space-y-3 的 12px 节奏，与「平均缓存命中率」行 pt-3 距分割线一致）；行改 flex 两端对齐，「调整」链接居右 → v193 修 v192 贴按钮：宿主 space-y-3 是 Tailwind v4 :where() 零权重 margin-bottom，行上自写 margin 会按类名权重压掉它（v190 的 6px 显挤、v192 的 margin:0 贴紧同因）——删掉 margin 声明整段回落容器原生 12px 节奏 → v194 阈值百分比改总窗口口径+数值行 30-99 校验：设置 91=原生按钮走到 91% 触发、hover 显示 91%（旧口径按扣除 21K 输出预留后的有效窗口算，设置值与显示差约 2 个点被判为割裂）；引擎 hook 以 eff+21K 近似还原标称窗口并钳在 eff 内，writeConfig 白名单收紧 30-99，已打补丁引擎下次启动按 PROLOGUE_V1 原位换装新 hook；⚙ 数值超范围实时提示并拒绝提交 → v195 hover 卡新增新手说明行：阈值行下方小字（.zu-ac-hint，随行同生命周期）解释口径与后果——「按窗口总量计算（与顶部百分比同口径）；走到该比例时客户端会自动压缩较早的对话内容以腾出空间」；margin-top 收紧 space-y 间距（space-y v4 只写 margin-bottom，top 无冲突） → v196 「调整」失灵诊断面包屑（下版移除）：openAcThresholdSettings 在 enter/after-gear/+150ms/row 各点写 __zusageDiag.acOpen（面板态、gear 可见性、条 display、分区、代际），closeSettings 写 acClose 调用者栈；v197 实证 acOpen 为空=点击未到达处理函数 → v198 修「调整」失灵：链接监听改 pointerdown（宿主疑似 mousedown 即关 hover 卡、click 到来前链接已被摘）+ 行级 click 兜底 + 捕获期点击写 localStorage 并在说明行回显（命中标绿/落空标红，诊断下版移除） → v199 清理 v196-v198 诊断：acOpen/acClose/acClick 面包屑、localStorage 回显、命中/落空着色全摘；保留 v198 修复本体（pointerdown 主监听 + 行级 click 委托兜底），实机验收=电脑操作点击「调整」面板弹出且阈值行琥珀高亮 → v200 上下文按钮增强显示层优先镜像原生 aria-label 已用/总量（宿主 taskUsage，压缩后立即回落；issue #172 曾停在 DB 最近完成请求旧值 16.4%），解析不出回退 lastBand DB 口径（ctxOv/nativeCtxVal 优先级只作用兜底），exc 过程态档位仍优先，还原路径共用同一解析器（英文 UI restore 顺带修对） → v201 合流：v200 撞号顺延（v200 已被并行线 issue #174 压缩按钮开关占用，8e6e1c0 先合入） → v202 预估费用行：四格 tooltip（本轮/会话/项目/今日）按 models.dev 官方牌价估算费用（token_pricing.py 内置表 326 条 + serve 内 12h 同步 models.dev 与 er-api 汇率，pricing-cache.json 落盘），快照加 cost_usd（USD）与 fx，展示层 ×汇率显 ¥（无汇率降级 $），会话/项目模型明细行尾加各模型费用，「价格来源 models.dev」脚注可点（openExternal），费用行尾空心问号图标悬停弹说明小气泡（价格来源/计算公式/汇率来源三行，fxTip 独立浮层 + mouseover/out 委托 + 180ms 悬停桥，主 tip 收起/重建时同步收），汇率源主源失败兜底 exchangerate.fun（自定义 fx.url 不启用），⚙ 通用区开关默认开，本库口径：裸输入=input−cache_read−cache_creation 全价、缓存分价、output 已含思考不另计 → v203 红点仅承载待重启（发现新版未安装、更新成功且已热重载均不亮；分量级已读比较保留以兼容旧 seen 串）+ ⚙ 带待重启红点点击直接落「插件更新」分区（激活即 ack）+ 设置页新增「已更新成功，点击重启 ZCode 即可生效」提示条（旧主进程降级回原文字指引），分区切换提取 activateSettingsSec 单一出口 → v209 额度 chip .zu-quota 与重置卡徽标 .zu-ctxrst 左右内边距 6px→3px + 模型选择触发按钮（chat-model-select-trigger）左内边距减半：文本态 8→4px、图标态 6→3px（!important 压宿主 group 变体）（用户规格 2026-11-02） → v210 时间范围行全部精确到秒（v166 会话/项目累计先行的 fmtStartS 扩展到本轮/今日合计与速率 tooltip 最近一段；fmtStart 仅剩「最后活动」行）（用户规格 2026-11-02） → v211 本轮 tooltip「单次耗时/首字延迟」改「平均耗时/平均延迟」（zusage 快照 last_turn 新增 avg_duration_ms/avg_ttft_ms，对 model_usage 该轮已完成 main_turn 行 >0 样本求均值；turn_usage.ttft_ms 聚合列实测口径不明不可依赖，旧快照缺字段整行不渲染）+ 本轮格面移除时长/首字两段（耗时只在 tooltip），精简摘要「本轮」行时长随同改平均（用户规格 2026-11-02） → v212 Git chip 分隔符 .zu-git-sep 间距收紧：字面「 · 」改纯点+左右 2px 内边距（多仓段与 ?N 未跟踪段两处同源；用户规格 2026-11-02） → v213 状态条格序调整：今日合计提前到会话累计之后（速度→本轮→会话→今日→项目→工具→子代理→⚙），速率 tooltip「状态条摘要」行序随同对齐（用户规格 2026-11-02） → v214 项目累计统计卡改版：tooltip 重构为「标题+统计范围（全部请求·含子代理）、总用量/请求次数/预估费用三 KPI（费用旁统一说明问号）、输入(命中率)/输出(含思考)/缓存写入明细、会话·轮·工具·重试规模行、模型四列表格（默认 6 项可展开全部，排序对副本）、时间范围（em dash）」，作用域 .zu-project-tip + :has 样式（不动共享 .tip/.rt-* 规则），展开态实例级归属键（sid:started）局部更新不重建整卡，触发项 zu-pj-item 标记，卡片内 Escape 关闭并归还焦点，focusout 进卡片不误关，positionTip 钳底边，费用全链复用 v202（0 有效/缺失 —/开关关整格收） → v215 六统计卡统计卡化：本轮/会话累计/今日合计/子代理四格 tooltip 统一 zu-stat-tip 视觉体系（速度统计卡公共构造：scope 标签+双读数 hero 主读数档位色、两行五列网格窄窗重排、速度卡宽帽 760px :has 作用域；明细面板内模型行问号图标弹费用说明气泡，复用 fxTip 单例同款委托）（用户规格 2026-11-02） → v215.1 速度卡去费用行与模型明细（用户规格：速度 tooltip 只留读数与时间范围，费用唯一承接处=各卡明细面板与 fxTip 气泡） → v217 子代理统一浮层：.zu-sub-pop 双栏单组件替代「悬停五段卡 tooltip+点击独立明细面板」两套旧 UI（preview/pinned 状态机：悬停预览、首次点击固定、面板内操作转固定、Escape/关闭/外点统一收且焦点归还+500ms 悬停抑制；选中按 sid 维护、运行中未入库槽位进导航、签名幂等重建保滚动、会话切换即关、入口断连即关；任务页 _sub_item 逐任务模型用量表/预估费用/平均速率档色行/最后活动全格式时间，zusage sub.list 单项同步扩展；精简入口 chip.__zuOpenSub 归一指向同一浮层）（实机验收 2026-11-03） → v218 速度卡三修（实机反馈）：悬停冻结 updateLive tipFor 判定改 contains（旧恒 false 致悬停中 tooltip 不冻结）；右格「最近一段」改读 lastView.last.tps（zuBarSpeedView 无 latest 字段恒缺）；图例 ≥2000 Ultra 改渐变圆点并禁 ✦ 伪元素（星点破形） → v219 ⚙「状态条样式」（默认/药丸/精简单选+精简说明行）从「通用」分区移入「状态条显示」分区卡首，纯分区归属调整，控件与持久化行为不变 → v222 速度卡 tooltip 补「时间范围」行（用户规格，参考四格 tooltip 同款式）：主数字为会话均/桥态取会话累计口径（started→last_at，与会话累计 tooltip 同源），「最近一段」回退态保持段范围；起点缺失整行不渲染（半程范围无意义）；三处 speedCardHTML 调用点（桥态 buildLiveTip/DB 回退/精简 chip）同批生效 → v223 ⚙ 面板关闭按钮命中区外扩（原并行线编号 v220，合入顺延；::after inset:-6px、hover 反馈同步，约 20×24px→32×36px）：按钮四周 head 空白点击原本无反应，用户实测「悬停 × 上点不动、不灵敏」；CDP 真实点击定责为命中区过小（事件链与面板几何均无缺陷），纯命中区修复，不改布局与视觉 → v224 速度卡悬停实时刷新二次修复（实机反馈）：v218 只改了 tipFor 判定，新 tip 串仍写到格内 .zu-live span，而 __tip 宿主与 drawTip 读取都在 .it 格元素上——条件每 tick 命中、重画的仍是整条渲染时的旧串，悬停中「当前读数」冻结在最后一次整条渲染的值（chip 已跳动、tooltip 停在「思考中…2秒」）；改写回格元素（liveEl.closest(".it")），悬停中每 tick 跟手重画，未悬停也保持新鲜 → v225（v224 并行线 PR #198 先合入，本线顺延）⚙ 自动压缩状态行区分「引擎被单独热更」（issue #191）：桌面 build 已登记而引擎 sha 脱钩时明示热更事实与漂移 sha 前 12 位（引擎补丁新增 drifted 字段，主进程传入 appVersion 按点分界前缀匹配登记表），替代误导性的"版本不在支持名单"；lastError 后缀此时与 sha 重复不再拼接；fail-closed 判定不变 → v226 ⚙ 两项（用户需求 2026-11-03；v226 已被并行线自动压缩状态行占用，顺延）：①六格显示开关（本轮/会话累计/项目累计/工具调用/今日合计/子代理）全部关闭时样式自动转精简（边缘触发只在「变得全关」那一拍切档，zusage3.autoCompact 记录来源主题 default|pill，重开任一格恢复、面板手动改档即解除；药丸来源同样触发）②默认样式新增「水平对齐」三选一（zusage3.barJust：均分 space-between 缺省不挂类/居左 flex-start/居右——居右不用字面 flex-end，LTR 下 start 侧溢出不可滚动也不计入 scrollWidth 会废掉收缩检测与 .zu-clip 渐隐，改首格 margin-left:auto 等效右聚拢、溢出方向与兜底不变；设置块仅默认档显示，applyBarTheme 随档显隐并同步条上 zu-just-* 类） → v227 预估费用说明气泡悬停保活（fxTip 是 body 级独立浮层、挂在主 tip 之外：指针从 ? 图标移入气泡被文档 mousemove「条外」分支按 left-bar 强制收主 tip、hideTip 同步收气泡，v202 起悬停说明气泡即灭；子代理浮层路径同被 preview-leave 倒计时收走面板。mousemove 处理器节流前新增分支：fxTip 显示中且目标在气泡内视同仍在 tooltip 上——保住主 tip 与气泡、取消越顶宽限与子代理面板延迟关闭，离开气泡回落原判定） → v228 速度 chip 完成态去「· 近X」尾缀（用户规格；编号顺延避让已合并的 v226(PR #200)与 v227(PR #202 fx-tip-keepalive)）：条面格与精简 chip 同批去掉 dbTps 尾缀，主数字只显会话均（或最近一段）；「最近一段」读数保留在 tooltip 右格不受影响 → v230 压缩轮不再显示「本轮统计不可用」（编号顺延：原 v238 号，v229 已由并行合入的 PR #207 占用、v231 起由并行未合线自占）：上下文压缩（手动/自动同链）是 query_source='compact' 的辅助轮（DB 有完整数字且已计入今日/会话累计，但消息流无正文、header 零输出），旧逻辑按 v74 零输出明示规则误插误导占位——实测压缩轮投影=turnHeader+timelineMarker(marker.type='compact') 而 header.executionKind 恒 'agent'（ek 探针证伪初版假设），turn-stats get() 以 isCompact 识别，overlay 对压缩完成轮不新插/撤下已插行（宿主「上下文已压缩」提示已承载语义）；kinds/tmr 为 det 诊断字段；v74 真实零输出轮行为不变 → v231 统计卡标题拼接名称与垂直居中（用户规格三轮迭代一并入库；编号顺延避让并行已合入的 v229(PR #207, issue #205)——v228 后 overlay 台账实际未占用，按共享代际台账撞号声明让号）：①项目累计卡拼项目名——zusage _project_usage 附 name=启动目录末段（正反斜杠归一，缺目录/旧快照判空不渲染），.zu-pj-pname 字号颜色同规模行 .zu-pj-scale；②会话累计卡拼会话名——快照行 title 三处本就产出，纯渲染端：statHead 加可选第三参仅会话累计卡传、/\s+/g 压空白、缺 title 判空不渲染，.zu-st-name 360px 省略号；③名称与标题垂直居中——标题容器带名称时切 .zu-tt-name（display:flex;align-items:center），行内 baseline/bottom 对齐会被 18px 大字 descent 拖得视觉偏低（实机指认），flex 子项自动块化、省略号仍成立 → v232 速度 tooltip「最近 20 段」柱状图：zusage 快照 session 行新增 speed_segs=最近 ≤20 条已完成 main_turn 有效速度段（_row_gen_ms 窗口与 avg_tps 同款口径、辅助源/子代理/碎段不计，v 保留原始浮点供档位与柱高按原始值判断；speedCardHTML 带 segs 时切「左读数卡+右图表」布局——左卡=当前读数/档位胶囊/加权平均说明，「最近一段」右格由最新柱承载，无 segs 的旧快照/远端旧版保持 v215 原布局），柱顶读数恒一位小数与柱同轴心、最新段加粗，Y 轴 0 起整洁刻度并按「信息卡横向覆盖最右约 1/3 柱」约束迭代刻度保证最高柱读数不被压住，X 轴=分段真实完成时间本地时区 MM-DD HH:mm 稀疏显示、首末恒留，最新段描边高亮+「最新」徽标，柱体颜色沿用 TPS_BANDS 档位类（ultra 渐变深浅主题显式 border-box 覆盖防 clip:text 裁没），段值 ≥1000 t/s（读数 6 字符）或窄窗口（plot min-width+横滚）保读数永不重叠；柱级悬停/键盘焦点弹信息卡——tip 本体委托 + 实例闭包存悬停段下标经 speedTipRebuild 编进串（签名幂等重建不丢状态、离开回落最新段、会话切换重置），render 接管对速度格补 drawTip 使打开中随快照跟手（焦点/选区在 tip 内时跳过），图表横滚位置跨重建保留；精简 chip tooltip 不带图表 → v233 速度卡三删+读数自适应（用户规格）：①删「统计会话全部已完成请求：工具等待不计，不含子代理。」口径行（DB 回退与精简摘要两处，Σ输出÷Σ生成耗时等其余口径保留）；②删柱状图「最新」徽标（最新段描边与加粗读数保留，plot 高 200→184）；③删「每段完成后更新；不足 20 段时显示实际数量。」脚注（live/回退两处）；④左卡「当前读数」估宽分级自适应（超长状态词降字号+允许换行，不再被 156px 左卡裁切；分级实现见同批改动） → v234 柱状图 20 段→14 段、释放空间给左卡（用户规格）：zusage 新常量 _SPEED_SEGS_MAX=14（与 last.tps 回查的 _TPS_LOOKBACK 分离，扫描窗 42 行凑 14 条有效段）+ speedSegsOf 渲染端截 14 + 两处口径行「最近 20 段：…」改 14；左卡 156→300px（内宽 278），主数字删 +12px 覆盖回基础 ui+22 大字，估宽分级阈值重算 ≤7.5/≤11.5、fit2 +6→+10px；plot min-width 600→420（pitch≥30）、wide 780→560、xEvery 估算基数 620→460/最小标签距 44→30（14 柱满宽全显时间标签） → v235 速度 tooltip 多状态结构化重构（用户设计图规格）：zuBarSpeedView 追加结构化字段 kind/statusText/nameText/nameFull/elapsedText/speedValue/speedIsEstimated/speedSource/activeCount/noteText（八类 tool/toolgroup/skill/subagent/thinking/estimate/avg/real，text/cls/phase/band/latest 逐字保留、状态判断不解析文案）；speedCardHTML 新增 o.status 分层左卡模板（zu-sl-status 状态标题+子代理 ×N 徽标 / zu-sl-name 名称两行省略+title 全名 / zu-sl-main 主数值或计时 / zu-sl-unit / zu-sl-note 辅助），数值型走档位色、工具/Skill/思考/子代理保持 dim，o.main 拼装路径为精简 chip 等旧调用方保留；子代理估速前缀 ≈、无效估速显「估算中…」不补 0；buildLiveTip/fallback 传结构化状态，scope 标签按真实状态映射（工具执行中/工具组执行中/Skill 执行中/子代理运行中/思考中/生成中估算/会话平均/本轮真实速度），思考态左卡内嵌脑动效图标；柱状图 14→17 段（_SPEED_SEGS_MAX=17、渲染端截 17、口径行改 17），plot min-width 420→500/wide 560→680/xEvery 基数 460→500/最小标签距 30→29 配平左卡 300→250px → v236 速度 tooltip 三修（用户实机反馈）：①信息卡改为悬停/键盘聚焦柱体时才渲染（默认不再常驻最新段上方，cur 高亮随之仅悬停态、latest 描边保留）；②X 轴时间标签最小距 29→44（17 柱 pitch≈29 必隔列、间距 ×2，修复标签拥挤）；③非 wide 图表删 plot min-width（随容器压缩+稀疏标签兜底），任何窗口宽度不出横向滚动条（wide ≥1000 t/s 保留横滚），速度卡宽帽 860→1040 → v237 修时间标签裁半（用户实机截图）：v236 的 border-box 配平让 X 轴行内容区只剩 20px、两行时间（25px）被 wrap 的 overflow-y:hidden 裁掉半行——X 行 24→29px（4 padding+25 两行）、plot 高 184→189，列配平随之 160+29 → v239 速度 tooltip 100% 复刻设计图（用户拍板以设计图为准，撤销 v233 删口径/v236 悬停才显卡）：信息卡恒在（默认最新段带「（最新）」+虚线引线连柱，悬停切段）、左卡状态图标+「当前读数」标签+档位色状态标题、颜色对照单行横排、统计口径左标题右分段+时间范围同卡、带图表时不渲染脚注 → v240 柱状图 17→10 段（zusage _SPEED_SEGS_MAX=10、渲染端截 10、口径文案同改）、柱宽 max-width 22→15px（-30%）、信息卡恢复仅悬停/聚焦才显示（撤销 v239 常驻）、左卡下半区加「峰值/最低/最新」概览填空、速度卡宽帽 1040→860、plot min-width 500→340 → v241 速度 tooltip 按设计图复刻：柱状图取当前会话最近 10 次（可跨天）、左卡标题行/主读数/说明行文案按设计图对齐（工具组「查阅」、Skill「执行中」、说明行统一「X · 正在执行」）、前缀「估/均」小号灰字、主体区垂直居中填空 → v242 速度 tooltip review 修复批（十 subagent 审查）：focusout/mouseout relatedTarget 守卫修 Tab 跨柱焦点断裂与双重建闪烁、render 接管 pill 主题补焦点守卫、wide 横滚复活（plot 420）、spanFrom 收严最坏一半 + CARD_H 36（实高 35.6 校准）、real 去档位胶囊、skill 标题统一无空格「·执行中」、工具组 statusText 回归完整短语、liveScopeMap real/estimate 用词对齐、「当前读数」标签与有效数值同门（修 subagent 数值误杀回归）、左卡 border-box 250/双规则合并/padding 12、标题档位色与单行省略、浅色 ultra 图例圆点 clip 修正、hero :has 单列、柱 role=img、17 段/常驻卡/帽 1040 等过期注释清理、测试补八态直调/概览三格/前缀/（最新）角标/图例行/几何不重叠断言 → v243 更新日志「发布页」链接 GitCode 渠道改指 /releases 列表页（tag 深链页对本项目 API 创建的 Release 一律「找不到或无权限」，GitCode 平台路由 bug 2026-11-04 实测；GitHub 渠道保持精确 tag 深链；镜像/未核实回退路径同规） → v244 重启按钮反馈与延迟（用户报告「点击没反应、等很久才退出」——大头是宿主 app.quit 优雅退出链要关窗并逐个终止会话/扩展子进程，可达数十秒，插件无法绕过）：确认发送即「正在重启…」+禁用+预期文案替代「发出即恢复」伪装无反应，4s 无回执/失败/90s 仍存活三路还原（ok 后挂 90s 兜底防 quit 被会话/扩展阻止永久卡死；4s 超时已还原则不再挂）；syncUpdate 重绘保持禁用与提示；主进程 relaunch 固定 300ms 延迟改回执送达后 30ms 退出（800ms 渲染端无响应硬兜底）；v245（同批提交）quit 前 hide 全部窗口——退出屏障期窗口不再可见干等，主进程 15s unhide 哨兵在 quit 未发生时恢复可见 → v246 用户手改批：速度图未悬停（hoverIdx<0）不渲染信息卡、span 只按 capOut 留柱顶读数净空，刻度基数补 6/7.5 防跳档空旷；X 轴同日去重（仅首枚显示标签柱与跨日首柱渲染日期行，其余同日只显 HH:mm）；本轮/今日合计首格改「总用量」、今日缓存命中率并入 grid3 输入列副行、本轮平均耗时/延迟/总耗时行改 --sub 弱化段、会话累计 scale 行分隔符改前缀式并删末项请求数、工具表 <50ms 显「<0.1s」弱化、子代理浮层 KPI 副行改命中率/含思考/缓存写入+平均速率并入 KPI、项目卡范围+scope 合并单胶囊+隐藏「按用量排序」+子代理浮层模型表去底色改行线、本轮输出速度单位 tok/s→t/s、图例 ultra 点隐藏与 inline 间距收紧、tbody scrollbar-gutter:stable → v247 悬浮窗口激活方式（issue 用户反馈：滑过误触遮挡）：⚙ 通用新增「点击激活悬浮窗口」开关（zusage3.tipClick 缺省关=停留 1 秒、仅显式 "1" 开=点击）；统计卡/子代理浮层 closed→open 改由独立 1000ms 定时器承接（排程置于 150ms 节流之前防快速滑入静止后永不触发、按命中元素 key 去重续期、到点按当前坐标 elementFromPoint 重命中抗 render 1.5s 重建 + :hover 最深元素复核），已开 tip 切相邻格保持即时，键盘 focusin 即时打开不变，取消统一落 hideTip/各 return 分支，定时器随 dispose 清理；点击模式 bar.click 接管 .it 并用 focusTipAt 避开 focusin→click 首击抵消（复用移出条面/Escape 关闭链，不另起 pin），fxTip/速度信息卡/工具栏 chip 与宿主原生 hover-card 不在本次范围→ v248 预估费用说明气泡「当前模型」随卡携带模型上下文（上一会话已完成、已部署未提交，与已合入的 v249（PR #224）并行开发，随本批补录入库）：四个统计卡与子代理浮层汇总的 KPI 费用问号随卡携带模型上下文（fxqIcon：data-model/data-rates=按用量最多模型+data-mcount+data-mscope），单模型显该模型四价、多模型沿项目卡口径显「计价范围」、无模型明细不显模型行，default 借 last 分支删除 → v249 用户裁定简化：「点击激活悬浮窗口」关闭（缺省）不再做停留 1 秒，恢复即时悬停原语义（v247 的 1000ms 定时器链 HOVER_OPEN_DELAY_MS/hoverSchedule/hoverCheck/hoverCancel 整体移除，mousemove 恢复 v246 逐行为）；开关开启仍为点击激活（bar.click 接管 .it + focusTipAt 防首击抵消、子代理 preview 关闭改 pinned 打开），设置项/文档口径同步为「悬停立即显示 ↔ 点击才打开」两态 → v250 速度柱状图按轮聚合+悬停卡全格式时间与轮明细+柱间距收紧（用户三项规格；编号顺延避让已合入的 v249「点击激活简化」PR #224）：zusage _speed_segments 改按 turn_id 合并一次提问的全部请求（v=Σ有效输出÷Σ生成窗口、逐问同口径），随段携带 m/i/o/n/c 供悬停信息卡渲染 模型/Token 用量（含输入·输出拆分）/请求次数/预估费用（数字格式化经 o.fmtTok/fmtCnt/fmtMoney 回调，费用随 state.cost 门控，旧快照缺字段按行省略，CARD_H 按实际明细行数校准）；悬停卡时间改全格式 yyyy-MM-dd HH:mm:ss；X 轴每个显示标签恒带月日两行（同日去重废止）；柱宽 calc(20%+12px) 使柱白任意宽度恒精确收紧 20%；段→轮措辞（最近 N 轮/第 N 轮） → v251 套餐额度显示口径开关（⚙ 套餐额度分区「显示剩余额度」，zusage3.quotaRemain 缺省关=已用%，纯渲染偏好不进 config.json）：开启后 chip 面分段数字与 aria、tooltip 窗口行/Key 总额度行/其他源摘要行改按剩余%（100−已用 同一窗口池补数，quotaRemainPct 钳 [0,100]）打头，绝对值窗口行内 已用/剩余 明细互换顺序；档位色恒按已用原始值判定（quota.md 契约）不随口径反转；余额/Key 剩余额度单段与团队/未配置/错误形态不受影响 → v252 模型拉取同步提供商侧配置（issue #236）：零兄弟供应商首拉写实最小骨架+有据元数据（contextWindow/inputFormat/档位/输出上限），档位按强度梯排序（宿主默认档=values 末项），Copilot capabilities 别名，api.json 档位目录按需后台补缺（大体量不阻塞，缓存后下次拉取生效），套餐源接目录补缺；弹窗行「未获取配置」中性提示+脚注披露只增不覆盖；档位索引落运行目录缓存（24h stale-while-revalidate 跨重启复用），目录后台补拉时行内「档位补拉中…」状态+脚注说明 → v253 本轮/今日合计 tooltip 模型明细改项目卡式四列表格（zu-pj-mhead+statTable，费用列随 state.cost 门控；本轮 rt-models 行式退役，精简摘要保留）+ 本轮 tooltip 删「速度＝Σ…未参与测速」口径行（unrated_output 字段照旧生产） → v254 生成速度 Tooltip 全面重构（范围/时间双 Tab 共 20 组合 + 按时间/会话/项目维度：zusage 新增真实库有界轮表 speed_history（短键+索引表+2s 缓存，单一 Σ有效输出÷Σ生成窗口口径，旧 speed_segs 契约不动），渲染端纯函数聚合；16 根细柱定宽居中、十档 TPS_BANDS 同源、删除均值虚线/统计口径大段/底部时间行/图表预览；右上角日历时间胶囊（title 全格式）、左卡历史均值与生成中估算分离、柱 hover 五字段自定义卡（时间区间/档位速度/多模型/Token 总量含输入输出/预估费用缺失态）、单行十档图例、空桶显空柱不显 0、远端身份下「全部」清晰降级、旧快照/精简 chip 回退原布局；Tab/dim/柱 hover 全走 tip 本体既有事件委托与签名幂等重建，不新增 IPC/定时器/全局监听） → v255 真实宿主验收三修（X 轴短时分标签+30px 裁切杜绝长时间戳重叠、左卡实时状态降为独立 note 且标题中性化「当前筛选 · 历史统计」避免工具执行中配历史均值语义错位、V2 实时状态变量更名 spdLiveStatus 与 buildLiveTip 旧局部同名隔离） → v256 修复「速度 Tooltip 有时新、有时旧」（用户实机报告）：根因=统一轮表只在 serve 常驻链产出，主进程常驻进程空闲回收/重启/降级时回退 zusage.py json 一次性帧缺 speed_history，spdRebuildOr 返回 null 整卡回退旧版；①zusage snapshot 增显式 include_speed_history 门控，serve 与桌面 json 都产出轮表（远端子进程 ZUSAGE_REMOTE_CHILD=1 排除，CLI/MCP/远端 stdout 契约不变）；②overlay __zusageUpdate 粘性保留最近一份有界轮表，缺字段帧不再闪回旧卡（空轮表不粘性）；③精简模式 tpsChipTipHTML 与 tpsTip 浮层补齐 V2 接线（双 Tab/维度/柱 hover 全走浮层本体委托、状态落 chip 数据包、V2 卡放行签名重建），V2 宽帽规则补 .zusage-tps-tip 宿主；冷文件 inject-main 未改，热重载即生效 → v257 追堵「首帧缺轮表」（用户 11:21 再现旧卡，渲染端 diag 实证已 v256）：v256 粘性只在代际内有效，热重载/重启后的新代际粘性为空，而 `_speed_history_safe` 在完成轮瞬间的 WAL 写窗口偶发抛错返回 None——首帧恰逢失败时无值可粘，仍回退旧卡。①safe 失败先短重试一次（50ms，新常驻进程首查撞写窗口时多半已放行；缓存 TTL 内不重扫），再失败跨 dbkey 回退最近一次成功轮表（`_SPEED_HISTORY_STALE_MS` 10 分钟上限，轮表是历史统计分钟级陈旧可接受，下一帧成功即覆盖）；②`__zusageUpdate` 帧级诊断 `FATAL.spdFrame`（has/sticky/turns，原地更新）——再出现象 diag 直接区分「数据链缺帧」与「粘性未建立」，不再靠截图反推 → v258 spdTip 取证诊断（用户 11:37 在 v257+首帧 has=1 下仍见旧卡，数据/代码/本地模拟三查均无异常，纯推理到头）：buildLiveTip/html(d)/tpsChipTipHTML 三条速度 tooltip 路径在 V2 成功时记 `FATAL.spdTip={t,src:"v2-live|v2-html|v2-chip",turns}`、回退时记 `{src:"fb-live|fb-html|fb-chip",turns,range,period,sid尾8}`，spdRebuildOr null 分支加 `FATAL.spdNull`（typeof FATAL 守卫不破坏 VM 切片）——diag 直接给出真实路径与当时轮表长度，定位后移除 → v259 宿主多视图顶部 48px [app-region:drag] 标题栏拖拽条穿透上层浮层（Electron 拖拽区按几何命中，覆盖层未显式 no-drag 不阻挡）：面板 top:8px 时头部 ✕ 落在条内，真实点击被窗口拖拽吞掉（新建任务页实报「设置关闭无效」，面板内导航点击正常与症状吻合）；.zusage-panel（设置+子代理浮层）/.tip（全部 tooltip 根）/.zu-mp-ov/.zu-compact-dlg/.zu-rot-pk-dlg 显式 -webkit-app-region:no-drag，把自身矩形从拖拽区减掉（宿主自家浮层与全屏屏障同款修法，app.asar 实证） → v260 静态桥缺席兜底（同内容仓库版记 v258，合入时按合入顺序归一；G2 跨版本免重打桥）：readFiberPaneScope 沿 React fiber 回溯 SessionPane 作用域（detOwnerOf/sidePaneKeyOf 的 tabId 同款兜底；限深 24、撞外层会话/分栏根止步、多候选歧义拒绝，校验与静态属性分支同规）；turn-stats.js 运行时合成 BRIDGE_TEMPLATE v2 同契约三访问器（Map.prototype 一次性探针捕获宿主注册表 + installRuntimeBridge 注入口） → v261 spdRender 取证补强（老会话完成态仍见旧卡而 spdTip 恒被 v2-live 每 tick 覆盖，hover 瞬间的整条渲染记录无法存活）：html(d) 整条渲染专记 `FATAL.spdRender={t,src:v2-html|fb-html,pane,sid尾8,turns,hasH,range,period,dim}`（独立字段不被覆盖），spdTip/spdRender 均带 pane 实例标识（多实例共享 diag 分不清写入者），spdRebuildOr null 分支补 spdNull 原因取证（typeof FATAL 守卫）；本版=运行目录 v260 合流超集基线 + 本诊断（v260 已含速度线全部修复与并行线 v259/v260 桥兜底） → v262 根治「空渲染污染共享数据」（spdRender 铁证定案：用户复现时刻整条渲染 hasH:false / spdNull hType:undefined，而前后帧 has=1——`render(d)` 首行无条件 `state.data = d`，实例 spawn 首渲染/桥空窗的 `render(state.data || {session:{},...})` 把空对象写进共享数据、抹掉统一轮表，窗口内 hover 即 fb-html 旧卡；切会话 tab 触发 pane 重建恰好高频制造该窗口，故「老会话旧卡、新会话正常」）：render 改条件写 `if (d && d.session && d.session.sid) state.data = d`——空对象渲染不再抹掉轮表，spawn 实例后续 updateLive 直接用上一真帧渲染（比旧行为更快出 V2）；真帧写入链（__zusageUpdate 外层）不变 → v263 根治「范围/时间 Tab 点击无效」（用户实报 P0）：①根因=生成中 updateLive 每 100ms 重编 V2 整卡（估算/计时走字让 tipSig 每 tick 变化），mousedown 命中的按钮在 mouseup 前被 innerHTML 替换、click 落到共同祖先 closest(".zu-sv-tab") 为 null；Tab 切换提前到 tip pointerdown 委托（重建窗口前同步生效，click 保留键盘/兜底，同值幂等共存），按下即进 600ms 交互冻结保下拉展开；②updateLive 冻结扩 mouseInBar（悬停保活不整卡重绘，数字冻结在进入时刻，typeof 守卫兼容 VM 切片）；③compact tpsTip 面：Tab 同款 pointerdown（tpsTabActivate）+ showTpsTip 撤销 v255 对 V2 卡的冻结放行（悬停中统一冻结，交互路径清 __zuTipSig 天然放行）；④视觉 12 项（视觉审查 Agent 实测截图清单）：Tab 选中态纯白改柔和强调 rgba(87,200,255,.14)+恒字重 600 防跳动、hover 补背景反馈，左卡删「Σ有效输出 ÷ Σ生成耗时」公式行、标题改弱化「历史统计 · 不含进行中请求」（.zu-sl-title 仅本卡作用域覆写，旧八态卡不动）、主数字 +22px，X 轴跨日首柱两行 MM/DD+HH:mm 且跨日柱稀疏化必显、xEvery 8⇒6 收紧标签间隙，图例 Ultra 补 ✦，维度下拉补 ▾ chevron，标题 +6px/时间胶囊 padding 4px 10px，间距归 8/12 节奏，柱组居中+删 --zu-sv-n 死配置 → v264 第二根因收口（实机点击仍关 tooltip 定案）：tip 内控件点击 ⇒ pointerdown 处理器同步重编 innerHTML ⇒ 被点按钮 detach ⇒ 焦点跌落 body ⇒ focusout(relatedTarget=null) 曾无条件 mouseInBar=false + hideTip(true,"focus-leave") 强制关 tooltip——切换生效了用户也看不见（旧版 click-only 同样中招，这是「Tab 点击无效」体感的第二半）。修复：mouseInBar（指针悬停在条面/tooltip 上）时降级 hideTip(false) 交总闸拦截，指针真正移开由 mousemove 判定；纯键盘 mouseInBar 已 false 维持原强制关。行为级回归：切片派发 focusout 断言悬停中 [false,"focus-leave"]/离场 [true,"focus-leave"] → v265 按下即建总闸（实机第 4 次点击实验定案的第三根因）：tooltip 常经 focusin 打开（点击 .it 聚焦），快速移动/合成指针下 mousemove 采样可能全部被 150ms 节流丢弃、mouseInBar 停留 false，随后一次快照推送的 render-orphan 接管失败即关掉正在交互的 tooltip，点击 Tab 落在消息区；pointerdown 委托开头 mouseInBar=true + cancelTipGrace，「指针按在 tip 内」先于一切判定生效，render-orphan 受总闸拦截，下一 mousemove 重新判定 → v266 render-orphan 悬停保留（第三根因彻底收口）：生成中宿主 phase 切换（思考↔工具↔正文）每次走 render 慢路径整条重建条面，条目结构变化时接管失败曾直接 hideTip(false,"render-orphan")——快速移动/合成指针下 mouseInBar 常 false（mousemove 采样被 150ms 节流丢弃，tooltip 经 focusin 打开），悬停中的 tooltip 随每次 phase 切换闪断、点击 Tab 落在消息区（实机第 4/5 次点击实验定案）。修复：mousemove 处理器开头（节流前）记 lastPt；接管失败时指针仍在 tip 覆盖矩形内则保留旧内容原地显示（不重画、不收），指针一动由 mousemove 重新判定；条外维持原收起 → v267 lastPt typeof 守卫（v266 裸引用打破 overlay-fx-tip-keepalive/overlay-tip-activation 的 mousemove 切片沙箱，与 v265 mouseInBar 同款教训：实例作用域新增变量一律 typeof 守卫或同步补切片夹具） → v268 粘性跨代际（用户实报「速度 tooltips 现在变成老版本了」定案）：v255 粘性是模块级变量，热重载/重启后新代际为 null，新代际首帧恰逢 serve 空闲回收/重启窗口（本地实测 serve pid 数分钟内 8576⇒11362 频繁重启；json 链本地实测 1268 轮/197 会话产出正常）即回退旧卡；修复 = 粘性写 window.__zusageSpdSticky（旧实例不清除、新实例继承，跨热重载/重启持久）+ 四处 V2 消费点（buildLiveTip v2h / html(d) spdRebuildOr / tpsTip 数据包）统一 lastSpeedHistory 兜底——帧缺轮表时以最近一份有界轮表顶上（历史统计分钟级陈旧可接受，v257 同取舍），下一帧成功即覆盖 → v269 lastSpeedHistory typeof 守卫（第三次同款教训：v268 三处裸引用打破 overlay-speed-chart 旧图切片沙箱 3 例——实例/模块新增变量被切片引用必须 typeof 守卫已三令五申） → v270 用户实机验收四修：①「项目」范围按用户口径重定义=全部项目对比（原当前项目与「会话」差异过小，用户实报「应该是取 zcode 所有的项目」；默认维度按项目，dims=[project,time]，不再按 panePid 过滤，切到项目时 session 维度归 project）；②维度切换后 Tab 无效——结合①数据差异过小造成「无反应」假象，随①消除；③右上时间胶囊月日前带年（跨年两端各自带年）；④hover 卡时间行同日区间压缩（右侧只补时分秒）+ zu-sv-twrap 允许换行，长区间不再省略号截断 → v271 点击任意位置关闭根治（用户实报）：tip 内按压后 1.2s 硬保活窗——hideTip 对非 win-leave/escape 的 force 一律降级交总闸（left-bar 命中区边缘误判/焦点跌落/宿主重渲染等任何路径）、focusout 在窗内直接不关；pointerdown 记 lastTipDownAt（typeof 守卫兼容切片）；win-leave（真失焦）与 Escape 保留立即收 → v272 维度切换功能移除（用户裁定）：图表恒按时间聚合——删图表头维度下拉（tip+tpsTip 两处 change 委托、dimSel 拼装、四条 CSS）、speedTabActivate/tpsTabActivate 的 dim 归位规则；「项目」范围恢复当前项目语义（恒时间维度下「全部项目」与「全部」完全等价），标题加「当前项目 ·」前缀；speedSel.dim 结构保留恒 time（会话切换重置兼容） → v273 自适应布局+稀疏可视化+筛选栏重设计（用户 8 张截图 Goal）：①plot 自适应——删 inline 定宽，in-flow spacer（max(240, n*30+12)px）撑宽 + min-width:calc(100% - 30px) 拉满容器，柱组 flex 居中，多桶 spacer 触发横滚，网格/Y 轴/hover 共享同一 plot 坐标系（少柱不再左侧堆积大空白）；②hover 卡锚点改中心相对式 left:calc(50% + off)（plot 宽不再可算）；③today 有效桶 ≤3 且全桶 ≥4 默认聚焦有效时段，图表头「显示完整时间轴/仅显示有记录时段」次级按钮切换（speedSel.focus，切筛选重置，不改统计口径），聚焦带「仅显示有记录时段」提示；④数据覆盖提示 zu-sc-cov：今天「有记录 x/M 小时」、近 7 天「仅 x/7 天有记录」、本月「本月 x/N 天有记录」（分母=已发生时段，不含未来）；⑤筛选工具栏两端对齐——范围组左、时间组右（.zu-sv-time margin-left:auto），删分隔符，与统计卡/图表两缘对齐；⑥左卡精简——删「不含进行中请求」，实时状态并入标题行右侧轻量 zu-sl-sub（不再混入指标间），单柱时峰值/最低/最新 zu-sl-solo 弱化；⑦时间胶囊智能格式——同日「MM/DD HH:MM – HH:MM」、跨日不带年、跨月/跨年两端带年（v270 全带年撤销）；会话切换 speedSel.focus 重置 → v274 完整规格补齐（第二轮 Goal）：①spdChartLayout 统一布局参数入口（colPitch/spacerW/xEvery/valEvery 单处决定）；②柱顶数值稀疏化 valShown——n>8 按 ceil(n/8) 抽稀、首末与悬停柱恒显，16 柱不再数值重叠（hover 卡兜底完整值）；③最新柱 latest 弱化描边；④单点/双点 coverage 追加「暂无足够数据观察趋势」；⑤空态追加「尝试选择更长时间范围」弱化引导；⑥bkeys 截尾仅剩 recent（v273 聚焦改造时已自然移除非 recent 截断，超宽由 spacer 横滚承接不丢桶） → v275 点击偶发关闭+快速切换卡死双修（用户实报）：①tip 原生 pointermove 直接保活（mousemove 处理器 150ms 节流采样盲区让 mouseInBar 停留 false，left-bar 等 force 路径就能关掉交互中 tooltip；pointermove 高频纯赋值绕开节流盲区，总闸始终可靠）；②整卡重编 rAF 合并 scheduleSpeedRebuild——快速来回切 Tab 每次指针按下同步 innerHTML 重建形成重建风暴（卡死体感），同帧多次切换只重建一次，切片沙箱无 rAF 自动退回同步（既有 pointerdown 契约测试不变）；③dispose 取消待合并 rAF；④tipStats.hideSeq 最近 8 次收起原因序列（diag 定性偶发关闭） → v276 撤销 v275 的 rAF 合并（用户实报「会话切到项目卡死」定案）：被遮挡窗口的渲染帧暂停让 rAF 永不执行（本机 ZCode 常被 Chrome/飞书遮挡），切 Tab 排程的重编永不落地、tooltip 僵在旧内容；恢复同步重编（单次 1-3ms 可承受，「重建风暴」为伪问题），保留 v275 的 pointermove 保活与 hideSeq 诊断——遮挡环境一切交互路径必须同步落地 → v277 win-leave 降级可取消宽限（用户实报「点击 tab 仍自动关闭」，hideSeq 铁证 win-leave）：点击 Tab 引发的合成 documentElement mouseleave/瞬态 blur 与真离开在触发点无法区分，tipBoundaryHide 立即 force 关把正常交互打死；降级为 400ms 可取消宽限（cancelTipGrace 共用定时器，pointermove/mousemove 落回即取消），真离开半秒后收；取证 cause 带触发源（blur/edge）与 document.hasFocus 焦点态 → v278 更新失败可见性（issue #247）：updater 检查/安装失败落盘 plugin-update.json lastError（成功即清），⚙ 更新区在非 error 相位显示「上次更新失败」行；hook 链按 HOST_TARGETS 判已装版本 × 宿主 build 未登记适配时强制立即升级 + 会话明确提示（去重），marketplace 刷新重试 + 清单新鲜度校验点名宿主 CLI 静默失败 → v279 速度卡 Header 单行重构（第三轮 UI Goal §3/§5/§7）：标题居左、范围/时间双 Tab 组成连续操作区整体靠右，旧独立筛选行与顶部时间胶囊删除，窄窗 flex-wrap 整体降级不裁剪；统计时间迁至图表标题栏右端轻量文字（calendar 图标 + 紧凑区间 + title 完整 YYYY-MM-DD HH:mm:ss 区间），单位 t/s 紧随图表标题；左卡标题层改「平均速度」+ 小号「历史统计」标识（.zu-sl-k 行删除）；旧图共享类仅 .zu-sv-root/.zu-sv-chart 作用域覆写不受影响 → v280 速度卡横滚位置记忆（用户实报 全部×全部 拉到末尾、关闭 tooltip 再开回到开头）：speedCardV2HTML 根节点携带 data-sv-key=范围|时间 选择键；tpsTip 重编分支（showTpsTip 非冻结路径）重建前从旧 DOM 捕获 .zu-sc-wrap scrollLeft 连同键存储、键同才回填（hover/心跳重编不跳回头部、关闭再开含数据刷新后恢复原位、切范围/时间键变自动归零）；全量 tip drawTip 横滚保留从 keepTop-only 扩展到重开路径并加同键守卫（v232 盲恢复改键同回填，V1 旧图无 zu-sv-root 键按空串键行为不变） → v281 速度卡专项双修（第三轮专项 Goal）：P1 图表列宽稳定——V2 注入样式由仅钳 max-width 改 width+max-width 同值 !important（width=min(960px,calc(100vw-24px))、border-box，压过 .tip 的 width:max-content 与 tpsTip 内联 max-width:520），右图表列 flex:1 1 0 + min-width:0、滚动容器定宽 100%，列宽不再随 plot spacer（n×30+12）与图表头文案反向撑缩，Tab 切换整卡宽度恒定（视口足宽恒 960、窄窗恒 vw-24）；P0 hover 信息卡裁剪根治——卡从 .zu-sv-plot（被 .zu-sc-wrap overflow 滚动容器裁剪）移到 body 级 Portal .zu-sv-portal（模块单例、类名挂 .zusage-quota-tip 复用 boot 旧代清理链、pointer-events:none、z-index 同 tooltip 层 2147483646 且 DOM 序在后），内容经 SPD_PORTAL 侧信道（纯字符串、VM 切片安全、消费即清）由 showTpsTip/zuSpeedChartPick/speedRebuildNow 渲染定位，按柱体 getBoundingClientRect 右上⇒左上⇒钳边避让视口（safe 10px），横向滚动 capture 相重定位（柱滚出 wrap 视口即收），切 Tab/hover=-1/收起路径（hideTpsTip/hideTip）立即隐藏不留孤儿 → v282 档位说明浮层与 Tab 低对比选中专项（第四轮 UI Goal）：底部常驻十档图例整体移除（.zu-sv-legend 包装/分割线/占位全删，整卡高度由 Header+统计主体决定），改由图表标题栏「单位：t/s」旁问号按钮承载——hover/focus 即显不点击、Escape 只收浮层、icon→卡保活（延时收+卡内取消）、柱体 Portal 互斥（双方 show 互收防双层浮窗）、按柱体 rect 下方→上方→钳边定位、body 级浮层脱离 overflow 裁剪 + 显示移尾（B1 同款）+ dispose/热更双清理链；十档内容 spdLegendCardHTML 自 TPS_BANDS 升序生成（颜色/星标/边界与柱体、chip 同源唯一事实），当前档位高亮读按钮 data-sv-band（整卡重编自动更新、空数据不高亮）；Tab 选中态对齐 Hover 低对比背景（去 rgba(87,200,255) 蓝块：on=白 .07/浅色黑 .06 + 发丝内描边区分持续选中，on:hover .09/.07 轻微提亮，字重恒 600 维持 v263 防选中加宽纪律） → v283 档位说明浮层微调（用户反馈）：最大宽度 560→800px（仍钳 calc(100vw-24px)）；显示时左缘对齐宿主 conversation-bottom-dock-transition（composer 容器）而非整窗口/图标锚定，dock 缺失回退图标左缘、越出右缘钳边（与 v282 避让策略叠加） → v284 主卡定宽 800+左缘对齐宿主 dock（用户反馈澄清：上轮 800/dock 对齐实为主 tooltip 而非档位浮层）：V2 注入样式定宽 960→800（width+max-width 同值 !important 不变）；tpsTip 链 showTpsTip 在 V2 卡圤位后左缘改对齐 conversation-bottom-dock-transition（缺失回退 chip 锚定，垂直不变）；全量 tip 链 drawTip 渲染 V2 内容时写 tip.__zuDockLeft、positionTip 每帧消费（rAF 跟随不回退回 chip 锚定），非 V2 内容 null 走原锚定 → v285 速度卡左缘对齐锚元素（用户反馈：热重载后仍居中，指定基于 .it 速度格左侧对齐）：废弃 v284 的 conversation-bottom-dock-transition 宿主类名依赖（实测未生效），改为 positionTip 在 V2 卡（tip.__zuAlignLeft，drawTip 按 .zu-sv-root 置位）时 left=锚元素（.it 格）左缘钳边；tpsTip 紧凑链删 v284 dock 覆盖（原本就是 chip 左缘钳边）；档位说明浮层左缘改对齐主 tooltip 容器左缘（与主卡构图一致，替换 v283 dock 对齐） → v286 图表标题栏精修（第五轮 UI Goal）：标题 600/+2（V2 作用域覆写，不过重）；「单位：t/s」收为轻量「t/s」徽章（弱化前景+微亮底+圆角 5px，视觉优先级 标题＞单位＞档位入口）；问号换专用 Speed Bands SVG（细圆环+三级递增速度柱，currentColor 继承按钮色态，18px 视觉/26px 命中），aria-label 改「查看速度档位说明」；十档浮层/互斥/保活/清理链全部沿用 v282 机制不变 → v287 修复批：速度卡远端判定改只认快照 remote 标（本地 scoped 行也带 workspace_identity，旧判定把本地 pane 选「全部」误降级为本会话并显「远端会话仅显示本会话历史」）；精简链 tpsTabActivate 聚焦按钮改 t0.speedHover=-1（原 t.speedHover 在声明前引用必抛 TypeError，0 也会误高亮第 0 柱） → v288 会话累计模型明细费用列随 ⚙ 预估费用开关门控（原 v215 内联四列表漏门控，v253 共享 statModelsTable 收编时漏掉本卡——开关关闭后仍渲染「预估费用」表头与 ¥ 单元格；换 statModelsTable(sess.models) 与本轮/今日同源，关时收三列、空明细整块不渲染） → v289 火山方舟额度修复（issue #260/#261）：tooltip「其他源」行抽公共 helper otherSourcesRow 并在 info（未配置/暂不支持）分支同样渲染——主源不可展示时后台已查询成功的源（如火山 AK/SK）不再被提前 return 吞掉；其他源标签对复合源 id（vendor:providerId）回退裸厂商键查找；剩余口径（quotaRemain）在其他源行保持不变 → v290 速度卡交互与标签（2026-11-08 用户规格）：图表区滚轮横滚（tpsTip 本体 wheel 委托，deltaY→scrollLeft，不可横滚不拦截）；每柱恒显时间标签（8px 下 5 字符可容纳，稀疏化废弃） → v291 速度历史热力图（本月月历/全部历史 GitHub 风格双形态，档位色同源 TPS_BANDS、无记录中性灰、未来弱日期号）+ FATAL.gen 代际号进 diag（重注入取证不依赖计数字段归零）+ 首开/键变滚到最右 → v292 月历定稿第一轮：标题去粒度词改「范围 · 时间 · 平均速度」三段式；整卡定高 315px 四形态同高；跨月占位不越出星期对齐 → v293 月历设计图规格：列头周首日号与格中心对齐、7 行 1fr 铺满、滚动条样式落元素本体（v293.1） → v294 月历格专项：低饱和档位底 22% 混卡片色（v294.1 拍板去左色条靠底色辨档）、文字统一吃前景色、space-between 布局+min-height 治越界、容器查询三档字号 → v295 月历布局铺满（6 列×行 1fr 均分、紧凑态隐数字 hover 兜底）+ 柱状图系列修订八项：顺序时间恢复（v295.7 撤 v290 倒序）、柱距 24px 恒显时间（v295.17）、Y 轴刻度列外移滚动容器（v295.18）、首开滚最右（v295.13）等 → v296 热力图「全部历史」改最近 365 天窗口（周日起对齐补齐、窗外透明占位、无数据卡覆盖统计 v296.1）+ 方格随容器宽自适应横滚 → v297 热力图动态字号（6~14px 纯算术择优、宿主量测 __zusageSpdMonRect 一次回写、今日格加深 v297.1、分段高度诊断 v297.2、⚙ 面板同款 v297.3） → v298 chip 主数字改最后一轮真实速度（去「均」前缀，tooltip 左卡保留会话加权均，两处各自成立；无最后一轮真实值时面留空不显会话均）+ Y 轴刻度锁定柱区基线（v298.1）+ 左卡标题随时间 Tab 五命名（v298.2）+ 档位徽标下模型名（v298.4）+ 量测时机挂 display:block 后（08） → v299 本轮 tooltip 紧凑化（三行 KPI 家族首卡：statKpi 辅助行参数、模型表 headRight/tableOnly、工具/重试迁模型标题行右） → v300 会话累计卡紧凑化（同三行 KPI 形态）+ 会话总耗时跨会话长时长换算 + zusage 会话级平均耗时/平均首字延迟/Σ生成耗时聚合（>0 门控，旧快照降级） → v301 今日合计卡紧凑化 + 三张统计卡共用 KPI SVG 图标（KPI_ICON_PATHS）+ zusage 今日聚合扩平均耗时/首字延迟列 + 缓存命中率入输入格副行 → v302 统计卡行结构定名（请求次数/请求轮数/请求会话层级行、「总耗时」「平均输出速度」统一命名）+ zusage 今日去重会话数与 Σ工具调用（v302.2）+ 会话/今日模型标题行右并入工具统计（v302.3） → v303 项目累计卡紧凑化（根类并入 .zu-stat-tip--project 统计卡家族）+ zusage _project_usage 新聚合（平均耗时/平均首字延迟/总耗时/跨分片合成 avg_tps）+ 刻度列外移联动（v303.3/v303.4） → v304 工具调用卡紧凑化（定宽四列+sticky 表头+行 hover）+ statKpi 标题图标参数 + zusage 子代理单任务耗时/轮数聚合（v304.1）+ 模型名立方体 SVG 胶囊（v304.2） → v305 收口审查修复批（review-fix-merge）：轮播可视化编辑器 when: 键白名单+提示行转义（堵存储型注入面）；手写显式 false 高级条件保存保留、false 不再渲染为勾选态；热力图「共 N 天」覆盖统计 var 提升修复（原恒退兜底文案）且分母对齐可视窗口；今日 tooltip 轮数/会话数旧远端缺字段显 —；今日/项目 avg 耗时与项目 avg_tps 过滤 main_turn（与 avg_tps 同口径）；devKeepTip 持久化+re-click 放行；__zusageSpdMonRect 代际清理；speed_v2 聚焦切换测试随功能移除删除；未编号同批内容——轮播自定义短语可视化编辑器+文本模式、内置词包拆独立分片 04-rotator-builtin-packs.js（16 包）、⚙ 轮播分区「原作者」按钮、速度卡覆盖提示/聚焦按钮移除（2026-11-07 文案批） → v306 精简 tooltip 幽灵行框修复（\x01 结构化 HTML 哨兵只在主链 drawTip 被 tip.firstChild.slice(1) 剥除，精简链 showTpsTip 直塞 innerHTML 不剥——控制字符落成文本节点被 .tip 的 white-space:pre-line 撑出 ~20px 幽灵行框，V2 卡定高 300+overflow:hidden 下整卡下坠、底部被裁，实报上下 padding 不对称；补齐同语义 charCodeAt 剥除）+ 状态轮播主开关默认关闭（2026-11-09 用户规格：新用户/从未写过设置的用户不自动启用，显式开/关过的存量配置经 loadRotatorConfig 布尔覆盖原样保留）+ 速率 chip 右键直开设置（2026-11-09 用户规格：精简下 chip 是唯一常驻入口，contextmenu 镜像 .tps-cfg 路径——先收 tooltip 再开面板，并压掉宿主原生右键菜单） → v307 速度 tooltip 左卡「生成中估 X t/s」note 行删除（2026-11-09 用户规格）：生成中估算只留标题旁「生成中（估算）」徽标，瞬时估算值不再与历史均值同卡并列；完成态会话均被误标「生成中估」的边界（v298 speedValue 保留 avg 语义 × v263 门控只看 speedValue>0）一并消失（.zu-sl-note CSS 保留——旧版 speedCardHTML 回退卡仍用）；未编号同批内容——速度卡模型行原生 title 改纯 CSS data-tip 伪元素气泡（2026-11-09 用户实报：宿主内原生 title 不弹——生成期重建打断驻留 + Electron 宿主对 title 气泡不可靠，同轮播 zu-rot-tipt 先例）+ 悬停模型列表不省略（spdAggregate 增 withNames 仅整体口径产出全量 modelNames，消费点唯一带 fallback）+ 模型行补 aria-label 全名单（伪元素 content:attr 不进可访问树） → v308 切换任务主线程阻塞修复（用户实报「来回切换任务卡很久才反应」）：gitMount 的 live() 幽灵判定从裸 inGhostSubtree 改走 ghostOf 120ms TTL 缓存——裸调用逐祖先 getComputedStyle 强制样式重算，恰在切换的 React 重挂风暴（样式树最脏）里被 render/heavy 高频触发，CDP CPU 采样归因 inGhostSubtree 436ms/9.4s 近乎全部经 gitMount→live（每次切换聚集 ~48ms，与长任务 72-102ms 时刻逐一吻合），缓存路径实测仅 2ms；判定语义与 track 每帧 ghostOf(composer) 同款；未编号同批内容——.zu-sv-bars 由 space-between 改 flex-start + 两侧 5px padding（修少柱如「最近 3 轮」柱顶 nowrap 数值越缘撑出 ~2px 横向滚动）+ 单柱 zu-sl-solo 弱化移除（2026-11-09 用户规格，含 CSS）+ 合入审查撤销同批误入的 hovFreeze 悬停冻结（08 分片 render 接管链：与已合并 v224「悬停中 tooltip 随快照跟手刷新」契约冲突致 pill-theme 4 例红，其原生 title 驻留动机已被 v307 data-tip 气泡消解，净 diff 与 fork/main 逐字节一致） → v309 拉取模型「确认添加并保存」先探测后保存（用户实报 OpenHub-Gemini Base URL 少 /v1：宿主实际请求 {base}/chat/completions 得 405，界面报 "Model request failed."）：勾选 ≤24 个时逐模型 model-pull-probe （主进程按宿主同款 URL 语义发最小对话请求——openai 两型不自动补 /v1、anthropic 归一化补 /v1 拼/messages、套餐源=套餐 baseUrl+messages+Bearer；刻意不走 candidateUrls 兼容改写以复现宿主真实路径），行内状态 chip （检测中/可用+延迟/失败，title=分类原因+实际 URL+脱敏摘录）并发 4 刷新，全过自动写入、有失败自动取消勾选保留弹窗（可重新勾选强制添加，旧主进程 unknown action 降级直接保存；inject-main 白名单加 model-pull-probe，model-puller 增 probeModel/分类/脱敏） → v310 拉取模型探测体验收口（用户实测两报）：①失败原因悬停不显示——v309 在 chip 上挂的原生 title 在 Electron 宿主内不弹（v307 同款实证），改 data-tip 伪元素气泡（从 chip 左侧水平弹出、行内垂直居中，避开 .zu-mp-items 的 overflow:auto 裁剪，双语 aria-label 同步）；②路径错配自动修复而非红字提示——主进程探测 404/405 时对 ±/v1 邻域候选实测，命中即把新 Base URL 读-改-原子写回 provider_config（与 applyModels 共享 applyBusy 写闸、同供应商单飞：全选模型同 URL 全失败只测一轮只写一次），模型按新 base 重试，弹窗绿字披露 「已自动修复 Base URL 并写入供应商配置」（.zu-mp-fix），修复候选也失败时失败原因附「已尝试自动修复」；探测 ask 兜底 25s 改 65s（探测+修复+重试最坏约 45s 不能被错杀）；修复限定 openai 两型（anthropic 型宿主自动补 /v1 无此错配、套餐源 baseUrl 不代改） → v311 辅助档位写实（用户实报：添加后宿主「测试模型」报 reasoning_effort "none" 被上游拒绝——宿主 testModelConnectivity 绑 values[0] 最低档，openai 两型内置 catch-all 把默认最低档 disabled 映射成 wire "none"（zcode-builtin.json modelApiRules[2]/[3] 同款语义），Gemini 严格上游只收 minimal..max；探测链基础连通后追加辅助档位验证：按 catch-all 同款语义发 values[0] 等效 wire 值，被 400 拒绝时从错误文案解析上游接受集（解析失败退化为逐候选实测），验证后写实合法档位表——模型规则已存在直接写规则（values-only 稀疏合法、带 map 自洽结构不动），未落盘模型写 fetchCache 元数据由 applyModels 统一落盘（绝不在探测路径新建规则防双写重复），绿字披露「思考档位写入 minimal/…」；失败新增 reasoning 类文案附上游接受集；错误摘录保留完整脱敏文本供解析 → v312 输入类型/模型能力自动匹配（用户实报：拉取后能力区全空）。宿主侧定案（源码+内置配置审计）：modelRules 的 `.*` catch-all 对所有模型显式设保守默认（text-only、json-schema/联网/中段系统全 false），**无协议级推导**、能力位必须逐模型证据；个人稀疏规则字段级覆盖合法。证据源三路：①目录一致性收割——同名模型多 provider 收录的歧义守卫改为「可加证据字段全命中一致才采纳」（modalities 收 inputFormat 含 PDF；tool_call 只采显式 false；structured_output 只采 true），mergedMeta 第三参最低优先级并入；②确认流能力实测（caps 标志显式携带才跑，仅 chat-completions、仅正证据 2xx 写 true、4xx/网络失败不写保守默认）：图片 content part / response_format json_schema / 对话中 system 消息三项 6s 探测（2026-11-09 真实中转实测三项可判定；PDF 的 OpenAI wire type:"file" 部分中转不认故 PDF 只走目录；视频/音频/联网搜索无廉价如实验证不探测），写目标与 v311 同款双路径（已存在规则合并 properties 叶子且用户显式 false 不覆盖；未落盘写 fetchCache 由 applyModels 落盘）；③弹窗行内徽标（图/PDF/JSON）+ 绿字披露「能力匹配：图片/结构化输出/中段系统消息」；探测兜底 65s 放宽 90s → v313 工具历史回灌探测（用户实报：配置就绪后真实对话 Turn execution failed 400001——实弹二分定位为 OpenHub 中转全部 Gemini 系通道（3.5/3.7/3.8，流式与否）拒收 assistant tool_calls + role:tool 历史形状（C4-C7 全变体 400），与插件写入无关（裸形状同样拒），Anthropic 线同病；工具结果折进 user 消息反而 200（Gemini 原生映射）；同站 qwen3.8-max 正常=通道级缺陷。宿主侧无配置解（supportsToolCall:false 会令宿主对带工具请求直接报错更糟），落为警告性质：确认流第 4 项 6s 探测发最小工具历史形状，4xx 确定性拒绝才警告（超时/网络/5xx 不定不警），琥珀 .zu-mp-warn 披露「代理任务在工具轮次会失败，纯对话可用」，绝不写任何配置位，结论按拉取会话 fetchCache 去重（裸探测无会话不去重） → v314 规格补全（用户实报 maxOutputTokens 89642 超上游 65536 上限 400）：宿主预算链定案——wire 输出预算 baseline=已解析 optionSpecs.maxOutputTokens.max（未写=内置 catch-all 128000），预轮 cap=min(baseline, 窗口−用量−1000) 只下调不设上限（model-token-limits.ts resolveModelStepMaxOutputTokens），超 spec.max 是宿主侧硬拒绝非钳制——所以「不写输出上限规格」会让请求预算完全脱缰。applyModels 是 append-only：先添加的模型在目录证据迟到时永远拿不到写实，v314 在确认流探测路径用拉取会话元数据补「缺失」键（properties.contextWindow / optionSpecs.maxOutputTokens.max，绝不覆盖已写数值、带 map 自洽结构不动、applyBusy 写闸），绿字披露「规格补全：输出上限/上下文窗口」；当日已手修用户配置 max=65536（上游 400 报错自证上限，中转 max_tokens=65536 实测 200）；收口审查补齐：禁止凭据重定向并按实际 key 脱敏、供应商来源与档位 CAS 守卫、缓存身份绑定及已验证路径迁移、自定义 map 不猜测、供应商显式能力优先且 false 保留、修复后补规格、工具限流不误警告、确认单批互斥和逐项强制添加、关键披露停留至再次确认、关窗清理等待与模块 dispose 失效 → v315 「原作者」悬停提示被滚动区顶缘裁剪修复（用户实报截图：气泡向上弹、只露底边一线）——cap 内触发点（原作者/自定义短语模式切换）气泡翻到触发元素下方 `bottom:auto;top:calc(100% + 6px)`，右对齐保留；cap 贴 .zu-settings-body（overflow:auto）顶缘是根因；向下弹常规布局落进分区卡片区域可见，纯 CSS 无视口碰撞翻转、cap 滚动至贴滚动区底缘时对称受限（v310 .zu-mp 左弹先例同款取舍） → v316 「压缩上下文」按钮视格重做（用户规格）：全宽 40px 胶囊、无边框、中性深灰半透明底（暗色=白叠加 6.5%/hover 10%/active 14%，浅色=黑叠加 5%/8%/12%，html.dark 分组自动跟随明暗与 zai 主题）、13px/600 文字（字号走 --ui-font-size 令牌 calc(-1px)，随宿主界面字号缩放）+ 18px 收缩双箭头 SVG（currentColor，flex+gap 8px 图文整体居中、nowrap）、focus-visible 焦点环（宿主无 --color-focus-ring 走 fallback）与 :disabled 半透明；reduced-motion 组整体移到全部受控规则之后（@media 不增特异性，置于按钮 transition/弹框 animation 基础规则之前会被同特异性后置规则压成死代码，review 实锤修复），弹框动画一并恢复实效；注入/判定/确认弹框/提交通道逻辑全不动 → v317 ⚙ 面板上层 body 级弹框内按下不再联动关闭设置面板（用户实报：词包「查看」弹框点遮罩/✕ 连设置一起关）——面板外点 mousedown 判定按 e.target 向上匹配弹框根类名（.zu-rot-pk-dlg/.zu-mp-ov）：遮罩关闭监听与面板判定同在 mousedown、target 阶段先执行并已把 rotPkDlg/mpModal 置 null，变量 contains 守卫对遮罩路径失效（✕ 走 click 判定故 contains 版已好、遮罩仍坏），closest 沿已 detach 的残留子树仍命中；弹框外点击照常关面板、无 closest 的 target 按弹框外处理 → v318 chip 字体切 sans（用户实报 Windows 上 chip 数字与中文大小不一，mac 无此问题，最终方案）：宿主 --font-mono 首选 ui-monospace——Windows 落到 Consolas（内置浏览器实测 13px 数字墨迹约 8px），中文回退 Microsoft YaHei UI（11~12px），条/chip/tooltip 内中文显大 ~40%；原生 UI 无此问题靠 sans 配对（Segoe 数字 10px + 雅黑 11~12px，配比 1.1）。缩放面路线三轮实机回退后整体废弃：ZuCJKFit CJK 面（90/82/76%；82% 真机像素测量实测配比仍 1.2 嫌数字小，76% 后数字锐利但配比失衡）与 ZuNumFit 数字面（ASCII 110%，实报数字边缘发虚——size-adjust 缩放路径光栅化比原生整数尺寸软，canvas 拉普拉斯方差实测低于原生面）全部删除。定稿=条/chip/tooltip 全部 30 处 mono font-family 换 var(--font-sans,…)+ 既有 tabular-nums 保留（含 01 模块 rateTip 内联 cssText 兜底，被 quotaTip/rstTip/tpsTip 整体复制）：Windows Segoe tnum 实测生效（13px 同 7 位任意数字恒 56.12px）数字刷新不抖宽，Segoe 数字 10px + 雅黑 11~12px 配比 1.1 与原生同源，零缩放零模糊零调参；mac SF Pro+苹方天然同构（用户实测无失衡），Linux system-ui tnum 未实机验收；⚙ mono 域（06 设置面板 .zu-src-field、.zu-mp-*、.zu-notes-* 与 05 rotator 编辑器 .zu-rot-*）仍走 mono 令牌 → v319 速度格数字与单位加距 4px（用户实报 "158.9t/s" 贴字，且「修改过程中对的、判定生效又变回去」——两条渲染路径只有一条有空格）：①实时桥路径 zuBarSpeedView text="… t/s" 有空格但切 sans 后 Segoe 空格 7.15px→~3.7px 视觉贴字，.zu-live 加 word-spacing:4px（用户实机逐档对比定稿）；②无桥 DB 回退路径 chipFace（07）数字直拼 '<span class="dim">t/s</span>' 根本无空格字符、word-spacing 对其无效——补空格后与①渲染一致；用户看到的「忽对忽错」=生成中走①、完成/无桥走② → v320 「不在本地库」提示与 ⚙「数据库统计」注记不再写死 ~/.zcode 路径（issue #279：宿主 dataBaseDir 迁移后旧提示误导）：tooltip 改中性描述并指引重装/更新、⚙ 注记改「只读本地用量库（默认 ~/.zcode/...，跟随宿主 dataBaseDir 迁移）」；用量链 DB 路径解析本体在 zusage.py / token_rate.py / inject-main.cjs（非浮层），此为配套文案 → v321 速度格贴字真根因修复：`.zusage-root .it>span:not(.eb)` 的 inline-flex 把速度格也 flex 化，flex 剥离文本 item 尾随空格——数字态（数字+span.dim 两 item）空格 spaceW=0、v319 的 word-spacing 无效（CDP 实测墨迹间隙 0），状态词态单文本 item 不受影响故「动态对、停止贴」；选择器豁免 .zu-live（外部 flex item 布局块化等价、零变化），空格与 word-spacing:4px 恢复生效，间隔与动态态一致 ~7.7px → v322 速度格 word-spacing 4px→2px（用户实机目测：7.7px 偏宽，收窄到 ~5.7px） → v323 速度格 word-spacing 2px→1px（用户实机继续收窄：~4.7px） → v324 完成态数字与 t/s 零间隔：chipFace 去除空格字符（7.7→5.7→4.7px 逐档后用户定稿 0）。动态态（单文本 "… t/s"）仍空格+word-spacing:1px ~4.7px；word-spacing 对完成态无空格文本不再生效（CSS 保留无害） → v325 动态态 word-spacing 1px→4px（用户实机回定；完成态零间隔不受影响——无空格字符可加距） → v326 数字与 t/s 间距改用 inline-flex+gap:5px+baseline：去除 word-spacing（用户实测调值无视觉变化——完成态无空格、动态态单文本）。动态态整条渲染（07 render live 分支）与原地更新（08）统一走 zuLiveFaceHtml 拆「数字+dim」两 item，gap 才有 item 可分；状态词态保持单文本。完成态 v324 曾零间隔，v326 起与动态态统一 5px（用户屏幕验证接受）；函数声明必须实例级（html(d) 分支块内是 Annex B 块级声明，live 分支 TypeError / 08 ReferenceError，实测 44 测试红） → v327 V2 左卡标题行防破版（另一台机器实报截图：--ui-font-size≈20px 浅色主题下「最近18轮平均速度」截断+「思考中」竖排折行）：标题行需求宽随字号线性增长而卡内宽固定 184px（实测 14px 需 151.1 余量 33、ui≥17 必溢出），.zu-sv-root .zu-sl-sub 加 flex:0 0 auto+white-space:nowrap——状态词永不收缩竖排，溢出收缩由标题独享 ellipsis 降级；本机默认字号视觉零变化，CSS 契约断言锁定 → v328 宿主卡顿治理（specs/perf-lag-reduction.md）：流式期间插件在宿主渲染线程的工作量与会话文本量/历史轮数解耦——①turn-stats ingest 字符计数改无分配码点计数+按行缓存（原 Array.from(text).length 整串拆数组，单次 0.35→4.1ms 且跑在宿主 store 通知链内，现 0.02→0.4ms）；②spdUnpack 按 speed_history 引用 WeakMap 缓存（6000 轮单次 ~5ms，占速度卡生成 95%）；③updateLive 快路径未悬停本格不再每拍白建整张 V2 速度卡（只记 view 标失鲜，drawTip 打开瞬间 liveTipRefresh 补建，兜底 1s 保鲜；悬停仍每拍）；④非 live 会话数据帧未变时 500ms 内心跳不重复整条 render（原每 100ms 全量重建 tooltip 串+五个 enhance*）；⑤轮播主开关关闭态 65ms 帧步降为 1s（仅剩遗留 DOM 还原的整文档查询） → v329 修复项目累计 tooltip 点击「查看全部模型」异常收起与同模型大小写重复：①根因=按钮未在 pointerdown/mousedown 阶段阻止默认/冒泡，且 hideTip 1.2s 保活因 mouseInBar=false 被绕过导致 left-bar 误杀 tooltip；在 pointerdown/mousedown 增加对 .zu-pj-more 的委托与阻止默认行为，hideTip/tipLeaveAt/mousemove 硬保活 1.2s 不受 mouseInBar 干扰；②zusage.py 聚合与计费统一对 model_id 大小写归一化（优先保留大写/官方名，合并同模型如 GLM-5.3 与 glm-5.3，费用累加不漏）。 → v330 宿主 3.18.0 loading 行结构适配：①chat-loading 行 label 类由 .zcode-loading-label 换成 .animated-gradient-text、spinner 图标位由 span.grid 换成带 data-chat-loading-icon 属性的 span（.font-mono 耗时格未变），轮播挂载/还原选择器双兼容（chatLoadingLabelOf/chatLoadingPixelGridOf，旧结构优先），label 未命中时不再隐藏宿主耗时格（宿主再改结构时退化为保留原生计时）；②「我方最后写入」基准由模块级单例改挂 label 自身 data-zu-last-text 属性，修多个 loading 行并存（多分栏并发请求）时后处理行的宿主文案快照被词组污染；③「拉取模型」选中套餐源而列表暂不含它（套餐 token 的解密密钥异步到位）时重问一次、仍没有则提示凭据暂不可用，不再落到「只有一个供应商就用它」而改投别的供应商；⚙ 额度披露文案补充钥匙串密钥的读取。 → v331 项目累计 Tooltip 双范围统计（specs/all-projects-usage.md）：zusage 新增 _all_projects_usage 全库聚合（归属单元=会话、parent 链取根环守卫、项目键=(project_id,归一化目录) 承 issue #248、未归属单列桶、totals==Σ projects 对账；桌面快照链顶层 all_projects，serve/桌面 json 带、CLI/MCP/远端子查询不带；_PROJ_CACHE 水位缓存，实测 2.6GB 库 ~210ms/次）；渲染端头部右上「当前项目/全部项目」双 Tab 替代范围胶囊（低对比选中对齐 v282，pointerdown 同步重编+click 幂等吞掉，归属键变化重置），输入格新增「含缓存」副行（cache_read 原值、同「含思考」层级、两模式同规则），全部项目模式新增四列项目明细表（模型明细之前、默认前 5、projTipProjExpanded 独立展开、未归属显本地化文案、名称转义+title 目录、截断 500 提示、空态不渲染表头），缺帧显「全部项目统计暂不可用」不借当前项目冒充。 → v332 工作流支持（specs/workflow-support.md）：zusage 把 sess_dwf-*（宿主动态工作流子代理，query_source='workflow_child'）归入子代理类——sub.list/明细/费用/速率聚合四处 query_source 门扩展、is_sub+sub_kind 字段、任务名从 dwf_actor.name 反查、快照池分桶防挤占主会话 top-6、_sub_item 下发 tps_out/tps_gen 速率分量；渲染端在会话流工作流卡（workflow-card data-workflow-run-id）注入 .zu-wfrun 汇总 chip（token 合计 + Σout÷Σgen 完成态聚合速率 + DOM 实时运行状态，悬停出逐执行者 tooltip，复用 subTip 浮层与委托监听），⚙ 新增「工作流卡汇总」开关；08 分片顺手去除 v176 以来整段重复定义的子代理 chip 块（两份 138 行逐字节相同，行为不变）。 → v333 智能体后台运行的状态同步（specs/agent-background-support.md）：后台智能体（AgentProfile 后台子代理）会话身份与前台子代理同构（sess_subagent_* / query_source='subagent'），DB 统计链天然覆盖零改动；修复实时面缺口——①运行中子代理集合在消费侧并入桥快照 backgroundWorks（kind='subagent' status='running'，事件驱动 state 键、窗口无关）补给，后台智能体把启动行滚出父会话 60 行窗口后槽位估算与「子代理运行中 ×N」计数不再丢失；②宿主状态面板 Agents 分区行（v4-running-subagent-item + data-child-session-id）注入 .zu-substat 速率 chip（槽位估算→「估 X t/s」、tps_avg 回填、无数据显「运行中」，tooltip 复用 subRowTipHTML 与 subTip 委托），render 尾部 + heavy 双对账点，共用 subRate 开关。 → v334 审查修复批（review-fix-merge 四路并行审查）：①zusage latest 候选与 CLI current 排除工作流 actor 会话（run 进行中多个 actor 轮流活跃会把顶层 session/current 顶成 run 视角，此前分桶注释声称已防而 latest/current 实未防）；②renderSubAgentRows 关门收浮层条件收窄到 .zu-subrate——原宽条件在 subRate 关 + wfChip 开时把悬停中的 .zu-wfrun/.zu-substat tooltip 每拍杀掉（闪烁）；③dispose 摘净链与 00 启动自清列表补 .zu-wfrun/.zu-substat（pane 回收后 chip 冻结 + 死实例 tooltip）；④renderWorkflowCards 不满足渲染条件的卡摘旧 chip（run 失败后「运行中」残留）+ tooltip 数据包每拍重写（requests/actor 名不进 sig 的打开瞬间新鲜度）+ 状态行去内层 ttEsc 防双重转义；⑤subRunningList 加快照 sessionId 校验（切会话一拍内不并入上一会话后台清单）；⑥substat「运行中」兜底态独立 run tooltip 口径 + chip 回位守卫 + 用例钉住 3s 新鲜度门与工作流卡防漂移负向夹具；⑦zusage _TASK_CACHE 失效键补 dwf_actor 维度（动态新建 actor 名字有界丢失）；⑧specs 与文档漂移同步（chip 面无状态点、开关持久化形态、CLI stdout 增量字段措辞、补给槽位优先级取舍）。 → v335 第二轮复审修复：①zusage 池分桶回归修复——v334 改 latest 候选时把 normal 桶误改 ranked[:6]（含普通子代理），恢复 normal=主会话独占、子代理/dwf 同入子代理桶（防挤占主会话 top-6 的 v332 语义）；②_TASK_CACHE 失效键改 greatest(time_created,time_updated) 覆盖纯改名；③renderWorkflowCards 的 runIds 收集循环对被宿主剥掉 runId 的卡也摘残留（空 runIds 早退前执行，wfChipStale 定义上移至循环前）；④测试设防：关门收窄行为锁（宽条件即红）、dispose/00 启动表三类 chip 源码契约、_TASK_CACHE astamp 失效用例、正常子代理不占 normal 桶用例；⑤spec §6.1 残留「运行中状态点」措辞清理。 → v337 后台智能体的主格速度关联（specs/agent-background-support.md §3）：后台槽位经 backgroundWorks 补给在跑而主会话自身无实时轮（空闲/上一轮已完成）时，updateLive 合成 runningTool=Agent 态让速度格走既有子代理分支（「子代理运行中 · 估 X t/s」×N；槽位绑定中/思考期降级状态词），后台全部结束（槽位解绑）自动回落会话均——主格不再静态；主会话自己的轮在跑时优先原 stats（v87 合成分支先行）。 → v338 项目累计卡体验批（用户规格四连；v331 迭代）：①分区名并入首列表头（项目明细/模型明细=各自首列 th，独立标题行删除；工具调用·重试与截断注记降级为 .zu-pj-mnote 右对齐 note 行、仅有值时渲染，「按用量排序」占位删除——v331/v332 批已落基线，此处汇总声明）；②高度自下而上——切 Tab/展开明细的高度变化底边固定（projTipPrevBottom 基线 + projTipPositionGrowUp 反推 top，max-height 钳制保证 top≥8；首次弹出无基线回退原锚定，仅项目卡路径）；③表体视口帽——项目卡 .tbody 破共享 60vh 帽，覆写 max-height:calc(100vh-36px)=视口帽扣根纵向可达 chrome（上边框1+上内距10+下边框1），内容不超窗完整展示无内滚、超窗转表体内滚（其它统计卡维持 60vh）；④全部项目模式行四第一列=项目数量格（KPI folder 图标，计数=projects_total 截断前真实数或列表长度；费用可见三格 .zu-turn-kpis--trio 3 列网格、费用关退 --duo 两格）。 → v339 详情卡点击空白/Esc 关闭（issue #297）：document mousedown 捕获外点判定（tipOutsideDown）——target 落在自绘浮层本体/条面/设置面板/各弹框之外即收，主 tip cause="outside" 进 hideTip 硬保活窗白名单（v271/v329 的 1.2s 窗不再吞「点过 Tab 后点空白」；devKeepTip 常驻模式契约不变仍只认 Escape/齿轮/再点同格），额度/速率/重置卡/子代理行内/git chip tooltip 与费用说明/档位说明浮层一并收（柱体 Portal pointer-events:none 无需排除）；document keydown 冒泡全局 Escape 兜底（tipGlobalEsc）——焦点在 body 时既有元素级 Esc 链收不到，此处一次收一个且不 preventDefault/stopPropagation 不吞宿主语义，冒泡挂载保住 tip 内「先收档位说明不关卡」分层。 → v340 心跳不再深拷贝整窗快照（issue #309，长会话卡顿；规格 specs/perf-lag-reduction.md 规则 10–12）：桥 v2 的 getState() 每次都是整窗深拷贝（本机 374 行 ≈1ms，报告者 6868 行 ≈86ms），而 100ms 心跳里 bridgeTick 健康检查与 updateLive→subRunningList 每拍各读一次（无 stats 时「思考中」合成再读一次）、每次 store 通知还有 subscribeStore 与 overlay 回调各读一次，v2 桥下 ≥20 次整窗拷贝/秒。三处修复且与桥代际无关（v2/v3 均有效）：①心跳经 handleSnapshot 读 handle 上的快照记录（通知回调写入，超 SNAP_FRESH_MS=2s 才回源一次并兼作 store 关闭/换代探活，时钟回拨按陈旧）；②turn-stats.js subscribeStore 把本次已读 state 传给 changed(state)，回调不再二读；③通知处理按实测成本自适应合并（上次处理 ≥8ms 时间隔 min(1s, cost×9)，占比 ≤~10%，尾部定时器归订阅持有、退订即清；廉价会话逐字不变）。pane 切会话仍由 handle.sid/sideKey 即时重绑；不改桥模板与 BRIDGE_GEN（冷路径）。 → v341 issue #309 复审补修：子代理槽位通知回调复用 changed(state) 不再二读；通知处理同步分支作废迟到的尾部定时器；全局 setTimeout/clearTimeout 缺席时不抛进宿主通知链（退回同步处理）；订正「窗口恒 60 行」旧注释（reducer 增量不截）。 → v342 ⚙ 面板底栏「反馈问题」左侧新增「联系我」按钮：点击经 openMpShell 复用 .zu-mp-ov 弹窗外壳（收窄 .zu-ct-ov 卡宽）展示维护者微信二维码远程直链（http 直链经实测可用；https 不可达；宿主渲染页 file:// 无混合内容拦截），加载失败隐藏图片换文字兜底；Esc/遮罩/✕ 关闭沿用壳协议，外部点击豁免走既有 .zu-mp-ov 白名单。随批修复既有潜在缺陷：openMpShell 系自有弹层被 modalOpen（v62）误判宿主模态——body 直挂全屏遮罩+内部 role=dialog 完整命中两层判定 ⇒ track 收条连带 closeSettings（用户实报：点「联系我」/关弹框后设置面板被关）；modalOpen 两层扫描与 isOwnOverlay 豁免清单补 .zu-mp-ov/.zu-rot-pk-dlg/.zu-compact-dlg，宿主真模态判定不变。复审补修：.zu-ct-img 补 [hidden] 显式隐藏（作者 display:block 压过 UA [hidden]，同 .zu-update-progress 先例）；mp 壳 Esc 升捕获相+stopPropagation 对齐 rotPkKey 协议（焦点在面板内按 Esc 曾关面板留弹窗）；error 守卫改 isConnected；img 补宽高属性防加载回流；09 面板外点白名单补 .zu-compact-dlg；⚙ 联网边界披露「联系我」图床拉图。 → v343 turn-text 回推诊断计数（issue #321「生成时长缺失，暂不显示速率」每轮常驻且零可观测）：完成态占位行的速率来自数据库富文本回推（token_rate.py --turn --current），此前回推失败全静默——空交付不区分「主进程没回（旧冷文件/通道断）」与「Python spawn 失败、15s 超时、非零退出」及「库没追上」。渲染端新增页面存活期单调计数 rt（sent、ok、empty、miss、stale，空交付原因细分 spawn/timeout/pyerr）随 FATAL.det.rt 落 diag-*.json；miss=请求 20s 无回执（略大于主进程 15s 超时），stale=未匹配在途请求的设计内淘汰回执；主进程空交付带原因标签属 inject-main.cjs 冷文件改动，需完全重启才细分，旧主进程回退落 empty 桶。 → v344 增强提示词按钮（specs/prompt-enhance.md）：模型 chip（chat-model-select-trigger，空配置「管理模型」分支同名）左侧 ✦ 按钮，chip 缺位回退用量圆环左侧；点击读 composer 草稿（__zcodeLexicalInputE2E，Lexical 直写 DOM 不进 EditorState 的唯一官方写通道）经 pluginRequest("prompt-enhance") 主进程按会话模型凭据（v4-model-config 实时选择优先、快照 last 兜底）一次性非流式改写后回填前重读草稿比对防覆盖用户编辑，再以 setText 替换，20 秒内按钮变撤销态恢复原文；增强中忽略再点（主进程 60s 超时 + 渲染端 75s 兜底）；警示态 4s 自愈（空草稿/模型未识别/失败原因/冲突）。实现落 model-puller.cjs enhanceText（三协议非流式 POST、套餐源 planTokenOf 解密、api-key 型自定义供应商、错误摘录脱敏）+ inject-main 白名单三动作（prompt-enhance / prompt-enhance-cancel 取消 / enhance 开关，enhance_enabled 缺省开显式 false 关、推送面 enhanceEnabled）+ ⚙ 面板「回答统计」分区开关行。增强中再点按钮=取消在途请求；主进程不认识新动作的旧版本回 unknown action，按钮按失败警示不挂起。 → v345 issue #327 回答末尾统计行逐拍消失/重现加固：scanDeterministicLines 在 owner 令牌取不到的单拍里对已验证归属的行整块 remove 且当拍 continue 不重建，令牌逐拍抖动即呈约 0.5s 一档的亮灭、块高归零下方内容跳动。现对「证据缺席」型空令牌（owner 无归属实例 / sid 实例暂无会话）且行仍属同一 tid（新增 __zuDetTid）宽限：连续 3 拍且跨过 1s 才撤（拍数防回执爆发耗尽、墙钟防后台节流拉长，同一扫描内多 box 命中同一行只计一次，时钟回拨视为到期，恢复一拍清零）；scope 与 sid 不符或侧聊远端（属于别的会话的反证）、归属换成另一个有效令牌（SID/scope 切换）、无 __zuDetOwner/__zuDetTid 的遗留行仍即时撤，fail-closed 对这些情形不松动。带行 box 令牌为空的原因拍数（owner/sid/scope）、宽限放行数 grace、空令牌撤行数 removed、非空令牌换代撤旧数 swap 与本代起算时刻 since 累计进 FATAL.det.nullOwner 随 diag 落盘，供报告者回传定位是哪个写入方在抖动。未证因果：本机复现不了，宽限属加固而非已确认根因的修复。 → v346 手机远控中继（specs/mobile-relay.md、specs/mobile-userscript-build.md）：asar 双段注入（stash 捕获宿主 relayProtocol 合法 send 入口，seq/ack/分片全归宿主协议栈；uplink 钩子包裹 onRawTransportPayload，带 zuUp 标记的手机上行帧在 acceptPayload 严格 seq 校验前被消费）；按宿主报告的 mobileTaskView 精确 target 推送完整快照；触发模型与桌面同源（DB 写入 fs.watch 300ms 去抖事件驱动 + 30s 兜底心跳 + config.activity_min_ms 同一限频），手机上行配置达成消费门控（clientReady）后才查库推送、按 zusage3.show 裁剪 chips；油猴接收端改为编译产物（src/mobile 分片 + 桌面 06/07 锚点提取构建，一次产出正式/调试双版本，锚点缺失构建报错） → v347 状态轮播附加工作时长与悬停提示（specs/status-rotator-work-duration.md；性能预算 specs/perf-lag-reduction.md 规则 17）：①appendWorkDuration 开关（默认 true、显式 false 保留，存 zusage3.rotator2）开启且 labelSource=phrases 时在 loading 行 label 后追加宿主同款「工作中 X 分 X 秒」兄弟 span（.zu-rotator-elapsed，格式逐句对齐宿主 formatConversationWorkDuration：max(1,round(ms/1000)) 拆天/时/分/秒非零入列至多两段、中文值与单位间空格；起点锚 turnHeader.startedAt 与宿主折叠头计时逐秒一致，宿主文案节点在虚拟滚动内无生产 API 故自算）；②悬停纯 CSS tooltip（data-tip + zu-rot-livetip 伪元素，内容同款文案）独立于开关①恒随轮播，零监听零布局读取，气泡静态 pointer-events:none 防偷 hover 抖动；③写入纪律（规则 17）：span 判位 nextElementSibling O(1) 零新增文档级查询、textContent/data-tip/classList 带比较前置判断按整型秒门控（同秒内 tick 零 DOM 写、每行至多 1 写/秒，不在打字机 15Hz 写流上叠加），文案缓存挂 rotatorRuntime 随热重载换代，restore 名单并入既有 querySelectorAll 选择器串；④⚙ 面板「追加工作时长」checkbox（.zu-rot-append-duration，启用行之后）走既有 setCb/change 尾缀统一保存链，底部预览卡不联动；⑤两轮用户实报修复——文字隐形根因=宿主 gradient label 的 -webkit-text-fill-color:transparent 是继承属性压过规则 color 使气泡文字全透明（CDP computed 实证，pointer-events 实测 auto 排除禁点），气泡显式重置 -webkit-text-fill-color:var(--color-tooltip-foreground) 堵继承；红色泛光根因=宿主 label 自带 filter:drop-shadow(rgba(255,0,85,.45) 辉光)（255,0,85=宿主渐变首色，shimmer 固有）不继承但作用整棵子树，气泡作为 label 伪元素子盒被整体泛光——data-tip/类改挂行容器 [data-testid="chat-loading"] 脱离作用域，label 旧代际属性每拍清退防热重载双气泡，还原名单行级摘除；样式对齐宿主原生 TooltipContent 视格（asar 实证 rounded-lg border-border bg-tooltip px-3 py-1.5 text-ui-sm，原生即无阴影——用户点名去阴影）：去 box-shadow、--color-tooltip/--color-tooltip-foreground 反色变量、var(--color-border) 边框、圆角 8px、padding 6px 12px。 → v348 速度与统计浮层适配大字号（specs/speed-tooltip-adaptive-layout.md、specs/stat-tooltip-large-text.md；开发早于 v347、晚于其合入，代际号按合入时间线顺延取 v348）：①速度卡 spdFitTip（02 分片）——固定 760×300 改 CSS 变量驱动（--zu-sv-width/--zu-sv-height/--zu-sv-left-width 注入 tip，未设置时 fallback 精确回落旧值），字号异常增大先按 14px 基准整体 zoom（下限 0.8），只按筛选栏/左卡量尺寸不读图表横滚内容，空间不足再按内容扩高（>300 加 12px 呼吸间距）并经 tip 纵滚到达，视口变化经既有定位周期 reset 重算、字号变化留待下次重建经 previous（__zuSpeedSize，含 font）失效重算，同视口同字号内 previous 防悬停中逐拍重建的尺寸抖动；②统计/模型名 fitModelNames（02 分片）——.zu-model-fit 按实际宽度缩字号至不低于 10px、仍放不下保留省略+title 全名，接入速度卡/统计卡模型表/项目卡/fxTip/子代理浮层（子代理浮层 td 补 max-width 帽让 fit 在表级溢出档生效）；③统计卡「输入」标签 .zu-kpi-label nowrap + .zu-stat-k flex-wrap（07 分片），命中率徽标允许换行不重叠；④多柱（n≥10）柱组 .zu-sv-bars--spread 均匀铺满、柱宽不拉粗（部分恢复 v273⑤ 废止的 space-between，仅多柱档）；⑤图表横滚位置 __zuChartScroll 关闭时捕获/重开同键回填（修隐藏态 scrollLeft 恒 0），root overflow:visible + tip overflow-y:auto、wheel 到边放行默认滚动，键盘 Tab 进滚动明细区（role=region）+Shift+Tab 归还；QA 门 ZU_GEOMETRY_ONLY（tests/speed-tooltip-host）覆盖 14/17/20px 字号与重叠断言。 → v349 宿主定时器慢拍缓释（issue #342，性能预算 specs/perf-lag-reduction.md 规则 18）：报告者（Windows/内置浏览器面板活动期）只读定时器归因记录到 bridgeTick 51–93ms、heavy 55–75ms、coordinator 54–63ms、flush 55–92ms 单拍——规则 10–12 后正常拍已 <5ms，慢拍=正常工作被宿主主线程争用拉长 + 长窗口会话 2s 回源一次的整窗深拷贝（≈86ms/次）。两处自适应缓释，只在实测单拍超预算时介入、廉价环境逐字不变：①handleSnapshot 回源实测 ≥8ms（规则 12 同阈值，perfMs=performance.now 优先缺位回退 Date.now）时本 handle 新鲜窗逐档退避 2s→4s→8s（h.freshMul），<8ms 立即回 1 档，影响面仅静默期思考合成 phase/后台清单与探活的陈旧上限 ≤8s（「已观察 Xs」走字按 bornAt 推进不受影响）；②heavy/coordinator 600ms 对账单拍 ≥16ms（含界）时跳拍（lvl∈{0..3} 每实跑升档后封顶、跳拍窗 600×lvl 右开；lvl=1 稳态不跳拍只吸收「前拍拉长后拍准点」尖峰，稳态有效降频自 1.2s 起、封顶 1.8s），<16ms 立即回 600ms（heavyLvl/heavyRunAt 实例闭包、coordLvl/coordRunAt 协调器闭包，setInterval 拓扑与 dispose 不变），降频期最坏影响 chip 兜回/pane 自藏延迟 ≤1.8s。诊断随 diag-*.json 新增 snapSrcMs/heavyCost/coordCost 三个数值字段供报告者归因。有意不做：bridgeTick 100ms 不降频（规则 1 跟手契约）、flush 已有 ≤10% 占空比上界、visibilityState 门控无增益（隐藏窗 Chromium 本就降到 ≈1Hz，报告者场景宿主窗口可见）。 → v350 增强历史「查看全部」浮层表格版视觉修复（specs/prompt-enhance.md 契约更新）：①高度自适应——面板 height:auto + max-height min(85dvh,760px)（内联与 CSS 双写），去掉固定 height:min(640px,80vh) 与表区 flex:1 1 auto 撑满，数据少时内容自然撑开、多时表区独立滚动，单页/空态不渲染分页页脚；②Header 左右分组——左=图标+标题+总数徽标，右=清空记录（图标文字横排、hover 危险色）+关闭按钮（32×32 命中、EH_ICON.close，Escape 同效）；③筛选行——搜索框带图标弹性填充（flex:1 1 240px、placeholder 完整），四个筛选器统一 34px 高/圆角/边框（来源 112/供应商 150/模型 140/时间 118px）；④表格对齐——表头与行共用 <colgroup> 列宽（chev 32px/来源 56px/操作 64px 固定 + 百分比弹性列，table-layout:fixed），去掉按 td 类的宽度声明；⑤供应商友好名——EH_PLAN_LABELS 内置 6 个套餐 id→显示名映射（与 model-puller PLAN_SOURCES 同源），表格/详情/筛选下拉显示友好名，title 悬浮完整原始 id，非套餐 id 原样不虚构；⑥展开详情——三栏 minmax(0,.85fr)/minmax(0,1.5fr)/minmax(0,1.5fr)（≈22/39/39），增强正文棕色背景改中性卡色+边框，正文 max-height 240px 内滚、详情块不再二次限高，元信息标签 11px/值 12px 行距 7px、长模型名 overflow-wrap:anywhere；⑦响应式——面板 container-type:inline-size，按面板实际宽度渲染时列裁剪（<900px 合并供应商/模型列、<640px 再隐摘要列，colspan 同步 10/9/7），容器查询 <900px 详情转两栏+元信息横排、<640px 详情纵向，resize 期间 150ms debounce 重排版（监听随关闭移除）；⑧行为修复——ehFullCache 补显式 var 声明（原隐式全局）、enhance-history-add 同步失效全量缓存、复制按钮统一按记录 id 定位（详情行经 detail-row 前一行）+check 反馈，删除死代码（重复 delete/copy 分支、无 data-expand 按钮），摘要列 title 悬浮全文（去 JS 60 字截断，CSS ellipsis 承担）。同批追加：⑫筛选下拉自绘箭头（appearance:none + data-URI 背景统一，右距 10px 与文字左距对称，原生箭头贴边且各端不一致）；⑬面板 min-height 60vh（用户口径：数据少时面板不显矮，上限仍 min(85dvh,760px)）；⑭关闭按钮 margin-right:-8px 收紧贴右上（icon 距面板右缘 12px）；⑮排序箭头 svg 显式 display:inline-block（宿主全局 svg 块化样式把 th 裸 svg 挤到第二行，按钮内图标被 inline-flex 吸收无此症）；⑯展开详情来源/Token/时间/耗时四对合并为三栏下方一行元信息（分隔线横排，左栏只留供应商/模型，minmax(0,.85fr) 栏宽放不下四对才上移全宽）；⑰确认类交互统一 zuConfirm 自绘弹框（复用压缩确认 .zu-compact-dlg 全套外壳样式，替换 overlay 全部 6 处 window.confirm：增强历史删除/清空 ×4 + 设置页移除 Key/重载丢弃修改 ×2；Esc/遮罩/Enter 协议同压缩弹框，规则沉淀 overlay-ui.md §4）。⑱增强历史双入口设置按钮（用户 2026-11-15 点名）：悬停面板 footer 与全量面板 header 右上新增「设置」（EH_ICON.gear 齿轮 + .zu-eh-cfg 同清空按钮外形中性 hover），点击经 openEnhanceSettings 复用齿轮官方完整开启路径（gear.click）+ activateSettingsSec("enhance-provider")，与增强按钮右键同款。⑳增强 Provider 分区 footer（状态+重新载入/保存按钮）改 sticky 吸底（用户 2026-11-15：矮屏用户不知道要滚到底部才能保存）——position:sticky bottom:-20px（负值补偿 .zu-settings-body 底 padding 20px 使视觉贴面板底缘）+ 水平负 margin=body padding clamp 值盖满面板宽 + 实色背景 var(--color-card) 防透出 + 上阴影分层；滚到底时回到自然位置，其他分区不受影响（.zu-ep-footer 类名仅该分区使用）。㉑修复重开面板误报「配置未保存」（用户实报）：保存成功回调只更新了 epSavedRevision 未刷新 epSavedFormJson 基准，重开面板 epSyncDirtyStatus 用旧基准比对恒脏——保存成功（含移除 Key）即以当前表单 JSON 为新已保存基准；保存失败/其他窗口 conflict 保留旧基准（脏标记语义不变）。⑲删除「撤销增强，恢复原文」状态（用户拍板去掉该展示）：应用成功（写入确认）后按钮直接回 idle，不再有 20s 撤销窗/撤销点击/自愈守卫（ENHANCE_UNDO_MS、ENH_SVG_UNDO、enhanceEnhanced/State、undo 点击分支与 heavy 对账块全拆），聊天历史采集时机不变（应用成功即记录）；回填前的会话与草稿比对守卫保留。独立 review 三修（2026-11-15）：⑨修复排序列点击不可达（th 非 button，data-sort 判断提到 button 判空前——首版表格即坏未报过）；⑩删除改缓存就地滤除+res.ok 门控+小浮层缓存失效（原 cache 置 null 后 build 清空整表，直到重开才恢复），失败删除不清表；⑪cssText 复制补 bottom:auto（小浮层动态 bottom 残留会把 fixed 面板高度压死，悬停→查看全部主路径必现）+disposeOverlay 摘除面板 keydown/resize 监听+两 handler 热更 stale 自卫+搜索 debounce 改模块级随关闭清理+首开「正在读取历史…」占位防闪白+sticky 表头（长列表滚动表头常驻，box-shadow 补 collapse 边框）。 → v351 状态轮播词库同步上游 01Virex/dsh-status-rotator（PR #179/#181/#184/#186/#188，仅 04-rotator-builtin-packs.js 数据）：community +3（「用户特么的…」thinking、「正在驾驶EVA~~…」「听见你说~…」running；#184 的 4 条已在存量）、internet-memes +4 相（「token来！！token来！！token来！！…」thinking/running/long 三相 + 「正在创作隐晦物品…」running）；star-ask 与上游一致未动；star-route 不随上游（用户拍板取本项目星标者）：GitHub 152 人 + GitCode 镜像 2 人 = 154 人，zh/en 镜像 308 条，替换过期旧快照 134 人，包头注明名单来源（两端 stargazers API）与刷新方式。范围外漂移保留：western-ai GPT-7 文案、coding/slacking/daily 的 weight 对象在本地转纯字符串（本项目不支持权重对象）。无增删包，ZU_ROTATOR_PACK_META 与 enabledPacks 种子不动。 → v352 状态栏项目排序、优先级与自动折叠（specs/statusbar-layout.md）：①数据模型 zusage3.barOrder（数组白名单归一：非法剔除/去重/缺项按 ZU_BAR_KEYS 补尾）+ zusage3.barPriority（high|normal|low 枚举，非法回缺省；缺省按设计稿 速度/本轮=高、会话/今日/项目=普通、工具/子代理=低）；排序决定显示序、优先级决定折叠序，两字段独立、定向写（persistBarOrder/persistBarPriority 不搭全量 persist，防跨窗口互覆），storage 监听对两键归一化回读同步。②条面排序：html() 每格带 data-zu-key（remote/not_local=system 恒置顶），经 zuBarSortItems 按用户序重排，tips 与 .it 下标对应不变。③自动折叠（仅 default 档）：真实布局测量 scrollWidth>clientWidth+1；折叠序=zuBarFoldOrder 纯函数（低先收、同级右先收；system 与 speed 不折叠——speed 是设计稿「固定（始终显示）」语义，有有效数据才渲染，不伪造 0）；宽/字号(含 font-family)/优先级签名+foldDirty 门控重算，每帧另测一次溢出探测流式内容变宽；恢复带 24px 迟滞带防阈值震荡；折叠集变化关菜单并收锚定 tip，折叠格 data-zu-folded display:none，sep 同步隐藏，全折仍超宽 .zu-clip 渐隐兜底；「···」入口带折叠计数，data-zu-visible 门控显隐。④「···」菜单（body 级 .zu-more-panel，实例级闭包）：图标+格名(ZU_BAR_TITLES)+实时值（原地 textContent 同步，不整卡重建不抢焦点），点击=从活格现取 __tip 锚定 ⋯ 按钮弹原有 tooltip、sub 项开子代理浮层（pinned 可再点关闭）；键盘=打开焦点入首项、↑↓/Home/End 循环、Escape（按钮/菜单两处）关闭归还焦点；外点 pointerdown 捕获关闭；hideBar/dispose 摘除，boot 旧代清理串补 .zu-more-panel，no-drag 联合规则挂载。⑤设置页排序卡（.zu-layout-card 嵌套卡，barOrderSettingsHtml 单根输出整卡替换）：拖拽手柄 SVG+格图标(与条面同 path)+两行名称说明+显示开关(speed 行为「固定（始终显示）」徽标替代)+三段优先级 radio(高|普通|低，:has 选中柔和主题底+内描边，speed 锁高禁用)+↑↓ 键盘排序（disabled 边界焦点回退对向按钮，aria-live 播报）+重置；HTML5 DND 仅手柄行可拖、交互控件排除，dragover 高亮 prevRow 记忆；syncPanel 双回填（radio 态+行序漂移整卡重建）。⑥v66 分级收缩机制整体退役（shrink/fadeOn 死变量与三处恒空三目删除），窄宽行为由折叠接管；既有 8 个切片测试的沙箱补 zuBarSortItems/ZU_BAR_KEYS 桩，data-k 契约断言转运行时求值 barOrderSettingsHtml。 → v354 draft 会话增强放行（specs/prompt-enhance.md；让位说明：运行目录 2026-11-16 00:19 已被并行会话先行占用 v356=排序卡布局重做（PR #349 线在途），本代跳号避免同号两义）：宿主新会话未发首条消息时 data-session-id="draft"（SessionPane `sessionId ?? "draft"`），归属链自 v90 起 draft 一律拒绝致增强按钮必报「未识别当前会话」；现 readPaneScope/readFiberPaneScope 加第 4 参 allowDraft（默认关，:112 fiber 兜底透传），仅增强链 enhanceCurrentScope 显式传 true 放行——发起身份键="draft"+workspace scope（scope 属性与 sessionId 无关），回填闸 draft→draft 一致放行、在途晋升（draft→真实 sid）走既有「会话已切换」丢弃；quota 上报/状态条/远端路由/getScope 等其余各处调用不传参行为不变，draft scope 绝不进上报链。主进程 prompt-enhance 链不消费 sid/scope，零改动。 → v355 增强历史悬停面板视口钳位（用户实报截图：多条卡片时面板顶缘越出窗口顶部，「最近增强记录」标题行被裁剪）：showEnhanceTip 原 bottom 锚定只保证底边间距、垂直零钳制，内容高超过按钮上方可用空间即顶部溢出。新增 placeEnhanceTip（ehRender 尾部接线，加载完成/清空/删除等高度变化后重钳）：按实测高三档放置——上方够→bottom 锚定（原行为）；上方不够而下方够（≥min(h,320)）→翻到按钮下方（zu-eh-flip：箭头 order:-1 移顶+border 翻向，v315 cap 翻转先例）；两侧都不够→上方贴边+钳 inline maxHeight 让 .zu-eh-scroll 内滚（flex:1 min-height:0 已就绪）。offsetHeight 桩环境缺席→0 恒走原分支，切片测试与既有行为不变。 → v356 系统状态一等显示格（issue #338，specs/statusbar-system-status.md）：①数据链——主进程新增 sysmon-client.cjs 热模块（CPU os.cpus() tick 差分、内存三平台口径 Linux /proc/meminfo+macOS vm_stat/sysctl+Windows os.totalmem/freemem、磁盘 fs.statfs+卷枚举 Linux /proc/self/mounts 白名单+macOS df -klP+Windows 盘符探测带超时、项目卷 st_dev 精确归卷），订阅制轮询（渲染端 pluginRequest sysmon-sub {want,cfg,projectPath}，want>0 才采样、末订阅停表），帧经 pushOnce 同款信任门推 window.__zusageSysmon；只推订阅窗口。②渲染端——ZU_BAR_KEYS 加 sysmon（第 8 格，缺省序补尾、show 默认关、优先级默认低），配置 zusage3.sysmonCfg 独立可校验模型（metrics/format/interval/disk 目标/阈值 clamp），纯函数 sysmonFaceHtml（full/compact/minimal 三面+阈值含等号判定+连续 2 拍预警确认/危险立即生效/回落 1 拍还原防抖）与 sysmonTipHtml（440px 结构化卡：CPU 整机使用率+Load、内存已用/总量+Wired/Swap、磁盘多卷表格项目卷高亮、动态阈值图例、过期注记；样式随内容内联 <style> zu-sys-* 前缀），条面格仅本地 scope 渲染（!d.remote && !d.not_local）。③自适应——format:"auto" 随窄宽档位映射（zu-tight→紧凑、zu-narrow→极简，档位切换钩子驱动 sysmonApplyFace 原地重绘，无新探针；显式档不自动改写，空间不足走既有折叠链）；折叠与「···」菜单由 ZU_BAR_TITLES 数据驱动自动纳入，菜单点击锚定 ⋯ 弹原格 tooltip。④精简模式——工具行 .zu-sysm chip（git chip 同款模板：防双挂复用/签名幂等/双 reapply/restore），收敛位 [锚][速率][git][sysmon]（git 兜回容忍 sysmon 收尾防拉锯），sysTip body 级浮层（gitTip 同款单例：签名幂等+保滚动+浅色档+Esc/离开/代际清理三链收起），点击=立即刷新（pluginRequest sysmon-refresh）+弹完整卡。⑤⚙ 设置——排序卡自动出现系统状态行（descs/icons 表同步），新增「系统状态」配置卡（显示内容/格式四选/双间隔/磁盘目标/预警开关+六阈值数字输入，双回填+panel 级 change 委托+真实数据预览行），zusage3.sysmonCfg 定向写+storage 跨窗同步（06 监听器新分支），boot 清理串补 .zu-sysm/.zusage-sysmon-tip；旧冷主进程无帧时格显 loading 态（—），无轮询无报错。 → v357 v1.5.19..HEAD 合并 PR 的 Windows 兼容性复审修复批（6 路 subagent 并行 review 收口；原拟 v354 与并行会话同号，rebase 让位顺延）：①折叠↔窄宽探针解耦（specs/statusbar-layout.md）——脱离布局探针克隆剥 data-zu-folded 后量未折叠自然宽，原样克隆让折叠格在探针里 display:none 把 fullWidth 量缩、shrink 档误判「完整宽装得下」随即反复展/折叠约 2Hz 震荡闪现（v352 探针写于折叠机制之前，两线串联时未教它剥折叠态）；②居右对齐 endlead 修正——dataset 驼峰键误写（zuEnd*Lead 大写 L 生成 data-zu-end-lead），与 CSS/清理的 data-zu-endlead 永不匹配，居右+首格折叠时剩余可见格被 space-between 摊满整条不右聚拢，统一为小写连字符拼法；③heavy/coordinator 跳拍门补时钟回拨守卫（负差值视为到期，防 NTP 步进/手动改时后 600×lvl 门恒真、对账冻结到墙钟追回；与 08 快照 age 门、v345 宽限的回拨口径一致）；④子代理浮层 positionSubPop 的 fitModelNames 补 __zuModelFitWidth 宽度门控（浮层打开期间逐帧强制布局读写，Windows 低配/高 DPI 帧预算紧；与 positionTip 同款，buildSubPop 重建归零重跑）；⑤增强回填读回校验换行归一（模型回包含 CRLF、宿主 E2E 桥读回规范化 LF 时逐字比对恒不等→每次误报「写回输入框失败或草稿已变化」且撤销窗不开）；⑥增强历史全量面板搜索 IME 修复（specs/prompt-enhance.md）——200ms debounce 整面板 innerHTML 重建会销毁聚焦搜索框：中文输入停顿即强制取消拼音组合、焦点打回 body、后续按键落进宿主草稿框；现组合期间（isComposing/委托 compositionstart 撤销待触发 debounce）挂起重建、compositionend 后同款 debounce 刷新、关面板复位 hold，重建后恢复焦点与光标位置；⑦Windows 增强供应商/历史落盘平台限制如实化（specs/prompt-enhance.md）——enhanceProviderView 增 platformLimited 字段，EP 分区不可用文案按平台区分（不再误导 Windows 用户「检查权限或重启 ZCode」），enhance-provider-save 主进程分支补 win32 对称早退门（models 分支已有；省一次必败 python 子进程），models/save 错误映射补 unsupported platform，「在本机保存增强历史」说明注明 Windows 仅本次运行内存；⑧速度卡 .zu-turn-models 补 ::-webkit-scrollbar 8px 窄条回退（scrollbar-width 需 Chromium 121+，旧宿主 Windows 经典滚动条约 17px 挤占表格；新 Chromium 忽略 webkit 伪元素双写无冲突）；同批契约顺手项：model-puller 1.2s 重试退避定时器补 unref（超时兜底定时器契约）；tests/test_config_transactions.py 增强供应商事务类按平台拆分跳过（update_enhance_provider 在 Windows 有意 fail-closed 恒 raise，原 4 例在 Windows 必红、CLI 用例拆出保留退出码传播覆盖）；scripts/install_workbuddy_plugin.py CLI 入口 stdout/stderr errors=replace（非 UTF-8 控制台打印登记文件生僻字符不再 UnicodeEncodeError）。矮窗钳高项已由并行 v355（placeEnhanceTip 三档放置）以更完善实现收口，本批不再重复。v353 空号由在途 PR #349（.zu-layout 排序卡重做）预留，按合入顺序后合者改号。 → v359 排序卡布局系统重做（原占 v353，后合两轮让位顺延：v353 空号留给主线批次、v358 被 PR #353 主进程段占用；真实宿主 CDP computed 实证根因=通用 .zu-settings label(0,1,1 后置)/label>span(0,1,2) 以同分或更高特异性压制排序卡单类规则：.zu-layout-ico 被 flex:1 拉成 129-167px 造成图标-名称大空白、prio label 被 padding:12px 14px 撑成 48px 高大格、body gap/align 被污染）：①全部 .zu-layout-* 规则加 .zu-settings 前缀升特异性（沿用 v144 radio/EP 分区/轮播 05:849 先例），对抗属性逐条显式声明不靠继承巧合，无 !important；②行布局改 Grid 五列（手柄 10px|信息组 minmax(0,1fr)|显示开关或固定徽标|优先级|排序钮），全部子项显式 grid 坐标免疫通用 checkbox order:2 重排，min-height:52 只托底不封顶；③名称区 label for/id（zu-show-<slot>-<key>）与开关显式关联（点名称即切换语义保留，speed 行无开关改 div），开关移出 label 独立成列纵向对齐；④「固定（始终显示）」徽标精简为「固定」胶囊（完整语义移 title），图标补显式 11px 尺寸（宿主 svg 块化防护）；⑤三段优先级选中态改 10% 主题 tint 无描边（废止 16%+inset 亮框）、分段 flex 等宽+min-height:24 防大字号垂直裁切（20px 实测裁切修复）、选中交界隐分隔线；⑥↑↓ 换 SVG 带杆箭头（规避 U+2191/93 Windows 字形偏差）26px、disabled .35；⑦容器查询降级：卡片 container-name:zu-layout，≤440px 两行排布（prio 左下/↑↓ 右下），容器宽度不随 nav rail 折叠误判；⑧turn 行说明文案过期修正（首字延迟已随 v211 移除）；⑨重置按钮 title 注明还原范围。配套：09 applyLayoutOrder 置 foldDirty（折叠候选序与排序变更联动，消同窗/跨窗不对称）；测试结构锁+级联锁更新。独立 review 修复批（合入前复审）：级联锁断言重写（原 lookbehind 正则 `\\.` 双重转义恒真、对本 PR 要防的前缀剥除变异全绿——改为穷举规则头回溯选择器段（逗号分段）查 .zu-settings 前缀 + 正反自证桩）；结构锁补 Grid 五列模板与子项坐标 token（此前列数/坐标变异零覆盖）；.zu-layout-card 补 .zu-settings 前缀（唯一裸规则，使「全部前缀化」声明为真）；speed 固定徽标 title 与 00/12 注释及 spec 的「不参与折叠」口径统一改「最后候选折叠」（zuBarFoldOrder rank -1 实为降序末位、极端挤压下照折，与实现及测试注释一致）。 → v360 turn-text 回推「零入队」可观测 + 桥补装 pending 重启标记（issue #321 后续诊断；代际让位：v358 被 PR #353 sysmon 主进程段注释占用、v359 已被 PR #349 排序卡布局重做占用且合入时间线在前，顺延 v360）：报告者 v1.5.19 实证 det.rt 全 0（sent=0）而占位行每轮常驻——v343 的桶全在「入队之后」，收集/flush 门控的静默拒绝不留痕。①richTextDiag 增 noKey/noSid/notCur/noInst 四桶（02 分片 zuRequestTurnText/zuFlushRichTextWants 门控处计数，按轮键 pid|tid 借 richTextBlocked 只计一次防逐拍翻倍，入队即解封、zuResetRichText 换代清空），noKey=富文本身份拒绝（静态桥补装 pending——Windows asar 被运行中客户端占用转待替换链——期间 scope 属性缺席、无桥回退再被远端证据 fail-closed 拒（#40 契约）时的典型落点）；det.rt（03 分片）同步落盘。②bridgeInfo 增 scopeAttrs（12 分片）：沿 wantedEl 上溯会话根查 data-zusage-scope-version=1（与 readPaneScope 同一门），0=静态桥缺席——与 noKey 对读即知「占位常驻且零入队」是否桥 pending 所致。③安装链（plugins/zcode-token-usage-statusbar/overlay_install.py）：ensure_renderer_bridge 的 replace-failed→pending 路径 publish 落定后按主安装同语义 record_restart({state:"pending-install",installation:{asar,entryHash=sha256(entry_bytes_of(stage))}}) 写 .plugin-restart-required——v172 取消会话文字提醒后红点是 pending 唯一用户可见信号，缺它则「桥 pending→scope 属性缺席→富文本 fail-closed」整条链零可诊断（报告者「升级后重启仍未见红点」即此缺口）；swap 时经 publish_install 记 publishedAt、下次启动 loader ack 销账，生命周期与主安装一致（tests/test_bridge_pending.py 全链锁定）。 → v361 重置卡刷新提速+事件触发（借宿主 Coding Plan 提醒链模式）：①主进程 quota-client——RESET_TTL_MS 5min→2min（status 只读查询），bigmodel 个人链列表增强子链独立 RESET_LIST_TTL_MS=10min（尝试即计时，force 仍必打，团队分支 list 即主链不受限），新增 pokeReset()（仅 ok 态、fetchedAt 旧于 RESET_POKE_GAP_MS=30s 的族置 nextAt=0 借 tickReset 守卫拉新，失败退避/auth 冻结/idle 族不唤醒——事件不越过退避与冻结，返回唤醒族数，门控关=0）。②主桥——pluginRequest 新 action quota-poke（冷文件，respond {ok,poked}；门控全在 pokeReset 内，不设 quotaEnabled 条件）。③渲染端——document visibilitychange 变 visible 且 state.resetBadge 时发 quota-poke（11 分片末尾 listenGlobal 随实例 dispose 摘除）；悬停重置卡徽标 showRstTip 入口同发（查看即拉新，对应宿主「订阅者挂载即投影」）；tooltip 图例文案同步新节奏。chip 点击 quota-refresh 强制语义不变；旧渲染端不发 poke、旧主进程回 unknown 均无害。 → v362 系统状态设置页与 Tooltip 深度优化（specs/statusbar-system-status.md UI 批；原拟 v357 与 PR #352 Windows 兼容批同号顺延 v359 后，PR #349 排序卡重做线又占 v359、v360/v361 相继被 turn-text 与重置卡批次占用，再顺延 v362）：①设置卡 Grid 重构——监控指标/显示方式/采样频率/磁盘监控范围分组小节标题（.zu-syscfg-cap），阈值改三列表（.zu-syscfg-ths：指标|预警|危险，%固定后缀 .zu-syscfg-unit），数字输入框显式边框/背景/28px 高（v356 基线 computed 实证 border:0px+透明背景），checkbox 显式 order:0 抵消 .zu-settings input[type=checkbox]{order:2}（v356 基线实证开关被排到文字后面），显示格式 option 短文案（详细说明移帮助行）；真实预览 sysmonPreviewHtml 共享函数（06 buildPanel 与 07 sysmonApplyFace 同一产出）：跟随显示格式（auto 以 full 演示）、全关显空状态、无帧加「采集中」尾注；阈值关系校验（00 分片 sysThresholdIssues：CPU/内存 warn<crit、磁盘 warn>crit）——非法候选不写入不悄悄交换，回填原生效值+行内红字（.zu-syscfg-therr）+输入框红边（.zu-syscfg-bad），合法写入回填 clamp 后实际生效值（HTML min/max 不拦键入）。②Tooltip 紧凑重构——三区改「标签列|主数值|右侧辅助」Grid（.zu-sys-grid），CPU 主数值直读百分比（去「整机使用率」前缀）、Load 恒两位小数，磁盘区去重复挂载点行（主卷角色并入区头右侧「当前：系统卷」），APFS 共享容器卷不重复容量（后端 sysmon-client 仅 / 与 /System/Volumes/Data 同 diskN 前缀时标 container 字段；前端同容器首行带徽记、后续行显「共享容器空间」，两行相同数值曾误导「磁盘翻倍」），当前监控卷高亮改轻背景+左 2px 强调线（.zu-sys-vrowon 替代 .zu-sys-cur 大灰底），阈值图例精简为三色点一行+ⓘ 按钮（data-zu-sys-th 点击切换内联展开区 data-zu-sys-thexp，明细动态读 cfg 且关系非法标红；只挂 click 不进 pointerdown——toggle 非同值幂等会翻回去；tip.__zuSysExp 跨重建保留、hideTip 清零），刷新说明换时钟图标（纯说明非按钮），warnColors 关时点转中性灰+注明「颜色提示已关闭」，Swap 有效 0 值显示（number 判定替代 >0）。③接线——drawTip 重建后恢复 sysmon 展开态、全量 tip click/mousedown 委托加 [data-zu-sys-th] 分支、01 sysTip 同款三链、09 syncPanel 同步阈值提示；chip blur 加 relatedTarget 守卫（焦点入浮层不收卡，ⓘ click 可达）。 → v363 增强历史默认开启落盘（用户 2026-11-16 拍板；specs/prompt-enhance.md 持久化契约同步）：「在本机保存增强历史」缺省视为开启——配置无 saveHistory 键即读盘+落盘 enhance-history.json，仅显式保存过 false 才回退仅内存保留（关闭态重启即清空契约不变）。四处缺省判定同批翻转：enhanceProviderView 归一化由「=== true」改「!== false」、loadEnhanceHistoryDisk 读盘门由「!== true」改「=== false」、persistEnhanceHistory 落盘门由「!saveHistory」改「=== false」、enhance-history-list 回执 saveHistory 字段由「=== true」改「!== false」，渲染端 EP 分区复选框初始化同步（09 分片）；「自动降级模型」开关本就缺省开启（!== false）不变。Windows 平台门恒拒落盘的既有限制不变。review 修复批：读回同走 30 天/100 条裁剪并在裁剪发生时回写磁盘；本分片勾选说明补「默认开启」与「关闭后已落盘文件保留、重新开启后可在历史面板清空」披露；新增 inject-enhance-history 回归测试 6 例。版本号顺延说明：v360/v361/v362 已被并行批次占用，直接取下一空号。 → v364 系统状态 Tooltip 三处修订（用户实测反馈；specs/statusbar-system-status.md 同步）：①去 .zu-sys-tip 内层 padding（原 11px 14px 12px）——宿主通用 .tip 容器自带 10px 13px，双叠加曾致内容离框过远；②当前监控卷高亮去左 2px 强调线（.zu-sys-vrowon 仅保留品牌色 8% 轻背景，用户主题下 inset 线显白被当瑕疵）；③Load 1m/5m/15m 与 Wired / Swap 数值加悬停解释：.zu-sys-hint 点状下划线 + 纯 CSS :hover 向下弹 .zu-sys-hintpop 小气泡（300px 宽、双语 L() 文案）——零事件链，不碰全量 tip click/mousedown 委托与 pointerdown 断言；宿主 .tip 容器 overflow:auto，absolute 气泡向下弹留在内容区内不触发滚动区域；帧重建后 :hover 实时重算气泡不丢。 → v365 系统状态磁盘表三处间距修订（用户实测反馈，接 v364）：①表行 .zu-sys-vr padding 右 6px 归 0（改 3px 0 3px 6px）——数值列右缘贴内容区右缘，与「14 核」「64%」「当前：系统卷」等右侧辅助列对齐；左 6px 保留供卷名缩进与高亮背景不贴左。②表头 .zu-sys-vh 加 margin-bottom:4px——高亮数据行背景曾紧贴表头分割线（无间距），表头与数据行拉开 4px。③.zu-sys-vols 去 scrollbar-gutter:stable——常显滚动条系统（macOS「总是显示」）该属性恒留 15px 槽，是行右侧空隙大头；去掉后 >6 卷滚动时滚动条占位列宽微跳（罕见场景可接受），≤6 卷（绝大多数）完全贴右。 → v366 磁盘表行 padding 左右对称（用户实测反馈，修正 v365①）：.zu-sys-vr 恢复 padding:3px 6px——v365 把右侧归 0 后高亮背景左 6px 右 0px 不对称；用户要求左右一致。v365 的实质（去 scrollbar-gutter:stable 槽与表头间距）保持不变。 → v367 系统状态设置卡内容边距统一（用户实测反馈）：.zu-syscfg.zu-layout-card 卡根加 padding:0 12px 12px，作用域内 .zu-layout-head/.zu-layout-note 自带水平 12px 归零（垂直保留）——此前卡根无内边距、仅通用 head/note 有 12px，预览/分组标题/行/阈值表全部贴卡边框，与标题错位。源顺序在通用 .zu-settings .zu-layout-head 之后、同特异性覆盖成立。 → v368 水平对齐说明左边距修复（用户实测反馈）：.zu-just-block 里的对齐 pnote 曾贴左缘——「仅默认样式生效…」包在 .zu-just-block 容器内，吃不到 .zu-settings-card>.pnote（直接子选择器）的 12px；补 .zu-settings .zu-just-block .pnote{padding:2px 12px 4px} 与卡直接子 pnote、.zu-theme-options 的 12px 对齐。同卡「精简」说明是直接子元素本就有 padding，不受影响。 → v369 系统状态 Tooltip 按《深色系统状态概览面板》设计稿图标化（specs/statusbar-system-status.md 同步）：①三区指标行统一图标区 .zu-sys-lead（grid-row:1/3 跨主数值/sub 两行 align-self:center）= .zu-sys-mico 28px 圆角 7px 中性轻背景（foreground 6% color-mix，非品牌非状态色）容器 + 15px 线性 SVG（SYSMON_ICONS 新增 cpu/mem/db 三个 lucide 同款 path + sysMicoSvg 统一属性模板）+ .zu-sys-k 标签升 13px——经 .zu-sys-tip .zu-sys-k 作用域覆写实现（.zu-sys-k 同时是条面格 seg() 标签共享类，基础规则保持 -2px 并加 white-space:nowrap 不动条面；review M1）+ 阈值表数值列宽 52px→56px（review N2 补记）；图标是采集范围标识不随预警变色。②主数值列/sub 行左缘加 1px 竖分隔线（border-left+padding-left:12px，grid 改 auto minmax(0,1fr) auto、row-gap 归 0 由 sub padding-top:3px 承接间距，分隔线连续）；.zu-sys-dhead 对齐 baseline→center（inline-flex lead 的基线落在图标底缘，baseline 对齐曾把「当前：」顶高）。③磁盘表套低对比外框（.zu-sys-vols 1px 边框+8px 圆角+3px 内衬，表头底线框内、高亮行内嵌）。④阈值展开表按行分容器：.zu-sys-tht-h 表头行带底线 / .zu-sys-tht-r 数据行（role=row/rowheader/cell 语义补全），右对齐选择器改 .zu-sys-tht-r>span:not(:first-child) 行内作用域——旧扁平 grid 的 :not(:first-child) 把数据行指标名也右对齐（对齐 bug）。⑤磁盘 other 角色卷名不拼「卷」前缀（「卷 Data」→「Data」，设计稿裸名；project/system 角色前缀保留）；「当前：」中文冒号后空格移除（空格只留英文串 current:）。⑥顺手修复 v367 遗留的 v359 级联锁违例（overlay-statusbar-layout bareLayoutRules 抓到 .zu-syscfg.zu-layout-card/.zu-layout-head/.zu-layout-note 三条裸规则头）——补 .zu-settings 前缀，特异性 (0,3,0) 高于通用 head/note，覆盖不再依赖源顺序，计算样式不变；该失败在 v367 会话即存在（未跑全套件），非本批引入。 → v370 会话累计卡标题行超长会话名布局修复（用户实测截图：大字标题被挤成「会话累/计」两行、名称溢出紧凑卡；specs/stat-tooltip-large-text.md 同步）：根因=.zu-tt-name 容器作为 .zu-stat-head 的 flex 子项 min-width:auto 解析为 min-content（标题文字+8px+名称 min-content），450px 紧凑卡内标题列被压到 min-content 以下，「会话累计」四字逐字折行、名称 360px 帽仍超剩余宽。修复四处（均 06 基础规则，项目卡 .zu-pj-title 同名容器一并受益）：.zu-stat-title 加 white-space:nowrap+min-width:0（标题文字恒单行——nowrap 继承给匿名 flex item 保其不缩；标题列保持缺省 flex:0 1 auto 可收缩，收缩额度全让给名称。初版曾加 flex:0 0 auto 锁死标题列，实机量测发现名称 360px 帽仍把范围胶囊顶出卡外，改回可收缩）、.zu-stat-scope 加 flex:0 0 auto（范围胶囊不压缩）、.zu-tt-name 加 min-width:0（解除 auto 最小尺寸）、.zu-st-name 加 flex:0 1 auto+min-width:0（名称在剩余宽度内收缩进既有 ellipsis，360px 仍为上限）；正常长度名称不触发收缩、排版不变。 → v371 其它浮层长动态文本防护批（v370 同根因全面排查，两路审计+逐项核实；specs/stat-tooltip-large-text.md 同步）：①增强历史小浮层 .zu-eh-phase 补 min-width:0+overflow:hidden+ellipsis——相位可含上游错误原文（长 URL/服务端消息），nowrap 无裁切曾撑破头部（与 v370 同型）。②精简摘要 .tip .rt-models .rt-row b 补 max-width:300px——table-cell 上 zu-model-fit 的 ellipsis 与 fitModelNames 缩字号兜底在无宽度帽的 auto 布局 cell 上双双失效，超长模型名曾把摘要卡撑出横滚；口径同项目表首列帽。③子代理任务页 .zu-spsub 由 flex:0 0 auto 改 flex:0 1 auto+min-width:0+max-width:45%+ellipsis，渲染端补 title 全名——长 agent 名曾把任务名 h3 挤到逐字折行。④额度浮层 .qt-h 补 overflow-wrap:anywhere（远端可控套餐/供应商名，同浮层数据行/qt-note 本就有、唯标题漏配）。⑤四处 data-tip 伪元素气泡补 overflow-wrap:anywhere（.zu-mp-tst 探测状态含 URL/错误原文必现溢出；.zu-sl-model 单个超长模型 id；.zu-rot-tipt/.zu-rot-livetip 防护性补齐）。⑥词包弹窗 .zu-rot-pk-title 补 min-width:0+ellipsis+nowrap、JS 补 title 全名（packId 回退长名）。⑦速度 V1 估宽分级 fit2/fit3 作用域扩 .zu-speed-hero——legacy hero（精简 chip 旧快照回退卡）o.main 可含 MCP 长工具动词，此前分级类只挂 .zu-speed-left 永不命中，36px nowrap 大字溢出 KPI 卡；短读数不带 fit 类排版不变。⑧工作流 run chip tooltip 作用域前缀 .zusage-wfrun-tip 改 .zusage-subrate-tip——浮层宿主类名恒为后者（showSubTip 从不挂前者），旧前缀整段 CSS 是死代码，wf-name 单行省略/数值右对齐从未生效（靠继承 anywhere 折行侥幸不破）；wf-* 类仅该构建器产出，改前缀无串扰。已充分防护无需动：Git tooltip（break-all）、sysmon 卷表（minmax(0,1fr)+ellipsis）、项目卡 pname（v303 compact 已齐）、fxTip 模型行（inline-block+帽）、V2 左卡标题/模型/时间胶囊、增强历史全量表格（fixed+ellipsis）。 → v372 统计卡/项目卡标题行外层垂直居中（用户实机指认）：.zu-stat-head 与 .zu-pj-head 的 align-items 由 baseline 改 center——baseline 把范围胶囊/Tab 中心拖低 ~2.5px（CDP 量测 cy 490.3 vs 标题 487.8）；只改外层 head 行对齐，六统计卡与项目卡同样生效，无名称的卡（本轮/今日/工具）居中无副作用。标题容器内部（.zu-tt-name）本就 center；项目卡内部 .zu-pj-title 的 baseline!important 遗留由 v373 单独修。 → v373 修复收尾两处审查 MINOR（review-fix-merge 第一轮）：①项目卡内部标题+项目名垂直居中——07 分片 statCompactStyle("project") 的 .zu-stat-tip--project .zu-pj-title 由 align-items:baseline!important 改 center!important（v290–v304 遗留，CDP 量测项目名中心比大标题低 ~1.7px，同 v372 根因；ellipsis/收缩链不变）；②工作流 run tooltip 补 .zusage-subrate-tip .sub-agent 灰色小字徽标样式（两个构建器共用 subTip DOM、各注入自己的 style，旧仅 subRowTipHTML 携带，wf 的 runShort 命中不到——既存问题，v371 改作用域后同段收尾）。 → v374 会话名省略号补 title 全名（PR 最终自审 F1）：截断项契约对齐项目名/词包标题/agent 名—— .zu-st-name 渲染时 title=压缩后的全名（escAttr 属性转义），发版条目「鼠标悬停可看全名」落地。 → v375 统计 tooltip 模型明细表新增「平均速度」列（specs/model-detail-avg-tps.md）：本轮/会话 累计/今日/项目累计/子代理统一浮层五列表（模型/Token用量/请求/平均速度/预估费用，费用关收四列）， 精简摘要行式明细同步追加 X.X t/s；值=zusage 快照逐模型 avg_tps（Σ有效输出÷Σ有效窗口，同 KPI）， 非 number/≤0 显 —；后端 _turn_rate 顺带按模型累加、会话/今日缓存改携带结构零新增扫描。 → v376 回答末尾统计行（specs/turn-text-cost-and-format.md）：生成耗时分级中文（<60s 保持一位 小数、≥60s 「分/秒」、≥1h 「时/分/秒」）；本轮模型 id 去重前置到 token/s(本轮) 之前； 累计后拼本轮预估费用（¥/$，受 state.cost 经 turn-text 请求 --no-cost 门控）；费用开关切换 bump richTextUnitEpoch 刷代谢行；⏱ 采样时刻/上轮行格式不变。 → v377 手机远控中继统一桌面 overlay（specs/mobile-unified-overlay.md；移动端原 v363/v364 与主线撞号，按合入顺序顺延 v377）：目标数值投影与匿名 binding 隔离；移动接收端内嵌唯一桌面 overlay，本地/WSL/SSH 共用相同状态条、设置和 tooltip。 → v378 清理手机中继无消费者分片与冗余移动分支（specs/mobile-relay.md；原 v350/v364 与主线撞号，按合入顺序顺延 v378）：删除 13-mobile-chips（桌面 DOM chips 采集已无消费者，主进程目标发现改读宿主 preload 状态）、移动端不启动 10Hz 桥心跳、去掉 speed_history 与移动缓存清空的空转守卫、删除 06/07 旧手机提取锚点（zm-cell-css/zm-band-css/zm-band-css-light/zm-show-rows/zm-ico；当前构建直接内嵌完整 overlay）；桌面渲染与既有移动快照语义不变。 → v379 ⚙ 设置面板底栏新增「重启 ZCode」按钮（用户规格；本地曾占 v377，因主线 v377/v378 已被手机中继批占用按合入顺序顺延）：置于滚动提示左侧，与「插件更新」分区内同名按钮共用 data-update=relaunch 点击状态机（二次确认/正在重启/回执三路还原），两枚按钮 armed/sent/禁用/待重启高亮同步；旧主进程缺 relaunchSupported 时同款降级隐藏。review 加固：5s 确认定时器发送/dispose 两路清理；ok 守卫读当前 DOM sent（非闭包旧节点）+ relaunchSeq 代际丢弃过期回执，防面板重建后迟到 ok 重挂 90s alive 误清新一轮重启。 → v380 命中层视觉透明豁免（用户实报：主窗口开模型选择器，右侧辅助对话状态条消失、弹层关闭即恢复）：宿主模型菜单 Radix DropdownMenu modal 开启时另挂「fixed 全屏 + 无底色 + 仅 pointer-events:auto」透明层拦 webview 插件外侧点击，body 同时被设 pointer-events:none 令应用树被命中测试跳过——z 序低于该层的 composer（辅助对话 pane 无主 Composer 的 z-20 抬升）中心命中该层，v65 部分遮挡豁免因整体罩住不成立，迟滞 400ms 后整条收起。hitSelf 在 v65 豁免后补「无底色、无背景图、无 backdrop-filter 的命中层不算视觉遮挡」，与 modalOpen「遮罩必带底色」同哲学；带底色/模糊的真模态遮罩行为不变，coverOK/cardHitOK 无 v65 豁免链路不动（on 判定为 reallyVisible||coverOK 的 OR，第二腿 false 无碍）。 → v381 撤销 v87/v116 的「draft 空窗合成思考中」（用户实报：什么都没干的辅助对话永久假「思考中…4分30秒」走字）：宿主 product-projection.ts onTurnStarted 复核——userInput/turnHeader 行与 phase:"running" 在同一 reducer 批次原子生效，draft 且窗口为空 ⇔ 会话从未有过任何输入，不是「已发送待 header」的瞬态；辅助对话（createSelectionSideSession）新建后宿主即建好 store（draft+空窗），pane 一开桥就绑上，v87/v116 合成立即触发并按绑定时长（bornAt）走字。合成条件收窄为仅 phase==="running"；发送动作到 TurnStarted 事件的亚秒级窗口速度格退回 DB 静态数字，可接受。场景⑤断言随语义翻转，①-④/⑥ 守卫保留。 → v382 套餐额度 chip 工具栏四级响应式（specs/quota-chip-responsive.md）：按 trailing 行真实可用宽度在 L0 完整→L1 紧凑→L2 摘要（主窗口+N）→L3 图标+值→L3I 纯图标→hidden 极限隐藏间选级，展开迟滞 20px/收缩即时/hidden 回展同门控；可用宽度按「锚点间距+当前宽」不变式测量（trailing 行右对齐贴内容，禁用容器宽−内容式相减，曾致 chip 摘除后永久隐藏黑洞）；lead 右缘锚 [data-composer-leading-content] 回退 Git chip，双缺失 fail-safe 保持 L0。窗口标签全档统一短标签（用户拍板终态=今日/5时/7天/月/套餐，tooltip 窗口行保留全称）；测量探针镜像各档盒模型（L1 gap、+N 字号）；档位色/口径/tooltip 数据全沿旧链。收口 review：quotaLeadingRight/HYST 入测试缝、L3/L3I 补 ⚠、缝随实例 dispose 清理、quotaRemainPct 单一实现。 → v383 Git 状态 chip 工具栏四级响应式（specs/git-chip-responsive.md）：按前导区真实可用宽度在 L0 完整→L1 紧凑（既有 zu-compact）→L2 摘要（风险短标+工作段+⋯）→L3 最小（图标+状态点+风险短标）→L3I 纯图标（点色承载风险）→hidden 极限摘除间选级，复用额度 chip 泛型选级（展开迟滞 20/收缩即时/hidden 回展同门控）；可用宽度=「leadA 宽 −（leadC 宽 − chipW）」反自指不变式（leadA 为 flex-1 窗口驱动，实机恒等式取证），未标定结构 fail-safe 保留旧两态（gitChipCompactLegacy：宿主 compact 强制 + 32px 迟滞，绝不隐藏——pill 夹具实证伸缩行会把行内求和压成伪 0）；风险（冲突/操作中/过期）各级保留，aria 恒全量，绝不拼接 ins/del 假汇总；候选宽按「等级|候选串|语言|字号」缓存，零宽不缓存。 → v384 生成速度 Tooltip V3（specs/speed-tooltip-v3.md）：模型级真实速度（zusage msl 四元组 [mIdx,out,ms,n] + mkeys 身份表 + 顶层 speed_days 全历史按日×模型桶，550 日上限+truncated 探针，门控同 speed_history）；渲染端新增 04-speed-v3-{core,charts,heat,view,wire}.js 五分片：spd3Unpack/spd3Analyze 20 组合管线（Σ有效输出÷Σ有效生成窗口单一口径，绝不算术平均）、SPD3_PALETTE 纯哈希模型配色（跨视图稳定）、spd3Filter 筛选状态机（auto/sel/显式空态，chips+搜索弹出层，Esc 分层收起）、单/多模型双布局左卡（分布=按请求数，恰 100%）、五视图（最近混合轮中性柱色/今天小时柱与多模型折线/近7天折线+虚线总体/本月·全部热力图+模型色点），920×480 外壳；V2 双 Tab 卡整体退役（spdAnalyze/spdChartHTML/speedCardV2HTML/spdRebuildOr 等删除，V1 卡与旧快照回退逐字保留）；speed_days 粘性（__zusageSpdDaysSticky）与轮表粘性同链。 → v385 OpenCode Go 模型口径换算（issue #382；本分支曾占 v382，与主线额度 chip 响应式撞号按合入顺序顺延）：官方按模型给月度额度（opencode.ai/go "allowances vary by model"）而 /console/api/go/status 的 meters 是账户基线池（Go 档 $60/月实测），DeepSeek V4.1 Flash（$100/月）会少显示 40%。渲染端 11 分片新增 quotaOpencodeModelView：源 id 为 opencode（含复合源）+ 模型命中 opencode.ai/go 快照表（2026-11-17，28 款）+ 月窗 total 恰等于 Go 档基线 60（档位锚定；Plus 基线未验证不换算）时，5h/周/月窗口总额=模型月度额度×活接口窗占比（不硬编码 20%/50%）、used 是账户实际花费保留原值、percent 重算钳 [0,100]、remaining 重算，原对象不变异；锚不上（未知模型/表过期/兜底链无金额锚点）一律显示活接口基线绝不伪造；chip 面分段与 chip.__zuQ.q 同吃换算视图，tooltip 页脚换模型口径披露；数据链/协议/重查零改动（「模型不入键」取舍不变）。规格 specs/opencode-model-allowance.md。 → v386 生成速度 Tooltip V3 合入主线（内容同上方 v384 条目，specs/speed-tooltip-v3.md；v384 号已被本分支占用、v385 已被主线 OpenCode Go 换算占用，按合入顺序顺延 v386）：分片与行为即 v384 批次终态，叠加主线 v385 换算（11 分片两特性并存互不干涉）。
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -10925,7 +12208,10 @@
       livePhaseCur = "", liveIconCur = "bolt",   // v77：当前 chip 阶段与图标（think=思考动效/bolt=闪电）——相位切换需整条重渲染
       tpsChipCache = null, lastView = null,   // v146：精简模式工具行速率 chip 与最近一次 render 会话视图（chip tooltip 摘要数据源）
       speedChartHover = -1, speedTipSess = "", speedTipRebuild = null,   // v232 速度柱状图：悬停段下标（-1=最新段）/归属会话守卫/tip 重建闭包
-      speedSel = { range: "recent", period: "recent", dim: "time" },   // v254 双 Tab + 维度（实例级，会话切换重置）
+      speedSel = { range: "recent", period: "recent", dim: "time",
+        /* v384 V3：模型筛选状态机/弹出层/分布展开（实例级，会话切换与 range/period 一同重置） */
+        filt: (typeof spd3FilterAuto === "function" ? spd3FilterAuto() : { mode: "auto", keys: null }),
+        pop: { open: false, query: "" }, expanded: false },   // v254 双 Tab + 维度（实例级，会话切换重置）
       speedInteractAt = 0,   // v254 最近一次 Tab/维度/柱 hover 交互时刻（updateLive 短冻结防打断）
       compactHid = false;   // v156：display:none 是否由精简模式设置（区分初载 none，避免切档前提前露条）
 
@@ -13234,9 +14520,47 @@
       if ((grp === "range" && SPD_RANGES.indexOf(val) >= 0) ||
           (grp === "period" && SPD_PERIODS.indexOf(val) >= 0)) {
         speedSel[grp] = val;
+        if (speedSel.pop) speedSel.pop.open = false;   /* v384：切 Tab 收起筛选弹出层 */
         speedChartHover = -1; speedInteractAt = Date.now();
         /* v272：维度切换移除，dim 恒 time，无需按范围归位 */
         speedRebuildNow();
+      }
+      return true;
+    }
+    /* v384 V3 模型筛选交互：chips/弹出层/展开按钮统一 pointerdown 先行（同 v263 Tab
+     * 纪律，防重建吞 click）；筛选动作是 toggle（非同值幂等），click 委托只认键盘
+     * 路径（e.detail===0），鼠标路径由 pointerdown 独占防双路径来回翻转。
+     * 未筛选模型池读 SPD3_POOL（wire 分片每次重建写入的模块级侧信道）。 */
+    function spd3Activate(e) {
+      if (!speedSel || typeof spd3FilterToggle !== "function" || typeof speedRebuildNow !== "function") return false;
+      var el = e.target && e.target.closest ? e.target.closest(
+        ".zu-sv3-chip,.zu-sv3-fpop-row,.zu-sv3-fsearch,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-more]") : null;
+      if (!el) return false;
+      if (!speedSel.filt) speedSel.filt = (typeof spd3FilterAuto === "function") ? spd3FilterAuto() : { mode: "auto", keys: null };
+      if (!speedSel.pop) speedSel.pop = { open: false, query: "" };
+      var key = el.getAttribute("data-k");
+      if (key && (el.classList.contains("zu-sv3-chip") || el.classList.contains("zu-sv3-fpop-row"))) {
+        spd3FilterToggle(speedSel.filt, key);
+      } else if (el.classList.contains("zu-sv3-fsearch")) {
+        speedSel.pop.open = !speedSel.pop.open;
+      } else if (el.hasAttribute("data-sv3-all")) {
+        /* v384 B2：SPD3_POOL 是对象数组，「全选」必须取 key 串（红队实测：对象入 keys
+         * 会被 String() 成 "[object Object]"，全选退化成清空且签名坍缩） */
+        spd3FilterOnly(speedSel.filt, (typeof SPD3_POOL !== "undefined" && SPD3_POOL || []).map(function (pm) { return pm.key; }));
+      } else if (el.hasAttribute("data-sv3-none")) {
+        spd3FilterOnly(speedSel.filt, []);
+      } else if (el.hasAttribute("data-sv3-reset")) {
+        spd3FilterAll(speedSel.filt);
+      } else if (el.hasAttribute("data-sv3-more")) {
+        speedSel.expanded = !speedSel.expanded;
+      } else return false;
+      if (!speedSel.pop.open) speedSel.pop.query = "";
+      speedChartHover = -1; speedInteractAt = Date.now();
+      speedRebuildNow();
+      /* v384 M2：弹层刚打开（或重编后）焦点移入搜索框——rebuild 同步完成，节点必在 */
+      if (speedSel.pop.open) {
+        var fi3 = tip.querySelector(".zu-sv3-fpop-input");
+        if (fi3 && fi3.focus) fi3.focus();
       }
       return true;
     }
@@ -13262,6 +14586,7 @@
       speedInteractAt = Date.now();
       if (projTipTabActivate(e)) return;
       if (projTipMoreActivate(e)) return;
+      if (spd3Activate(e)) return;   /* v384 V3：筛选 chips/弹出层/展开按钮 pointerdown 先行 */
       speedTabActivate(e);
     });
     tip.addEventListener("mousedown", function (e) {
@@ -13269,7 +14594,9 @@
        * v331：双范围 Tab 同入名单 */
       var t = e.target;
       if (!t || !t.closest) return;
-      var interactive = t.closest(".zu-pj-more") || t.closest(".zu-pj-tab") || t.closest(".zu-sv-tab") || t.closest("[data-zu-sys-th]");
+      var interactive = t.closest(".zu-pj-more") || t.closest(".zu-pj-tab") || t.closest(".zu-sv-tab") || t.closest("[data-zu-sys-th]") ||
+        t.closest(".zu-sv3-fbar") || (t.closest(".zu-sv3-fpop") && !t.classList.contains("zu-sv3-fpop-input")) ||
+        t.closest(".zu-sv3-more");   /* v384：V3 筛选区同入名单；搜索输入框豁免（否则点击无法聚焦） */
       if (interactive) {
         e.stopPropagation();
         if (e.preventDefault) e.preventDefault();
@@ -13293,7 +14620,9 @@
       }
       /* v254 速度 Tooltip 双 Tab：事件委托挂 tip 本体，改实例闭包选择后经
        * speedTipRebuild 整卡重编（签名幂等），旧 hover 卡随筛选切换自动收起。
-       * v263：鼠标路径已提前到 pointerdown（见上），此处保留键盘 Enter 与兜底。 */
+       * v263：鼠标路径已提前到 pointerdown（见上），此处保留键盘 Enter 与兜底。
+       * v384：V3 筛选 toggle 动作 click 只认键盘路径（e.detail===0），防双路径翻转。 */
+      if (e.detail === 0 && spd3Activate(e)) return;
       speedTabActivate(e);
     });
     /* 项目卡内部 Escape：先收档位说明浮层（v282，只收浮层不关卡）、再收费用说明
@@ -13306,6 +14635,39 @@
       }
       if (e.key !== "Escape") return;
       e.stopPropagation();
+      /* v384 M1：热力格/命中列方向键移动（roving tabindex 翻转）。步长：month 网格
+       * .zu3-hm-grid 行主序 7 列（右=+1/下=+7）；hist 网格 .zu3-hh-grid 列主序 7 行
+       * （下=+1/右=+7）；charts 命中列 .zu-sv3-hit 只支持左右 ±1。 */
+      var ac3 = e.target && e.target.closest && e.target.closest(".zu-hm-cell,.zu-sv3-hit");
+      if (ac3 && typeof e.key === "string" && e.key.indexOf("Arrow") === 0) {
+        var idx3 = parseInt(ac3.getAttribute("data-i"), 10);
+        if (idx3 >= 0) {
+          var isHit3 = ac3.classList.contains("zu-sv3-hit");
+          var isHist3 = !isHit3 && !!ac3.closest(".zu3-hh-grid");
+          var step3 = e.key === "ArrowRight" ? (isHit3 || !isHist3 ? 1 : 7)
+            : e.key === "ArrowLeft" ? (isHit3 || !isHist3 ? -1 : -7)
+            : e.key === "ArrowDown" ? (isHist3 ? 1 : 7)
+            : e.key === "ArrowUp" ? (isHist3 ? -1 : -7) : 0;
+          if (step3) {
+            var nu3 = tip.querySelector('.zu-hm-cell[data-i="' + (idx3 + step3) + '"],.zu-sv3-hit[data-i="' + (idx3 + step3) + '"]');
+            if (nu3 && nu3 !== ac3) {
+              e.preventDefault();
+              ac3.setAttribute("tabindex", "-1");
+              nu3.setAttribute("tabindex", "0");
+              if (nu3.focus) nu3.focus();
+            } else if (!nu3) e.preventDefault();   /* 越界：吞掉方向键防滚动 */
+            return;
+          }
+        }
+      }
+      /* v384 V3：筛选弹出层最先收（Esc 分层：弹出层→档位说明→费用→关卡），焦点归还搜索按钮 */
+      if (speedSel && speedSel.pop && speedSel.pop.open) {
+        speedSel.pop.open = false; speedSel.pop.query = "";
+        speedRebuildNow();
+        var fsBtn = tip.querySelector(".zu-sv3-fsearch");
+        if (fsBtn && fsBtn.focus) fsBtn.focus();
+        return;
+      }
       if (spdLegendTip.style.display === "block") { spdLegendTipHide(); return; }
       if (fxTip.style.display === "block") { hideFxTip(); return; }
       var back = tipFor;
@@ -13326,7 +14688,7 @@
       if (idx === speedChartHover) return;
       /* v291：热力图格子（.zu-hm-cell）与柱体（.zu-sc-col）共用同一悬停/焦点契约 */
       var hadFocus = tip.contains(document.activeElement) &&
-        document.activeElement.closest && document.activeElement.closest(".zu-sc-col,.zu-hm-cell");
+        document.activeElement.closest && document.activeElement.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit");
       speedChartHover = idx; speedInteractAt = Date.now();
       if (tipFor && typeof speedTipRebuild === "function") {
         var t2 = speedTipRebuild(speedChartHover, speedSel);
@@ -13335,7 +14697,7 @@
           drawTip(tipFor, true);
           /* innerHTML 重建会销毁聚焦的柱节点（焦点落 body、Tab 序断裂）——归位 */
           if (hadFocus && idx >= 0) {
-            var nu2 = tip.querySelector('.zu-sc-col[data-i="' + idx + '"],.zu-hm-cell[data-i="' + idx + '"]');
+            var nu2 = tip.querySelector('.zu-sc-col[data-i="' + idx + '"],.zu-hm-cell[data-i="' + idx + '"],.zu-sv3-hit[data-i="' + idx + '"]');
             if (nu2 && nu2.focus) nu2.focus();
           }
         }
@@ -13343,7 +14705,7 @@
       }
     }
     tip.addEventListener("mouseover", function (e) {
-      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
+      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit");
       if (col) zuSpeedChartPick(parseInt(col.getAttribute("data-i"), 10) || 0);
       var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
       if (lb) spdLegendTipShow(lb);   /* v282：问号 hover 即显档位说明 */
@@ -13360,6 +14722,25 @@
       wrap.scrollLeft += d;
       if (wrap.scrollLeft !== before) e.preventDefault();
     }, { passive: false });
+    /* v384 V3 筛选弹出层搜索：input 委托挂 tip 本体（随 tip.remove() 消亡）。只重渲染
+     * 弹出层并回填焦点/光标——整卡重编会销毁 input 节点丢焦点；全卡签名不动，下一次
+     * 完整重编（悬停/帧刷新）自然携带最新 query。 */
+    tip.addEventListener("input", function (e) {
+      var inp = e.target && e.target.classList && e.target.classList.contains("zu-sv3-fpop-input") ? e.target : null;
+      if (!inp || !speedSel || !speedSel.pop) return;
+      speedSel.pop.query = inp.value || "";
+      var pop = inp.closest(".zu-sv3-fpop");
+      if (pop && typeof spd3FilterPopHTML === "function") {
+        var pool3 = (typeof SPD3_POOL !== "undefined" && SPD3_POOL) || [];
+        pop.innerHTML = spd3FilterPopHTML(pool3, speedSel.filt, speedSel.pop.query);
+        var ni3 = pop.querySelector(".zu-sv3-fpop-input");
+        if (ni3) {
+          ni3.value = speedSel.pop.query;
+          if (ni3.focus) ni3.focus();
+          try { ni3.setSelectionRange(ni3.value.length, ni3.value.length); } catch (_) { }
+        }
+      }
+    });
     tip.addEventListener("mouseout", function (e) {
       var to = e.relatedTarget;
       var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
@@ -13368,14 +14749,14 @@
           spdLegendTipScheduleHide();
         return;
       }
-      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
+      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit");
       if (!col) return;
       /* v242:移入另一根柱时同样交给 mouseover 切段,避免 out(-1)→in(B) 双重整卡重建闪烁 */
-      if (to && to.closest && to.closest(".zu-sc-col,.zu-hm-cell")) return;
+      if (to && to.closest && to.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit")) return;
       zuSpeedChartPick(-1);
     });
     tip.addEventListener("focusin", function (e) {
-      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
+      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit");
       if (col) zuSpeedChartPick(parseInt(col.getAttribute("data-i"), 10) || 0);
       var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
       if (lb) spdLegendTipShow(lb);   /* v282：键盘聚焦问号同样显示 */
@@ -13386,10 +14767,10 @@
         mouseInBar = false;
         hideTip(true, "focus-leave");
       }
-      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
+      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit");
       /* v242:relatedTarget 落在另一根柱上时不得收卡重建——focusout 先于 focusin,
        * 此处重建会销毁即将接收焦点的目标柱(焦点跌落 body、Tab 序断裂) */
-      if (col && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest(".zu-sc-col,.zu-hm-cell"))) zuSpeedChartPick(-1);
+      if (col && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit"))) zuSpeedChartPick(-1);
       var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
       if (lb && !(e.relatedTarget && e.relatedTarget.closest && (e.relatedTarget.closest(".zu-sv-legend-btn") || e.relatedTarget.closest(".zu-sv-legend-tip"))))
         spdLegendTipScheduleHide();
@@ -14150,6 +15531,9 @@
         speedTipSess = segSess; speedChartHover = -1;
         if (typeof speedSel !== "undefined" && speedSel) {
           speedSel.range = "recent"; speedSel.period = "recent"; speedSel.dim = "time"; speedSel.focus = "";
+          /* v384 V3：模型筛选/弹出层/展开态随会话切换一并复位，不串上一 pane */
+          if (typeof spd3FilterAuto === "function") speedSel.filt = spd3FilterAuto();
+          speedSel.pop = { open: false, query: "" }; speedSel.expanded = false;
         }
       }
       /* v218 修复：zuBarSpeedView 从不返回 latest 字段，右格恒缺（用户实测「缺少最近
@@ -14257,9 +15641,13 @@
       /* v268：帧缺轮表（serve 重启窗口）时以粘性兜底，杜绝 V2↔旧版闪回 */
       var v2h = (state.data && state.data.speed_history) ||
         (typeof lastSpeedHistory !== "undefined" && lastSpeedHistory) || null;
+      /* v384：speed_days（全历史日桶）同源粘性帧；缺帧（旧 Python/serve 重启窗口）
+       * 由 core 降级为轮表窗口并提示，不冒充全历史。 */
+      var v2sd = (state.data && state.data.speed_days) ||
+        (typeof lastSpeedDays !== "undefined" && lastSpeedDays) || null;
       var v2sess = (lastView && lastView.session) || {};
-      speedTipRebuild = (typeof spdRebuildOr === "function"
-        ? spdRebuildOr(v2h, v2selL, speedChartHover, speedView,
+      speedTipRebuild = (typeof spd3RebuildOr === "function"
+        ? spd3RebuildOr(v2h, v2sd, v2selL, speedChartHover, speedView,
           { fmtTok: fmt, fmtCnt: countFmt, fmtMoney: state.cost ? fmtMoney : null }, v2sess) : null);
       /* v258 帧级诊断：V2 成功/回退各记一条 spdTip——再出现「样式变回旧版」时 diag 直接
        * 给出走哪条路径与当时轮表长度，不再靠截图反推。原地更新属性，不替换 FATAL 本体。
@@ -14418,6 +15806,9 @@
           speedTipSess = fbSess; speedChartHover = -1;
           if (typeof speedSel !== "undefined" && speedSel) {
           speedSel.range = "recent"; speedSel.period = "recent"; speedSel.dim = "time"; speedSel.focus = "";
+          /* v384 V3：同上——筛选/弹出层/展开态随会话切换复位 */
+          if (typeof spd3FilterAuto === "function") speedSel.filt = spd3FilterAuto();
+          speedSel.pop = { open: false, query: "" }; speedSel.expanded = false;
         }
         }
         var fbBasis = sessAvg
@@ -14458,9 +15849,11 @@
          * 按默认筛选，不影响旧契约断言。 */
         var v2sel = (typeof speedSel !== "undefined" && speedSel) ? speedSel
           : { range: "recent", period: "recent", dim: "time" };
-        var v2fn = (typeof spdRebuildOr === "function"
-          ? spdRebuildOr(d.speed_history ||
-            (typeof lastSpeedHistory !== "undefined" && lastSpeedHistory), v2sel, speedChartHover, null,
+        var v2fn = (typeof spd3RebuildOr === "function"
+          ? spd3RebuildOr(d.speed_history ||
+            (typeof lastSpeedHistory !== "undefined" && lastSpeedHistory),
+            d.speed_days || (typeof lastSpeedDays !== "undefined" && lastSpeedDays) || null,
+            v2sel, speedChartHover, null,
             { fmtTok: fmt, fmtCnt: countFmt, fmtMoney: state.cost ? fmtMoney : null }, sess) : null);
         /* v261：整条渲染专记 spdRender（updateLive 每 tick 的 v2-live 会覆盖 spdTip，
          * 用户 hover 瞬间的整条渲染记录必须独立存活）；带 pane/会话标识与分支原因。 */
@@ -15971,7 +17364,8 @@
            * （pill-theme 4 例红）；其动机（原生 title 需 ~1s 稳定悬停，生成期重建打断）
            * 已由 02 分片同批的纯 CSS data-tip 气泡消解——重建后 :hover 即时跟随新元素，
            * 无驻留要求，冻结不再有必要，撤销以恢复悬停实时刷新。 */
-          var speedFollow = !!(nu.__tip.indexOf && nu.__tip.indexOf("zu-stat-tip--speed") > 0) && !focusInTip;
+          var speedFollow = !!(nu.__tip.indexOf && (nu.__tip.indexOf("zu-stat-tip--speed") > 0 ||
+            nu.__tip.indexOf("zu-sv3-root") > 0)) && !focusInTip;   /* v384：V3 根类识别 */
           /* v242:pill 主题同样受「焦点在 tip 内跳过重绘」守卫——此前无条件 drawTip,
            * 键盘聚焦柱体时一次快照推送就把焦点打回 body(v224 修的是悬停链,此处补齐焦点链) */
           if (!focusInTip && (state.theme === "pill" || document.activeElement === nu || speedFollow)) drawTip(nu, true);
@@ -16047,7 +17441,7 @@
       spdLegendTipHide();     /* v282：档位说明浮层同链收起 */
       if (tipGraceTimer) { clearTimeout(tipGraceTimer); tipGraceTimer = 0; }
       if (tip.style.display !== "none") {
-        var closingChart = tip.querySelector && tip.querySelector(".zu-sc-wrap"), closingRoot = tip.querySelector && tip.querySelector(".zu-sv-root");
+        var closingChart = tip.querySelector && tip.querySelector(".zu-sc-wrap"), closingRoot = tip.querySelector && tip.querySelector(".zu-sv3-root");
         if (closingChart && closingRoot) tip.__zuChartScroll = { key: closingRoot.getAttribute("data-sv-key") || "", x: closingChart.scrollLeft };
         tip.style.display = "none";
       }
@@ -16117,13 +17511,13 @@
       var oldTipScroll = keepTop ? tip.scrollTop : 0;
       /* v232：速度图表横滚位置跨重建保留；v280 扩展——重开路径（keepTop=false，用户
        * 实报「全部×全部拉到末尾、关闭再开回到开头」）同样捕获，并带选择键守卫
-       * （.zu-sv-root 的 data-sv-key 同键才回填，切换范围/时间后归零；V1 旧图无键
+       * （.zu-sv3-root 的 data-sv-key 同键才回填，切换范围/时间后归零；V1 旧图无键
        * 视为空串键，同内容回填行为与 v232 一致）。 */
       var oldChartL = null, oldChartKey = "";
       if (oldBody) {
         var oc = oldBody.querySelector(".zu-sc-wrap");
         if (oc) {
-          var or0 = oldBody.querySelector(".zu-sv-root");
+          var or0 = oldBody.querySelector(".zu-sv3-root");
           oldChartKey = or0 ? (or0.getAttribute("data-sv-key") || "") : "";
           var savedChart = tip.style.display === "none" && tip.__zuChartScroll;
           oldChartL = savedChart && savedChart.key === oldChartKey ? savedChart.x : (tip.style.display === "none" ? null : oc.scrollLeft);   /* 0 也是有效记忆；隐藏态不可直接读取 */
@@ -16144,12 +17538,12 @@
       }
       /* v285：V2 卡左对齐标记（positionTip 消费：left=锚元素左缘）；
        * v299.2（用户规格）：本轮 500×350 卡同款居左（与生成速度 tooltip 对齐语义一致） */
-      tip.__zuAlignLeft = !!(tip.querySelector(".zu-sv-root") || tip.querySelector(".zu-stat-tip--turn"));
+      tip.__zuAlignLeft = !!(tip.querySelector(".zu-sv3-root") || tip.querySelector(".zu-stat-tip--turn"));
       /* v297：月历网格实测尺寸回写——builder 动态字号的数据源（量测便宜、单元素；
        * 字号变化不改变格尺寸，无测量/布局循环） */
       var nc = tip.querySelector(".zu-sc-wrap");
       if (nc && oldChartL !== null) {
-        var nr0 = tip.querySelector(".zu-sv-root");
+        var nr0 = tip.querySelector(".zu-sv3-root");
         if (nr0 ? (nr0.getAttribute("data-sv-key") || "") === oldChartKey : !oldChartKey) {
           nc.scrollLeft = oldChartL;
         } else if (nc.hasAttribute && nc.hasAttribute("data-sv-end")) {
@@ -16165,7 +17559,7 @@
       spdFitTip(tip, !keepTop);
       fitModelNames(tip);
       if (nc && oldChartL !== null) {
-        var fittedRoot = tip.querySelector(".zu-sv-root");
+        var fittedRoot = tip.querySelector(".zu-sv3-root");
         if (fittedRoot && (fittedRoot.getAttribute("data-sv-key") || "") === oldChartKey) nc.scrollLeft = oldChartL;
         else if (nc.hasAttribute && nc.hasAttribute("data-sv-end")) nc.scrollLeft = nc.scrollWidth;
       } else if (nc && nc.hasAttribute && nc.hasAttribute("data-sv-end")) nc.scrollLeft = nc.scrollWidth;
@@ -16174,10 +17568,10 @@
       positionTip(el, keepTop);
       /* v297：月历网格实测尺寸回写（动态字号数据源）。v298 起挂 display:block 之后——
        * 隐藏态量测全 0 会把下一帧字号压到 6px 下限（首开闪小字，下轮刷新才自愈）。 */
-      var mgEl = tip.querySelector(".zu-hm-grid--mon");
+      var mgEl = tip.querySelector(".zu3-hm-grid");
       if (mgEl) {
         var mgr = mgEl.getBoundingClientRect();
-        var monRoot = mgEl.closest && mgEl.closest(".zu-sv-root");
+        var monRoot = mgEl.closest && mgEl.closest(".zu-sv3-root");
         var monZoom = parseFloat(monRoot && monRoot.style && monRoot.style.zoom) || 1;
         window.__zusageSpdMonRect = { w: mgr.width / monZoom, h: mgr.height / monZoom };
       }
@@ -16186,7 +17580,7 @@
        * 必须挂 display:block 之后：隐藏态 getBoundingClientRect 全 0（v298 首版挂在
        * innerHTML 重建处实测六层全 0 废片）。 */
       try {
-        var segR = tip.querySelector(".zu-sv-root"), segWrap = tip.querySelector(".zu-sc-wrap"),
+        var segR = tip.querySelector(".zu-sv3-root"), segWrap = tip.querySelector(".zu-sc-wrap"),
           segHead = tip.querySelector(".zu-sv-head"), segPlot = tip.querySelector(".zu-sv-plot"),
           segBody = tip.querySelector(".zu-speed-body"), segChart = tip.querySelector(".zu-sv-chart"),
           segRow = tip.querySelector(".zu-sv-plotrow"), segGutcol = tip.querySelector(".zu-sv-gutcol"),
@@ -20206,13 +21600,18 @@
       var chipSpan = (v.kind === "live" || v.sessAvg)
         ? speedSpan(sess.started, sess.last_at)
         : speedSpan(last.startedAt, last.endedAt);
-      /* v255：精简模式速度 chip 也走 V2 整卡（此前只接了全量状态条两条路径，
-       * compact 下 hover 一直显示旧「统计口径 + 10 根粗柱」）。筛选/悬停状态挂数据包，
-       * tpsTip 浮层委托见模块层；旧快照缺轮表时原样回退旧摘要卡。 */
-      var cv2 = spdRebuildOr(t && t.speedHistory, (t && t.speedSel) ||
-        { range: "recent", period: "recent", dim: "time" },
-        (t && typeof t.speedHover === "number") ? t.speedHover : -1, t && t.speedLive,
-        { fmtTok: fmt, fmtCnt: countFmt, fmtMoney: state.cost ? fmtMoney : null }, sess);
+      /* v255：精简模式速度 chip 也走整卡（v384 起 V3：模型筛选/五视图/悬停明细）。
+       * 筛选/悬停状态挂数据包，tpsTip 浮层委托见模块层；旧快照缺轮表时原样回退旧摘要卡。 */
+      var cv2 = (typeof spd3RebuildOr === "function"
+        ? spd3RebuildOr(t && t.speedHistory, (t && t.speedDays) ||
+            (typeof lastSpeedDays !== "undefined" && lastSpeedDays) || null,
+          (t && t.speedSel) ||
+            { range: "recent", period: "recent", dim: "time",
+              filt: (typeof spd3FilterAuto === "function" ? spd3FilterAuto() : { mode: "auto", keys: null }),
+              pop: { open: false, query: "" }, expanded: false },
+          (t && typeof t.speedHover === "number") ? t.speedHover : -1, t && t.speedLive,
+          { fmtTok: fmt, fmtCnt: countFmt, fmtMoney: state.cost ? fmtMoney : null }, sess)
+        : null);
       if (cv2) return cv2((t && typeof t.speedHover === "number") ? t.speedHover : -1, t.speedSel);
       try { FATAL.spdTip = { t: Date.now(), src: "fb-chip",
         turns: t && t.speedHistory && t.speedHistory.turns ? t.speedHistory.turns.length : -1 }; } catch (_) { }
@@ -20367,10 +21766,20 @@
       }
       var prevT = chip.__zuT;
       chip.__zuT = { v: v, view: lastView, buildTip: tpsChipTipHTML,
-        /* v255：V2 轮表与筛选/悬停状态随 chip 包走，10Hz 心跳不重置用户选择 */
+        /* v255：轮表与筛选/悬停状态随 chip 包走，10Hz 心跳不重置用户选择；v384 加 speedDays */
         speedHistory: (state.data && state.data.speed_history) || (prevT && prevT.speedHistory) ||
           (typeof lastSpeedHistory !== "undefined" && lastSpeedHistory) || null,
-        speedSel: (prevT && prevT.speedSel) || { range: "recent", period: "recent", dim: "time" },
+        speedDays: (state.data && state.data.speed_days) || (prevT && prevT.speedDays) ||
+          (typeof lastSpeedDays !== "undefined" && lastSpeedDays) || null,
+        speedSel: (prevT && prevT.speedSel &&
+          prevT.sessId === ((lastView && lastView.session && lastView.session.sid) || "")) ? prevT.speedSel :
+          /* v384 m6：会话变化不继承旧 pane 筛选（实例链 07:627 同款重置语义）。
+           * 身份取 lastView.session.sid——本函数作用域无 sess 变量（S7 P1 实测
+           * ReferenceError），chip 面的会话归属与格面同源。 */
+          { range: "recent", period: "recent", dim: "time",
+            filt: (typeof spd3FilterAuto === "function" ? spd3FilterAuto() : { mode: "auto", keys: null }),
+            pop: { open: false, query: "" }, expanded: false },
+        sessId: (lastView && lastView.session && lastView.session.sid) || "",
         speedHover: prevT && typeof prevT.speedHover === "number" ? prevT.speedHover : -1,
         speedLive: v.kind === "live" ? v.sv : null };
       var lite = bar.classList.contains("zu-light");

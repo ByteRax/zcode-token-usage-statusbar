@@ -320,7 +320,7 @@ svg { display: block; }
   <div class="conv-scroll">
     <div class="conv-col">
       <div class="msg-user">速度卡 QA：看一下本月热力图横滚之后档位说明浮层的落位。</div>
-      <div class="msg-assistant">已打开速度统计卡 V2，近 16 轮样本就绪；切「本月」可查看月历热力图，<span class="sub">图表区支持滚轮横滚，悬停柱体或月历格查看单轮明细。</span></div>
+      <div class="msg-assistant">已打开速度统计卡 V3，近 16 轮样本就绪；切「本月」可查看月历热力图，<span class="sub">图表区支持滚轮横滚，悬停柱体或月历格查看单轮明细。</span></div>
     </div>
   </div>
   <div data-v4-composer-dock="true" class="dock">
@@ -424,10 +424,11 @@ window.__zuSetTheme = function (name) {
 <script src="__OVERLAY_URL__"></script>
 <script>
 'use strict';
-/* ===== V2 装配层 =====
- * overlay.js 的 SPD_V2 纯函数块 + TPS_BANDS/tpsBand/tpsBandText + Portal/档位浮层宿主
- * 函数原文切片（由 main.cjs 从同一文件提取），交互遵循生产同款纯函数重建契约：
- * 改 sel/hover 包 ⇒ 整卡重编。所有夹具确定性表驱动，无随机数。 */
+/* ===== V3 装配层（v384，替代旧 SPD_V2 块切片） =====
+ * overlay.js 的 SPD_V3 四段锚原文 + wire（spd3RebuildOr）+ TPS_BANDS/tpsBand/
+ * tpsBandText + 02 分片存活 spd* 助手段 + spdFitTip（V3 视口分支）+ Portal/档位浮层
+ * 宿主函数原文切片（由 main.cjs 从同一文件提取），交互遵循生产同款纯函数重建契约：
+ * 改 sel/hover 包 ⇒ spd3RebuildOr 闭包整卡重编。所有夹具确定性表驱动，无随机数。 */
 window.__zuLang = 'zh';
 window.__zuReady = function (src) {
   var Lfn = function (zh, en) { return window.__zuLang === 'en' ? en : zh; };
@@ -435,7 +436,9 @@ window.__zuReady = function (src) {
   factory(Lfn);
   if (!window.__SPD) return false;
   /* Portal / 档位浮层宿主函数装配：同 eval 作用域供给浮层元素、SPD_PORTAL 桥与
-   * 提取函数引用的模块级变量（spdLegendHideTimer 等——漏供给即运行时 undefined）。 */
+   * 提取函数引用的模块级变量（spdLegendHideTimer 等——漏供给即运行时 undefined）。
+   * spdLegendCardHTML 已随 V2 块删除而 spdLegendTipShow 仍引用（悬空，已知产品问题，
+   * 测试报告单列）——此处供给 undefined 保持复刻页与生产同形（问号浮层悬停即报错）。 */
   var scope = new Function('"' + 'use strict' + '";\n' +
     'var spdHoverPortal = document.createElement("div");\n' +
     'spdHoverPortal.className = "zusage-quota-tip zu-sv-portal";\n' +
@@ -460,7 +463,7 @@ window.__zuReady = function (src) {
 };
 /* ===== live 实时数据模式 =====
  * main.cjs 的泵经生产同款 serve 常驻进程拉真实当前会话快照，直接调 overlay 的
- * __zusageUpdate（生产泵语义）。这里包装一层：缓存真实轮表/SID 供 V2 卡联动，
+ * __zusageUpdate（生产泵语义）。这里包装一层：缓存真实轮表/SID 供 V3 卡联动，
  * 并在夹具步骤（__zuDataMode='fixture'）丢弃真实帧，两条数据线互不污染。 */
 window.__zuDataMode = 'live';   /* 默认 live：未注入场景前泵帧直接生效 */
 window.__zuLiveFixture = null;  /* 泵最近一帧的真实轮表（speed_history） */
@@ -479,22 +482,25 @@ window.__zuLiveSid = null;      /* 真实当前会话 SID（V2 卡 sel.sid / 会
   window.__zuNativeUpdate = nativeUpdate;   /* v299：场景夹具直推真实状态条（绕过真实帧丢弃层） */
 })();
 /* ===== 确定性夹具 =====
- * 轮表 delta 编码（spdUnpack 累加还原）：首轮 t=绝对时刻、其后 t=增量、b=绝对生成起点。 */
+ * 轮表 delta 编码（spd3Unpack 累加还原）：首轮 t=绝对时刻、其后 t=增量、b=绝对生成起点。
+ * msl 四元组 [mIdx,out,ms,n]（v384 V3 契约，带模型级窗口）+ 帧级 mkeys 身份表。 */
 var SPD_SPEEDS16 = [150, 120, 161.5, 96, 140, 133, 158, 101, 145, 155, 90, 130, 149, 122, 137, 160];
 function atHour(h, m) { var d = new Date(); d.setHours(h, m || 0, 0, 0); return d.getTime(); }
 function daysAgo(n, h, m) { var d = new Date(); d.setDate(d.getDate() - n); d.setHours(h || 15, m || 0, 0, 0); return d.getTime(); }
 function buildTurns(list) {
   var prev = 0;
   return list.map(function (x) {
-    var r = { s: 0, t: x.at - prev, b: x.at - x.gen, out: Math.round(x.sps * 6), ms: 6000,
-      i: Math.round(x.sps * 6 * 2.2), o: Math.round(x.sps * 6), n: 1, msl: [[0, Math.round(x.sps * 6)]],
+    var out = Math.round(x.sps * 6);
+    var r = { s: 0, t: x.at - prev, b: x.at - x.gen, out: out, ms: 6000,
+      i: Math.round(out * 2.2), o: out, n: 1, msl: [[0, out, x.gen, 1]],
       c: Math.round(x.sps) / 100, cf: 1 };
     prev = x.at; return r;
   });
 }
 function hist(turns) {
   return { turns: turns, sids: ['sess_main'], snames: ['速度夹具会话'], pids: [['pid_demo', 'Demo 项目']],
-    mnames: ['GLM-5.3-FlashX'], sid: 'sess_main', source: 'host-fixture', truncated: false };
+    mnames: ['GLM-5.3-FlashX'], mkeys: ['demo\x1fGLM-5.3-FlashX'],
+    sid: 'sess_main', source: 'host-fixture', truncated: false };
 }
 var FIXTURES = {
   recent16: function () {
@@ -730,15 +736,20 @@ window.__zuSysDiag = function () {
   };
 };
 function buildCard() {
-  /* live 模式用泵缓存的真实轮表 + 真实 SID（spdAnalyze 按 sid 过滤会话轮） */
+  /* V3 装配（v384）：spd3RebuildOr(h, sd, sel, hover, live, o, paneSess) → 闭包 →
+   * "\x01"+整卡串（生产消费方剥哨兵同款）。live 模式用泵缓存的真实轮表 + 真实 SID
+   * （spd3Analyze 按 paneSess.sid 过滤会话轮）；speed_days 夹具缺省 null（轮表窗口）。 */
   var liveCard = window.__zuDataMode === 'live' && window.__zuLiveFixture;
-  return window.__SPD.speedCardV2HTML({
-    speedHistory: liveCard ? window.__zuLiveFixture : window.__zuFixture,
-    sel: Object.assign({ range: 'recent', period: 'recent', dim: 'time',
-      sid: window.__zuLiveSid || 'sess_main' }, window.__zuSel || {}),
-    live: null, segsHover: window.__zuHover == null ? -1 : window.__zuHover,
-    fmtTok: fmtTok, fmtCnt: fmtTok, fmtMoney: function (u) { return '¥' + u.toFixed(2); }
-  });
+  var h = liveCard ? window.__zuLiveFixture : window.__zuFixture;
+  var sel = Object.assign({ range: 'recent', period: 'recent',
+    sid: window.__zuLiveSid || 'sess_main' }, window.__zuSel || {});
+  var hover = window.__zuHover == null ? -1 : window.__zuHover;
+  var rb = window.__SPD.spd3RebuildOr(h, null, sel, hover, null,
+    { fmtTok: fmtTok, fmtCnt: fmtTok, fmtMoney: function (u) { return '¥' + u.toFixed(2); } },
+    { sid: window.__zuLiveSid || 'sess_main' });
+  if (!rb) return '';   /* 无轮表：生产同款回退 V1 旧卡（复刻页显示空态即可见） */
+  var html = rb(hover, sel);
+  return html.charCodeAt(0) === 1 ? html.slice(1) : html;
 }
 /* 复用生产 tip 容器类（表面样式来自真实注入的样式表）；定位跟随 v283/v284 生产语义 */
 window.__zuMount = function (sel, hover) {
@@ -753,13 +764,13 @@ window.__zuMount = function (sel, hover) {
     /* 重建保留横滚（生产 v280 同键回填的简化版；切 Tab 键变时生产会归零，
      * 复刻页经由 __zuMount 重挂承载该行为，此处只服务 hover 重建不跳位） */
     function rebuildKeepScroll() {
-      var ow = tip.querySelector('.zu-sc-wrap'), oldRoot = tip.querySelector('.zu-sv-root');
+      var ow = tip.querySelector('.zu-sc-wrap'), oldRoot = tip.querySelector('.zu-sv3-root');
       var ox = ow ? ow.scrollLeft : null, oldKey = oldRoot && oldRoot.getAttribute('data-sv-key');
       tip.innerHTML = '<div class="tbody"></div>';
       tip.firstChild.innerHTML = buildCard();
       window.__SPD.spdFitTip(tip, false);
       if (tip.getBoundingClientRect().top < 8) { tip.style.bottom = 'auto'; tip.style.top = '8px'; }
-      var nw = tip.querySelector('.zu-sc-wrap'), newRoot = tip.querySelector('.zu-sv-root');
+      var nw = tip.querySelector('.zu-sc-wrap'), newRoot = tip.querySelector('.zu-sv3-root');
       if (nw && ox !== null && newRoot && newRoot.getAttribute('data-sv-key') === oldKey) nw.scrollLeft = ox;
       else if (nw && nw.hasAttribute('data-sv-end')) nw.scrollLeft = nw.scrollWidth;
       return nw;
@@ -804,12 +815,11 @@ window.__zuMount = function (sel, hover) {
   tip.classList.toggle('zu-light', !document.documentElement.classList.contains('dark'));
   tip.style.left = window.__zuTipRight ? 'auto' : '48px';
   if (window.__zuTipRight) tip.style.right = '12px'; else tip.style.right = 'auto';
-  /* v293.1：补生产同构 .tbody 层（全量 tip 链 tip→tbody→卡三级高度链的真实形态，
-   * 此前复刻缺该层导致高度链回归测不出） */
-  tip.innerHTML = '<div class="tbody"></div>';
-  tip.firstChild.innerHTML = buildCard();
+  /* v384 S6：V3 卡直塞 innerHTML 对齐生产 tpsTip 链（01 showTpsTip 无 .tbody 包装；
+   * 复刻页多包一层会引入生产不存在的 max-height:60vh 截痕——V2 全量链才有 tbody） */
+  tip.innerHTML = buildCard();
   if (document.querySelector('.zusage-root style')) window.__SPD.spdFitTip(tip, true);
-  else setTimeout(function () { if (tip.isConnected && tip.querySelector('.zu-sv-root')) window.__SPD.spdFitTip(tip, true); }, 100);
+  else setTimeout(function () { if (tip.isConnected && tip.querySelector('.zu-sv3-root')) window.__SPD.spdFitTip(tip, true); }, 100);
   if (tip.getBoundingClientRect().top < 8) { tip.style.bottom = 'auto'; tip.style.top = '8px'; }
   /* v291 生产同款（drawTip/showTpsTip）：历史热力图首开无记忆位置时滚到最右（最新区域）；
    * 用户滚过后的位置保留交给生产 v280 同键回填（复刻页不重建滚动记忆） */
@@ -827,7 +837,7 @@ window.__zuMount = function (sel, hover) {
   /* 生产同款浮层渲染 */
   window.__setSPDPortal(window.__SPD.getPortal());
   window.__portal.sync(tip, window.__zuHover == null ? -1 : window.__zuHover);
-  return !!tip.querySelector('.zu-sv-root');
+  return !!tip.querySelector('.zu-sv3-root');
 };
 window.__zuRectOf = function (sel) {
   var el = document.querySelector('#zu-spd-replica ' + sel) || document.querySelector(sel);   /* v356：SYS 链点真实 UI（⋯/齿轮/chip）回退全文档选择器 */
@@ -954,9 +964,11 @@ window.__zuHostDiag = function () {
     modelAnchor: !!(q('[data-testid="v4-model-config"]') && q('[data-testid="v4-model-config"]').getAttribute('data-model'))
   };
 };
-/* 几何测量：用户所见左缘 = tip 容器外缘（非 .zu-sv-root 内容盒，差 padding） */
+/* 几何测量：用户所见左缘 = tip 容器外缘（非 .zu-sv3-root 内容盒，差 padding）。
+ * V3 装配（v384）：测量目标改 .zu-sv3-* / .zu-sc-* / .zu3-*（.zu-sv-plot/.zu-hm-grid--*
+ * 等 V2 专属结构随 V2 卡删除，不再测）。 */
 window.__zuDiag = function () {
-  var tip = document.querySelector('#zu-spd-replica .zu-sv-root');
+  var tip = document.querySelector('#zu-spd-replica .zu-sv3-root');
   if (!tip) return { tipOpen: false };
   var r = function (el) { if (!el) return null; var b = el.getBoundingClientRect();
     return { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height) }; };
@@ -980,28 +992,29 @@ window.__zuDiag = function () {
     headerTabsInHead: !!(head(tip) && head(tip).querySelector('[data-sv-group="range"]') && head(tip).querySelector('[data-sv-group="period"]')),
     rangeText: (tip.querySelector('.zu-sv-range') || {}).textContent || null,
     bars: tip.querySelectorAll('.zu-sc-col').length,
+    filterCount: (tip.querySelector('.zu-sv3-fcount') || {}).textContent || null,
     /* v293.1：tbody 层横向溢出断言（>0 即出现底部滚动条的根因形态） */
     segH: (function () { var h = tip.querySelector('.zu-sv-head'),
-        b = tip.querySelector('.zu-speed-body'), tb = tip.querySelector('.tbody');
+        b = tip.querySelector('.zu-sv3-main'), tb = tip.querySelector('.tbody');
       var H = function (el) { return el ? Math.round(el.getBoundingClientRect().height) : null; };
-      var row = tip.querySelector('.zu-sv-plotrow'), gc = tip.querySelector('.zu-sv-gutcol'),
-        gu = tip.querySelector('.zu-sc-gutter'), wp = tip.querySelector('.zu-sc-wrap'),
-        pl = tip.querySelector('.zu-sv-plot'), bar0 = tip.querySelector('.zu-sc-bar'),
+      var gu = tip.querySelector('.zu-sc-gutter'),
+        wp = tip.querySelector('.zu-sc-wrap'),
+        pl = tip.querySelector('.zu-sc-plot'), bar0 = tip.querySelector('.zu-sc-bar'),
         x0 = tip.querySelector('.zu-sc-x'), col0 = tip.querySelector('.zu-sc-col'),
-        rootEl = tip.querySelector('.zu-sv-root'), chartEl = tip.querySelector('.zu-sv-chart');
+        rootEl = tip.querySelector('.zu-sv3-root'), chartEl = tip.querySelector('.zu-sv3-chart');
       /* 柱状图纵向全链：相对 tip 顶的 y 偏移 + 高度（刻度越界定位用） */
       var Y = function (el) { if (!el) return null; var r = el.getBoundingClientRect(), t = tip.getBoundingClientRect();
         return { y: Math.round(r.y - t.y), h: Math.round(r.height), bottom: Math.round(r.bottom - t.y) }; };
-      return { root: H(tip), svroot: Y(rootEl), chart: Y(chartEl), head: Y(h), body: Y(b), tbody: H(tb),
-        card: H(tip.querySelector('.zu-speed-chart')), cal: H(tip.querySelector('.zu-hm-cal')),
-        grid: H(tip.querySelector('.zu-hm-grid--mon')),
-        row: Y(row), gutcol: Y(gc), gutter: Y(gu), wrap: Y(wp), plot: Y(pl),
+      return { root: H(tip), svroot: Y(rootEl), chart: Y(chartEl), head: Y(h), main: Y(b), tbody: H(tb),
+        card: H(tip.querySelector('.zu-speed-chart')), cal: H(tip.querySelector('.zu3-hm')),
+        grid: H(tip.querySelector('.zu3-hm-grid')),
+        gutter: Y(gu), wrap: Y(wp), plot: Y(pl),
         bar0: Y(bar0), x0: Y(x0), col0: Y(col0),
         gutterTicks: gu ? Array.prototype.map.call(gu.children, Y) : null }; })(),
-    cellGeo: (function () { var g = tip.querySelector('.zu-hm-grid--mon'); if (!g) return null;
-      var c = g.querySelector('.zu-hm-cell.data') || g.querySelector('.zu-hm-cell'); if (!c) return null;
+    cellGeo: (function () { var g = tip.querySelector('.zu3-hm-grid'); if (!g) return null;
+      var c = g.querySelector('.zu-hm-cell.zu-hm-data') || g.querySelector('.zu-hm-cell'); if (!c) return null;
       var cr = c.getBoundingClientRect();
-      var d = c.querySelector('.zu-hm-d'), v = c.querySelector('.zu-hm-v');
+      var d = c.querySelector('.zu3-d'), v = c.querySelector('.zu3-v');
       var cs = getComputedStyle(c), ds = d ? getComputedStyle(d) : null, vs = v ? getComputedStyle(v) : null;
       var gs = getComputedStyle(g);
       return { cellW: Math.round(cr.width), cellH: Math.round(cr.height),
@@ -1011,38 +1024,38 @@ window.__zuDiag = function () {
         dRect: d ? (function (r) { return { x: Math.round(r.x - cr.x), y: Math.round(r.y - cr.y), w: Math.round(r.width), h: Math.round(r.height) }; })(d.getBoundingClientRect()) : null,
         vRect: v ? (function (r) { return { x: Math.round(r.x - cr.x), y: Math.round(r.y - cr.y), w: Math.round(r.width), h: Math.round(r.height) }; })(v.getBoundingClientRect()) : null,
         gap: gs.gap, cols: gs.gridTemplateColumns.split(' ').length }; })(),
-    plotHTML: (function () { var pl = tip.querySelector('.zu-sv-plot'); return pl ? pl.innerHTML.slice(0, 400) : null; })(),
+    plotHTML: (function () { var pl = tip.querySelector('.zu-sc-plot'); return pl ? pl.innerHTML.slice(0, 400) : null; })(),
     barGeo: (function () { var q = function (sel) { var el = tip.querySelector(sel);
         if (!el) return null; var r = el.getBoundingClientRect(); var cs = getComputedStyle(el);
         return { w: Math.round(r.width), h: Math.round(r.height), pos: cs.position, disp: cs.display }; };
-      return { row: q('.zu-sv-plotrow'), gut: q('.zu-sv-gutcol'), wrap: q('.zu-sc-wrap'),
-        plot: q('.zu-sv-plot'), bars: q('.zu-sv-bars'),
-        col0: (function(){ var c = tip.querySelector('.zu-sv-bars .zu-sc-col'); return c ? (function(r){return {w:Math.round(r.width),h:Math.round(r.height)};})(c.getBoundingClientRect()) : null; })() }; })(),
+      return { gut: q('.zu-sc-gutter'), wrap: q('.zu-sc-wrap'),
+        plot: q('.zu-sc-plot'), bars: q('.zu-sv3-bars'),
+        col0: (function(){ var c = tip.querySelector('.zu-sv3-bars .zu-sc-col'); return c ? (function(r){return {w:Math.round(r.width),h:Math.round(r.height)};})(c.getBoundingClientRect()) : null; })() }; })(),
     tbodyScrollX: (function () { var tb = tip.querySelector('.tbody'); if (!tb) return null;
       return tb.scrollWidth - tb.clientWidth; })(),
-    /* v291：热力图指标（月历格/数据格/今日描边/月标签数/稀疏说明/历史周列数） */
+    /* V3 热力图指标（月历格/数据格/今日描边/列头数/通知行/历史周列数 --zu3-cols） */
     hmCells: tip.querySelectorAll('.zu-hm-cell').length,
-    hmData: tip.querySelectorAll('.zu-hm-cell.data').length,
-    hmVoid: tip.querySelectorAll('.zu-hm-cell.void').length,
-    hmFut: tip.querySelectorAll('.zu-hm-cell.fut').length,
+    hmData: tip.querySelectorAll('.zu-hm-cell.zu-hm-data').length,
+    hmVoid: tip.querySelectorAll('.zu-hm-cell.zu-hm-void').length,
+    hmFut: tip.querySelectorAll('.zu-hm-cell.zu-hm-fut').length,
     hmToday: tip.querySelectorAll('.zu-hm-cell.zu-hm-today').length,
-    hmMonths: tip.querySelectorAll('.zu-hm-ml').length,
-    hmMonthLabels: (function () { var a = tip.querySelectorAll('.zu-hm-ml'); var o = [];
+    hmMonths: tip.querySelectorAll('.zu3-cl').length,
+    hmMonthLabels: (function () { var a = tip.querySelectorAll('.zu3-cl'); var o = [];
       for (var i = 0; i < a.length; i++) o.push(a[i].textContent); return o; })(),
-    hmNote: (tip.querySelector('.zu-hm-note') || {}).textContent || null,
-    hmWeeks: (function () { var g = tip.querySelector('.zu-hm-grid--hist'); if (!g) return 0;
-      var m = /--zu-hm-w:\s*(\d+)/.exec(g.getAttribute('style') || ''); return m ? +m[1] : 0; })(),
-    hmDataCols: (function () { var g = tip.querySelector('.zu-hm-grid--hist'); if (!g) return [];
+    hmNote: (tip.querySelector('.zu-sv3-notice') || {}).textContent || null,
+    hmWeeks: (function () { var g = tip.querySelector('.zu3-hh-grid'); if (!g) return 0;
+      var m = /--zu3-cols:\s*(\d+)/.exec(g.getAttribute('style') || ''); return m ? +m[1] : 0; })(),
+    hmDataCols: (function () { var g = tip.querySelector('.zu3-hh-grid'); if (!g) return [];
       var kids = g.children; var out = [];
       for (var i = 0; i < kids.length; i++)
-        if (kids[i].classList && kids[i].classList.contains('data')) out.push(Math.floor(i / 7) + 1);
+        if (kids[i].classList && kids[i].classList.contains('zu-hm-data')) out.push(Math.floor(i / 7) + 1);
       return out; })(),
-    hmDataRect: (function () { var g = tip.querySelector('.zu-hm-grid--hist');
-      var c = g && g.querySelector('.zu-hm-cell.data'); if (!c) return null;
+    hmDataRect: (function () { var g = tip.querySelector('.zu3-hh-grid');
+      var c = g && g.querySelector('.zu-hm-cell.zu-hm-data'); if (!c) return null;
       var r = c.getBoundingClientRect();
       var aria = c.getAttribute('aria-label');
       return { x: Math.round(r.x), y: Math.round(r.y), aria: aria }; })(),
-    hmFirst8: (function () { var g = tip.querySelector('.zu-hm-grid--hist'); if (!g) return [];
+    hmFirst8: (function () { var g = tip.querySelector('.zu3-hh-grid'); if (!g) return [];
       var out = [];
       for (var i = 0; i < Math.min(8, g.children.length); i++) {
         var k = g.children[i], r = k.getBoundingClientRect();
@@ -1051,19 +1064,19 @@ window.__zuDiag = function () {
           aria: (k.getAttribute('aria-label') || '').slice(0, 14) });
       }
       return out; })(),
-    hmGridStyle: (function () { var g = tip.querySelector('.zu-hm-grid--hist'); if (!g) return null;
+    hmGridStyle: (function () { var g = tip.querySelector('.zu3-hh-grid'); if (!g) return null;
       var cs = getComputedStyle(g);
       return { cols: cs.gridTemplateColumns, flow: cs.gridAutoFlow, dir: cs.direction, w: Math.round(g.getBoundingClientRect().width) }; })(),
     legendBtn: !!tip.querySelector('.zu-sv-legend-btn'),
     legendBand: (function () { var b = tip.querySelector('.zu-sv-legend-btn');
       return b ? (b.getAttribute('data-sv-band') || '') : null; })(),
-    cov: (tip.querySelector('.zu-sc-cov') || {}).textContent || null,
-    geom: { tip: r(tipBox || tip), left: r(tip.querySelector('.zu-sv-left')), chart: r(tip.querySelector('.zu-speed-chart')),
+    cov: (tip.querySelector('.zu-sv3-cov') || {}).textContent || null,
+    geom: { tip: r(tipBox || tip), left: r(tip.querySelector('.zu-sv3-left')), chart: r(tip.querySelector('.zu-speed-chart')),
       wrap: r(wrap), wrapScrollW: wrap ? wrap.scrollWidth : 0, wrapScrollLeft: wrap ? wrap.scrollLeft : 0,
-      plot: (function () { var p = tip.querySelector('.zu-sv-plot'); if (!p) return null;
+      plot: (function () { var p = tip.querySelector('.zu-sc-plot'); if (!p) return null;
         var s = getComputedStyle(p); var b = p.getBoundingClientRect();
         return { x: Math.round(b.x), w: Math.round(b.width), minW: s.minWidth }; })(),
-      bars: (function () { var p = tip.querySelector('.zu-sv-bars'); if (!p) return null;
+      bars: (function () { var p = tip.querySelector('.zu-sv3-bars'); if (!p) return null;
         var s = getComputedStyle(p); var b = p.getBoundingClientRect();
         var c = p.querySelector('.zu-sc-col'); var cb = c ? c.getBoundingClientRect() : null;
         return { x: Math.round(b.x), w: Math.round(b.width), just: s.justifyContent,

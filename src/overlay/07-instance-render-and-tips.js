@@ -627,6 +627,9 @@
         speedTipSess = segSess; speedChartHover = -1;
         if (typeof speedSel !== "undefined" && speedSel) {
           speedSel.range = "recent"; speedSel.period = "recent"; speedSel.dim = "time"; speedSel.focus = "";
+          /* v384 V3：模型筛选/弹出层/展开态随会话切换一并复位，不串上一 pane */
+          if (typeof spd3FilterAuto === "function") speedSel.filt = spd3FilterAuto();
+          speedSel.pop = { open: false, query: "" }; speedSel.expanded = false;
         }
       }
       /* v218 修复：zuBarSpeedView 从不返回 latest 字段，右格恒缺（用户实测「缺少最近
@@ -734,9 +737,13 @@
       /* v268：帧缺轮表（serve 重启窗口）时以粘性兜底，杜绝 V2↔旧版闪回 */
       var v2h = (state.data && state.data.speed_history) ||
         (typeof lastSpeedHistory !== "undefined" && lastSpeedHistory) || null;
+      /* v384：speed_days（全历史日桶）同源粘性帧；缺帧（旧 Python/serve 重启窗口）
+       * 由 core 降级为轮表窗口并提示，不冒充全历史。 */
+      var v2sd = (state.data && state.data.speed_days) ||
+        (typeof lastSpeedDays !== "undefined" && lastSpeedDays) || null;
       var v2sess = (lastView && lastView.session) || {};
-      speedTipRebuild = (typeof spdRebuildOr === "function"
-        ? spdRebuildOr(v2h, v2selL, speedChartHover, speedView,
+      speedTipRebuild = (typeof spd3RebuildOr === "function"
+        ? spd3RebuildOr(v2h, v2sd, v2selL, speedChartHover, speedView,
           { fmtTok: fmt, fmtCnt: countFmt, fmtMoney: state.cost ? fmtMoney : null }, v2sess) : null);
       /* v258 帧级诊断：V2 成功/回退各记一条 spdTip——再出现「样式变回旧版」时 diag 直接
        * 给出走哪条路径与当时轮表长度，不再靠截图反推。原地更新属性，不替换 FATAL 本体。
@@ -895,6 +902,9 @@
           speedTipSess = fbSess; speedChartHover = -1;
           if (typeof speedSel !== "undefined" && speedSel) {
           speedSel.range = "recent"; speedSel.period = "recent"; speedSel.dim = "time"; speedSel.focus = "";
+          /* v384 V3：同上——筛选/弹出层/展开态随会话切换复位 */
+          if (typeof spd3FilterAuto === "function") speedSel.filt = spd3FilterAuto();
+          speedSel.pop = { open: false, query: "" }; speedSel.expanded = false;
         }
         }
         var fbBasis = sessAvg
@@ -935,9 +945,11 @@
          * 按默认筛选，不影响旧契约断言。 */
         var v2sel = (typeof speedSel !== "undefined" && speedSel) ? speedSel
           : { range: "recent", period: "recent", dim: "time" };
-        var v2fn = (typeof spdRebuildOr === "function"
-          ? spdRebuildOr(d.speed_history ||
-            (typeof lastSpeedHistory !== "undefined" && lastSpeedHistory), v2sel, speedChartHover, null,
+        var v2fn = (typeof spd3RebuildOr === "function"
+          ? spd3RebuildOr(d.speed_history ||
+            (typeof lastSpeedHistory !== "undefined" && lastSpeedHistory),
+            d.speed_days || (typeof lastSpeedDays !== "undefined" && lastSpeedDays) || null,
+            v2sel, speedChartHover, null,
             { fmtTok: fmt, fmtCnt: countFmt, fmtMoney: state.cost ? fmtMoney : null }, sess) : null);
         /* v261：整条渲染专记 spdRender（updateLive 每 tick 的 v2-live 会覆盖 spdTip，
          * 用户 hover 瞬间的整条渲染记录必须独立存活）；带 pane/会话标识与分支原因。 */

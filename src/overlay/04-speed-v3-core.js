@@ -1,0 +1,541 @@
+  /* ---------- v384 生成速度 Tooltip V3：模型级速度统计核心（spd3 纯函数，无 DOM） ----------
+   * 数据契约 = specs/speed-tooltip-v3.md §1：轮表 msl 条目扩为 [mIdx,out,ms,n] 四元组
+   * （旧二元组兼容）+ 帧级 mkeys 身份表；新顶层 speed_days 全历史按日聚合（生产端
+   * 本地日界、550 天上限）。本分片只做解包/筛选状态机/聚合/管线，是 view/charts/heat
+   * （spec §5-§7，另分片实现）唯一的数据上游：消费入口 spd3Analyze(h, sd, sel) → an。
+   * 口径铁律（spec §0）：速度恒 = Σ有效输出 ÷ Σ有效生成窗口，绝不逐轮/逐模型算术
+   * 平均，绝不用「模型输出 ÷ 整轮耗时」充当模型速度。
+   * 只引用更早分片的存活符号（V3 集成后仍在）：L / SPD_L / TPS_BANDS / tpsBand /
+   * tpsBandText / spdEsc / spdNum / spd2 / spdDate / spdFull / spdLabel / spdBucket /
+   * spdNextBucket / spdShort / spdRangeText / spdCompactRange / SPD_RANGES /
+   * SPD_PERIODS / SPD_BARS_MAX。V2 专属函数（spdAnalyze/spdChartHTML/spdRebuildOr/
+   * speedSegsOf 等）随 V3 上线删除，本分片一律不引用；其余依赖一律本地 spd3 版本，
+   * 保证本文件可独立 node --check、可单独切片进 VM 夹具。 */
+  /* SPD_V3_CORE_BEGIN */
+  /* ==================== ① 轮表解包（spec §1.1/§1.3）：msl 新旧条目兼容 ==================== */
+  /* msl 条目 → 模型分量。二元组 [mIdx,out]（旧帧，无模型级窗口）与四元组
+   * [mIdx,out,ms,n]（v384 起，ms=该模型在本轮的 Σ有效生成窗口、n=已完成请求数）
+   * 兼容；日行五元组多出的 tn 取 p[4]（轮表条目无此位 → 0，聚合按每行 1 轮计）。
+   * 身份键（spec §1.3）：mkeys 在场且条目为非空字符串时 key=mkeys[idx]
+   * （provider_id\x1fmodel_id，provider 缺失为空段），否则退化为 "n\x1f"+name 按名称
+   * 识别。返回 null = 条目非法（只跳该条目，不弃整轮——纪律同 spdUnpackRaw）。 */
+  function spd3ModelOf(p, mnames, mkeys) {
+    /* 名字只拒绝 null/undefined（空串是合法显示名缺失）：兜底「未知模型」继续用
+     * mkeys/名称键识别身份，不再把空名整条丢弃（minor2） */
+    if (!p || typeof p[0] !== "number" || p[0] < 0 || mnames[p[0]] == null || !(spdNum(p[1]) > 0)) return null;
+    var name = mnames[p[0]] || SPD_L("未知模型", "Unknown model"), key, mpid = "", mmid = name;
+    if (mkeys && typeof mkeys[p[0]] === "string" && mkeys[p[0]]) {
+      key = mkeys[p[0]];
+      var cut = key.indexOf("\x1f");
+      if (cut >= 0) { mpid = key.slice(0, cut); mmid = key.slice(cut + 1); }
+    } else {
+      key = "n\x1f" + name;
+    }
+    return { key: key, name: name, pid: mpid, mid: mmid, o: spdNum(p[1]),
+      ms: (typeof p[2] === "number" && isFinite(p[2]) && p[2] > 0) ? p[2] : 0,
+      n: (typeof p[3] === "number" && isFinite(p[3]) && p[3] > 0) ? p[3] : 0,
+      tn: (typeof p[4] === "number" && isFinite(p[4]) && p[4] > 0) ? p[4] : 0 };
+  }
+  /* 轮表解包：t 是相对上一轮完成时刻的 delta（升序还原），s/msl 是索引表下标。
+   * t 缺失/非法整帧拒绝（fail-closed，minor3）：t 是 delta 累加基准，跳行续跑会让
+   * 后续所有轮的时间整体位移，宁可整体降级 V1 也不出错位统计；其余核心字段
+   * （out/ms/s）非法仍整轮丢弃，不让畸形远端/旧快照污染统计。
+   * 行携带 msAvail（任一模型分量 ms>0）= 该轮有模型级速度数据；全帧都没有时管线
+   * 判定降级模式（spec §4 msAvail=false）。 */
+  function spd3UnpackRaw(h) {
+    var sids = h.sids, snames = h.snames, pids = h.pids || [];
+    var mnames = Array.isArray(h.mnames) ? h.mnames : [];
+    /* 索引表一律 Array.isArray 校验：字符串等有 .length 的鸭子类型会把下标访问
+     * 变成字符索引（mnames='GLM-A' 时 mnames[0]==='G'），不能放行 */
+    var mkeys = Array.isArray(h.mkeys) ? h.mkeys : null;
+    var out = [], prev = 0;
+    for (var i = 0; i < h.turns.length; i++) {
+      var r = h.turns[i];
+      if (!r || typeof r.t !== "number" || !isFinite(r.t)) return null;
+      var t = prev + r.t;
+      prev = t;
+      var outv = spdNum(r.out), ms = spdNum(r.ms);
+      if (!(outv > 0 && ms > 0) || !(typeof r.s === "number" && sids[r.s])) continue;
+      var models = [], msAvail = false;
+      if (r.msl && typeof r.msl.length === "number") {
+        for (var j = 0; j < r.msl.length; j++) {
+          var m = spd3ModelOf(r.msl[j], mnames, mkeys);
+          if (!m) continue;
+          if (m.ms > 0) msAvail = true;
+          models.push(m);
+        }
+      }
+      var meta = pids[r.s] || ["", ""];
+      out.push({ s: r.s, sid: sids[r.s], sname: snames[r.s] || sids[r.s],
+        pid: meta[0] || "", pname: meta[1] || sids[r.s],
+        t: t, b: spdNum(r.b) || t, out: outv, ms: ms,
+        i: spdNum(r.i), o: spdNum(r.o), n: spdNum(r.n), models: models, msAvail: msAvail,
+        c: (typeof r.c === "number" && isFinite(r.c)) ? r.c : null, cf: !!r.cf });
+    }
+    return { turns: out, sid: h.sid || "", source: h.source || "", truncated: !!h.truncated };
+  }
+  /* 解包结果按帧对象引用缓存（纪律同 SPD_UNPACK_MEMO）：updateLive 心跳/悬停重编会
+   * 反复经 spd3Analyze 解包同一份轮表（6000 轮约 5ms/次）。同一帧内引用恒定；新帧是
+   * 新 JSON 对象自然失效，引用相等即内容相等，零陈旧风险。轮数守卫防同一对象被原地
+   * 追加后命中陈旧结果。结果只读：spd3Analyze 只 filter/slice 出新数组、不改行对象。 */
+  var SPD3_UNPACK_MEMO = new WeakMap();
+  function spd3Unpack(h) {
+    if (!h || !Array.isArray(h.turns) || !h.sids || !h.snames) return null;
+    var memo = SPD3_UNPACK_MEMO.get(h);
+    if (memo && memo.n === h.turns.length) return memo.res;
+    var res = spd3UnpackRaw(h);
+    SPD3_UNPACK_MEMO.set(h, { n: h.turns.length, res: res });
+    return res;
+  }
+  /* ==================== ② speed_days 解包（spec §1.2/§1.3） ====================
+   * days[i] = start 起第 i 个本地自然日（连续；日界由 Python 生产端按本地日历保证，
+   * 解包同样按本地日历 new Date(y,m,d+i) 推进，DST 日 23h/25h 与生产端天然对齐，
+   * 见 spd3UnpackDaysRaw 注释）。空日=[0,0,0,0,0,0] 跳过不产行，渲染层自己铺空格。
+   * 日行字段与轮表行对齐同形（b=t0、t=当日最后一毫秒、i/o 补 0、c=null），使
+   * spd3Aggregate/筛选重算无需分行处理；sid/pid 留空 = 日行无会话身份，范围筛选
+   * 天然只命中轮表行；t0 即日历零点，供日桶键直接使用（与轮表行 spdBucket 同源）。 */
+  function spd3UnpackDaysRaw(sd) {
+    var mnames = Array.isArray(sd.mnames) ? sd.mnames : [];
+    var mkeys = Array.isArray(sd.mkeys) ? sd.mkeys : null;
+    /* 日界从 start 的日历日期本地推进（new Date(y,m,d+i)，B1/S10）：DST 日 23h/25h
+     * 天然对齐 Python 生产端。固定 864e5 步长在跨 DST 帧上把日桶键推离日历零点
+     * （每次切换 ±1h 累计）：热力格按日历零点查 byDay 命中不了漂移键、合并接缝
+     * （endMs 漂到覆盖末日 23:00）还会把末日内晚轮双重计数。t1=次日日历零点，
+     * t=t1-1（约定不变）。rows[].t0 与轮表行 spdBucket 本地零点同源，聚合/热力
+     * 无需再分行处理。 */
+    var d0 = new Date(sd.start);
+    var y0 = d0.getFullYear(), mo0 = d0.getMonth(), dd0 = d0.getDate();
+    var rows = [];
+    for (var i = 0; i < sd.days.length; i++) {
+      var e = sd.days[i];
+      if (!e || typeof e.length !== "number") continue;
+      var outv = spdNum(e[0]), ms = spdNum(e[1]);
+      if (!(outv > 0 && ms > 0)) continue;   /* 空日（或全无效日）不产行 */
+      var t0 = new Date(y0, mo0, dd0 + i).getTime();
+      var t1 = new Date(y0, mo0, dd0 + i + 1).getTime();
+      var models = [], msAvail = false;
+      if (e[5] && typeof e[5].length === "number") {
+        /* v384 S1 打平形态：日行 msl 为五元组平铺序列 [mIdx,out,ms,n,tn, ...]
+         * （生产端 cap=8）；逐元素嗅探兼容旧嵌套形态（数组=嵌套条目步长 1，
+         * 数字=打平步长 5）。残缺尾部（不足一个五元组）丢弃不越界读。 */
+        var ml3 = e[5];
+        for (var j = 0; j < ml3.length;) {
+          var entry3, step3;
+          if (Array.isArray(ml3[j])) { entry3 = ml3[j]; step3 = 1; }
+          else if (typeof ml3[j] === "number" && j + 5 <= ml3.length) { entry3 = ml3.slice(j, j + 5); step3 = 5; }
+          else break;
+          j += step3;
+          var m = spd3ModelOf(entry3, mnames, mkeys);
+          if (!m) continue;
+          if (m.ms > 0) msAvail = true;
+          models.push(m);
+        }
+      }
+      rows.push({ t0: t0, t1: t1, t: t1 - 1, b: t0,
+        out: outv, ms: ms, n: spdNum(e[2]), turns: spdNum(e[3]), capped: !!e[4],
+        models: models, msAvail: msAvail, sid: "", pid: "", sname: "", pname: "",
+        i: 0, o: 0, c: null, cf: false });
+    }
+    /* end=覆盖末日次日日历零点（合并接缝界，B1/S10）：日行 t 恒 < end，晚于 end 的
+     * 轮表行才由 spd3Analyze 并入，无重叠无遗漏。 */
+    return { rows: rows, days: sd.days.length, start: sd.start,
+      end: new Date(y0, mo0, dd0 + sd.days.length).getTime(), truncated: !!sd.truncated };
+  }
+  /* 日桶解包同样按 sd 对象引用缓存，天数守卫防原地追加（纪律同 spd3Unpack）。 */
+  var SPD3_DAYS_MEMO = new WeakMap();
+  function spd3UnpackDays(sd) {
+    /* days 必须是真数组：字符串等有 .length 的鸭子类型会通过长度检查却不产行
+     * （'x'.length===1、'x'[0] 不是数组被静默跳过），宁可整帧拒绝 */
+    if (!sd || sd.v !== 1 || !Array.isArray(sd.days) ||
+        typeof sd.start !== "number" || !isFinite(sd.start)) return null;
+    var memo = SPD3_DAYS_MEMO.get(sd);
+    if (memo && memo.n === sd.days.length) return memo.res;
+    var res = spd3UnpackDaysRaw(sd);
+    SPD3_DAYS_MEMO.set(sd, { n: sd.days.length, res: res });
+    return res;
+  }
+  /* ==================== ③ 模型身份与颜色（spec §2） ====================
+   * 固定 10 色调色板（深浅主题共用，QA 验证过对比度）：纯哈希取色，跨范围/跨时间
+   * Tab/跨筛选稳定，与选择顺序和数据池无关；冲突靠名称/悬停明细区分。速度色阶仍
+   * 唯一来自 TPS_BANDS，两套颜色语义不混用（PRD 7.3）。 */
+  var SPD3_PALETTE = ["#4ea1ff", "#34d399", "#a78bfa", "#fbbf24", "#22d3ee",
+    "#f472b6", "#a3e635", "#fb923c", "#2dd4bf", "#f87171"];
+  /* FNV-1a 32 位哈希：offset basis 2166136261、FNV 质数 16777619，逐 UTF-16 码元
+   * 「先异或后乘质数」（Math.imul 保持 32 位乘法语义），>>>0 归一化为无符号后对
+   * 调色板长度取模。同 key 恒同色。 */
+  function spd3Color(key) {
+    var s = String(key == null ? "" : key), hsh = 2166136261;
+    for (var i = 0; i < s.length; i++) hsh = Math.imul(hsh ^ s.charCodeAt(i), 16777619) >>> 0;
+    return SPD3_PALETTE[hsh % SPD3_PALETTE.length];
+  }
+  /* 模型条目的稳定身份键：key 在场直接用（解包已保证），兜底按名称退化（spec §1.3），
+   * 供渲染层在 chips/图例/色点间统一取键，不假设条目一定来自 spd3 解包。 */
+  function spd3ModelKey(m) {
+    return m && typeof m.key === "string" && m.key ? m.key : "n\x1f" + ((m && m.name) || "");
+  }
+  /* ==================== ④ 筛选状态机（spec §3） ====================
+   * 实例状态 filt = {mode:"auto"|"sel", keys:[...]|null}：auto=跟随数据池全部模型；
+   * sel=显式集合（可为空=明确空态，不假装全选）。全部动作原地改属性并返回同引用，
+   * 不整体换对象（时间 Tab 切换保留筛选，会话切换与 speedSel 一同重置由调用方做）。
+   * 作用域=实例；新范围中无数据的选中模型保留选中，由 spd3Analyze 产出 selMissing
+   * 供 chips 标「无数据」。 */
+  function spd3FilterAuto() { return { mode: "auto", keys: null }; }
+  /* auto 下首次点击某模型=「只看该模型」（最小惊讶）；sel 下点击=toggle 该 key，
+   * 清空到 0 个时保持 sel 空数组=显式空态。 */
+  function spd3FilterToggle(f, key) {
+    if (!f) return f;
+    if (f.mode !== "sel" || !f.keys) { f.mode = "sel"; f.keys = [key]; return f; }
+    var i = f.keys.indexOf(key);
+    if (i >= 0) f.keys.splice(i, 1); else f.keys.push(key);
+    return f;
+  }
+  /* 显式只看一组模型（弹出层全选/搜索勾选批量用）；重复 key 去重保持签名稳定 */
+  function spd3FilterOnly(f, keys) {
+    if (!f) return f;
+    var out = [];
+    for (var i = 0; i < (keys || []).length; i++) if (out.indexOf(keys[i]) < 0) out.push(keys[i]);
+    f.mode = "sel"; f.keys = out;
+    return f;
+  }
+  /* 恢复默认=auto（spec §3 reset） */
+  function spd3FilterAll(f) {
+    if (!f) return f;
+    f.mode = "auto"; f.keys = null;
+    return f;
+  }
+  /* 显式空态（sel 且 0 个选中）≠ auto 全选 */
+  function spd3FilterIsEmpty(f) {
+    return !!f && f.mode === "sel" && (!f.keys || !f.keys.length);
+  }
+  /* 稳定签名串（spec §8 缓存键与 §7 横滚记忆键 filterSig）：keys 排序消除 toggle
+   * 顺序差，集合相等即同签名。显式空态（sel 且 0 个）签名 "sel:" 不得与 auto 塌缩
+   * 同串——两者池语义不同（空 vs 全部），memo/横滚键会互相碰撞。分隔符用 \x1e
+   * （记录分隔符）——key 内部已含 \x1f（provider\x1fmodel），再用 \x1f 连接会产生
+   * 歧义碰撞。 */
+  function spd3FilterSig(f) {
+    if (!f || f.mode !== "sel" || !f.keys) return "auto";
+    return "sel:" + f.keys.slice().sort().join("\x1e");
+  }
+  /* ==================== ⑤ 聚合器（spec §0 口径铁律） ====================
+   * 统一聚合器：任何桶/柱/overall 都走 Σ有效输出 ÷ Σ有效生成窗口，绝不逐轮/逐模型
+   * 算术平均。每模型分量按 key 累计 {name,o,ms,n}，模型级速度 tps 在输出时就地算出
+   * （ms=0 的分量 tps=null = 该模型无窗口数据，绝不拿整轮窗口冒充）。轮表行/日行
+   * 混合池（all+sd 合并）无需分行处理——日行解包时已对齐 b/t 同形。models 不截断：
+   * 模型数受生产端 msl ≤12 上限约束，悬停合成明细需要完整组成（V2 的 slice(0,8)
+   * 截断废弃，withNames 全量名单纪律保留）。 */
+  function spd3Aggregate(rows, withNames) {
+    var out = 0, ms = 0, i = 0, o = 0, n = 0, turns = 0, models = {}, c = 0, priced = false, costFull = true;
+    var t0 = Infinity, t1 = 0, last = 0;
+    for (var k = 0; k < rows.length; k++) {
+      var r = rows[k];
+      out += r.out; ms += r.ms; i += r.i; o += r.o; n += r.n;
+      /* 日行 turns=当日 distinct 轮数（解包带），轮表行每行恒 1 轮 */
+      turns += (typeof r.turns === "number" && isFinite(r.turns) && r.turns > 0) ? r.turns : 1;
+      if (r.b < t0) t0 = r.b;
+      if (r.t > t1) t1 = r.t;
+      if (r.t >= last) last = r.t;
+      for (var j = 0; j < r.models.length; j++) {
+        var m = r.models[j], e = models[m.key];
+        if (!e) e = models[m.key] = { key: m.key, name: m.name, pid: m.pid || "", mid: m.mid || "", o: 0, ms: 0, n: 0 };
+        e.o += m.o; e.ms += spdNum(m.ms); e.n += spdNum(m.n);
+      }
+      if (r.c !== null) { c += r.c; priced = true; costFull = costFull && r.cf; }
+      else costFull = false;
+    }
+    if (!rows.length || !ms) return null;
+    var ml = [];
+    for (var key in models) if (models[key].o > 0) {
+      var e2 = models[key];
+      ml.push({ key: e2.key, name: e2.name, pid: e2.pid, mid: e2.mid, o: e2.o, ms: e2.ms, n: e2.n,
+        tps: e2.ms > 0 ? e2.o / (e2.ms / 1000) : null });
+    }
+    ml.sort(function (a, b) { return b.o - a.o; });
+    var res = { v: out / (ms / 1000), out: out, ms: ms, i: i, o: o, n: n, turns: turns,
+      models: ml, modelCount: ml.length, t0: isFinite(t0) ? t0 : 0, t1: t1, last: last,
+      c: priced ? c : null, costFull: priced && costFull };
+    /* 整体口径额外产出全量模型名单（悬停列表不省略，纪律同 V2 withNames） */
+    if (withNames) res.modelNames = ml.map(function (x) { return x.name; });
+    return res;
+  }
+  /* 按模型分组（Σout/Σms/n/tn）→ out 降序数组。tn：轮表行每含该模型一轮计 1，
+   * 日行用解包带的 tn（当日含该模型的 distinct 轮数，缺席按 ≥1 计）。速度恒
+   * Σout÷Σms，ms=0 → tps=null（降级模式）。share（请求数占比，恰好 1）由调用方
+   * 按池内总请求数计算——本函数不掌握「分母是否该含池外模型」的语境。 */
+  function spd3PerModel(rows) {
+    var by = {};
+    for (var k = 0; k < rows.length; k++) {
+      var rm = rows[k].models;
+      for (var j = 0; j < rm.length; j++) {
+        var m = rm[j], e = by[m.key];
+        if (!e) e = by[m.key] = { key: m.key, name: m.name, pid: m.pid || "", mid: m.mid || "", out: 0, ms: 0, n: 0, tn: 0 };
+        e.out += m.o; e.ms += spdNum(m.ms); e.n += spdNum(m.n);
+        e.tn += (typeof m.tn === "number" && isFinite(m.tn) && m.tn > 0) ? m.tn : 1;
+      }
+    }
+    var ml = [];
+    for (var key in by) if (by[key].out > 0) {
+      var e2 = by[key];
+      ml.push({ key: e2.key, name: e2.name, pid: e2.pid, mid: e2.mid, out: e2.out, ms: e2.ms, n: e2.n, tn: e2.tn,
+        tps: e2.ms > 0 ? e2.out / (e2.ms / 1000) : null });
+    }
+    ml.sort(function (a, b) { return b.out - a.out; });
+    return ml;
+  }
+  /* ==================== ⑥ 聚合管线（spec §4，20 组合唯一入口） ====================
+   * 顺序固定（PRD 4.2）：范围池 → 自然时间窗 → 最近 N 轮（SPD_BARS_MAX=18，沿用
+   * 现值）→ 模型筛选 → 聚合。筛选只删分量不缩窗口：range=recent 先取最近 18 轮
+   * 窗口，再在窗口内按筛选分量重算（PRD 4.3，不向更早历史补轮）。
+   * 入参：h=speed_history 帧（可 null）、sd=speed_days 帧（可 null）、
+   * sel={range,period,sid,remote?,filt?,focus?}。sid 由调用点从本窗口/分栏可信身份
+   * 注入（同一帧推给所有窗，绝不用帧里 sid——纪律同 V2）；filt 是 spd3Filter* 维护
+   * 的同一可变对象（原地改属性后无需重建 sel）。
+   * 返回 an（view/charts/heat 的唯一上游契约，结果只读不得原地改）：
+   * { items, real, overall(+modelNames/models[].tps), perModel(+share), peak, low,
+   *   latest, unit("turn"|"hour"|"day"), title, range, period, spanA, spanB, notice,
+   *   truncated, msAvail, pool, selMissing, daysGrid?(仅 month) }
+   * items 每项 = spd3Aggregate 结果 + {label,full,a,b}，空桶 {v:null,...,empty:true}
+   * 不显 0 t/s；real=非空 items；peak/low/latest 按 real 的 v/last。 */
+  function spd3Analyze(h, sd, sel) {
+    sel = sel || {};
+    var range = SPD_RANGES.indexOf(sel.range) >= 0 ? sel.range : "all";
+    var period = SPD_PERIODS.indexOf(sel.period) >= 0 ? sel.period : "all";
+    var paneSid = sel.sid || "";
+    var now = Date.now();
+    var u = spd3Unpack(h);
+    var daysRows = sd ? spd3UnpackDays(sd) : null;
+    if (!u && !daysRows) return null;   /* h 与 sd 都缺（或都畸形）→ 调用方回退 V1 */
+    /* 远端身份 + 全部：本地库不能冒充远端历史，明确降级到本会话并提示（沿用 V2
+     * fail-closed）。降级先行：all+sd 合并池只在真「全部」范围组装，降级后自然走
+     * 轮表会话池（日行无 sid，会话筛选天然剔除）。 */
+    var remote = !!sel.remote;
+    if (remote && range === "all") range = "session";
+    var notices = [];
+    if (remote && sel.range === "all") notices.push(SPD_L("远端会话仅显示本会话历史", "Remote pane: local session history only"));
+    /* 数据池组装（spec §1.2 防重叠）：全部×全部 且 speed_days 可用 → 日行 + 晚于
+     * 覆盖末日次日日历零点（daysRows.end，B1/S10 日历化接缝）的轮表行；日行 t 恒 <
+     * 该分界，轮表行按 t >= 分界并入，无重叠无遗漏——固定 864e5 接缝在跨 DST 帧会
+     * 漂进覆盖末日，把末日内晚轮双重计数。其余组合池=轮表行。 */
+    var useDays = range === "all" && period === "all" && !!daysRows;
+    var pool;
+    if (useDays) {
+      var endMs = daysRows.end;
+      pool = daysRows.rows.slice();
+      if (u) for (var pi = 0; pi < u.turns.length; pi++) if (u.turns[pi].t >= endMs) pool.push(u.turns[pi]);
+      if (daysRows.truncated) notices.push(SPD_L("已截断 · 仅显示最近 " + daysRows.days + " 天",
+        "Truncated · last " + daysRows.days + " days only"));
+    } else {
+      pool = u ? u.turns : [];
+    }
+    /* 数据来源披露（M2/S8）：a) 无 speed_days 的「全部×全部」= 轮表窗口在冒充全历史；
+     * b) 轮表 6000 截断且本视图真以轮表为源（useDays 时日桶已覆盖全历史，截断无谓
+     * 再提示）。两类同义（「仅统计最近可用轮次」），互斥去重不叠报。 */
+    if (range === "all" && period === "all" && !daysRows) {
+      notices.push(SPD_L("仅统计最近可用轮次", "recent turns only"));
+    } else if (!useDays && u && u.truncated) {
+      notices.push(SPD_L("历史较长，仅统计最近可用轮次", "long history: recent turns only"));
+    }
+    /* 本会话 pid 从池内同 sid 行取（帧不携带调用方身份）；找不到=本会话不在历史中，
+     * 项目范围为空池并提示（spec §4：项目=本会话所在 pid 的全部会话）。 */
+    var panePid = "";
+    for (var pp = 0; pp < pool.length; pp++) if (pool[pp].sid === paneSid) { panePid = pool[pp].pid; break; }
+    if (range === "session" || range === "recent") {
+      pool = pool.filter(function (r) { return r.sid === paneSid; });
+    } else if (range === "project") {
+      if (!panePid) notices.push(SPD_L("当前会话不在历史中，项目范围无数据", "Current session not found in history; project scope is empty"));
+      pool = panePid ? pool.filter(function (r) { return r.pid === panePid; }) : [];
+    }
+    /* 自然时间窗：today/week/month 用本地日历运算（零点/当月一号），不减固定毫秒数
+     * （weekStart 同样日历化：today-6 个本地日，DST 日 23h/25h 与桶归属一致，M3/S8；
+     * 桶归属仍走 spdBucket 本地日历）。 */
+    var a = 0, b = 0, dNow = new Date(now);
+    var todayStart = new Date(dNow.getFullYear(), dNow.getMonth(), dNow.getDate()).getTime();
+    var weekStart = new Date(dNow.getFullYear(), dNow.getMonth(), dNow.getDate() - 6).getTime();
+    var monthStart = new Date(dNow.getFullYear(), dNow.getMonth(), 1).getTime();
+    if (period === "today") { a = todayStart; b = now; }
+    else if (period === "week") { a = weekStart; b = now; }
+    else if (period === "month") { a = monthStart; b = now; }
+    if (a) pool = pool.filter(function (r) { return r.t >= a && r.t <= b; });
+    /* 最近 N 轮：时间窗先行、N 轮上限在后（沿用 V2）；range=recent 与 period=recent
+     * 两处各切一次（同值幂等）——范围「最近」在该周期过滤之后取最近 18 个有效轮。 */
+    if (range === "recent") pool = pool.slice(-SPD_BARS_MAX);
+    if (period === "recent") pool = pool.slice(-SPD_BARS_MAX);
+    /* 降级提示的池规模判据（M1/S8）：取筛选前的原始池模型数——筛选只删分量，
+     * 池里「有没有第二个模型可比」不该随筛选翻转。 */
+    var rawPoolModelCount = 0, rawPoolKeys = {};
+    for (var rk = 0; rk < pool.length; rk++) {
+      var rkm = pool[rk].models;
+      for (var rkj = 0; rkj < rkm.length; rkj++)
+        if (!rawPoolKeys[rkm[rkj].key]) { rawPoolKeys[rkm[rkj].key] = 1; rawPoolModelCount++; }
+    }
+    /* 模型筛选（spec §4 顺序最末）：把每行 models 收窄为选中 key 子集，行级 out/ms/n
+     * 重算为筛选后分量和；行无选中分量 → 整行剔除。特例：所选分量全部无模型级窗口
+     * （旧二元组帧 fms=0）时保留整行 out/ms 画整轮值（spec §6 降级不缺柱），但
+     * models 清空（M1/S8）——无窗口分量不入 perModel/悬停组成，绝不拿「分量输出 ÷
+     * 整轮窗口」充当模型速度，柱走中性色、左卡单模型判定天然排除。 */
+    var filt = sel.filt, filtering = !!(filt && filt.mode === "sel" && filt.keys);
+    if (filtering) {
+      var selSet = {};
+      for (var si = 0; si < filt.keys.length; si++) selSet[filt.keys[si]] = true;
+      var fp = [];
+      for (var fi = 0; fi < pool.length; fi++) {
+        var row = pool[fi], fm = [];
+        for (var fj = 0; fj < row.models.length; fj++) if (selSet[row.models[fj].key]) fm.push(row.models[fj]);
+        if (!fm.length) continue;
+        if (fm.length === row.models.length) { fp.push(row); continue; }
+        var fo = 0, fms = 0, fn = 0;
+        for (var fk = 0; fk < fm.length; fk++) { fo += fm[fk].o; fms += fm[fk].ms; fn += fm[fk].n; }
+        /* 部分选中：有窗口分量按 spec §4 重算行级和；全无窗口（旧二元组帧）保留
+         * 整行 out/ms 画整轮值、models 清空（M1/S8，身份不再入分布/悬停卡）。
+         * 两种都拷贝新行对象——缓存的解包结果只读，绝不原地改行。 */
+        fp.push(fms > 0
+          ? Object.assign({}, row, { out: fo, ms: fms, n: fn, models: fm, msAvail: true })
+          : Object.assign({}, row, { models: [], msAvail: false }));
+      }
+      pool = fp;
+    }
+    /* 桶化：recent 每轮一项；today 恒小时全桶（00..当前小时，空桶保留显空位不显 0）；
+     * week/month/all 恒日桶（v291 起「全部」切历史热力，日粒度恒定）。month 另产
+     * an.daysGrid 覆盖当月全部日（含空日/未来日，日历铺格由渲染层做）。日行桶键
+     * 直接用契约 t0（不走 spdBucket 再归一化，见 ② 的 DST 口径注释）。 */
+    var items = [], daysGrid = null;
+    if (period === "recent") {
+      for (var ri = 0; ri < pool.length; ri++) {
+        var rrow = pool[ri], ragg = spd3Aggregate([rrow]);
+        /* 柱底只显时分，完整年月日时分秒留给 hover 信息卡（纪律同 V2） */
+        if (ragg) items.push(Object.assign(ragg, { label: spdShort(rrow.t, "turn"),
+          full: spdFull(rrow.b) + " – " + spdFull(rrow.t), a: rrow.b, b: rrow.t }));
+      }
+    } else {
+      var unit = period === "today" ? "hour" : "day";
+      var buckets = {}, bkeys = [];
+      if (pool.length) {
+        for (var w = 0; w < pool.length; w++) {
+          var prow = pool[w];
+          var bk = (unit === "day" && prow.t0 !== undefined) ? prow.t0 : spdBucket(prow.t, unit);
+          if (!buckets[bk]) { buckets[bk] = []; bkeys.push(bk); }
+          buckets[bk].push(prow);
+        }
+        bkeys.sort(function (x, y) { return x - y; });
+        if (period === "today") {
+          /* 00:00→当前小时全桶，无数据显空桶而非零速度；有效桶 ≤3 且全桶 ≥4 时默认
+           * 聚焦有效时段（收放条件读 sel.focus，沿用 V2 行为） */
+          bkeys = [];
+          for (var hr = 0; hr <= dNow.getHours(); hr++) bkeys.push(todayStart + hr * 3600000);
+          var fullKeys = bkeys.slice(), realKeys = [];
+          for (var fk = 0; fk < fullKeys.length; fk++) if ((buckets[fullKeys[fk]] || []).length) realKeys.push(fullKeys[fk]);
+          if (sel.focus !== "full" && realKeys.length && realKeys.length <= 3 && fullKeys.length >= 4) bkeys = realKeys;
+        }
+        for (var bi = 0; bi < bkeys.length; bi++) {
+          var bk2 = bkeys[bi], rows2 = buckets[bk2] || [], bg = spd3Aggregate(rows2);
+          var nb = spdNextBucket(bk2, unit);
+          items.push(bg ? Object.assign(bg, { label: spdLabel(bk2, unit, true),
+              full: spdFull(bk2) + " – " + spdFull(Math.min(nb, now)), a: bk2, b: nb })
+            : { v: null, label: spdLabel(bk2, unit, true), full: spdFull(bk2) + " – " + spdFull(nb),
+                a: bk2, b: nb, empty: true, models: [] });
+        }
+      }
+      if (period === "month") {
+        /* 当月每日键集（本地日历天数，含今天之后的未来日）：agg=null=空日/未来日，
+         * 热力格状态由渲染层区分（spec §5：未来遮罩/空日灰/有记录色阶/今天描边） */
+        daysGrid = [];
+        var dim = new Date(dNow.getFullYear(), dNow.getMonth() + 1, 0).getDate();
+        for (var dd = 1; dd <= dim; dd++) {
+          var g0 = new Date(dNow.getFullYear(), dNow.getMonth(), dd).getTime();
+          var g1 = new Date(dNow.getFullYear(), dNow.getMonth(), dd + 1).getTime();
+          var grows = buckets[g0] || [];
+          daysGrid.push({ t0: g0, t1: g1, agg: grows.length ? spd3Aggregate(grows) : null });
+        }
+      }
+    }
+    /* 设计稿五命名（spec §6）；N=items.length（recent 恒 = 柱数） */
+    var unit2 = period === "recent" ? "turn" : (period === "today" ? "hour" : "day");
+    var title = period === "recent" ? SPD_L("最近 " + items.length + " 轮 · 生成速度", "Last " + items.length + " turns · generation speed")
+      : period === "today" ? SPD_L("今天 · 按小时生成速度", "Today · hourly generation speed")
+      : period === "week" ? SPD_L("近 7 天 · 每日平均速度", "Last 7 days · daily average speed")
+      : period === "month" ? SPD_L("本月 · 日均生成速度", "This month · daily generation speed")
+      : SPD_L("全部 · 历史生成速度", "All history · generation speed");
+    /* v295 纪律沿用：顺序时间（旧→新，最新柱在最右）；real 与峰值/最低/最新按时间戳
+     * 比较不受顺序影响；spanA/spanB 取自筛选后池（沿用 V2 取法：时间窗优先）。 */
+    var real = items.filter(function (x) { return !x.empty; });
+    var overall = spd3Aggregate(pool, true);
+    var spanA = a || (pool.length ? pool[0].b : 0);
+    var spanB = b || (pool.length ? pool[pool.length - 1].t : 0);
+    if (period === "all" && pool.length) { spanA = pool[0].b; spanB = pool[pool.length - 1].t; }
+    var peak = null, low = null, latest = null;
+    for (var z = 0; z < real.length; z++) {
+      if (real[z].v == null) continue;
+      if (!peak || real[z].v > peak.v) peak = real[z];
+      if (!low || real[z].v < low.v) low = real[z];
+      if (!latest || real[z].last > latest.last) latest = real[z];
+    }
+    /* msAvail=筛选后池内是否存在 ms>0 的模型分量（spec §4 降级模式判据）；同时收集
+     * 池内模型 key 集（selMissing 判定基于筛选后的真实池）。 */
+    var msAvail = false, poolKeys = {};
+    for (var mi = 0; mi < pool.length; mi++) {
+      var rm2 = pool[mi].models;
+      for (var mj = 0; mj < rm2.length; mj++) {
+        if (rm2[mj].ms > 0) msAvail = true;
+        if (!poolKeys[rm2[mj].key]) { poolKeys[rm2[mj].key] = true; }
+      }
+    }
+    var selMissing = [];
+    if (filtering) {
+      for (var sm = 0; sm < filt.keys.length; sm++) if (!poolKeys[filt.keys[sm]]) selMissing.push(filt.keys[sm]);
+      if (selMissing.length) notices.push(SPD_L("已选 " + filt.keys.length + " 个模型中 " + selMissing.length + " 个在当前范围无数据",
+        selMissing.length + " of " + filt.keys.length + " selected models have no data here"));
+    }
+    /* 降级模式通知：判据=筛选后池无窗口分量 且 原始池（筛选前）有第二个模型可比
+     * （M1/S8：降级帧上筛选会清空全部身份，池模型数不能再当判据，单模型也无可
+     * 比较对象，spec §6/任务 §7） */
+    if (!msAvail && rawPoolModelCount > 1) notices.push(SPD_L("该历史数据缺少模型级生成耗时，暂无法按模型比较速度",
+      "Model-level timing missing in this history; per-model speed comparison unavailable"));
+    /* perModel：spd3PerModel 分组 + share（请求数占比，恰好 1；spec §6 左卡分布表。
+     * 占比按「该模型已完成请求数 / 池内总请求数」——单轮多模型会使 Σn>轮数，属
+     * 口径内（PRD §10 禁的是把 Token 占比或输出占比当请求占比，不是 n 占比）。 */
+    var perModel = spd3PerModel(pool), totalN = 0;
+    for (var tni = 0; tni < perModel.length; tni++) totalN += perModel[tni].n;
+    for (var shi = 0; shi < perModel.length; shi++) perModel[shi].share = totalN > 0 ? perModel[shi].n / totalN : 0;
+    var an = { items: items, real: real, overall: overall, perModel: perModel,
+      peak: peak, low: low, latest: latest, unit: unit2, title: title,
+      range: range, period: period, spanA: spanA, spanB: spanB,
+      notice: notices.join(SPD_L(" · ", " · ")), truncated: !!(u && u.truncated),
+      msAvail: msAvail, pool: pool, selMissing: selMissing };
+    if (daysGrid) an.daysGrid = daysGrid;
+    return an;
+  }
+  /* ==================== ⑦ 结果 memo（spec §8） ====================
+   * 按「帧对象引用 + sel 签名」缓存（WeakMap<h, 条目数组>）：帧未变+签名未变不重算。
+   * 每帧多槽（S10/B1 修复）：wire 在筛选激活时对同一帧连续算 sel/auto 两个签名、
+   * 多窗/多实例各持不同组合——单槽会逐拍互踢退化为每次全量重算。槽数组线性扫
+   * （≤SPD3_MEMO_CAP 条，数组在 VM 切片沙箱可用，Map 不在夹具原生名单内），超限
+   * 整清再存当前（纪律同 _AGG_CACHE 溢出整清）。命中另带 h.turns.length 守卫
+   * （同 spd3Unpack：防同一帧对象被原地追加后命中陈旧结果）。签名含分钟粒度时间片
+   * spd3NowBucket——today/week/month 时间窗与 month 日历都依赖 Date.now()，每分钟
+   * 失效一次（V2 每次悬停都全量重算，这里是纯增益）。speed_days 帧经 SPD3_SD_IDS
+   * 分配稳定序号进签名（WeakMap 键做不了字符串签名的一部分）。结果为共享只读对象：
+   * 调用方不得原地改 an（纪律同 spd3Unpack 行只读）。 */
+  var SPD3_MEMO = new WeakMap(), SPD3_SD_IDS = new WeakMap(), SPD3_SD_NEXT = 1;
+  var SPD3_MEMO_CAP = 8;
+  function spd3NowBucket() { return Math.floor(Date.now() / 60000); }
+  function spd3AnalyzeCached(h, sd, sel) {
+    var keyObj = h || sd;
+    if (!keyObj) return spd3Analyze(h, sd, sel);
+    sel = sel || {};
+    var sdId = 0;
+    if (sd) {
+      sdId = SPD3_SD_IDS.get(sd);
+      if (!sdId) { sdId = SPD3_SD_NEXT++; SPD3_SD_IDS.set(sd, sdId); }
+    }
+    var sig = [sel.range || "", sel.period || "", sel.sid || "", sel.remote ? 1 : 0,
+      spd3FilterSig(sel.filt), sel.focus || "", spd3NowBucket(), sdId].join("\u0001");
+    var n = (h && h.turns && typeof h.turns.length === "number") ? h.turns.length : -1;
+    var memo = SPD3_MEMO.get(keyObj);
+    if (memo) for (var i = 0; i < memo.length; i++)
+      if (memo[i].sig === sig && memo[i].n === n) return memo[i].res;
+    var res = spd3Analyze(h, sd, sel);
+    if (!memo) { memo = []; SPD3_MEMO.set(keyObj, memo); }
+    if (memo.length >= SPD3_MEMO_CAP) memo.length = 0;   /* 超限整清再存当前 */
+    memo.push({ sig: sig, n: n, res: res });
+    return res;
+  }
+  /* SPD_V3_CORE_END */

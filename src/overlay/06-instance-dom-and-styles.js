@@ -270,9 +270,11 @@
      * → v381 撤销 v87/v116 的「draft 空窗合成思考中」（用户实报：什么都没干的辅助对话永久假「思考中…4分30秒」走字）：宿主 product-projection.ts onTurnStarted 复核——userInput/turnHeader 行与 phase:"running" 在同一 reducer 批次原子生效，draft 且窗口为空 ⇔ 会话从未有过任何输入，不是「已发送待 header」的瞬态；辅助对话（createSelectionSideSession）新建后宿主即建好 store（draft+空窗），pane 一开桥就绑上，v87/v116 合成立即触发并按绑定时长（bornAt）走字。合成条件收窄为仅 phase==="running"；发送动作到 TurnStarted 事件的亚秒级窗口速度格退回 DB 静态数字，可接受。场景⑤断言随语义翻转，①-④/⑥ 守卫保留。
      * → v382 套餐额度 chip 工具栏四级响应式（specs/quota-chip-responsive.md）：按 trailing 行真实可用宽度在 L0 完整→L1 紧凑→L2 摘要（主窗口+N）→L3 图标+值→L3I 纯图标→hidden 极限隐藏间选级，展开迟滞 20px/收缩即时/hidden 回展同门控；可用宽度按「锚点间距+当前宽」不变式测量（trailing 行右对齐贴内容，禁用容器宽−内容式相减，曾致 chip 摘除后永久隐藏黑洞）；lead 右缘锚 [data-composer-leading-content] 回退 Git chip，双缺失 fail-safe 保持 L0。窗口标签全档统一短标签（用户拍板终态=今日/5时/7天/月/套餐，tooltip 窗口行保留全称）；测量探针镜像各档盒模型（L1 gap、+N 字号）；档位色/口径/tooltip 数据全沿旧链。收口 review：quotaLeadingRight/HYST 入测试缝、L3/L3I 补 ⚠、缝随实例 dispose 清理、quotaRemainPct 单一实现。
      * → v383 Git 状态 chip 工具栏四级响应式（specs/git-chip-responsive.md）：按前导区真实可用宽度在 L0 完整→L1 紧凑（既有 zu-compact）→L2 摘要（风险短标+工作段+⋯）→L3 最小（图标+状态点+风险短标）→L3I 纯图标（点色承载风险）→hidden 极限摘除间选级，复用额度 chip 泛型选级（展开迟滞 20/收缩即时/hidden 回展同门控）；可用宽度=「leadA 宽 −（leadC 宽 − chipW）」反自指不变式（leadA 为 flex-1 窗口驱动，实机恒等式取证），未标定结构 fail-safe 保留旧两态（gitChipCompactLegacy：宿主 compact 强制 + 32px 迟滞，绝不隐藏——pill 夹具实证伸缩行会把行内求和压成伪 0）；风险（冲突/操作中/过期）各级保留，aria 恒全量，绝不拼接 ins/del 假汇总；候选宽按「等级|候选串|语言|字号」缓存，零宽不缓存。
+     * → v384 生成速度 Tooltip V3（specs/speed-tooltip-v3.md）：模型级真实速度（zusage msl 四元组 [mIdx,out,ms,n] + mkeys 身份表 + 顶层 speed_days 全历史按日×模型桶，550 日上限+truncated 探针，门控同 speed_history）；渲染端新增 04-speed-v3-{core,charts,heat,view,wire}.js 五分片：spd3Unpack/spd3Analyze 20 组合管线（Σ有效输出÷Σ有效生成窗口单一口径，绝不算术平均）、SPD3_PALETTE 纯哈希模型配色（跨视图稳定）、spd3Filter 筛选状态机（auto/sel/显式空态，chips+搜索弹出层，Esc 分层收起）、单/多模型双布局左卡（分布=按请求数，恰 100%）、五视图（最近混合轮中性柱色/今天小时柱与多模型折线/近7天折线+虚线总体/本月·全部热力图+模型色点），920×480 外壳；V2 双 Tab 卡整体退役（spdAnalyze/spdChartHTML/speedCardV2HTML/spdRebuildOr 等删除，V1 卡与旧快照回退逐字保留）；speed_days 粘性（__zusageSpdDaysSticky）与轮表粘性同链。
      * → v385 OpenCode Go 模型口径换算（issue #382；本分支曾占 v382，与主线额度 chip 响应式撞号按合入顺序顺延）：官方按模型给月度额度（opencode.ai/go "allowances vary by model"）而 /console/api/go/status 的 meters 是账户基线池（Go 档 $60/月实测），DeepSeek V4.1 Flash（$100/月）会少显示 40%。渲染端 11 分片新增 quotaOpencodeModelView：源 id 为 opencode（含复合源）+ 模型命中 opencode.ai/go 快照表（2026-11-17，28 款）+ 月窗 total 恰等于 Go 档基线 60（档位锚定；Plus 基线未验证不换算）时，5h/周/月窗口总额=模型月度额度×活接口窗占比（不硬编码 20%/50%）、used 是账户实际花费保留原值、percent 重算钳 [0,100]、remaining 重算，原对象不变异；锚不上（未知模型/表过期/兜底链无金额锚点）一律显示活接口基线绝不伪造；chip 面分段与 chip.__zuQ.q 同吃换算视图，tooltip 页脚换模型口径披露；数据链/协议/重查零改动（「模型不入键」取舍不变）。规格 specs/opencode-model-allowance.md。
+     * → v386 生成速度 Tooltip V3 合入主线（内容同上方 v384 条目，specs/speed-tooltip-v3.md；v384 号已被本分支占用、v385 已被主线 OpenCode Go 换算占用，按合入顺序顺延 v386）：分片与行为即 v384 批次终态，叠加主线 v385 换算（11 分片两特性并存互不干涉）。
      */
-    var VERSION = "v385";
+    var VERSION = "v386";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -305,7 +307,10 @@
       livePhaseCur = "", liveIconCur = "bolt",   // v77：当前 chip 阶段与图标（think=思考动效/bolt=闪电）——相位切换需整条重渲染
       tpsChipCache = null, lastView = null,   // v146：精简模式工具行速率 chip 与最近一次 render 会话视图（chip tooltip 摘要数据源）
       speedChartHover = -1, speedTipSess = "", speedTipRebuild = null,   // v232 速度柱状图：悬停段下标（-1=最新段）/归属会话守卫/tip 重建闭包
-      speedSel = { range: "recent", period: "recent", dim: "time" },   // v254 双 Tab + 维度（实例级，会话切换重置）
+      speedSel = { range: "recent", period: "recent", dim: "time",
+        /* v384 V3：模型筛选状态机/弹出层/分布展开（实例级，会话切换与 range/period 一同重置） */
+        filt: (typeof spd3FilterAuto === "function" ? spd3FilterAuto() : { mode: "auto", keys: null }),
+        pop: { open: false, query: "" }, expanded: false },   // v254 双 Tab + 维度（实例级，会话切换重置）
       speedInteractAt = 0,   // v254 最近一次 Tab/维度/柱 hover 交互时刻（updateLive 短冻结防打断）
       compactHid = false;   // v156：display:none 是否由精简模式设置（区分初载 none，避免切档前提前露条）
 
@@ -2614,9 +2619,47 @@
       if ((grp === "range" && SPD_RANGES.indexOf(val) >= 0) ||
           (grp === "period" && SPD_PERIODS.indexOf(val) >= 0)) {
         speedSel[grp] = val;
+        if (speedSel.pop) speedSel.pop.open = false;   /* v384：切 Tab 收起筛选弹出层 */
         speedChartHover = -1; speedInteractAt = Date.now();
         /* v272：维度切换移除，dim 恒 time，无需按范围归位 */
         speedRebuildNow();
+      }
+      return true;
+    }
+    /* v384 V3 模型筛选交互：chips/弹出层/展开按钮统一 pointerdown 先行（同 v263 Tab
+     * 纪律，防重建吞 click）；筛选动作是 toggle（非同值幂等），click 委托只认键盘
+     * 路径（e.detail===0），鼠标路径由 pointerdown 独占防双路径来回翻转。
+     * 未筛选模型池读 SPD3_POOL（wire 分片每次重建写入的模块级侧信道）。 */
+    function spd3Activate(e) {
+      if (!speedSel || typeof spd3FilterToggle !== "function" || typeof speedRebuildNow !== "function") return false;
+      var el = e.target && e.target.closest ? e.target.closest(
+        ".zu-sv3-chip,.zu-sv3-fpop-row,.zu-sv3-fsearch,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-more]") : null;
+      if (!el) return false;
+      if (!speedSel.filt) speedSel.filt = (typeof spd3FilterAuto === "function") ? spd3FilterAuto() : { mode: "auto", keys: null };
+      if (!speedSel.pop) speedSel.pop = { open: false, query: "" };
+      var key = el.getAttribute("data-k");
+      if (key && (el.classList.contains("zu-sv3-chip") || el.classList.contains("zu-sv3-fpop-row"))) {
+        spd3FilterToggle(speedSel.filt, key);
+      } else if (el.classList.contains("zu-sv3-fsearch")) {
+        speedSel.pop.open = !speedSel.pop.open;
+      } else if (el.hasAttribute("data-sv3-all")) {
+        /* v384 B2：SPD3_POOL 是对象数组，「全选」必须取 key 串（红队实测：对象入 keys
+         * 会被 String() 成 "[object Object]"，全选退化成清空且签名坍缩） */
+        spd3FilterOnly(speedSel.filt, (typeof SPD3_POOL !== "undefined" && SPD3_POOL || []).map(function (pm) { return pm.key; }));
+      } else if (el.hasAttribute("data-sv3-none")) {
+        spd3FilterOnly(speedSel.filt, []);
+      } else if (el.hasAttribute("data-sv3-reset")) {
+        spd3FilterAll(speedSel.filt);
+      } else if (el.hasAttribute("data-sv3-more")) {
+        speedSel.expanded = !speedSel.expanded;
+      } else return false;
+      if (!speedSel.pop.open) speedSel.pop.query = "";
+      speedChartHover = -1; speedInteractAt = Date.now();
+      speedRebuildNow();
+      /* v384 M2：弹层刚打开（或重编后）焦点移入搜索框——rebuild 同步完成，节点必在 */
+      if (speedSel.pop.open) {
+        var fi3 = tip.querySelector(".zu-sv3-fpop-input");
+        if (fi3 && fi3.focus) fi3.focus();
       }
       return true;
     }
@@ -2642,6 +2685,7 @@
       speedInteractAt = Date.now();
       if (projTipTabActivate(e)) return;
       if (projTipMoreActivate(e)) return;
+      if (spd3Activate(e)) return;   /* v384 V3：筛选 chips/弹出层/展开按钮 pointerdown 先行 */
       speedTabActivate(e);
     });
     tip.addEventListener("mousedown", function (e) {
@@ -2649,7 +2693,9 @@
        * v331：双范围 Tab 同入名单 */
       var t = e.target;
       if (!t || !t.closest) return;
-      var interactive = t.closest(".zu-pj-more") || t.closest(".zu-pj-tab") || t.closest(".zu-sv-tab") || t.closest("[data-zu-sys-th]");
+      var interactive = t.closest(".zu-pj-more") || t.closest(".zu-pj-tab") || t.closest(".zu-sv-tab") || t.closest("[data-zu-sys-th]") ||
+        t.closest(".zu-sv3-fbar") || (t.closest(".zu-sv3-fpop") && !t.classList.contains("zu-sv3-fpop-input")) ||
+        t.closest(".zu-sv3-more");   /* v384：V3 筛选区同入名单；搜索输入框豁免（否则点击无法聚焦） */
       if (interactive) {
         e.stopPropagation();
         if (e.preventDefault) e.preventDefault();
@@ -2673,7 +2719,9 @@
       }
       /* v254 速度 Tooltip 双 Tab：事件委托挂 tip 本体，改实例闭包选择后经
        * speedTipRebuild 整卡重编（签名幂等），旧 hover 卡随筛选切换自动收起。
-       * v263：鼠标路径已提前到 pointerdown（见上），此处保留键盘 Enter 与兜底。 */
+       * v263：鼠标路径已提前到 pointerdown（见上），此处保留键盘 Enter 与兜底。
+       * v384：V3 筛选 toggle 动作 click 只认键盘路径（e.detail===0），防双路径翻转。 */
+      if (e.detail === 0 && spd3Activate(e)) return;
       speedTabActivate(e);
     });
     /* 项目卡内部 Escape：先收档位说明浮层（v282，只收浮层不关卡）、再收费用说明
@@ -2686,6 +2734,39 @@
       }
       if (e.key !== "Escape") return;
       e.stopPropagation();
+      /* v384 M1：热力格/命中列方向键移动（roving tabindex 翻转）。步长：month 网格
+       * .zu3-hm-grid 行主序 7 列（右=+1/下=+7）；hist 网格 .zu3-hh-grid 列主序 7 行
+       * （下=+1/右=+7）；charts 命中列 .zu-sv3-hit 只支持左右 ±1。 */
+      var ac3 = e.target && e.target.closest && e.target.closest(".zu-hm-cell,.zu-sv3-hit");
+      if (ac3 && typeof e.key === "string" && e.key.indexOf("Arrow") === 0) {
+        var idx3 = parseInt(ac3.getAttribute("data-i"), 10);
+        if (idx3 >= 0) {
+          var isHit3 = ac3.classList.contains("zu-sv3-hit");
+          var isHist3 = !isHit3 && !!ac3.closest(".zu3-hh-grid");
+          var step3 = e.key === "ArrowRight" ? (isHit3 || !isHist3 ? 1 : 7)
+            : e.key === "ArrowLeft" ? (isHit3 || !isHist3 ? -1 : -7)
+            : e.key === "ArrowDown" ? (isHist3 ? 1 : 7)
+            : e.key === "ArrowUp" ? (isHist3 ? -1 : -7) : 0;
+          if (step3) {
+            var nu3 = tip.querySelector('.zu-hm-cell[data-i="' + (idx3 + step3) + '"],.zu-sv3-hit[data-i="' + (idx3 + step3) + '"]');
+            if (nu3 && nu3 !== ac3) {
+              e.preventDefault();
+              ac3.setAttribute("tabindex", "-1");
+              nu3.setAttribute("tabindex", "0");
+              if (nu3.focus) nu3.focus();
+            } else if (!nu3) e.preventDefault();   /* 越界：吞掉方向键防滚动 */
+            return;
+          }
+        }
+      }
+      /* v384 V3：筛选弹出层最先收（Esc 分层：弹出层→档位说明→费用→关卡），焦点归还搜索按钮 */
+      if (speedSel && speedSel.pop && speedSel.pop.open) {
+        speedSel.pop.open = false; speedSel.pop.query = "";
+        speedRebuildNow();
+        var fsBtn = tip.querySelector(".zu-sv3-fsearch");
+        if (fsBtn && fsBtn.focus) fsBtn.focus();
+        return;
+      }
       if (spdLegendTip.style.display === "block") { spdLegendTipHide(); return; }
       if (fxTip.style.display === "block") { hideFxTip(); return; }
       var back = tipFor;
@@ -2706,7 +2787,7 @@
       if (idx === speedChartHover) return;
       /* v291：热力图格子（.zu-hm-cell）与柱体（.zu-sc-col）共用同一悬停/焦点契约 */
       var hadFocus = tip.contains(document.activeElement) &&
-        document.activeElement.closest && document.activeElement.closest(".zu-sc-col,.zu-hm-cell");
+        document.activeElement.closest && document.activeElement.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit");
       speedChartHover = idx; speedInteractAt = Date.now();
       if (tipFor && typeof speedTipRebuild === "function") {
         var t2 = speedTipRebuild(speedChartHover, speedSel);
@@ -2715,7 +2796,7 @@
           drawTip(tipFor, true);
           /* innerHTML 重建会销毁聚焦的柱节点（焦点落 body、Tab 序断裂）——归位 */
           if (hadFocus && idx >= 0) {
-            var nu2 = tip.querySelector('.zu-sc-col[data-i="' + idx + '"],.zu-hm-cell[data-i="' + idx + '"]');
+            var nu2 = tip.querySelector('.zu-sc-col[data-i="' + idx + '"],.zu-hm-cell[data-i="' + idx + '"],.zu-sv3-hit[data-i="' + idx + '"]');
             if (nu2 && nu2.focus) nu2.focus();
           }
         }
@@ -2723,7 +2804,7 @@
       }
     }
     tip.addEventListener("mouseover", function (e) {
-      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
+      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit");
       if (col) zuSpeedChartPick(parseInt(col.getAttribute("data-i"), 10) || 0);
       var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
       if (lb) spdLegendTipShow(lb);   /* v282：问号 hover 即显档位说明 */
@@ -2740,6 +2821,25 @@
       wrap.scrollLeft += d;
       if (wrap.scrollLeft !== before) e.preventDefault();
     }, { passive: false });
+    /* v384 V3 筛选弹出层搜索：input 委托挂 tip 本体（随 tip.remove() 消亡）。只重渲染
+     * 弹出层并回填焦点/光标——整卡重编会销毁 input 节点丢焦点；全卡签名不动，下一次
+     * 完整重编（悬停/帧刷新）自然携带最新 query。 */
+    tip.addEventListener("input", function (e) {
+      var inp = e.target && e.target.classList && e.target.classList.contains("zu-sv3-fpop-input") ? e.target : null;
+      if (!inp || !speedSel || !speedSel.pop) return;
+      speedSel.pop.query = inp.value || "";
+      var pop = inp.closest(".zu-sv3-fpop");
+      if (pop && typeof spd3FilterPopHTML === "function") {
+        var pool3 = (typeof SPD3_POOL !== "undefined" && SPD3_POOL) || [];
+        pop.innerHTML = spd3FilterPopHTML(pool3, speedSel.filt, speedSel.pop.query);
+        var ni3 = pop.querySelector(".zu-sv3-fpop-input");
+        if (ni3) {
+          ni3.value = speedSel.pop.query;
+          if (ni3.focus) ni3.focus();
+          try { ni3.setSelectionRange(ni3.value.length, ni3.value.length); } catch (_) { }
+        }
+      }
+    });
     tip.addEventListener("mouseout", function (e) {
       var to = e.relatedTarget;
       var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
@@ -2748,14 +2848,14 @@
           spdLegendTipScheduleHide();
         return;
       }
-      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
+      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit");
       if (!col) return;
       /* v242:移入另一根柱时同样交给 mouseover 切段,避免 out(-1)→in(B) 双重整卡重建闪烁 */
-      if (to && to.closest && to.closest(".zu-sc-col,.zu-hm-cell")) return;
+      if (to && to.closest && to.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit")) return;
       zuSpeedChartPick(-1);
     });
     tip.addEventListener("focusin", function (e) {
-      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
+      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit");
       if (col) zuSpeedChartPick(parseInt(col.getAttribute("data-i"), 10) || 0);
       var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
       if (lb) spdLegendTipShow(lb);   /* v282：键盘聚焦问号同样显示 */
@@ -2766,10 +2866,10 @@
         mouseInBar = false;
         hideTip(true, "focus-leave");
       }
-      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
+      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit");
       /* v242:relatedTarget 落在另一根柱上时不得收卡重建——focusout 先于 focusin,
        * 此处重建会销毁即将接收焦点的目标柱(焦点跌落 body、Tab 序断裂) */
-      if (col && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest(".zu-sc-col,.zu-hm-cell"))) zuSpeedChartPick(-1);
+      if (col && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit"))) zuSpeedChartPick(-1);
       var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
       if (lb && !(e.relatedTarget && e.relatedTarget.closest && (e.relatedTarget.closest(".zu-sv-legend-btn") || e.relatedTarget.closest(".zu-sv-legend-tip"))))
         spdLegendTipScheduleHide();

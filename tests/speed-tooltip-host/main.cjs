@@ -2,7 +2,10 @@
 /* 生成速度 Tooltip 真实 Electron 视觉/几何 QA harness（QA 专用，非分发清单成员）。
  * 运行见 README.md。要点：
  * - 运行目录 overlay.js 原文注入（真实 IIFE/CSS/状态条）；
- * - SPD_V2 纯函数块 + TPS_BANDS/tpsBand/tpsBandText + Portal/档位浮层宿主函数原文切片装配；
+ * - V3 装配（v384）：TPS_BANDS/tpsBand/tpsBandText + 02 分片存活 spd* 助手段 +
+ *   SPD_V3_{CORE,VIEW,CHARTS,HEAT} 四段锚原文 + wire（spd3ChartFor/spd3RebuildOr）+
+ *   spdFitTip（V3 视口分支）+ Portal/档位浮层宿主函数切片；`--selftest` 纯 Node
+ *   dry-run 验证锚点全部命中且切片可编译（不启动 Electron）；
  * - 夹具确定性表驱动（无随机数），轮表 delta 编码（首轮绝对、其后增量）；
  * - live 实时链（2026-11-08）：生产同款 zusage.py serve 常驻泵拉真实当前会话快照，
  *   泵帧直推 overlay __zusageUpdate（生产泵语义）；夹具步骤自动丢弃真实帧；
@@ -10,7 +13,11 @@
  * 环境变量：ZU_OVERLAY（默认 ~/.zcode/zcode-token-usage-statusbar/overlay.js）、
  *   ZU_ZUSAGE（默认同目录 zusage.py）、ZU_PYTHON（默认 python3）。
  */
-const { app, BrowserWindow } = require('electron');
+/* electron 仅 QA 跑链需要（harness 目录 npm install）；--selftest 纯 Node dry-run
+ * 不依赖它——缺包时置 null，selftest 分支先行退出，跑链分支给出明确安装提示。 */
+const ELECTRON = (function () { try { return require('electron'); } catch (e) { return null; } })();
+const app = ELECTRON && ELECTRON.app;
+const BrowserWindow = ELECTRON && ELECTRON.BrowserWindow;
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -34,32 +41,88 @@ function extractBraced(src, startIdx) {
   throw new Error('unbalanced braces at ' + startIdx);
 }
 
-function buildV2Slice() {
-  const src = fs.readFileSync(OVERLAY_SRC, 'utf8');
+/* ---------- V3 装配（v384 生成速度 Tooltip V3，替代旧 SPD_V2 块切片） ----------
+ * overlay.js 构建产物内：TPS_BANDS/tpsBand/tpsBandText + 02 分片存活 spd* 助手段 +
+ * SPD_V3_{CORE,VIEW,CHARTS,HEAT} 四段锚原文 + wire 两函数（spd3ChartFor/spd3RebuildOr，
+ * 无段锚走花括号提取）+ spdFitTip（02 尾块，已带 V3 视口分支）。V2 双 Tab 卡函数
+ * （speedCardV2HTML/spdAnalyze/spdRebuildOr）已删除，不再装配。 */
+const SPD_V3_SHARDS = ['CORE', 'VIEW', 'CHARTS', 'HEAT'];
+
+function buildV3SliceFrom(src) {
   const a1 = src.indexOf('var TPS_BANDS = [');
-  if (a1 < 0) throw new Error('TPS_BANDS not found — 确认 ZU_OVERLAY 指向运行目录 overlay.js');
+  if (a1 < 0) throw new Error('TPS_BANDS not found — 确认 ZU_OVERLAY 指向构建产物 overlay.js');
   const tpsBands = src.slice(a1, src.indexOf('];', a1) + 2);
   const tpsBand = extractBraced(src, src.indexOf('function tpsBand('));
   const tpsBandText = extractBraced(src, src.indexOf('function tpsBandText('));
-  const END = '/* SPD_V2_BLOCK_END */';
-  const e = src.indexOf(END);
-  if (e < 0) throw new Error('SPD_V2_BLOCK_END not found');
-  const spdBlock = src.slice(src.indexOf('var SPD_RANGES'), e + END.length);
-  /* Portal / 档位说明浮层宿主函数原文（含其依赖的模块级计时器变量声明） */
+  const hA = src.indexOf('var SPD_RANGES');
+  /* v384 S6：终点延伸到 fitModelNames 注释——覆盖恢复版 spdLegendCardHTML
+   * （spdLegendTipShow 消费它；此前止于 SPD_PORTAL 锚导致档位浮层 7 次
+   * "spdLegendCardHTML is not a function" PAGE_ERROR） */
+  const hB = src.indexOf('  /* 模型名按实际宽度缩小');
+  if (hA < 0 || hB < 0) throw new Error('spd helper anchors not found (02 shard)');
+  const spdHelpers = src.slice(hA, hB);
+  const v3 = SPD_V3_SHARDS.map(name => {
+    const BEGIN = '/* SPD_V3_' + name + '_BEGIN */', END = '/* SPD_V3_' + name + '_END */';
+    const a = src.indexOf(BEGIN), b = src.indexOf(END);
+    if (a < 0 || b < 0 || b < a) throw new Error('SPD_V3_' + name + ' anchors not found');
+    return src.slice(a, b + END.length);
+  }).join('\n');
+  const spdWire = 'var SPD3_POOL = [];\n' +
+    extractBraced(src, src.indexOf('function spd3ChartFor(')) + '\n' +
+    extractBraced(src, src.indexOf('function spd3RebuildOr('));
+  const spdFitTip = extractBraced(src, src.indexOf('function spdFitTip('));
+  /* Portal / 档位说明浮层宿主函数原文（含其依赖的模块级计时器变量声明）。
+   * v384：spdLegendCardHTML 已随收口恢复进 02 分片（helpers 段终点已延伸覆盖），
+   * 无需再由 host.html 供给 undefined。 */
   const hostFns = extractBraced(src, src.indexOf('function spdHoverPortalHide(')) + '\n' +
     extractBraced(src, src.indexOf('function spdHoverPortalPlace(')) + '\n' +
     extractBraced(src, src.indexOf('function spdHoverPortalSync(')) + '\n' +
-    extractBraced(src, src.indexOf('function spdLegendCardHTML(')) + '\n' +
     extractBraced(src, src.indexOf('function spdLegendTipHide(')) + '\n' +
     extractBraced(src, src.indexOf('function spdLegendTipScheduleHide(')) + '\n' +
     extractBraced(src, src.indexOf('function spdLegendTipShow(')) + '\n' +
     'var SPD_LEGEND_HIDE_MS = 180, spdLegendHideTimer = 0;';
-  return tpsBands + '\n' + tpsBand + '\n' + tpsBandText + '\n' + spdBlock +
-    '\nwindow.__SPD = { speedCardV2HTML: speedCardV2HTML, spdAnalyze: spdAnalyze,' +
-    ' spdLegendCardHTML: spdLegendCardHTML, spdFitTip: spdFitTip, getPortal: function(){ return SPD_PORTAL; } };' +
+  return tpsBands + '\n' + tpsBand + '\n' + tpsBandText + '\n' + spdHelpers +
+    '\nvar SPD_PORTAL = "";\n' + v3 + '\n' + spdWire + '\n' + spdFitTip +
+    '\nwindow.__SPD = { spd3RebuildOr: spd3RebuildOr, spd3FilterAuto: spd3FilterAuto,' +
+    ' spdFitTip: spdFitTip,' +
+    ' spdLegendCardHTML: (typeof spdLegendCardHTML === "function" ? spdLegendCardHTML : null),' +
+    ' getPortal: function(){ return SPD_PORTAL; } };' +
     '\nwindow.__PORTAL_SRC = ' + JSON.stringify(hostFns) + ';';
 }
 
+function buildV3Slice() {
+  return buildV3SliceFrom(fs.readFileSync(OVERLAY_SRC, 'utf8'));
+}
+
+/* --selftest（纯 Node dry-run，不启动 Electron）：锚点提取全部命中 + 切片可编译。
+ * 默认取仓库根构建产物 overlay.js（与单元测试同一份），ZU_OVERLAY 显式覆盖。 */
+if (process.argv.includes('--selftest')) {
+  const cand = process.env.ZU_OVERLAY ||
+    path.join(__dirname, '..', '..', 'overlay.js');
+  const slice = buildV3SliceFrom(fs.readFileSync(cand, 'utf8'));
+  const need = ['var TPS_BANDS = [', 'function tpsBand(', 'function tpsBandText(',
+    'var SPD_RANGES', 'var SPD_PERIODS', 'var SPD_BARS_MAX', 'function SPD_L(',
+    'var SPD_PORTAL = "";', '/* SPD_V3_CORE_BEGIN */', '/* SPD_V3_VIEW_END */',
+    'function spd3Analyze(', 'function spd3AnalyzeCached(', 'function spd3CardHTML(',
+    'function spd3ChartHeadHTML(', 'function spd3ChartHTML(', 'function spd3MonthHTML(',
+    'function spd3HistHTML(', 'function spd3DayCardHTML(', 'function spd3ChartFor(',
+    'function spd3RebuildOr(', 'var SPD3_POOL = [];', 'function spdFitTip(',
+    'function spdHoverPortalSync(', 'function spdLegendTipShow('];
+  const missing = need.filter(s => !slice.includes(s));
+  if (missing.length) { console.error('SELFTEST_FAIL missing: ' + missing.join(' | ')); process.exit(1); }
+  try { new Function('L', '"' + 'use strict' + '";\n' + slice); }   /* 只编译不执行 */
+  catch (e) { console.error('SELFTEST_FAIL compile: ' + e.message); process.exit(1); }
+  if (/function speedCardV2HTML\(|function spdRebuildOr\(/.test(slice)) {
+    console.error('SELFTEST_FAIL V2 entries resurrected'); process.exit(1);
+  }
+  console.log('SELFTEST_OK ' + cand + ' (' + slice.length + ' chars)');
+  process.exit(0);
+}
+
+if (!ELECTRON) {
+  console.error('electron 未安装（QA 跑链需在 tests/speed-tooltip-host 下 npm install）；--selftest 不需要');
+  process.exit(1);
+}
 app.setPath('userData', path.join(os.tmpdir(), 'zu-spd-host-ud-' + Date.now()));
 
 /* host.html 模板中的 __OVERLAY_URL__ 替换为运行目录 overlay.js 的 file:// URL，
@@ -155,7 +218,7 @@ async function runChain(wc, win, steps, log) {
     if (st.reload) {
       await win.loadFile(path.join(OUT, 'host.final.html'));
       await sleep(500);
-      await wc.executeJavaScript('window.__zuReady(' + JSON.stringify(V2SLICE) + ')', true);
+      await wc.executeJavaScript('window.__zuReady(' + JSON.stringify(V3SLICE) + ')', true);
       await sleep(200);
     }
     await wc.executeJavaScript(`window.__zuScenario(${JSON.stringify(st)})`, true);
@@ -248,21 +311,20 @@ async function runChain(wc, win, steps, log) {
         };
         var out = [info(tip, 'tipRoot:' + tip.className.slice(0, 60))];
         out.push(info(tip.firstElementChild, 'firstChild'));
-        out.push(info(q('.zu-sv-root'), 'svRoot'));
-        out.push(info(q('.zu-speed-body'), 'body'));
-        out.push(info(q('.zu-sv-left'), 'left'));
-        out.push(info(q('.zu-sv-chart'), 'chart'));
+        out.push(info(q('.zu-sv3-root'), 'svRoot'));
+        out.push(info(q('.zu-sv3-main'), 'main'));
+        out.push(info(q('.zu-sv3-left'), 'left'));
+        out.push(info(q('.zu-sv3-chart'), 'chart'));
         out.push(info(q('.zu-sc-head'), 'chartHead'));
         out.push(info(q('.zu-sc-wrap'), 'wrap'));
-        out.push(info(q('.zu-sv-bars'), 'bars'));
-        out.push(info(q('.zu-sv-plotrow'), 'plotrow'));
-        out.push(info(q('.zu-sv-gutcol'), 'gutcol'));
-        out.push(info(q('.zu-sv-plot'), 'plot'));
-        var sp = q('.zu-sv-spacer');
+        out.push(info(q('.zu-sv3-bars'), 'bars'));
+        out.push(info(q('.zu-sc-gutter'), 'gutter'));
+        out.push(info(q('.zu-sc-plot'), 'plot'));
+        var sp = q('.zu-sv3-spacer');
         out.push(sp ? { name: 'spacer', rect: [Math.round(sp.getBoundingClientRect().x), sp.style.width].join(' ') } : { name: 'spacer', rect: 'none' });
         var wrapEl = q('.zu-sc-wrap');
         out.push({ name: 'wrapScroll', rect: wrapEl ? wrapEl.scrollLeft + ' sl / ' + wrapEl.scrollWidth + ' sw / ' + wrapEl.clientWidth + ' cw' : null });
-        var plotEl = q('.zu-sv-plot');
+        var plotEl = q('.zu-sc-plot');
         if (plotEl) { var pcs = getComputedStyle(plotEl); out.push({ name: 'plotStyle', rect: [pcs.marginLeft, pcs.marginRight, pcs.borderLeftWidth, pcs.borderRightWidth, pcs.boxSizing, pcs.minWidth].join(' ') }); }
         out.push(info(q('.zu-sv-head'), 'svHead'));
         var tabs = tip.querySelectorAll('.zu-sv-tabs');
@@ -342,10 +404,10 @@ async function runChain(wc, win, steps, log) {
   }
 }
 
-let V2SLICE = '';
+let V3SLICE = '';
 app.whenReady().then(async () => {
   buildHostFinal();
-  V2SLICE = buildV2Slice();
+  V3SLICE = buildV3Slice();
   const win = new BrowserWindow({ width: 1240, height: 820, show: true,
     webPreferences: { contextIsolation: false, sandbox: false } });
   const wc = win.webContents;
@@ -354,7 +416,7 @@ app.whenReady().then(async () => {
   });
   await win.loadFile(path.join(OUT, 'host.final.html'));
   await sleep(500);
-  await wc.executeJavaScript('window.__zuReady(' + JSON.stringify(V2SLICE) + ')', true);
+  await wc.executeJavaScript('window.__zuReady(' + JSON.stringify(V3SLICE) + ')', true);
   await sleep(200);
   if (process.env.ZU_GEOMETRY_ONLY) {
     const result = await wc.executeJavaScript(`(() => {
@@ -364,14 +426,19 @@ app.whenReady().then(async () => {
         window.__zuScenario({ fixture: 'recent16' });
         window.__zuMount({}, -1);
         const tip = document.getElementById('zu-spd-replica');
-        const box = s => tip.querySelector(s).getBoundingClientRect();
-        const status = box('.zu-sl-status'), main = box('.zu-sl-main');
-        const model = box('.zu-sl-model'), stats = box('.zu-sl-stats');
-        if (main.top + 1 < status.bottom || stats.top + 1 < model.bottom) failures.push('speed overlaps at ' + font);
-        const old = tip.querySelector('.zu-sv-root');
+        const root = tip.querySelector('.zu-sv3-root');
+        if (!root) { failures.push('no V3 root at ' + font); continue; }
+        const left = tip.querySelector('.zu-sv3-left'), chart = tip.querySelector('.zu-sv3-chart');
+        if (!left || !chart) { failures.push('missing V3 panes at ' + font); continue; }
+        const lb = left.getBoundingClientRect(), cb = chart.getBoundingClientRect();
+        if (cb.left + 1 < lb.right) failures.push('left card overlaps chart at ' + font);
+        if (root.style.zoom) failures.push('V3 root must not be zoomed at ' + font);
+        if (!root.style.maxWidth || !root.style.maxHeight) failures.push('V3 viewport clamp missing at ' + font);
+        const old = root;
         tip.querySelector('[data-sv-group="period"][data-sv-val="month"]').dispatchEvent(new PointerEvent('pointerdown', { bubbles:true }));
-        const next = tip.querySelector('.zu-sv-root');
-        if (next === old || !next.style.zoom || !tip.querySelector('.zu-hm-month')) failures.push('tab rebuild lost scaling at ' + font);
+        const next = tip.querySelector('.zu-sv3-root');
+        if (!next || !tip.querySelector('.zu3-hm-grid')) failures.push('tab rebuild lost V3 month grid at ' + font);
+        if (next && next.style.zoom) failures.push('tab rebuild re-introduced zoom at ' + font);
       }
       return failures;
     })()`, true);
