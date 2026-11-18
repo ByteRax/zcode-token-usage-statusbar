@@ -2643,7 +2643,7 @@
         spd3FilterToggle(speedSel.filt, key);
       } else if (el.classList.contains("zu-sv3-fsearch")) {
         speedSel.pop.open = !speedSel.pop.open;   /* v390 兼容分支：按钮已退役，防旧缓存帧 */
-      } else if (el.hasAttribute("data-sv3-fopen") || el.classList.contains("zu-sv3-fsearch")) {
+      } else if (el.hasAttribute("data-sv3-fopen")) {
         /* v390 §14.1：+N/「模型筛选」标签打开面板；动态锚定 fpop 顶到 fbar 底+8
          * （字号缩放安全，替代静态 top 估算） */
         speedSel.pop.open = !speedSel.pop.open;

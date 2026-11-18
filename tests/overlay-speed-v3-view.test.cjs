@@ -545,10 +545,25 @@ test('spd3HeightTier: empty 320 / recent 三档 340/360/390 / today/week 400 / m
   assert.deepEqual(tier({ real: [1], overall: {}, period: 'month', daysGrid: dgrid(2026, 7) }),
     { tier: 'month-r6', px: 470 }, '2026-08：1 前导 + 31 天 = 6 行 → 470');
   assert.deepEqual(tier({ real: [1], overall: {}, period: 'month' }), { tier: 'month-r6', px: 470 }, 'daysGrid 缺席兜底 6 行');
-  // all：items 日桶数（逐日一桶）≤56→380、≤112→420、else→460
-  assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(30).fill(1) }), { tier: 'all-s', px: 380 });
-  assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(56).fill(1) }), { tier: 'all-s', px: 380 });
+  // all：日历式（覆盖 ≤56 天或周数 ≤8）按覆盖自然周行数 R 分档（v390 审查 M1 接线：
+  // R≤5→380、R6-7→420、R8→460）；周列式（>56 天）按日桶数 420/460。
+  // 30 天夹具无 axisA/spanA → 走周列式旧映射（days≤112→420）。
+  assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(30).fill(1) }), { tier: 'all-m', px: 420 });
+  // 日历式：axisA=2026-11-01（周日）、37 天覆盖 → R=ceil((0+37)/7)=6 → 420
+  const calA = new Date(2026, 10, 1).getTime();
+  assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(37).fill(1),
+    axisA: calA, axisB: calA + 36 * 864e5 }), { tier: 'all-m', px: 420 }, '37 天 R6→420');
+  // R=3（14 天、轴首周三偏移 3 → ceil(6/7)=1？取轴首周日：14 天 R=2→380）
+  const sunA = new Date(2026, 10, 1).getTime() - 3 * 864e5;   // 10/29 周四？改用确定周日
+  const sun0 = new Date(2026, 9, 25).getTime();              // 2026-10-25 周日
+  assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(14).fill(1),
+    axisA: sun0, axisB: sun0 + 13 * 864e5 }), { tier: 'all-s', px: 380 }, '14 天 R2→380');
+  // R8（50 天自周日起）→ 460
+  assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(50).fill(1),
+    axisA: sun0, axisB: sun0 + 49 * 864e5 }), { tier: 'all-l', px: 460 }, '50 天 R8→460');
+  // 周列式（>56 天）：days 112→420、200→460
   assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(112).fill(1) }), { tier: 'all-m', px: 420 });
+  assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(200).fill(1) }), { tier: 'all-l', px: 460 });
   assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(200).fill(1) }), { tier: 'all-l', px: 460 });
   // 真 an 产物 root 内联下发：data-h-tier 与 min-height 与纯函数一致
   const selAll = { range: 'session', period: 'all', sid: 'sess_main' };
@@ -661,7 +676,7 @@ test('v390 §14.2 dbar 轨道: 段 min-width:0/stretch 废除 2px 下限；8 模
   assert.match(bar, /background:var\(--color-tooltip-tag-foreground,#a6a6a6\)/, '其他段=中性灰');
   assert.match(bar, /title="其他 2 个模型 · 2 次请求 · 13\.3%"/, '其他段 title=名 · 请求数 · 占比（计数差 15−13=2）');
   // aria 简化为概况（完整数据由下方表格承载）
-  assert.match(dom, /zu-sv3-dbar" role="img" aria-label="模型分布：8 个模型"/, 'dbar aria=「模型分布：N 个模型」');
+  assert.match(dom, /zu-sv3-dbar" role="img" aria-label="模型分布：8 个模型，前 6 占 \d+%"/, 'dbar aria=概况+前 6 占比（v390 m1）');
   // <0.1%：share<0.001 显「&lt;0.1%」不显 0%（表占比列与段 title 同口径）
   const t0 = new Date(2026, 10, 5, 9).getTime();
   const turns = [];
@@ -677,5 +692,5 @@ test('v390 §14.2 dbar 轨道: 段 min-width:0/stretch 废除 2px 下限；8 模
   const domSk = stripStyle(cardHTML(ctx, analyze(ctx, hSk, sel), sel));
   assert.match(domSk, /zu-sv3-pct" role="cell">&lt;0\.1%</, '占比列显 <0.1%（1/2001≈0.05%，不显 0%）');
   assert.match(domSk, /title="Tiny · 1 次请求 · &lt;0\.1%"/, '段 title 同步 <0.1%');
-  assert.match(domSk, /zu-sv3-dbar" role="img" aria-label="模型分布：2 个模型"/);
+  assert.match(domSk, /zu-sv3-dbar" role="img" aria-label="模型分布：2 个模型，前 \d+ 占 \d+%"/);
 });

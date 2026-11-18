@@ -518,7 +518,7 @@
       spd3FilterToggle(s3.filt, key);
     } else if (hit.classList.contains("zu-sv3-fsearch")) {
       s3.pop.open = !s3.pop.open;   /* v390 兼容分支 */
-    } else if (hit.hasAttribute("data-sv3-fopen") || hit.classList.contains("zu-sv3-fsearch")) {
+    } else if (hit.hasAttribute("data-sv3-fopen")) {
       s3.pop.open = !s3.pop.open;
       if (s3.pop.open) {
         var fb1 = tpsTip.querySelector(".zu-sv3-fbar"), rt1 = tpsTip.querySelector(".zu-sv3-root");

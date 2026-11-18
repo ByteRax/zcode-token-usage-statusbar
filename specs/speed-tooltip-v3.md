@@ -257,7 +257,7 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 - **方案 A**：删除右侧放大镜按钮（.zu-sv3-fsearch 整链退役——含 01/06 委托、CSS、测试）；入口=`+N` button 与「模型筛选」标签 button（.zu-sv3-fopen，data-sv3-fopen），同一面板/同一状态/同一关闭行为。
 - `+N` 与 fopen 均为真 button：aria-expanded（随 pop.open）、aria-haspopup、pointer/键盘（既有 pointerdown 委托白名单扩展）、Hover 反馈。
 - fpop 定位改**锚定筛选栏正下方**：`top` 对齐 fbar 底 +8px（fbar 单行高稳定）、右缘对齐 `right:10px`、宽度 340px；卡内空间恒够（卡高 ≥320）无需翻转；`bottom:10px` 废除。
-- 打开时焦点入搜索框（既有）；Esc/外点关闭（既有）；关闭焦点归还触发按钮。
+- 打开时焦点入搜索框（既有）；Esc/外点关闭（既有）；关闭焦点归还「模型筛选」标签（DOM 首个 fopen 入口；+N 打开时亦归还该合法入口）。
 
 ### 14.2 dbar 轨道契约 + Top6+其他（P0/P1）
 
@@ -275,7 +275,7 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 - **43–90 天**：周列贡献式（既有 .zu3-hh，列帽 64px）与日历式按行数自动选择（自然周数 ≤8 用日历式防纵挤，否则周列式）。
 - **>90 天**：周列式；周列 >26 既有月聚合（粒度文案同步）。
 - 色阶/模型点/今天描边/空日语义全形态一致（tpsBand 唯一来源不变）。
-- 日历式行数驱动卡高档位（month 同款 430-470 映射）。
+- 日历式行数驱动卡高档位（已接线：R≤5→380、R6-7→420、R8→460；周列式 >56 天按日桶数 420/460）。
 
 ### 14.4 验收
 

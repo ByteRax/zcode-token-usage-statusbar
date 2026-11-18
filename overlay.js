@@ -1508,7 +1508,7 @@
       spd3FilterToggle(s3.filt, key);
     } else if (hit.classList.contains("zu-sv3-fsearch")) {
       s3.pop.open = !s3.pop.open;   /* v390 兼容分支 */
-    } else if (hit.hasAttribute("data-sv3-fopen") || hit.classList.contains("zu-sv3-fsearch")) {
+    } else if (hit.hasAttribute("data-sv3-fopen")) {
       s3.pop.open = !s3.pop.open;
       if (s3.pop.open) {
         var fb1 = tpsTip.querySelector(".zu-sv3-fbar"), rt1 = tpsTip.querySelector(".zu-sv3-root");
@@ -10215,6 +10215,9 @@
         (msAvail ? '<span class="zu-sv3-dcell zu-sv3-dnum" role="cell">' + (rm.tps != null ? spdEsc(spd3FmtV(rm.tps) + SPD_L(" t/s", " t/s")) : "—") + "</span>" : "") +
         '<span class="zu-sv3-dcell zu-sv3-dnum zu-sv3-pct" role="cell">' + spdEsc(spd3PctTxt(rm.share)) + "</span></div>";
     }
+    var top6Pct = 0;
+    for (var t6 = 0; t6 < Math.min(6, shareSorted.length); t6++) top6Pct += (shareSorted[t6].share || 0) * 100;
+    top6Pct = Math.round(top6Pct);
     var more = "";
     if (shareSorted.length > DEF_ROWS) {
       more = '<button type="button" class="zu-sv3-more" data-sv3-more aria-expanded="' + (expanded ? "true" : "false") + '">' +
@@ -10232,7 +10235,8 @@
         missN + " selected models have no valid records in this range")) + "</em>" : "") + "</div>" +
       '<div class="zu-sv3-dist-h">' + spdEsc(SPD_L("所选模型分布 · 按请求数", "Selected models · by requests")) + "</div>" +
       '<div class="zu-sv3-dbar" role="img" aria-label="' +
-      spdEsc(SPD_L("模型分布：" + models.length + " 个模型", "Distribution: " + models.length + " models")) + '">' + bar + "</div>" +
+      spdEsc(SPD_L("模型分布：" + models.length + " 个模型，前 " + Math.min(6, models.length) + " 占 " + top6Pct + "%",
+        "Distribution: " + models.length + " models, top " + Math.min(6, models.length) + " at " + top6Pct + "%")) + '">' + bar + "</div>" +
       '<div class="zu-sv3-dwrap"><div class="zu-sv3-dtab' + (msAvail ? "" : " zu-sv3-dtab-noms") +
       '" role="table">' + thead + rowsHtml + "</div></div>" + more + stats + "</div>";
   }
@@ -10595,11 +10599,24 @@
         : rows === 5 ? { tier: "month-r5", px: 450 }
         : { tier: "month-r6", px: 470 };
     }
-    /* all：日桶数（an.items 逐日一桶）映射周跨度档位（任务简化口径）：≤56 天=8 周→
-     * 380、≤112 天=16 周→420、更长→460 */
+    /* all：日历式（.zu3-cal，覆盖 ≤56 天或自然周 ≤8 行）按**覆盖自然周行数 R**
+     * 分档（v390 审查 M1 接线：R6-7 需 420、R8 需 460，380 档 6 行日历纵挤）；
+     * 周列式（>56 天）按日桶数映射。R 复算公式与 heat 分派一致
+     * （ceil((轴首星期偏移+coverDays)/7)）。 */
+    var dA = (typeof an.axisA === "number" && isFinite(an.axisA) && an.axisA > 0) ? an.axisA
+      : (typeof an.spanA === "number" ? an.spanA : 0);
+    var dB = (typeof an.axisB === "number" && isFinite(an.axisB) && an.axisB > 0) ? an.axisB
+      : (typeof an.spanB === "number" ? an.spanB : 0);
+    if (dA > 0 && dB > 0) {
+      var d0 = new Date(dA), cover = Math.round((dB - dA) / 864e5) + 1;
+      var R = Math.ceil((d0.getDay() + cover) / 7);
+      if (cover <= 42 || R <= 8)
+        return R <= 5 ? { tier: "all-s", px: 380 }
+          : R <= 7 ? { tier: "all-m", px: 420 }
+          : { tier: "all-l", px: 460 };
+    }
     var days = an.items ? an.items.length : 0;
-    return days <= 56 ? { tier: "all-s", px: 380 }
-      : days <= 112 ? { tier: "all-m", px: 420 }
+    return days <= 112 ? { tier: "all-m", px: 420 }
       : { tier: "all-l", px: 460 };
   }
   function spd3CardHTML(an, ctx) {
@@ -15491,7 +15508,7 @@
         spd3FilterToggle(speedSel.filt, key);
       } else if (el.classList.contains("zu-sv3-fsearch")) {
         speedSel.pop.open = !speedSel.pop.open;   /* v390 兼容分支：按钮已退役，防旧缓存帧 */
-      } else if (el.hasAttribute("data-sv3-fopen") || el.classList.contains("zu-sv3-fsearch")) {
+      } else if (el.hasAttribute("data-sv3-fopen")) {
         /* v390 §14.1：+N/「模型筛选」标签打开面板；动态锚定 fpop 顶到 fbar 底+8
          * （字号缩放安全，替代静态 top 估算） */
         speedSel.pop.open = !speedSel.pop.open;
