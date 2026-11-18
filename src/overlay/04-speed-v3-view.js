@@ -15,7 +15,8 @@
    * 文案走 SPD_L；颜色语义两套不混用——模型身份色 = spd3Color（SPD3_PALETTE），速度
    * 色阶 = TPS_BANDS 档位类（zu-ultra/ok/warm… 全局色规则继承）。
    * 集成契约：spd3LeftHTML 第三参 expanded（多模型分布表展开态，调用方传布尔）、第四参
-   * poolSingle（chips 池恰一模型=「真单模型池」，仅此时渲染「唯一模型」徽标，v387 §11.5）；
+   * poolSingle（chips 池恰一模型=「真单模型池」，驱动「当前模型」行去重；v390 用户
+   * 裁定「唯一模型」徽标与供应商副标 .zu-sv3-msub/.zu-sv3-only 均去除）；
    * 覆盖范围五值读可选 an.cov={recent,today,week,month,all}（集成方按五个 period 各跑一次
    * spd3AnalyzeCached 汇总轮数，缺席显 —）；筛选 chips 池缺省取 an.perModel+an.selMissing，
    * 筛选激活时集成方应传 ctx.pool=未筛选全量模型（否则 chips 收缩为已选集，无法点回）。
@@ -86,22 +87,13 @@
     var p = spd3Parts(entry);
     return p.pid ? p.pid + "/" + p.mid : p.mid;
   }
-  /* chips/弹层/分布行共用：色点 + 名称（allEntries 存在同 name 异 key 时追加
-   * span.zu-sv3-msub 供应商副标——pid 尾段，pid 空退 key 首段，仍空则省副标） */
+  /* chips/弹层/分布行共用：色点 + 名称（v390 用户裁定去除供应商副标 .zu-sv3-msub；
+   * 同名异供应商的区分保留在 title/hover 完整身份 = provider/model） */
   function spd3ModelLabel(entry, allEntries) {
     var key = spd3ModelKey(entry);
     var name = (entry && entry.name) || spd3KeyName(key);
-    var dup = false, list = allEntries || [];
-    for (var i = 0; i < list.length; i++) {
-      if (list[i] && spd3ModelKey(list[i]) !== key && list[i].name === name) { dup = true; break; }
-    }
-    var sub = "";
-    if (dup) {
-      var tail = spd3TailSeg(spd3Parts(entry).pid);
-      if (tail) sub = ' <span class="zu-sv3-msub">' + spdEsc(tail) + "</span>";
-    }
     return '<i class="zu-sv3-dot" style="background:' + spd3Color(key) + '" aria-hidden="true"></i>' +
-      '<span class="zu-sv3-chip-name">' + spdEsc(name) + sub + "</span>";
+      '<span class="zu-sv3-chip-name">' + spdEsc(name) + "</span>";
   }
   /* ==================== ① 头部：标题 + 范围/时间双 Tab 组（V2 spdTabRow/spdHeadHTML 同构改名） ==================== */
   function spd3TabRow(group, list, cur, labels) {
@@ -222,9 +214,9 @@
    * （堆叠条 + div Grid 网格表默认 ≤4 行，data-sv3-more 查看全部；表容器 max-height
    * 内滚，展开态不撑高主卡）→ 峰/低/新。分布行序按 share（请求数占比）降序；
    * msAvail=false 降级：隐藏「均速」列（.zu-sv3-dtab-noms 两列变体），绝不出现 t/s 假值。
-   * poolSingle（v387 §11.5）= chips 池恰 1 个真模型——「唯一模型」徽标只用于真
-   * 单模型池，筛选缩到单模型不冒充。覆盖范围单值随 an.period 直读（v384 M4：an.cov
-   * 五值契约废除）。 */
+   * poolSingle = chips 池恰 1 个真模型——驱动「当前模型」行去重（v390 起「唯一模型」
+   * 徽标已按用户裁定去除）；筛选缩到单模型不冒充。覆盖范围单值随 an.period 直读
+   * （v384 M4：an.cov 五值契约废除）。 */
   function spd3LeftTitle(an) {
     var n = an && an.items ? an.items.length : 0;
     var t = an && an.period === "recent" ? SPD_L("最近 " + n + " 轮", "Last " + n + " turns")
@@ -297,8 +289,7 @@
       }
       return '<div class="zu-sv3-left">' + headRow + spd3MainNumHTML(overall.v) +
         (bd ? spd3BandHTML(bd) : "") +
-        '<div class="zu-sv3-model">' + spd3DotAndName(m.key, m.name) +
-        (poolSingle ? '<em class="zu-sv3-only">' + spdEsc(SPD_L("唯一模型", "Only model")) + "</em>" : "") + "</div>" +
+        '<div class="zu-sv3-model">' + spd3DotAndName(m.key, m.name) + "</div>" +
         '<i class="zu-sv3-cov-h">' + spdEsc(SPD_L("本期统计", "This period")) + "</i>" +
         '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("请求轮次", "Turns")) + "</i><b>" +
         spdEsc(spdNum(overall.turns) + SPD_L("轮", " turns")) + "</b></div>" +
@@ -502,9 +493,6 @@
       ".zu-sv3-root .zu-sv3-chip:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
       ".zu-sv3-root .zu-sv3-dot{display:inline-block;width:8px;height:8px;border-radius:50%;flex:0 0 auto}" +
       ".zu-sv3-root .zu-sv3-chip-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
-      /* §11.5 同名异供应商副标（pid 尾段小字，跟随名称同行） */
-      ".zu-sv3-root .zu-sv3-msub{font-size:calc(var(--ui-font-size,14px) - 4px);font-weight:400;" +
-        "color:var(--color-tooltip-tag-foreground,#a6a6a6);margin-left:4px}" +
       ".zu-sv3-root .zu-sv3-chip-miss{font-style:normal;font-size:calc(var(--ui-font-size,14px) - 4px);" +
         "color:var(--color-tooltip-tag-foreground,#a6a6a6);opacity:.85;flex:0 0 auto}" +
       ".zu-sv3-root .zu-sv3-chip-empty{border-style:dashed;opacity:.8}" +
@@ -569,8 +557,6 @@
         "padding:2px 10px;border:1px solid var(--color-popover-border,rgba(255,255,255,.14));border-radius:999px;" +
         "background:rgba(255,255,255,.03)}" +
       ".zu-light .zu-sv3-root .zu-sv3-model{border-color:rgba(15,23,42,.14);background:rgba(0,0,0,.04)}" +
-      ".zu-sv3-root .zu-sv3-only{font-style:normal;font-size:calc(var(--ui-font-size,14px) - 4px);" +
-        "color:var(--color-tooltip-tag-foreground,#a6a6a6);flex:0 0 auto}" +
       ".zu-sv3-root .zu-sv3-count{display:flex;align-items:center;flex-wrap:wrap;gap:4px 6px;margin-top:8px;min-width:0;" +
         "font-size:calc(var(--ui-font-size,14px) - 1px);font-weight:600}" +
       ".zu-sv3-root .zu-sv3-count svg{flex:0 0 auto;opacity:.85}" +

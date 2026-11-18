@@ -150,13 +150,12 @@ test('spd3CardHTML 结构锁: 根类/data-sv-key/双 Tab 组/chips/单多左卡�
   assert.match(html, /class="zu-speed-chart zu-sv3-chart" data-sv3-chart><!--CHART--><\/div>/);
   // 无 notice 不渲染通知行
   assert.ok(!dom.includes('zu-sv3-notice'), '无通知不渲染常驻行');
-  // 单模型态（只选 B）：互斥——无分布表/分布条，有唯一模型行。本层直调的 chips 池
-  // 缺省=an.perModel（恰 B 一个）→ poolSingle=true；wire 集成传全量池时筛选缩到
-  // 单模型不冒充「唯一模型」（§11.5 真单模型池语义，wire/v2 测试锁另一态）。
+  // 单模型态（只选 B）：互斥——无分布表/分布条。v390 用户裁定「唯一模型」徽标
+  // 全局去除（含真单模型池），改负向锁；供应商区分保留在 title/hover 完整身份。
   const selB = { range: 'session', period: 'all', sid: 'sess_main', filt: { mode: 'sel', keys: [KEYS.b] } };
   const anB = analyze(ctx, h, selB);
   const domB = stripStyle(cardHTML(ctx, anB, selB));
-  assert.match(domB, /唯一模型/);
+  assert.doesNotMatch(domB, /唯一模型|zu-sv3-only/);
   assert.match(domB, /zu-sv3-main-num/);
   assert.doesNotMatch(domB, /zu-sv3-dtab/, '单模型态无分布表（PRD 6.3）');
   assert.doesNotMatch(domB, /zu-sv3-dbar/, '单模型态无分布条');
@@ -228,7 +227,7 @@ test('单模型左卡: 五 period 标题文案、主数字/档位/模型行/本�
       month: /本月平均速度/, all: /历史平均速度/ }[period];
     assert.match(dom, want, 'period=' + period + ' 左卡标题');
     assert.match(dom, /zu-sv3-main-num/, 'period=' + period + ' 主数字在场');
-    assert.match(dom, /唯一模型/);
+    assert.doesNotMatch(dom, /唯一模型|zu-sv3-only/);
     // m3：「本期统计」组标题 + 请求轮次/覆盖范围 kv（§12.2「当前模型」行去重见 fmtTok 用例）
     assert.match(dom, /zu-sv3-cov-h">本期统计</, 'period=' + period + ' 本期统计组标题');
     assert.match(dom, /请求轮次/);
@@ -388,7 +387,7 @@ test('i18n: lang=en 关键文案切英文（SPD_L 桩实现真实 L 逻辑）', 
   // 单模型英文
   const selB = { range: 'session', period: 'recent', sid: 'sess_main', filt: { mode: 'sel', keys: [KEYS.b] } };
   const domB = stripStyle(cardHTML(ctx, analyze(ctx, h, selB), selB));
-  assert.match(domB, /Only model/);
+  assert.doesNotMatch(domB, /Only model/);
   assert.match(domB, /zu-sv3-stat"><i>Peak<\/i>/);
   assert.match(domB, /Coverage/);
   assert.match(domB, /Last \d+ turns · average speed/, 'recent 英文标题');

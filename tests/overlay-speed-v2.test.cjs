@@ -122,7 +122,7 @@ test('weighted average is Σout/Σms, never the arithmetic mean of per-turn spee
   assert.match(multi, /本期有效 2 个模型 · 3 轮/, 'multi-model count row (active semantics)');
   assert.match(multi, /zu-sv3-main-num"><span class="[a-z-]+">\d/, 'multi-model main number always present');
   assert.match(multi, /zu-sv3-dtab/, 'distribution table present');
-  // 真单模型池（chips 池恰 1 真模型）才显「唯一模型」徽标
+  // v390 用户裁定：「唯一模型」徽标全局去除（.zu-sv3-only）——真单模型池也不再显
   const t0s = new Date(2026, 10, 5, 9).getTime();
   const singlePool = { sid: 's', source: 'local', truncated: false, sids: ['s'], snames: ['S'],
     pids: [['p', 'P']], mnames: ['GLM-5.3-FlashX'], mkeys: ['prov_a\x1fglm-a'],
@@ -130,7 +130,8 @@ test('weighted average is Σout/Σms, never the arithmetic mean of per-turn spee
       msl: [[0, 500, 5000, 2]], c: 0.03, cf: 1 }] };
   const singleHtml = dom(card(ctx, { range: 'session', period: 'all' },
     { h: singlePool, sess: { sid: 's' } }));
-  assert.match(singleHtml, /唯一模型/, 'single-model pool earns the "only model" badge');
+  assert.ok(!singleHtml.includes('唯一模型') && !singleHtml.includes('zu-sv3-only'),
+    'v390: single-model pool no longer shows the removed "only model" badge');
   assert.ok(!singleHtml.includes('zu-sv3-dtab'), 'single-model pool shows no distribution table');
 });
 
