@@ -324,7 +324,7 @@ python scripts/install_workbuddy_plugin.py  # 重新部署到 WorkBuddy 缓存
 - 远程（SSH/WSL/Docker）查询链路仍是 ZCode 语义：它转发的是 `zusage.py json`，
   若远端也要读 WorkBuddy 数据，需在远端写同样的 `host` 配置。
 - 逐问速率行（`token_rate.py`）依赖逐请求 token 与耗时，WorkBuddy 不适用。
-- 桌面主桥（`inject-main.cjs`）监听库文件变化、判断「有无新写入」时仍按默认解析目录，不跟随
-  `hosts.zcode.db_path`：库放在非默认位置时，快照内容读的是覆盖库，但覆盖库的写入不会触发状态条
-  刷新，新数据可能要等到切换会话等其它刷新时机才显示。详见
-  [specs/db-path-config-override.md](../specs/db-path-config-override.md)「遗留」。
+- 桌面主桥（`inject-main.cjs`）的库文件监听与写入判断跟随解析后的库位置：`hosts.zcode.db_path`
+  覆盖同样作用于 `dbFile()` / `dbDir()` / `dbStamp()` / `watchDb()`（按覆盖库文件名及其
+  `-wal`/`-shm` 计戳监听，与 zusage / token_rate 三端同源，见
+  [specs/db-path-config-override.md](../specs/db-path-config-override.md) 规则 7）。

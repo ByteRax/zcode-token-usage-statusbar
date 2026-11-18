@@ -7,6 +7,15 @@ const path = require("path");
 const M = require(path.join(__dirname, "..", "model-puller.cjs"));
 
 const MODELS_DEV_TEST_URL = "https://models.dev.test/json";
+const { after } = require("node:test");
+/* 假凭据文件走 os.tmpdir 独立目录：硬编码 "/tmp" 在 Windows 解析为 <cwd盘>:\tmp，
+ * 盘上无该目录时整族套餐源用例失败（跨盘克隆红）。 */
+const CREDS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-mp-creds-"));
+const CREDS = path.join(CREDS_DIR, "creds.json");
+after(() => { try { fs.rmSync(CREDS_DIR, { recursive: true, force: true }); } catch (e) { } });
+/* Electron（含 ELECTRON_RUN_AS_NODE）的 fs shim 拦截 app.asar 路径（目录树 mkdir 直接
+ * ENOTDIR），假 @napi-rs/keyring 夹具只能在纯 Node 运行时构造。 */
+const KEYRING_FIXTURE_SKIP = !!process.versions.electron && "Electron fs shim 拦截 app.asar 路径，假 keyring 夹具需纯 Node 运行时";
 
 function tmpCfgPath() {
   return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "zusage-mp-")), "provider_config.json");
@@ -91,7 +100,7 @@ function createPlanPuller(file, routes, opts) {
   };
   const mp = M.createModelPuller({
     customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL,
-    credentialsPath: "/tmp/creds.json",
+    credentialsPath: CREDS,
     decryptValue: () => "plan-oauth-token",
     ...opts,
   });
@@ -101,7 +110,7 @@ function createPlanPuller(file, routes, opts) {
 test("plan source: listed when token decrypts, hidden when it does not", async () => {
   const file = tmpCfgPath();
   writeCfg(file, PLAN_CFG);
-  fs.writeFileSync("/tmp/creds.json", JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
+  fs.writeFileSync(CREDS, JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
   const { mp } = createPlanPuller(file, []);
   const r = await mp.listProviders();
   assert.equal(r.ok, true);
@@ -192,7 +201,7 @@ test("plan source: an enc:v2 credential that cannot be decrypted is not a token 
   }
 });
 
-test("plan source: enc:v2:os credential — the first list starts the keyring read, afterwards the plan source pulls with the plaintext token", async (t) => {
+test("plan source: enc:v2:os credential — the first list starts the keyring read, afterwards the plan source pulls with the plaintext token", { skip: KEYRING_FIXTURE_SKIP }, async (t) => {
   /* 生产路径：不注入钥匙串句柄，经宿主资源目录解析宿主自带的 @napi-rs/keyring（这里用假目录顶替） */
   const crypto = require("crypto");
   const osKey = crypto.randomBytes(32);
@@ -220,7 +229,7 @@ test("plan source: enc:v2:os credential — the first list starts the keyring re
 test("plan source: fetches anthropic models endpoint with oauth bearer and normalizes case", async () => {
   const file = tmpCfgPath();
   writeCfg(file, PLAN_CFG);
-  fs.writeFileSync("/tmp/creds.json", JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
+  fs.writeFileSync(CREDS, JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
   let seenAuth = "";
   const routes = [{
     url: "https://open.bigmodel.cn/api/anthropic/v1/models",
@@ -258,7 +267,7 @@ test("plan source: applyModels bootstraps personal rule on fresh env (issue #226
       modelConfigRules: { providerModelRules: [], manualProviderModelRules: [] },
     },
   });
-  fs.writeFileSync("/tmp/creds.json", JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
+  fs.writeFileSync(CREDS, JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
   const { mp } = createPlanPuller(file, []);
   const r = await mp.applyModels(PLAN_ID, ["GLM-5.3-FlashX", "glm-5.3"]);
   assert.deepEqual(r, { ok: true, added: 2 });
@@ -286,7 +295,7 @@ test("plan source: applyModels bootstraps personal rule on fresh env (issue #226
 test("plan source: applyModels refuses when providerRules is not an in-file array (no host skeleton rebuild)", async () => {
   const file = tmpCfgPath();
   writeCfg(file, { schemaVersion: 1, config: {} });   // providerConfigRules 缺失：结构缺口过大
-  fs.writeFileSync("/tmp/creds.json", JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
+  fs.writeFileSync(CREDS, JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
   const { mp } = createPlanPuller(file, []);
   assert.equal((await mp.applyModels(PLAN_ID, ["GLM-5.3"])).error, "provider not found");
   const after = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -296,16 +305,16 @@ test("plan source: applyModels refuses when providerRules is not an in-file arra
   writeCfg(nonArray, { schemaVersion: 1, config: { providerConfigRules: { providerRules: {} } } });
   const mpNA = M.createModelPuller({
     customCfgPath: nonArray, fetchImpl: async () => null, modelsDevUrl: MODELS_DEV_TEST_URL,
-    credentialsPath: "/tmp/creds.json", decryptValue: () => "plan-oauth-token",
+    credentialsPath: CREDS, decryptValue: () => "plan-oauth-token",
   });
   assert.equal((await mpNA.applyModels(PLAN_ID, ["GLM-5.3"])).error, "provider not found");
   assert.deepEqual(JSON.parse(fs.readFileSync(nonArray, "utf8")).config.providerConfigRules, { providerRules: {} });
 
   const missing = tmpCfgPath();   // 文件不存在：不代宿主创建 provider_config.json
-  fs.writeFileSync("/tmp/creds.json", JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
+  fs.writeFileSync(CREDS, JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
   const mp2 = M.createModelPuller({
     customCfgPath: missing, fetchImpl: async () => null, modelsDevUrl: MODELS_DEV_TEST_URL,
-    credentialsPath: "/tmp/creds.json", decryptValue: () => "plan-oauth-token",
+    credentialsPath: CREDS, decryptValue: () => "plan-oauth-token",
   });
   assert.equal((await mp2.applyModels(PLAN_ID, ["GLM-5.3"])).error, "provider not found");
   assert.equal(fs.existsSync(missing), false);
@@ -314,7 +323,7 @@ test("plan source: applyModels refuses when providerRules is not an in-file arra
 test("plan source: applyModels without modelConfigRules writes only id lists", async () => {
   const file = tmpCfgPath();
   writeCfg(file, { schemaVersion: 1, config: { providerConfigRules: { providerRules: [] } } });
-  fs.writeFileSync("/tmp/creds.json", JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
+  fs.writeFileSync(CREDS, JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
   const { mp } = createPlanPuller(file, []);
   const r = await mp.applyModels(PLAN_ID, ["GLM-5.3"]);
   assert.deepEqual(r, { ok: true, added: 1 });
@@ -948,7 +957,7 @@ test("plan source: catalog fills GLM meta within grace; apply writes evidenced f
       modelConfigRules: { providerModelRules: [], manualProviderModelRules: [] },
     },
   });
-  fs.writeFileSync("/tmp/creds.json", JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
+  fs.writeFileSync(CREDS, JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
   const impl = async (url) => {
     if (url === "https://open.bigmodel.cn/api/anthropic/v1/models") {
       return { ok: true, status: 200, body: null, json: async () => ({ data: [{ id: "glm-5.2" }] }) };
@@ -960,7 +969,7 @@ test("plan source: catalog fills GLM meta within grace; apply writes evidenced f
   };
   const mp = M.createModelPuller({
     customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL,
-    credentialsPath: "/tmp/creds.json", decryptValue: () => "plan-oauth-token",
+    credentialsPath: CREDS, decryptValue: () => "plan-oauth-token",
   });
   const r = await mp.fetchModels(PLAN_ID);
   assert.equal(r.ok, true);
@@ -1248,11 +1257,11 @@ test("probe classifies failures and masks the error snippet", async () => {
 test("probe fail-closed on structural problems; plan source probes anthropic messages with oauth bearer", async () => {
   const file = tmpCfgPath();
   writeCfg(file, probeCfg());
-  fs.writeFileSync("/tmp/creds.json", JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
+  fs.writeFileSync(CREDS, JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
   const seen = [];
   const mp = M.createModelPuller({
     customCfgPath: file, modelsDevUrl: MODELS_DEV_TEST_URL,
-    credentialsPath: "/tmp/creds.json", decryptValue: () => "plan-oauth-token",
+    credentialsPath: CREDS, decryptValue: () => "plan-oauth-token",
     fetchImpl: async (url, opts) => { seen.push({ url, auth: opts.headers.Authorization }); return { ok: true, status: 200 }; },
   });
   assert.equal((await mp.probeModel("missing", "m")).kind, "provider");
@@ -1338,11 +1347,11 @@ test("probe repair is single-flight per provider: one candidate test and one wri
 test("probe repair never touches anthropic/plan sources (no mismatch dimension)", async () => {
   const file = tmpCfgPath();
   writeCfg(file, probeCfg());
-  fs.writeFileSync("/tmp/creds.json", JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
+  fs.writeFileSync(CREDS, JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
   const urls = [];
   const mp = M.createModelPuller({
     customCfgPath: file, modelsDevUrl: MODELS_DEV_TEST_URL,
-    credentialsPath: "/tmp/creds.json", decryptValue: () => "plan-oauth-token",
+    credentialsPath: CREDS, decryptValue: () => "plan-oauth-token",
     fetchImpl: async (url) => { urls.push(url); return { ok: false, status: 404, text: async () => "404" }; },
   });
   const claude = await mp.probeModel("claude-relay", "claude-sonnet-5-5");   // anthropic 型宿主自动补 /v1：无 ±/v1 错配
@@ -1474,7 +1483,7 @@ test("aux probe: un-added model heals fetchCache metadata for the follow-up appl
   const noModelRule = auxProbeCfg();
   noModelRule.config.modelConfigRules.providerModelRules = [];   // 未添加场景：无模型规则，写实只能进 fetchCache 元数据
   writeCfg(file, noModelRule);
-  fs.writeFileSync("/tmp/models-list.json", "");
+  fs.writeFileSync(path.join(CREDS_DIR, "models-list.json"), "");   // 无消费者的历史哨兵文件，同 CREDS 走 os.tmpdir（原 /tmp 字面量在 Windows 解析为 <cwd盘>:\tmp）
   const mp = M.createModelPuller({
     customCfgPath: file,
     fetchImpl: async (url, opts) => {
@@ -1719,7 +1728,7 @@ test("plan source: process.env.ZCODE_CREDENTIAL_SECRET is used when no env optio
   assert.deepEqual(requests.map((r) => r.auth), ["Bearer plan.env.token"]);
 });
 
-test("plan source: shares the module-level host-key cache with the quota chain on the same credentials path", async (t) => {
+test("plan source: shares the module-level host-key cache with the quota chain on the same credentials path", { skip: KEYRING_FIXTURE_SKIP }, async (t) => {
   const crypto = require("crypto");
   const osKey = crypto.randomBytes(32);
   const resources = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-mp-shared-"));
@@ -1764,7 +1773,7 @@ test("plan source: shares the module-level host-key cache with the quota chain o
   assert.equal(globalThis.__zusageMpSharedOpens === undefined ? keyringMod2.__opens() : keyringMod2.__opens(), 1, "额度与模型拉取共用同一份缓存：只开过一次钥匙串条目");
 });
 
-test("plan source: 每次用户触达都越过取钥重试窗——钥匙串解锁后再点一次就能拉到套餐源", async (t) => {
+test("plan source: 每次用户触达都越过取钥重试窗——钥匙串解锁后再点一次就能拉到套餐源", { skip: KEYRING_FIXTURE_SKIP }, async (t) => {
   const crypto = require("crypto");
   const osKey = crypto.randomBytes(32);
   const resources = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-mp-retry-"));
