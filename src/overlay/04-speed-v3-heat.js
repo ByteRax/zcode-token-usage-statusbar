@@ -4,16 +4,16 @@
    * 模型身份色唯一来自 SPD3_PALETTE 纯哈希（格右上 ≤3 色点 + 「+N」），两套语义
    * 不混用（PRD 7.3）。网格数学移植 V2 v291 段：month=7 列周日首列（行数=
    * ceil((首日星期+天数)/7)，4~6 行，行数经 --zu-hm-rows 变量下发，v387 §11.6 行高
-   * 自适应=minmax(0,1fr) 行模板 + wrap flex 链填满可用高，4/5/6 周均无底部大空白）；
-   * hist=行=星期（7 行周日..周六）、列=周（列头=周起始 MM/DD，跨月首列加亮；>14 列
-   * 时隔列显标签防挤、首列恒显），列宽帽 minmax(34px,64px)（v387 §11.6 去无限 1fr
-   * 拉伸，短跨度不再超宽格；v388 §12.6 列数分档对齐：≤14 列根挂 zu3-hh-c 整块水平
-   * 居中、>14 列 flex-start 左对齐贴满容器）；池时间轴覆盖跨度 ≤7 自然日切紧凑日卡
-   * （v389 §13.4，.zu3-dc 横排日期卡，判定读 an.axisA/axisB、缺失退化 spanA/spanB
-   * 再回退 items 首日→今天）；v390 §14.3 密度选择器：8–42 天切七列日历式 .zu3-cal
-   * （month 同构、7 列 minmax(0,1fr) 满幅——消除周列式列帽下 37 天两侧大空白），
-   * 43–90 天按覆盖自然周行数 ≤SPD3_HIST_CAL_WEEKS(8) 仍日历式（防纵挤）否则周列
-   * 式，>90 天恒周列式；周列数 >SPD3_HIST_MONTH_COLS(26) 切月
+   * 自适应=minmax(0,1fr) 行模板 + wrap flex 链填满可用高；v391 §15.3 行高帽 84px
+   * +wrap 垂直居中——稀疏行不再拉成巨格）；hist=行=星期（7 行周日..周六）、列=周
+   * （列头=周起始 MM/DD，跨月首列加亮；>14 列时隔列显标签防挤、首列恒显），列宽帽
+   * minmax(34px,64px)（v387 §11.6 去无限 1fr 拉伸，短跨度不再超宽格；v388 §12.6
+   * 列数分档对齐：≤14 列根挂 zu3-hh-c 整块水平居中、>14 列 flex-start 左对齐贴满
+   * 容器）；池时间轴覆盖跨度 ≤6 自然日切紧凑日卡（v389 §13.4，.zu3-dc 横排日期卡，
+   * 判定读 an.axisA/axisB、缺失退化 spanA/spanB 再回退 items 首日→今天）；v391
+   * §15.3 密度选择器：7–60 天切七列日历式 .zu3-cal（month 同构、7 列
+   * minmax(0,1fr) 满幅——消除周列式列帽下 37 天两侧大空白），>60 天周列式；周列数
+   * >SPD3_HIST_MONTH_COLS(26) 切月
    * 粒度（v387 §11.6/PRD 7.2：
    * 每列=日历月竖条格，月 v=Σout÷Σms 加权、列头 YYYY/MM、550 日 ≤19 月列无横滚，
    * 原 spec §5「110 列硬帽」被月聚合取代）。格状态五态可区分（spec §5）：补位更暗
@@ -38,14 +38,12 @@
    * 粒度周格（34px 下限）可读上限，更长跨度按月聚合后 550 日 ≤19 月列，天然无横滚，
    * 不再横滚兜底也不丢数据。 */
   var SPD3_HIST_MONTH_COLS = 26;
-  /* v390 §14.3 hist 密度选择器阈值（按布局密度可调，非唯一条件）：覆盖跨度 ≤
-   * SPD3_HIST_CAL_MAX_DAYS(42) 自然日切七列日历式 .zu3-cal（7 列满幅消除周列式
-   * 短跨度两侧大空白）；43–90 天按覆盖自然周行数 ≤SPD3_HIST_CAL_WEEKS(8) 仍日历式
-   * （防纵挤：行数再多格高不足，回周列式），否则周列式；>90 天恒周列式。行数 ≤8
-   * 隐含跨度 ≤56 天（8 周）、>90 天行数 ≥13，90 上沿被行数条件自然吸收，不设
-   * 独立常量。 */
-  var SPD3_HIST_CAL_MAX_DAYS = 42;
-  var SPD3_HIST_CAL_WEEKS = 8;
+  /* v391 §15.3 hist 密度选择器阈值（PRD 六轮档位表）：覆盖跨度 ≤6 自然日切紧凑日卡
+   * （.zu3-dc）；7–60 天切七列日历式 .zu3-cal（连续日历热力图，7 列满幅消除周列式
+   * 短跨度两侧大空白；行高帽 84px 下 9–10 行日历每行仍 ≥30px 可读，不再需要 v390
+   * 的 43–90 行数分支防纵挤）；>60 天周列贡献式（周列 >26 既有月聚合）。布局判断
+   * 依据=axis 日历跨度（不按有效数据天数裁剪历史）。 */
+  var SPD3_HIST_CAL_MAX_DAYS = 60;
   /* 格 aria（spec §7）：完整日期 + 均速档位 + 模型数；无记录日显式说明，绝不 0 t/s */
   function spd3CellAria(t, agg) {
     var d = spdDate(t), wd = d.getDay();
@@ -143,11 +141,23 @@
        * 填满容器、无底部大空白；补位格/未来格同属网格轨道同步拉伸。格内容顶对齐、
        * 速度值在日号下方剩余空间垂直居中（margin:auto 0），行高变化时布局不散。 */
       ".zu-sv3-root .zu3-hm{flex:1;min-height:0;min-width:0;display:flex;flex-direction:column}" +
-      ".zu-sv3-root .zu3-hm .zu-sc-wrap{flex:1;min-height:0;display:flex;flex-direction:column}" +
+      /* §15.2（v391 审查 M1）：热力内层根类 zu-sv-chart 命中 06 分片 V2 基础规则
+       * （.zu-sv-chart{border+padding+radius}，无 .zu-sv-root 作用域全文档生效）——
+       * V3 卡外层 [data-sv3-chart] 已有边界，内层再镶一圈=双重边框+24px 水平内距；
+       * 此处只中和盒壳（border/padding/radius），flex 列链仍由 V2 规则承担 */
+      ".zu-sv3-root .zu-sv-chart{border:0;padding:0;border-radius:0}" +
+      ".zu-light .zu-sv3-root .zu-sv-chart{border-color:rgba(0,0,0,0)}" +
+      /* §15.3（v391）：wrap 垂直居中——行高帽封顶后剩余空间上下均分（周头+网格作为
+       * 整组居中，列对齐保持）；行多无剩余时等同顶排（行为不变） */
+      ".zu-sv3-root .zu3-hm .zu-sc-wrap,.zu-sv3-root .zu3-cal .zu-sc-wrap{flex:1;min-height:0;display:flex;flex-direction:column;justify-content:center}" +
       ".zu-sv3-root .zu3-hm-week{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;margin-bottom:4px;" +
         "text-align:center;font-size:9px;line-height:12px;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      /* §15.3（v391）：行高帽 84px——flex:1 增长封顶 rows×84（行高 ≤84），2–3 行稀疏
+       * 跨度格不再拉成巨高（巨大空白网格根因=minmax(0,1fr) 无上限吃满容器）；行多时
+       * 可用高低于帽，行为与既有 flex 填满一致 */
       ".zu-sv3-root .zu3-hm-grid{flex:1;min-height:0;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));" +
-        "grid-template-rows:repeat(var(--zu-hm-rows,5),minmax(0,1fr));gap:6px}" +
+        "grid-template-rows:repeat(var(--zu-hm-rows,5),minmax(0,1fr));gap:6px;" +
+        "max-height:calc(var(--zu-hm-rows,5)*84px)}" +
       ".zu-sv3-root .zu3-hm-grid .zu3-v{margin:auto 0}" +
       ".zu-sv3-root .zu-hm-pad{display:block;min-height:1px}" +
       ".zu-sv3-root .zu-hm-cell{position:relative;display:flex;flex-direction:column;justify-content:space-between;" +
@@ -210,7 +220,7 @@
       ".zu-light .zu-sv3-root .zu3-hh-grid .zu-hm-cell.zu-hm-void{background:rgba(0,0,0,.045)}" +
       /* v384 S6-MINOR3：V3 图表横滚条隐藏（06 旧规则只匹配 .zu-sv-chart） */
       ".zu-sv3-root .zu3-hh .zu-sc-wrap::-webkit-scrollbar,.zu-sv3-root .zu3-hm .zu-sc-wrap::-webkit-scrollbar{display:none}" +
-      /* ---------- v389 §13.4 hist ≤7 天紧凑日卡（.zu3-dc）：横排日期卡 ----------
+      /* ---------- v389 §13.4 hist ≤6 天紧凑日卡（.zu3-dc）：横排日期卡 ----------
        * 复用 .zu-hm-cell 基座（宿主 mouseover/focus/keydown 委托按该类+data-i 命中，
        * 零宿主改动）；卡级覆写：min 120px / flex 1 1 0 / 帽 160px，wrap 允许 7 天在
        * 窄窗折两行；justify/align-content center=居中分布（spec §13.4）。速度大字
@@ -220,7 +230,8 @@
       ".zu-sv3-root .zu3-dc .zu-sc-wrap{flex:1;min-height:0;display:flex;flex-direction:column}" +
       ".zu-sv3-root .zu3-dc-grid{flex:1;min-height:0;display:flex;flex-wrap:wrap;gap:6px;" +
         "justify-content:center;align-content:center;align-items:stretch}" +
-      ".zu-sv3-root .zu3-dc-grid .zu-hm-cell{flex:1 1 0;min-width:120px;max-width:160px;box-sizing:border-box;" +
+      /* §15.3（v391）：卡高帽 150px——1–2 天历史不再整卡拉高成巨卡（容器居中已就位） */
+      ".zu-sv3-root .zu3-dc-grid .zu-hm-cell{flex:1 1 0;min-width:120px;max-width:160px;max-height:150px;box-sizing:border-box;" +
         "border-radius:9px;padding:8px 10px;gap:2px}" +
       ".zu-sv3-root .zu3-dchd{display:flex;align-items:center;justify-content:space-between;gap:4px;min-width:0}" +
       ".zu-sv3-root .zu3-dcd{font-size:15px;line-height:1.1;font-weight:600;font-variant-numeric:tabular-nums;" +
@@ -229,7 +240,7 @@
       ".zu-sv3-root .zu3-dcv{font-size:18px;line-height:1.1;font-weight:600;font-variant-numeric:tabular-nums;" +
         "white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
       ".zu-sv3-root .zu3-dcv.zu3-dcnone{font-size:11px;font-weight:500}" +
-      /* ---------- v390 §14.3 hist 8–42 天七列日历式（.zu3-cal）----------
+      /* ---------- v391 §15.3 hist 7–60 天七列日历式（.zu3-cal）----------
        * 与 month 组件同构复用（spec §14.3：span 代替当月）：周头 .zu3-hm-week、网格
        * .zu3-hm-grid、格基座 .zu-hm-cell* 与档位混底/今天描边/模型点各规则全挂
        * .zu-sv3-root 作用域（不绑 .zu3-hm 根类），日历根只补 flex 链与字号覆写。
@@ -241,7 +252,7 @@
        * 与混底同源一色（day-card .zu3-dcv v389 对比度结论沿用）；空日「无记录」
        * 轻字 .zu3-cnone 同法继承 .zu-hm-void 灰。 */
       ".zu-sv3-root .zu3-cal{flex:1;min-height:0;min-width:0;display:flex;flex-direction:column}" +
-      ".zu-sv3-root .zu3-cal .zu-sc-wrap{flex:1;min-height:0;display:flex;flex-direction:column}" +
+      /* (.zu3-cal .zu-sc-wrap 的 flex 列链已并入 §15.3 居中合并规则，旧重复行删除) */
       ".zu-sv3-root .zu3-cal .zu3-cv{font-size:12px;color:inherit}" +
       ".zu-sv3-root .zu3-cal .zu3-cnone{font-size:10px;font-weight:500;color:inherit}" +
       /* ---------- 共用：模型色点 / 空态（图例行样式已随 v388 §12.6 删除） ---------- */
@@ -351,12 +362,12 @@
         SPD_L("暂无有效速度记录", "no rated speed data yet") + "</div></div>";
     var single = !!(an.perModel && an.perModel.length === 1);
     var meta = spd3DayMeta(an.pool);
-    /* ---- v389 §13.4 覆盖跨度 ≤7 自然日 → 紧凑日卡形态（spd3DayCardsHTML） ----
+    /* ---- v389 §13.4 覆盖跨度 ≤6 自然日 → 紧凑日卡形态（spd3DayCardsHTML） ----
      * 判定轴=「池时间轴」：首日读 an.axisA（v389：core 未筛选原始池时间轴——
      * spanA 随筛选收缩会让形态在日卡/周网格间跳变，PRD 5.5 时间轴稳定），
      * 老帧缺 axisA 退化读 an.spanA，再缺回退 items 首日（旧行为轴）；轴末=
      * 取大者(今天, an.axisB/spanB 所在日)=今天（见下方钳制注释）。日历跨度=轴末−首日+1
-     * 天（Math.round 折算 DST 23h/25h 日，口径同下方 totalDays）；≤7 切日卡，8+
+     * 天（Math.round 折算 DST 23h/25h 日，口径同下方 totalDays）；≤6 切日卡，7+
      * 天走既有周网格/月聚合（两既有分支零改动）。着色仍按筛选（byDay 已是筛选后
      * 桶），跨度判定与筛选无关的语义由 axis 轴承载。 */
     var spanA0 = first, spanB0 = todayStart;
@@ -378,19 +389,15 @@
     var coverDays = Math.round((spanB0 - spanA0) / 864e5) + 1;
     var axis3 = { byDay: byDay, single: single, meta: meta,
       start: spanA0, end: spanB0, todayStart: todayStart, truncTxt: truncTxt };
-    if (coverDays <= 7)
+    if (coverDays <= 6)
       return spd3DayCardsHTML(an, hoverIdx, o, axis3);
-    /* ---- v390 §14.3 密度选择器（P0）：8–42 天 → 七列日历式（spd3CalHTML）----
+    /* ---- v391 §15.3 密度选择器（对齐 PRD 档位表）：7–60 天 → 七列日历式 ----
      * 37 天在周列式下只有 6 列（列帽 64px+居中）两侧大空白（用户截图 P0）；日历式
-     * 7 列 minmax(0,1fr) 满幅天然消除。43–90 天按覆盖自然周行数自适应：行数 ≤
-     * SPD3_HIST_CAL_WEEKS(8) 仍日历式（防纵挤——行数少格高才够），否则回周列式；
-     * >90 天恒周列式（行数 ≤8 隐含跨度 ≤56 天，90 上沿被行数条件吸收）。落到周列
-     * 式后，周列 >SPD3_HIST_MONTH_COLS 切月聚合的既有阈值照常生效（下方分支零改
-     * 动）；判定轴与日卡同为未筛选池时间轴 axisA/spanA（形态不随筛选跳变）。 */
+     * 7 列 minmax(0,1fr) 满幅天然消除。>60 天周列贡献式（行高帽 84px 落地后日历
+     * 不再纵挤，v390 的 43–90 行数分支删除）。落到周列式后，周列
+     * >SPD3_HIST_MONTH_COLS 切月聚合的既有阈值照常生效（下方分支零改动）；判定轴
+     * 与日卡同为未筛选池时间轴 axisA/spanA（形态不随筛选跳变）。 */
     if (coverDays <= SPD3_HIST_CAL_MAX_DAYS)
-      return spd3CalHTML(an, hoverIdx, o, axis3);
-    var caS0 = spdDate(spanA0);
-    if (Math.ceil((new Date(caS0.getFullYear(), caS0.getMonth(), caS0.getDate()).getDay() + coverDays) / 7) <= SPD3_HIST_CAL_WEEKS)
       return spd3CalHTML(an, hoverIdx, o, axis3);
     var fd0 = spdDate(first);
     var fy = fd0.getFullYear(), fmo = fd0.getMonth(), fd = fd0.getDate();
@@ -504,8 +511,8 @@
       '<div class="zu3-hh-grid" role="grid" style="--zu3-cols:' + cols + '">' + rowsHtml + "</div>" +
       "</div></div></div></div>";
   }
-  /* hist ≤7 自然日紧凑日卡（v389 §13.4，唯一消费者 spd3HistHTML 覆盖分支）：横排
-   * 日期卡替代周网格——跨度 ≤7 天时周列×星期行只剩 1-2 列、周头/行头占掉近半高度。
+  /* hist ≤6 自然日紧凑日卡（v389 §13.4/v391 §15.3，唯一消费者 spd3HistHTML 覆盖分支）：横排
+   * 日期卡替代周网格——跨度 ≤6 天时周列×星期行只剩 1-2 列、周头/行头占掉近半高度。
    * axis={byDay, single, meta, start 首日零点, end 末日零点（≤今天）, todayStart,
    * truncTxt}。span 内每一天都有卡（含无数据日=「无记录」灰卡）：卡=日期 M/D 大字+
    * 周几+日均速度（档位色大字，.zu3-dcv 继承卡上档位类 currentColor）+模型点 ≤3+
@@ -551,8 +558,7 @@
         "daily · " + nDays + (nDays === 1 ? " day" : " days") + " covered") + axis.truncTxt) +
       '<div class="zu-sc-wrap"><div class="zu3-dc-grid" role="grid">' + cards.join("") + "</div></div></div>";
   }
-  /* hist 七列日历式（v390 §14.3，唯一消费者 spd3HistHTML 密度分派）：覆盖 8–42 天
-   * （或 43–90 天但覆盖自然周 ≤8 行）时替代周列贡献式——周列式列帽 64px 下短跨度
+  /* hist 七列日历式（v390 §14.3/v391 §15.3，唯一消费者 spd3HistHTML 密度分派）：覆盖 7–60 天时替代周列贡献式——周列式列帽 64px 下短跨度
    * 列少居中、两侧大空白（37 天=6 列实测两侧各 ~100px）；日历式 7 列 minmax(0,1fr)
    * 满幅均分容器宽，与跨度无关。month 组件同构复用（span 代替当月）：网格=7 列周日
    * 首列 × 覆盖自然周行（行数=ceil((首日星期偏移+跨度)/7)，2–7 行，经 --zu-hm-rows

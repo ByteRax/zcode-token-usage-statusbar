@@ -196,22 +196,119 @@ test('recent 数值稀疏: n=18 恒显集=峰值/最低/最新（估宽让位）
   assert.match(html, /\.zu-sv3-bars \.zu-sc-col\{flex:1 1 0;min-width:0;height:100%;position:relative\}/,
     '槽 flex:1 1 0 满幅均摊');
   assert.doesNotMatch(html, /zu-sv3-spacer|justify-content:flex-start/, 'spacer/挤左路径已删除');
-  // 数值稀疏：n=18 → valEvery=3、估宽 5 字符×6+8=38px > 槽宽 620/18≈34.4px → 采样位
-  // 全部让位；恒显集=峰值(17)/最低(0)/最新(17) → 恰 2 柱带读数
-  const shown = (html.match(/zu-sc-val">[0-9]/g) || []).length;
+  // 数值稀疏（§15.5）：n=18∈13–24 档全试显、估宽 5 字符×6+8=38px > 槽宽 620/18≈34.4px
+  // → 非关键位全部让位；恒显集=峰值(17)/最低(0)/最新(17) → 恰 2 柱带读数
+  const shown = (html.match(/zu-sc-val[^>"]*">[0-9]/g) || []).length;
   assert.equal(shown, 2, '恒显集=峰值/最低/最新（0 与 17）→ 2 柱，得到 ' + shown);
-  assert.match(colsOf(html)[0], /zu-sc-val">100\.0</, '最低柱读数在场');
-  assert.match(colsOf(html)[17], /zu-sc-val">117\.0</, '最新=峰值柱读数在场');
-  // 悬停非采样位柱：读数强制显示
+  assert.match(colsOf(html)[0], /zu-sc-val[^>]*">100\.0</, '最低柱读数在场');
+  assert.match(colsOf(html)[17], /zu-sc-val[^>]*">117\.0</, '最新=峰值柱读数在场');
+  // 悬停非采样位柱：读数强制显示（其自身让位 estW 38>34.4 → 左右邻非关键标签临时隐藏）
   const html2 = chart(ctx, an, 2);
-  const shown2 = (html2.match(/zu-sc-val">[0-9]/g) || []).length;
+  const shown2 = (html2.match(/zu-sc-val[^>"]*">[0-9]/g) || []).length;
   assert.equal(shown2, 3);
   const cols2 = colsOf(html2);
   assert.match(cols2[2], /zu-sc-val">102\.0</, '悬停柱数值在场');
   assert.match(cols2[2], /class="zu-sc-col cur zu-sv3-slot"/, '悬停柱 cur 类');
-  assert.ok(!cols2[1].includes('zu-sc-val">1'), '非采样位且未悬停不显');
+  assert.ok(!/zu-sc-val[^>"]*">1/.test(cols2[1]), '非采样位且未悬停不显');
   // 一位小数纪律
-  assert.ok(!/zu-sc-val">\d+\.\d{2,}/.test(html2));
+  assert.ok(!/zu-sc-val[^>"]*">\d+\.\d{2,}/.test(html2));
+});
+
+// ---------- ③b 柱标三档确定性（§15.5） ----------
+// n 轮单模型夹具：值 100+i 递增（min=0 / peak=latest=n-1）、ms=1000（hover 耗时行）
+function fixtureN(n) {
+  const t0 = new Date(2026, 10, 5, 8).getTime();
+  let prev = 0;
+  const turns = [];
+  for (let i = 0; i < n; i++) {
+    const abs = t0 + i * 60000;
+    turns.push({ s: 0, t: abs - prev, b: abs - 30000, out: 100 + i, ms: 1000, i: 80, o: 100,
+      n: 1, msl: [[0, 100 + i, 1000, 1]], c: 0.01, cf: 1 });
+    prev = abs;
+  }
+  return { sid: 's', source: 'local', truncated: false, sids: ['s'], snames: ['S'],
+    pids: [['p', 'P']], mnames: ['GLM-A'], mkeys: [KEYS.a], turns };
+}
+function shownIdx(cols) {
+  const out = [];
+  for (let i = 0; i < cols.length; i++) if (/zu-sc-val[^>"]*">[0-9]/.test(cols[i])) out.push(i);
+  return out;
+}
+test('柱标三档确定性: n=12 全显 / n=24 让位仅关键位 / n=30 步长抽样+首末钉边 / 悬停邻抑制 / hover 耗时行', () => {
+  const ctx = makeCtx();
+  // 生产柱图槽位上限：recent 帽 18（SPD_BARS_MAX）、today 小时桶 24 → >24 档为防御
+  // 规则，直接以构建器单测（items 与 spd3Aggregate 输出同构：v/empty/label/models）
+  const mk = n => { const a = []; for (let i = 0; i < n; i++)
+    a.push({ v: 100 + i, empty: false, label: String(i), a: 0, b: 0, models: [] }); return a; };
+  const barCols = (items, hover) => { ctx.__bi = items; ctx.__bh = hover === undefined ? -1 : hover;
+    return vm.runInContext('spd3BarCols(__bi, __bh, 200)', ctx); };
+  // n=12（1–12 档）：estW "111.0"=38 ≤ 槽宽 620/12≈51.7 → 全部非空柱显值，无钉边类
+  const cols12 = colsOf(barCols(mk(12)));
+  assert.deepEqual(shownIdx(cols12), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], 'n=12 全显');
+  assert.ok(!/zu-sv3-vpin-/.test(cols12.join('')), '估宽足够不出钉边类');
+  // n=1/2/7 小样本同档全显（少量柱合理居中由 spd3BarDensityStyle 既有锁承担）
+  for (const k of [1, 2, 7]) {
+    const got = shownIdx(colsOf(barCols(mk(k))));
+    assert.deepEqual(got, Array.from({ length: k }, (_, i) => i), 'n=' + k + ' 全显');
+  }
+  // n=24（13–24 档）：estW 38 > 槽宽 25.8 → 非关键位全部让位，恒显={min 0, peak/latest 23}
+  const cols24 = colsOf(barCols(mk(24)));
+  assert.deepEqual(shownIdx(cols24), [0, 23], 'n=24 让位仅关键位');
+  // n=30（>24 档）：slotW≈20.7、maxLblW=30 → step=ceil(38/20.7)=2 → 偶数位抽样显值
+  // （不再叠加 fits 门槛），关键位 29（peak/latest）并入 → 显值=偶数位 ∪ {29}
+  const cols30 = colsOf(barCols(mk(30)));
+  const want30 = [];
+  for (let i = 0; i < 30; i += 2) want30.push(i);
+  if (!want30.includes(29)) want30.push(29);
+  assert.deepEqual(shownIdx(cols30), want30, 'n=30 步长抽样+关键位');
+  // 首末钉边（estW>slotW）：idx0 → vpin-l、idx29 → vpin-r（不越出 plot 触发横滚）
+  assert.match(cols30[0], /zu-sv3-vpin-l/, '首柱标签钉左');
+  assert.match(cols30[29], /zu-sv3-vpin-r/, '末柱标签钉右');
+  // 悬停位自身让位 → 左右邻非关键标签临时隐藏（关键位不受抑制）。hover=3：
+  // 非采样位（自身恒显、estW 38>20.7 让位）→ 偶数采样邻位 2/4 被抑制
+  const got30h = shownIdx(colsOf(barCols(mk(30), 3)));
+  assert.ok(!got30h.includes(2) && !got30h.includes(4), '悬停邻（2/4）非关键标签隐藏（真抑制）');
+  assert.ok(got30h.includes(3), '悬停柱恒显');
+  // 悬停空槽/0 值槽不抑制邻位（审查 MINOR-1：自身无读数无避让收益）
+  const items30 = mk(30); items30[5] = { v: 0, empty: true, label: '5', a: 0, b: 0, models: [] };
+  const base30 = shownIdx(colsOf(barCols(items30)));
+  const got30e = shownIdx(colsOf(barCols(items30, 5)));
+  assert.deepEqual(got30e, base30, '悬停空槽不抑制邻位（显隐集合与无悬停一致）');
+  // n=90（防御档）：slotW≈6.9 → step=ceil(38/6.9)=6 → 采样位 {0,6,…,84}=15 + keep{89}=16
+  const got90 = shownIdx(colsOf(barCols(mk(90))));
+  assert.equal(got90.length, 16, 'n=90 步长 6 抽样+关键位 → 16 读数，实得 ' + got90.length);
+  assert.ok(got90.every((v, i2) => i2 === 0 || v >= got90[i2 - 1]), 'n=90 显值位升序（确定性）');
+  // spd3PlotEstW 视口分支（审查缺口 7）：window.innerWidth=560 → est=clamp(536-328)=208
+  vm.runInContext('var window = { innerWidth: 560 }', ctx);
+  const colsNw = colsOf(barCols(mk(16)));
+  assert.deepEqual(shownIdx(colsNw), [0, 15], '560 窄窗（est 208/slotW 13）：仅关键位在场（peak=latest 同柱）');
+  vm.runInContext('window = undefined', ctx);
+  // hover 悬停卡：生成耗时行（ms=1000 → 「1.0秒」；时间/速度/Token/费用齐）
+  const an12 = analyze(ctx, fixtureN(12), { range: 'session', period: 'recent', sid: 's' });
+  chart(ctx, an12, 3);
+  const portal12 = portal(ctx);
+  assert.match(portal12, /生成耗时<\/span><b>1\.0秒</, 'hover 生成耗时行（§15.5）');
+  assert.match(portal12, /时间</);
+  assert.match(portal12, /速度</);
+  assert.match(portal12, /Token 总消耗/);
+  assert.match(portal12, /预估价格/);
+  // 耗时行三态（审查缺口 3）：ms=0 整行省略绝不造 0；ms<100 显 <0.1秒；槽位卡同款在场
+  assert.equal(vm.runInContext('spd3DurTxt(0)', ctx), '');
+  assert.equal(vm.runInContext('spd3DurTxt(40)', ctx), '<0.1秒');
+  assert.equal(vm.runInContext('spd3DurTxt(178000)', ctx), '2分58秒');
+  assert.equal(vm.runInContext('spd3DurTxt(3725000)', ctx), '1时2分5秒');
+  const anNoMs = JSON.parse(JSON.stringify(an12));
+  anNoMs.real.forEach(r => { r.ms = 0; });
+  anNoMs.items.forEach(it => { it.ms = 0; });
+  chart(ctx, anNoMs, 2);
+  assert.ok(!portal(ctx).includes('生成耗时'), 'ms=0 降级帧耗时行整行省略');
+  // today 槽位卡（spd3SlotCardHTML，§15.5 两处同款之二）生成耗时行
+  const anToday = analyze(ctx, fixture(), { range: 'all', period: 'today', sid: 'sess_main',
+    filt: { mode: 'sel', keys: [KEYS.a] } });
+  const hit = anToday.items.findIndex(it => !it.empty && it.ms > 0);
+  assert.ok(hit >= 0, '夹具存在有 ms 的 today 桶');
+  chart(ctx, anToday, hit);
+  assert.match(portal(ctx), /生成耗时<\/span><b>[\d.]+秒</, 'today 槽位卡生成耗时行在场');
 });
 
 // ---------- ④ today 单模型柱 ----------

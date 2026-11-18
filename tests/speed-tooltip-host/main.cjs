@@ -112,7 +112,7 @@ if (process.argv.includes('--selftest')) {
     /* v389 §13.4/§13.2：未筛选时间轴字段 + 日卡形态 + 槽位卡构建器锚 */
     'axisA: axisA, axisB: axisB', 'function spd3DayCardsHTML(', 'function spd3SlotCardHTML(',
     /* v390 §14：占比 <0.1% 文案 + hist 日历式构建器 + 密度选择器阈值常量 */
-    'function spd3PctTxt(', 'function spd3CalHTML(', 'var SPD3_HIST_CAL_MAX_DAYS = 42;'];
+    'function spd3PctTxt(', 'function spd3CalHTML(', 'var SPD3_HIST_CAL_MAX_DAYS = 60;', 'function spd3PlotEstW(', 'zu-sv3-vpin-l'];
   const missing = need.filter(s => !slice.includes(s));
   if (missing.length) { console.error('SELFTEST_FAIL missing: ' + missing.join(' | ')); process.exit(1); }
   try { new Function('L', '"' + 'use strict' + '";\n' + slice); }   /* 只编译不执行 */
@@ -682,6 +682,16 @@ app.whenReady().then(async () => {
     { reload: true, fixture: 'hist400', theme: 'dark', sel: { range: 'all', period: 'all' },
       wheel: { ticks: 6, deltaY: 240 }, shot: 'h14-hist-wheel.png' },
     { reload: true, fixture: 'hist400', theme: 'dark', lang: 'en', sel: { range: 'all', period: 'all' }, shot: 'h15-hist-en.png' },
+  ], log);
+
+  /* 链 V（v391 §15.3/§15.5）：密度阈值真机形态——hist7=日历式下沿（⑬⑮ 断言），
+   * hist30=日历式、hist90=周列式贡献热力、singleDay=紧凑日卡（dc 卡组居中）；
+   * 几何断言含 ⑬ 单层边框 / ⑭ 柱标不重叠（柱图形态自动落）/ ⑮ 短历史整组居中。 */
+  await runChain(wc, win, [
+    { reload: true, fixture: 'hist7', theme: 'dark', sel: { range: 'all', period: 'all' }, shot: 'v1-hist7-cal.png' },
+    { fixture: 'hist30', theme: 'dark', sel: { range: 'all', period: 'all' }, shot: 'v2-hist30-cal.png' },
+    { reload: true, fixture: 'hist90', theme: 'dark', sel: { range: 'all', period: 'all' }, shot: 'v3-hist90-weeks.png' },
+    { reload: true, fixture: 'singleDay', theme: 'dark', sel: { range: 'all', period: 'all' }, shot: 'v4-single-day-cards.png' },
   ], log);
 
   /* 链 D（v389 §13.2/§13.7）：折线 hit 合成 mouseover 出卡——projWeek 近 7 天 5 天有

@@ -7992,6 +7992,10 @@
     ".zu-sv3-bars .zu-sc-x b{display:block;width:100%;overflow:hidden;text-overflow:ellipsis;text-align:center;line-height:14px}" +
     /* 隔槽隐藏标签：visibility 占位（槽几何不变），首/末/悬停槽恒显在构建侧判定 */
     ".zu-sv3-bars .zu-sc-x b.zu-sv3-xoff{visibility:hidden}" +
+    /* §15.5 首末柱标签防裁切：estW>slotW 时钉在槽内缘（align-self 覆盖列居中），
+     * 不越出 plot 左右缘（曾可触发 wrap 横滚） */
+    ".zu-sv3-bars .zu-sc-val.zu-sv3-vpin-l{align-self:flex-start}" +
+    ".zu-sv3-bars .zu-sc-val.zu-sv3-vpin-r{align-self:flex-end}" +
     /* 槽 hover 十字参考线（纯 CSS 显现，零 JS 监听；随槽位水平居中，高=值区） */
     ".zu-sv3-bars .zu-sv3-xline{position:absolute;left:50%;top:0;width:0;height:calc(100% - " + SPD3_X_H + "px);border-left:1px dashed var(--color-border,rgba(255,255,255,.3));opacity:0;pointer-events:none}" +
     ".zu-sv3-bars .zu-sc-col:hover>.zu-sv3-xline,.zu-sv3-bars .zu-sc-col:focus-within>.zu-sv3-xline{opacity:1}" +
@@ -8156,6 +8160,9 @@
       spdEsc((fmtCnt ? fmtCnt(turns) : String(turns)) + SPD_L(" 轮", " turns")) + "</b></div>" +
       '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("有效输出", "Output")) + "</span><b>" +
       spdEsc((fmtTok ? fmtTok(spdNum(it.out)) : String(spdNum(it.out))) + SPD_L(" token", " tokens")) + "</b></div>" +
+      /* §15.5（v391）：生成耗时（Σ有效生成窗口；降级 ms=0 整行省略） */
+      (spdNum(it.ms) > 0 ? '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("生成耗时", "Gen time")) +
+        "</span><b>" + spdEsc(spd3DurTxt(it.ms)) + "</b></div>" : "") +
       '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("区间", "Range")) + "</span><b>" +
       spdEsc(spd3SlotRange(it, dayMode)) + "</b></div>" +
       '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("预估费用", "Est. cost")) + "</span><b>" + cost + "</b></div>";
@@ -8164,25 +8171,55 @@
   /* ==================== ④ 柱状图槽位列构建（recent / 今天单模型共用） ====================
    * 槽位满幅（spec §11.2）：每槽 .zu-sv3-slot flex:1 1 0 均摊全宽，槽即命中区
    * （data-i/tabindex/role/aria/混合 title 契约全在槽上），柱按密度 18/14/10px 槽内
-   * 水平居中。数值标签（PRD 3.2）：n≤8 全显；>8 时 峰值/最低/最新/悬停 恒显 + 其余按
-   * valEvery=ceil(n/8) 抽稀，估宽=字符数×6px+8 超槽宽（SPD3_PLOT_W_EST/n）让位跳过，
-   * 绝不重叠。X 标签每槽显示，估宽 <34px 且 n>10 时隔槽显示（首/末/悬停恒显），
-   * b 兜底 ellipsis。柱色规则（spec §5）：行 models.length===1 → 柱色=spd3Color(模型
-   * key)（内联 background，速度档位色阶不再上柱体）；>1 → .zu-sv3-mix 中性灰（绝不
-   * 用主导模型色）+ title/aria 标「混合」；=0（旧帧无 msl）→ 中性默认色。柱顶读数
-   * 一位小数；最新柱（最右）latest 描边。 */
+   * 水平居中。数值标签三档（spec §15.5，PRD 六轮）：估宽 estW=字符数×6px+8、槽宽
+   * slotW=estPlotW/n；n≤12 全显（estW 超槽宽的非关键位让位=碰撞避让）；13–24 全试
+   * 显、让位时峰值/最低/最新恒显（其余确定性隐藏）；>24 按可用空间抽样 step=
+   * ceil((maxLblW+8)/slotW)（≥2，step×slotW≥maxLblW+8 保证采样位间距，不再叠加
+   * fits 门槛——窄槽下叠加会全部让位、抽样失去意义），关键值恒显。
+   * 悬停位恒显；其自身让位时临时隐藏左右邻已显的非关键标签（关键位恒显优先，
+   * 确定性、收起即恢复）。首末柱
+   * estW>slotW 时标签 align-self 钉在槽内（.zu-sv3-vpin-l/r，不越出 plot 触发横滚）。
+   * 0 值柱不显 0.0（无意义读数，绝不伪造）。X 标签每槽显示，估宽 <34px 且 n>10 时
+   * 隔槽显示（首/末/悬停恒显），b 兜底 ellipsis。柱色规则（spec §5）：行
+   * models.length===1 → 柱色=spd3Color(模型 key)（内联 background，速度档位色阶不再
+   * 上柱体）；>1 → .zu-sv3-mix 中性灰（绝不用主导模型色）+ title/aria 标「混合」；
+   * =0（旧帧无 msl）→ 中性默认色。柱顶读数一位小数；最新柱（最右）latest 描边。 */
+  /* estPlotW 视口感知（§15.5）：标签密度输入要贴近真实可视宽——tip=min(952,100vw−24)
+   * （v387 宽度链），再减 tip border/padding 26、左卡 250（窄窗 220 取宽者保守）、
+   * main gap 12、plot 左缩进 30、wrap 呼吸 10。VM/无 window 回退 SPD3_PLOT_W_EST。
+   * 仅用于标签密度（数值让位、抽样步长），布局仍由 flex 自适应，不参与几何。 */
+  function spd3PlotEstW() {
+    var vw = 0;
+    try { vw = (typeof window !== "undefined" && window.innerWidth) || 0; } catch (eW) { vw = 0; }
+    if (!(vw > 0)) return SPD3_PLOT_W_EST;
+    var w = Math.min(vw - 24, 952) - 26 - 250 - 12 - 30 - 10;
+    return Math.max(180, Math.min(SPD3_PLOT_W_EST, w));
+  }
   function spd3BarCols(items, hoverIdx, yMax) {
-    var n = items.length, valEvery = Math.max(1, Math.ceil(n / 8));
-    var slotW = SPD3_PLOT_W_EST / Math.max(n, 1);
+    var n = items.length;
+    var slotW = spd3PlotEstW() / Math.max(n, 1);
     var xThin = n > 10 && slotW < 34, cols = "";
-    var peakI = -1, minI = -1;
+    var peakI = -1, minI = -1, maxLbl = 0;
     for (var p = 0; p < n; p++) {
       var pv = items[p].empty ? 0 : spdNum(items[p].v);
       if (pv > 0) {
         if (peakI < 0 || pv > spdNum(items[peakI].v)) peakI = p;
         if (minI < 0 || pv < spdNum(items[minI].v)) minI = p;
+        maxLbl = Math.max(maxLbl, pv.toFixed(1).length * 6);
       }
     }
+    /* 恒显关键位（峰/低/新）：不吃估宽让位（PRD：碰撞时优先保留） */
+    var keep = {};
+    keep[peakI] = true; keep[minI] = true; keep[n - 1] = true;
+    var fits = function (t) { return t.length * 6 + 8 <= slotW; };
+    /* n>24 抽样步长按可视宽算：step×slotW ≥ maxLblW+8 → 采样位间距保证不重叠
+     * （fits 门槛只用于 step=1 的 n≤24 相邻让位；抽样位若再叠加 fits，窄槽下
+     * 全部让位、抽样失去意义） */
+    var step = n > 24 ? Math.max(2, Math.ceil((maxLbl + 8) / slotW)) : 1;
+    /* 抑制前提=悬停位有值（空槽/0 值槽不出读数，无避让收益不出邻位抖动）且自身让位 */
+    var hoverHasVal = hoverIdx >= 0 && hoverIdx < n && !items[hoverIdx].empty &&
+      spdNum(items[hoverIdx].v) > 0;
+    var curFits = hoverHasVal && fits(spdNum(items[hoverIdx].v).toFixed(1));
     for (var c = 0; c < n; c++) {
       var it = items[c], isCur = c === hoverIdx, empty = !!it.empty;
       var mcolor = "", mix = false, mname = "";
@@ -8193,9 +8230,14 @@
       var vv = spdNum(it.v);
       var hPct = empty || !(vv > 0) ? 0 : Math.max(1.2, Math.round(vv / yMax * 1000) / 10);
       var txt = vv.toFixed(1);
-      /* 恒显集合（峰值/最低/最新/悬停）不吃估宽让位；其余采样位超槽宽即跳过 */
-      var shown = !empty && (n <= 8 || isCur || c === n - 1 || c === peakI || c === minI ||
-        (c % valEvery === 0 && txt.length * 6 + 8 <= slotW));
+      /* 三档显隐（§15.5）：关键位/悬停恒显；n≤24 相邻位估宽让位、n>24 按步长抽样；
+       * 悬停位自身让位时左右邻非关键标签临时隐藏（关键位恒显优先，hover 变化即重编
+       * 恢复；hoverIdx=-1 不抑制） */
+      var shown = !empty && vv > 0 && (isCur || keep[c] ||
+        (c % step === 0 && (step > 1 || fits(txt)) &&
+          !(hoverHasVal && Math.abs(c - hoverIdx) === 1 && !curFits)));
+      var pinL = shown && c === 0 && !fits(txt);
+      var pinR = shown && c === n - 1 && !fits(txt);
       var xShow = !xThin || c % 2 === 0 || c === n - 1 || c === hoverIdx;
       var aria = it.label + SPD_L("，", ", ") + (empty || !(vv > 0) ? SPD_L("无数据", "no data") : (vv.toFixed(1) + " t/s")) +
         (mname ? SPD_L("，", ", ") + mname : "") + (mix ? SPD_L("，", ", ") + SPD_L("混合", "mixed") : "");
@@ -8203,7 +8245,8 @@
         (c === n - 1 ? " latest" : "") + ' zu-sv3-slot" role="img" tabindex="0" data-i="' + c + '"' +
         (mix ? ' title="' + spdEsc(SPD_L("混合（" + it.models.length + " 种模型）", "Mixed (" + it.models.length + " models)")) + '"' : "") +
         ' aria-label="' + spdEsc(aria) + '">' +
-        '<span class="zu-sc-vz"><span class="zu-sc-val">' + (shown ? txt : "") + "</span>" +
+        '<span class="zu-sc-vz"><span class="zu-sc-val' + (pinL ? " zu-sv3-vpin-l" : pinR ? " zu-sv3-vpin-r" : "") + '">' +
+        (shown ? txt : "") + "</span>" +
         '<i class="zu-sc-bar' + (mix ? " zu-sv3-mix" : "") + '" style="height:' + hPct + "%" +
         (mcolor ? ";background:" + mcolor : "") + '"></i></span>' +
         '<span class="zu-sc-x"><b' + (xShow ? "" : ' class="zu-sv3-xoff"') + ">" + spdEsc(it.label) + "</b></span>" +
@@ -8240,6 +8283,19 @@
    * today/week 槽位卡自 v389 起改走 spd3SlotCardHTML（§13.2 增强字段 + 空槽轻卡），
    * 本函数保留给 recent 一轮一柱形态。hoverIdx 可选：≥0 时卡根携带 data-i（Portal
    * 定位与键盘焦点归位消费）。 */
+  /* 生成耗时文本（§15.5 hover 六要素）：ms→人读时长，中文值与单位紧邻（v125 口径）、
+   * 英文值与单位紧邻+时段间空格；秒 <60 一位小数，向上分段零段省略；ms≤0 空串
+   * （调用点整行省略，绝不显示 0）。 */
+  function spd3DurTxt(ms) {
+    if (!(spdNum(ms) > 0)) return "";
+    if (ms < 100) return SPD_L("<0.1秒", "<0.1s");   /* 绝不显示 0.0（v391 审查 MINOR-3） */
+    var tot = Math.round(ms / 1000);
+    var h = Math.floor(tot / 3600), mnt = Math.floor((tot % 3600) / 60), sec = tot % 60;
+    if (tot < 60) return (ms / 1000).toFixed(1) + SPD_L("秒", "s");
+    var zh = (h ? h + "时" : "") + (mnt ? mnt + "分" : "") + (sec ? sec + "秒" : "");
+    var en = (h ? h + " h " : "") + (mnt ? mnt + " m " : "") + (sec ? sec + " s" : "");
+    return SPD_L(zh, en.replace(/\s+$/, ""));
+  }
   function spd3HoverCardHTML(item, o, hoverIdx) {
     if (!item || item.empty || !(spdNum(item.v) > 0)) return "";
     var bd = tpsBand(item.v), vv = spdNum(item.v);
@@ -8284,6 +8340,10 @@
     }
     rows += '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("Token 总消耗", "Total tokens")) + '</span><b>' + spdEsc(tokLine) +
       '<small>' + spdEsc(sub) + "</small></b></div>" +
+      /* §15.5（v391）：生成耗时行（Σ有效生成窗口；降级帧 ms=0 整行省略，绝不造 0）——
+       * 时间/模型/速度/Token/耗时/费用六要素齐 */
+      (spdNum(item.ms) > 0 ? '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("生成耗时", "Gen time")) +
+        '</span><b>' + spdEsc(spd3DurTxt(item.ms)) + "</b></div>" : "") +
       '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("预估价格", "Est. cost")) + "</span><b>" + cost + "</b></div>";
     return '<div class="' + cls + '" role="tooltip"' +
       (typeof hoverIdx === "number" && hoverIdx >= 0 ? ' data-i="' + hoverIdx + '"' : "") + ">" + rows + "</div>";
@@ -9122,16 +9182,16 @@
    * 模型身份色唯一来自 SPD3_PALETTE 纯哈希（格右上 ≤3 色点 + 「+N」），两套语义
    * 不混用（PRD 7.3）。网格数学移植 V2 v291 段：month=7 列周日首列（行数=
    * ceil((首日星期+天数)/7)，4~6 行，行数经 --zu-hm-rows 变量下发，v387 §11.6 行高
-   * 自适应=minmax(0,1fr) 行模板 + wrap flex 链填满可用高，4/5/6 周均无底部大空白）；
-   * hist=行=星期（7 行周日..周六）、列=周（列头=周起始 MM/DD，跨月首列加亮；>14 列
-   * 时隔列显标签防挤、首列恒显），列宽帽 minmax(34px,64px)（v387 §11.6 去无限 1fr
-   * 拉伸，短跨度不再超宽格；v388 §12.6 列数分档对齐：≤14 列根挂 zu3-hh-c 整块水平
-   * 居中、>14 列 flex-start 左对齐贴满容器）；池时间轴覆盖跨度 ≤7 自然日切紧凑日卡
-   * （v389 §13.4，.zu3-dc 横排日期卡，判定读 an.axisA/axisB、缺失退化 spanA/spanB
-   * 再回退 items 首日→今天）；v390 §14.3 密度选择器：8–42 天切七列日历式 .zu3-cal
-   * （month 同构、7 列 minmax(0,1fr) 满幅——消除周列式列帽下 37 天两侧大空白），
-   * 43–90 天按覆盖自然周行数 ≤SPD3_HIST_CAL_WEEKS(8) 仍日历式（防纵挤）否则周列
-   * 式，>90 天恒周列式；周列数 >SPD3_HIST_MONTH_COLS(26) 切月
+   * 自适应=minmax(0,1fr) 行模板 + wrap flex 链填满可用高；v391 §15.3 行高帽 84px
+   * +wrap 垂直居中——稀疏行不再拉成巨格）；hist=行=星期（7 行周日..周六）、列=周
+   * （列头=周起始 MM/DD，跨月首列加亮；>14 列时隔列显标签防挤、首列恒显），列宽帽
+   * minmax(34px,64px)（v387 §11.6 去无限 1fr 拉伸，短跨度不再超宽格；v388 §12.6
+   * 列数分档对齐：≤14 列根挂 zu3-hh-c 整块水平居中、>14 列 flex-start 左对齐贴满
+   * 容器）；池时间轴覆盖跨度 ≤6 自然日切紧凑日卡（v389 §13.4，.zu3-dc 横排日期卡，
+   * 判定读 an.axisA/axisB、缺失退化 spanA/spanB 再回退 items 首日→今天）；v391
+   * §15.3 密度选择器：7–60 天切七列日历式 .zu3-cal（month 同构、7 列
+   * minmax(0,1fr) 满幅——消除周列式列帽下 37 天两侧大空白），>60 天周列式；周列数
+   * >SPD3_HIST_MONTH_COLS(26) 切月
    * 粒度（v387 §11.6/PRD 7.2：
    * 每列=日历月竖条格，月 v=Σout÷Σms 加权、列头 YYYY/MM、550 日 ≤19 月列无横滚，
    * 原 spec §5「110 列硬帽」被月聚合取代）。格状态五态可区分（spec §5）：补位更暗
@@ -9156,14 +9216,12 @@
    * 粒度周格（34px 下限）可读上限，更长跨度按月聚合后 550 日 ≤19 月列，天然无横滚，
    * 不再横滚兜底也不丢数据。 */
   var SPD3_HIST_MONTH_COLS = 26;
-  /* v390 §14.3 hist 密度选择器阈值（按布局密度可调，非唯一条件）：覆盖跨度 ≤
-   * SPD3_HIST_CAL_MAX_DAYS(42) 自然日切七列日历式 .zu3-cal（7 列满幅消除周列式
-   * 短跨度两侧大空白）；43–90 天按覆盖自然周行数 ≤SPD3_HIST_CAL_WEEKS(8) 仍日历式
-   * （防纵挤：行数再多格高不足，回周列式），否则周列式；>90 天恒周列式。行数 ≤8
-   * 隐含跨度 ≤56 天（8 周）、>90 天行数 ≥13，90 上沿被行数条件自然吸收，不设
-   * 独立常量。 */
-  var SPD3_HIST_CAL_MAX_DAYS = 42;
-  var SPD3_HIST_CAL_WEEKS = 8;
+  /* v391 §15.3 hist 密度选择器阈值（PRD 六轮档位表）：覆盖跨度 ≤6 自然日切紧凑日卡
+   * （.zu3-dc）；7–60 天切七列日历式 .zu3-cal（连续日历热力图，7 列满幅消除周列式
+   * 短跨度两侧大空白；行高帽 84px 下 9–10 行日历每行仍 ≥30px 可读，不再需要 v390
+   * 的 43–90 行数分支防纵挤）；>60 天周列贡献式（周列 >26 既有月聚合）。布局判断
+   * 依据=axis 日历跨度（不按有效数据天数裁剪历史）。 */
+  var SPD3_HIST_CAL_MAX_DAYS = 60;
   /* 格 aria（spec §7）：完整日期 + 均速档位 + 模型数；无记录日显式说明，绝不 0 t/s */
   function spd3CellAria(t, agg) {
     var d = spdDate(t), wd = d.getDay();
@@ -9261,11 +9319,23 @@
        * 填满容器、无底部大空白；补位格/未来格同属网格轨道同步拉伸。格内容顶对齐、
        * 速度值在日号下方剩余空间垂直居中（margin:auto 0），行高变化时布局不散。 */
       ".zu-sv3-root .zu3-hm{flex:1;min-height:0;min-width:0;display:flex;flex-direction:column}" +
-      ".zu-sv3-root .zu3-hm .zu-sc-wrap{flex:1;min-height:0;display:flex;flex-direction:column}" +
+      /* §15.2（v391 审查 M1）：热力内层根类 zu-sv-chart 命中 06 分片 V2 基础规则
+       * （.zu-sv-chart{border+padding+radius}，无 .zu-sv-root 作用域全文档生效）——
+       * V3 卡外层 [data-sv3-chart] 已有边界，内层再镶一圈=双重边框+24px 水平内距；
+       * 此处只中和盒壳（border/padding/radius），flex 列链仍由 V2 规则承担 */
+      ".zu-sv3-root .zu-sv-chart{border:0;padding:0;border-radius:0}" +
+      ".zu-light .zu-sv3-root .zu-sv-chart{border-color:rgba(0,0,0,0)}" +
+      /* §15.3（v391）：wrap 垂直居中——行高帽封顶后剩余空间上下均分（周头+网格作为
+       * 整组居中，列对齐保持）；行多无剩余时等同顶排（行为不变） */
+      ".zu-sv3-root .zu3-hm .zu-sc-wrap,.zu-sv3-root .zu3-cal .zu-sc-wrap{flex:1;min-height:0;display:flex;flex-direction:column;justify-content:center}" +
       ".zu-sv3-root .zu3-hm-week{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;margin-bottom:4px;" +
         "text-align:center;font-size:9px;line-height:12px;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      /* §15.3（v391）：行高帽 84px——flex:1 增长封顶 rows×84（行高 ≤84），2–3 行稀疏
+       * 跨度格不再拉成巨高（巨大空白网格根因=minmax(0,1fr) 无上限吃满容器）；行多时
+       * 可用高低于帽，行为与既有 flex 填满一致 */
       ".zu-sv3-root .zu3-hm-grid{flex:1;min-height:0;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));" +
-        "grid-template-rows:repeat(var(--zu-hm-rows,5),minmax(0,1fr));gap:6px}" +
+        "grid-template-rows:repeat(var(--zu-hm-rows,5),minmax(0,1fr));gap:6px;" +
+        "max-height:calc(var(--zu-hm-rows,5)*84px)}" +
       ".zu-sv3-root .zu3-hm-grid .zu3-v{margin:auto 0}" +
       ".zu-sv3-root .zu-hm-pad{display:block;min-height:1px}" +
       ".zu-sv3-root .zu-hm-cell{position:relative;display:flex;flex-direction:column;justify-content:space-between;" +
@@ -9328,7 +9398,7 @@
       ".zu-light .zu-sv3-root .zu3-hh-grid .zu-hm-cell.zu-hm-void{background:rgba(0,0,0,.045)}" +
       /* v384 S6-MINOR3：V3 图表横滚条隐藏（06 旧规则只匹配 .zu-sv-chart） */
       ".zu-sv3-root .zu3-hh .zu-sc-wrap::-webkit-scrollbar,.zu-sv3-root .zu3-hm .zu-sc-wrap::-webkit-scrollbar{display:none}" +
-      /* ---------- v389 §13.4 hist ≤7 天紧凑日卡（.zu3-dc）：横排日期卡 ----------
+      /* ---------- v389 §13.4 hist ≤6 天紧凑日卡（.zu3-dc）：横排日期卡 ----------
        * 复用 .zu-hm-cell 基座（宿主 mouseover/focus/keydown 委托按该类+data-i 命中，
        * 零宿主改动）；卡级覆写：min 120px / flex 1 1 0 / 帽 160px，wrap 允许 7 天在
        * 窄窗折两行；justify/align-content center=居中分布（spec §13.4）。速度大字
@@ -9338,7 +9408,8 @@
       ".zu-sv3-root .zu3-dc .zu-sc-wrap{flex:1;min-height:0;display:flex;flex-direction:column}" +
       ".zu-sv3-root .zu3-dc-grid{flex:1;min-height:0;display:flex;flex-wrap:wrap;gap:6px;" +
         "justify-content:center;align-content:center;align-items:stretch}" +
-      ".zu-sv3-root .zu3-dc-grid .zu-hm-cell{flex:1 1 0;min-width:120px;max-width:160px;box-sizing:border-box;" +
+      /* §15.3（v391）：卡高帽 150px——1–2 天历史不再整卡拉高成巨卡（容器居中已就位） */
+      ".zu-sv3-root .zu3-dc-grid .zu-hm-cell{flex:1 1 0;min-width:120px;max-width:160px;max-height:150px;box-sizing:border-box;" +
         "border-radius:9px;padding:8px 10px;gap:2px}" +
       ".zu-sv3-root .zu3-dchd{display:flex;align-items:center;justify-content:space-between;gap:4px;min-width:0}" +
       ".zu-sv3-root .zu3-dcd{font-size:15px;line-height:1.1;font-weight:600;font-variant-numeric:tabular-nums;" +
@@ -9347,7 +9418,7 @@
       ".zu-sv3-root .zu3-dcv{font-size:18px;line-height:1.1;font-weight:600;font-variant-numeric:tabular-nums;" +
         "white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
       ".zu-sv3-root .zu3-dcv.zu3-dcnone{font-size:11px;font-weight:500}" +
-      /* ---------- v390 §14.3 hist 8–42 天七列日历式（.zu3-cal）----------
+      /* ---------- v391 §15.3 hist 7–60 天七列日历式（.zu3-cal）----------
        * 与 month 组件同构复用（spec §14.3：span 代替当月）：周头 .zu3-hm-week、网格
        * .zu3-hm-grid、格基座 .zu-hm-cell* 与档位混底/今天描边/模型点各规则全挂
        * .zu-sv3-root 作用域（不绑 .zu3-hm 根类），日历根只补 flex 链与字号覆写。
@@ -9359,7 +9430,7 @@
        * 与混底同源一色（day-card .zu3-dcv v389 对比度结论沿用）；空日「无记录」
        * 轻字 .zu3-cnone 同法继承 .zu-hm-void 灰。 */
       ".zu-sv3-root .zu3-cal{flex:1;min-height:0;min-width:0;display:flex;flex-direction:column}" +
-      ".zu-sv3-root .zu3-cal .zu-sc-wrap{flex:1;min-height:0;display:flex;flex-direction:column}" +
+      /* (.zu3-cal .zu-sc-wrap 的 flex 列链已并入 §15.3 居中合并规则，旧重复行删除) */
       ".zu-sv3-root .zu3-cal .zu3-cv{font-size:12px;color:inherit}" +
       ".zu-sv3-root .zu3-cal .zu3-cnone{font-size:10px;font-weight:500;color:inherit}" +
       /* ---------- 共用：模型色点 / 空态（图例行样式已随 v388 §12.6 删除） ---------- */
@@ -9469,12 +9540,12 @@
         SPD_L("暂无有效速度记录", "no rated speed data yet") + "</div></div>";
     var single = !!(an.perModel && an.perModel.length === 1);
     var meta = spd3DayMeta(an.pool);
-    /* ---- v389 §13.4 覆盖跨度 ≤7 自然日 → 紧凑日卡形态（spd3DayCardsHTML） ----
+    /* ---- v389 §13.4 覆盖跨度 ≤6 自然日 → 紧凑日卡形态（spd3DayCardsHTML） ----
      * 判定轴=「池时间轴」：首日读 an.axisA（v389：core 未筛选原始池时间轴——
      * spanA 随筛选收缩会让形态在日卡/周网格间跳变，PRD 5.5 时间轴稳定），
      * 老帧缺 axisA 退化读 an.spanA，再缺回退 items 首日（旧行为轴）；轴末=
      * 取大者(今天, an.axisB/spanB 所在日)=今天（见下方钳制注释）。日历跨度=轴末−首日+1
-     * 天（Math.round 折算 DST 23h/25h 日，口径同下方 totalDays）；≤7 切日卡，8+
+     * 天（Math.round 折算 DST 23h/25h 日，口径同下方 totalDays）；≤6 切日卡，7+
      * 天走既有周网格/月聚合（两既有分支零改动）。着色仍按筛选（byDay 已是筛选后
      * 桶），跨度判定与筛选无关的语义由 axis 轴承载。 */
     var spanA0 = first, spanB0 = todayStart;
@@ -9496,19 +9567,15 @@
     var coverDays = Math.round((spanB0 - spanA0) / 864e5) + 1;
     var axis3 = { byDay: byDay, single: single, meta: meta,
       start: spanA0, end: spanB0, todayStart: todayStart, truncTxt: truncTxt };
-    if (coverDays <= 7)
+    if (coverDays <= 6)
       return spd3DayCardsHTML(an, hoverIdx, o, axis3);
-    /* ---- v390 §14.3 密度选择器（P0）：8–42 天 → 七列日历式（spd3CalHTML）----
+    /* ---- v391 §15.3 密度选择器（对齐 PRD 档位表）：7–60 天 → 七列日历式 ----
      * 37 天在周列式下只有 6 列（列帽 64px+居中）两侧大空白（用户截图 P0）；日历式
-     * 7 列 minmax(0,1fr) 满幅天然消除。43–90 天按覆盖自然周行数自适应：行数 ≤
-     * SPD3_HIST_CAL_WEEKS(8) 仍日历式（防纵挤——行数少格高才够），否则回周列式；
-     * >90 天恒周列式（行数 ≤8 隐含跨度 ≤56 天，90 上沿被行数条件吸收）。落到周列
-     * 式后，周列 >SPD3_HIST_MONTH_COLS 切月聚合的既有阈值照常生效（下方分支零改
-     * 动）；判定轴与日卡同为未筛选池时间轴 axisA/spanA（形态不随筛选跳变）。 */
+     * 7 列 minmax(0,1fr) 满幅天然消除。>60 天周列贡献式（行高帽 84px 落地后日历
+     * 不再纵挤，v390 的 43–90 行数分支删除）。落到周列式后，周列
+     * >SPD3_HIST_MONTH_COLS 切月聚合的既有阈值照常生效（下方分支零改动）；判定轴
+     * 与日卡同为未筛选池时间轴 axisA/spanA（形态不随筛选跳变）。 */
     if (coverDays <= SPD3_HIST_CAL_MAX_DAYS)
-      return spd3CalHTML(an, hoverIdx, o, axis3);
-    var caS0 = spdDate(spanA0);
-    if (Math.ceil((new Date(caS0.getFullYear(), caS0.getMonth(), caS0.getDate()).getDay() + coverDays) / 7) <= SPD3_HIST_CAL_WEEKS)
       return spd3CalHTML(an, hoverIdx, o, axis3);
     var fd0 = spdDate(first);
     var fy = fd0.getFullYear(), fmo = fd0.getMonth(), fd = fd0.getDate();
@@ -9622,8 +9689,8 @@
       '<div class="zu3-hh-grid" role="grid" style="--zu3-cols:' + cols + '">' + rowsHtml + "</div>" +
       "</div></div></div></div>";
   }
-  /* hist ≤7 自然日紧凑日卡（v389 §13.4，唯一消费者 spd3HistHTML 覆盖分支）：横排
-   * 日期卡替代周网格——跨度 ≤7 天时周列×星期行只剩 1-2 列、周头/行头占掉近半高度。
+  /* hist ≤6 自然日紧凑日卡（v389 §13.4/v391 §15.3，唯一消费者 spd3HistHTML 覆盖分支）：横排
+   * 日期卡替代周网格——跨度 ≤6 天时周列×星期行只剩 1-2 列、周头/行头占掉近半高度。
    * axis={byDay, single, meta, start 首日零点, end 末日零点（≤今天）, todayStart,
    * truncTxt}。span 内每一天都有卡（含无数据日=「无记录」灰卡）：卡=日期 M/D 大字+
    * 周几+日均速度（档位色大字，.zu3-dcv 继承卡上档位类 currentColor）+模型点 ≤3+
@@ -9669,8 +9736,7 @@
         "daily · " + nDays + (nDays === 1 ? " day" : " days") + " covered") + axis.truncTxt) +
       '<div class="zu-sc-wrap"><div class="zu3-dc-grid" role="grid">' + cards.join("") + "</div></div></div>";
   }
-  /* hist 七列日历式（v390 §14.3，唯一消费者 spd3HistHTML 密度分派）：覆盖 8–42 天
-   * （或 43–90 天但覆盖自然周 ≤8 行）时替代周列贡献式——周列式列帽 64px 下短跨度
+  /* hist 七列日历式（v390 §14.3/v391 §15.3，唯一消费者 spd3HistHTML 密度分派）：覆盖 7–60 天时替代周列贡献式——周列式列帽 64px 下短跨度
    * 列少居中、两侧大空白（37 天=6 列实测两侧各 ~100px）；日历式 7 列 minmax(0,1fr)
    * 满幅均分容器宽，与跨度无关。month 组件同构复用（span 代替当月）：网格=7 列周日
    * 首列 × 覆盖自然周行（行数=ceil((首日星期偏移+跨度)/7)，2–7 行，经 --zu-hm-rows
@@ -9871,8 +9937,7 @@
    * 集成契约：spd3LeftHTML 第三参 expanded（多模型分布表展开态，调用方传布尔）、第四参
    * poolSingle（chips 池恰一模型=「真单模型池」，驱动「当前模型」行去重；v390 用户
    * 裁定「唯一模型」徽标与供应商副标 .zu-sv3-msub/.zu-sv3-only 均去除）；
-   * 覆盖范围五值读可选 an.cov={recent,today,week,month,all}（集成方按五个 period 各跑一次
-   * spd3AnalyzeCached 汇总轮数，缺席显 —）；筛选 chips 池缺省取 an.perModel+an.selMissing，
+   * 筛选 chips 池缺省取 an.perModel+an.selMissing，
    * 筛选激活时集成方应传 ctx.pool=未筛选全量模型（否则 chips 收缩为已选集，无法点回）。
    * v387 实机修复批（spec §11）：宽度链 border-box 释放（§11.1）；多模型态主数字恒在
    * （§11.3）；an.real 空时图表区渲染居中空态 spd3EmptyStateHTML（§11.4，占位 <!--CHART-->
@@ -10060,17 +10125,17 @@
       (capped ? '<div class="zu-sv3-fpop-cap">' + spdEsc(SPD_L("输入以搜索更多", "Type to search more")) + "</div>" : "") +
       acts + "</div>";
   }
-  /* ==================== ④ 左摘要卡（spec §6 + §11.3/§11.4/§11.5） ====================
-   * 三态：空（无 perModel 或无 overall）→ 主数字 — + 本期统计 0/0 + 峰最低新 —；
-   * 单模型（perModel 恰 1，无数据模型不计）→ 主数字/档位/模型行/本期统计；
-   * 多模型 → 主数字恒在（v387 §11.3：任何模型数不缺均速大数字）→ 档位胶囊 →
-   * 「本期有效 N 个模型 · M 轮」（selMissing 非空追加无有效记录提示）→ 分布
+  /* ==================== ④ 左摘要卡（spec §6 + §11.3/§11.4/§11.5/§15.1） ====================
+   * 三态：空（无 perModel 或无 overall）→ 主数字 — + 请求轮次 0/有效模型 0 + 峰最低新 —；
+   * 单模型（perModel 恰 1，无数据模型不计）→ 主数字/档位/模型行/请求轮次/有效输出
+   * （或当前模型）；多模型 → 主数字恒在（v387 §11.3：任何模型数不缺均速大数字）→
+   * 档位胶囊 → 「本期有效 N 个模型 · M 轮」（selMissing 非空追加无有效记录提示）→ 分布
    * （堆叠条 + div Grid 网格表默认 ≤4 行，data-sv3-more 查看全部；表容器 max-height
    * 内滚，展开态不撑高主卡）→ 峰/低/新。分布行序按 share（请求数占比）降序；
    * msAvail=false 降级：隐藏「均速」列（.zu-sv3-dtab-noms 两列变体），绝不出现 t/s 假值。
    * poolSingle = chips 池恰 1 个真模型——驱动「当前模型」行去重（v390 起「唯一模型」
-   * 徽标已按用户裁定去除）；筛选缩到单模型不冒充。覆盖范围单值随 an.period 直读
-   * （v384 M4：an.cov 五值契约废除）。 */
+   * 徽标已按用户裁定去除）；筛选缩到单模型不冒充。「本期统计」组标题与「覆盖范围」
+   * kv 已随 v391 §15.1 删除（范围语义由标题行承载）。 */
   function spd3LeftTitle(an) {
     var n = an && an.items ? an.items.length : 0;
     var t = an && an.period === "recent" ? SPD_L("最近 " + n + " 轮", "Last " + n + " turns")
@@ -10112,10 +10177,9 @@
       spd3StatHTML(SPD_L("最低", "Low"), an.low, dayLbl ? SPD_L("最低日均", "Worst daily") : "") +
       spd3StatHTML(SPD_L("最新", "Latest"), an.latest, dayLbl ? SPD_L("最近日均", "Latest daily") : "") + "</div>";
     if (!models.length || !overall) {
-      /* 空池/显式空筛选（§11.4）：标题 + — 主数字 + 本期统计（0 轮 / 0 模型）+
+      /* 空池/显式空筛选（§11.4）：标题 + — 主数字 + 请求轮次 0 / 有效模型 0 +
        * 峰最低新 —，绝不造 0 t/s；图表区由 spd3CardHTML 换居中空态块 */
       return '<div class="zu-sv3-left">' + headRow + spd3MainNumHTML(null) +
-        '<i class="zu-sv3-cov-h">' + spdEsc(SPD_L("本期统计", "This period")) + "</i>" +
         '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("请求轮次", "Turns")) + "</i><b>" +
         spdEsc(spdNum(0) + SPD_L("轮", " turns")) + "</b></div>" +
         '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("有效模型", "Active models")) + "</i><b>0</b></div>" +
@@ -10123,13 +10187,8 @@
     }
     if (models.length === 1) {
       var m = models[0];
-      /* v384 M4：覆盖范围单值直读本视图（an.cov 五值生产者无人实现，砍掉）；
-       * m3：补「本期统计」组标题（设计稿单模型态三行 kv 的分组标签） */
-      var covLbl = an.period === "recent" ? SPD_L("最近 " + (an.items ? an.items.length : 0) + " 轮", "Last " + (an.items ? an.items.length : 0) + " turns")
-        : an.period === "today" ? SPD_L("今天", "Today")
-        : an.period === "week" ? SPD_L("近 7 天", "Last 7 days")
-        : an.period === "month" ? SPD_L("本月", "This month")
-        : SPD_L("全部历史", "All history");
+      /* §15.1：「本期统计」组标题与「覆盖范围」kv 删除（v391）——范围语义由标题行
+       * （「最近 N 轮平均速度」等）承载，kv 组紧凑直达数据 */
       /* §12.2 当前模型行去重：真单模型池（poolSingle）时本行与模型行 Chip 恒完全同名
        * （同一 perModel 条目），替换为「有效输出」（overall.out 经 o.fmtTok 格式化）；
        * fmtTok 缺席整行省略（不虚构格式化值），非真单模型池（筛选缩到单模型）保留原名 */
@@ -10144,11 +10203,9 @@
       return '<div class="zu-sv3-left">' + headRow + spd3MainNumHTML(overall.v) +
         (bd ? spd3BandHTML(bd) : "") +
         '<div class="zu-sv3-model">' + spd3DotAndName(m.key, m.name) + "</div>" +
-        '<i class="zu-sv3-cov-h">' + spdEsc(SPD_L("本期统计", "This period")) + "</i>" +
         '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("请求轮次", "Turns")) + "</i><b>" +
         spdEsc(spdNum(overall.turns) + SPD_L("轮", " turns")) + "</b></div>" +
         modelKv +
-        '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("覆盖范围", "Coverage")) + "</i><b>" + spdEsc(covLbl) + "</b></div>" +
         stats + "</div>";
     }
     /* ---- 多模型态（§11.3）：标题 → 主数字 → 档位胶囊 → 本期有效计数 →
@@ -10366,9 +10423,12 @@
       ".zu-sv3-root .zu-sv3-left{flex:0 0 250px;min-width:0;display:flex;flex-direction:column;min-height:0;" +
         "border:1px solid var(--color-popover-border,rgba(255,255,255,.14));border-radius:12px;padding:10px 12px 12px}" +
       ".zu-light .zu-sv3-root .zu-sv3-left{border-color:rgba(15,23,42,.14)}" +
-      ".zu-sv3-root .zu-sv3-chart{flex:1 1 0;min-width:0;max-width:100%;display:flex;flex-direction:column;min-height:0;" +
-        "border:1px solid var(--color-popover-border,rgba(255,255,255,.14));border-radius:12px;padding:10px 12px}" +
-      ".zu-light .zu-sv3-root .zu-sv3-chart{border-color:rgba(15,23,42,.14)}" +
+      /* §15.2（v391）：边框/圆角/padding 只挂外层卡 [data-sv3-chart]——charts 分片内层
+       * 内容盒同名 .zu-sv3-chart 曾双重命中同一规则，绘图区外多一层边框+双层 padding */
+      ".zu-sv3-root .zu-sv3-chart{flex:1 1 0;min-width:0;max-width:100%;display:flex;flex-direction:column;min-height:0}" +
+      ".zu-sv3-root .zu-sv3-chart[data-sv3-chart]{border:1px solid var(--color-popover-border,rgba(255,255,255,.14));" +
+        "border-radius:12px;padding:10px 12px}" +
+      ".zu-light .zu-sv3-root .zu-sv3-chart[data-sv3-chart]{border-color:rgba(15,23,42,.14)}" +
       "@media (max-width:760px){.zu-sv3-root .zu-sv3-left{flex:0 0 220px}}" +
       /* ---- 图表标题栏（.zu-sc-* 基类属 V1 共享，这里只做 V3 作用域覆写） ---- */
       ".zu-sv3-chart .zu-sc-head{margin-left:0;align-items:center;flex-wrap:wrap;row-gap:2px}" +
@@ -10422,8 +10482,7 @@
       ".zu-sv3-root .zu-sv3-kv i{font-style:normal;color:var(--color-tooltip-tag-foreground,#a6a6a6);flex:0 0 auto}" +
       ".zu-sv3-root .zu-sv3-kv b{font-weight:600;font-variant-numeric:tabular-nums;min-width:0;overflow:hidden;" +
         "text-overflow:ellipsis;white-space:nowrap;text-align:right}" +
-      /* v384 M4：覆盖范围改单值 kv（.zu-sv3-kv 承载），五值结构 CSS 删除 */
-      ".zu-sv3-root .zu-sv3-cov-h{font-style:normal;color:var(--color-tooltip-tag-foreground,#a6a6a6);display:block;margin-top:10px}" +
+      /* v391 §15.1：「本期统计」组标题（.zu-sv3-cov-h）随字段删除整链退役 */
       /* §13.5 分布条对齐：dist-h/dbar/dwrap 同为左卡内容盒的全宽块级子元素，三者一律
        * 零水平 margin/padding（v388 态核查已达标，此处显式锁口径）——左右缘对齐误差
        * ≤2px；dbar 的 4px 圆角端头是视觉内收（≤4px 感知差）而非几何错位；dwrap 展开
@@ -10453,9 +10512,13 @@
       ".zu-sv3-root .zu-sv3-dnum{text-align:right;white-space:nowrap}" +
       ".zu-sv3-root .zu-sv3-dname{display:flex;align-items:center;gap:6px}" +
       ".zu-sv3-root .zu-sv3-dname .zu-sv3-chip-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
-      ".zu-sv3-root .zu-sv3-more{appearance:none;border:0;background:transparent;color:var(--color-brand,#a3cfff);" +
-        "font-family:inherit;font-size:calc(var(--ui-font-size,14px) - 3px);padding:4px 0 0;margin:0;cursor:pointer;text-align:left}" +
-      ".zu-sv3-root .zu-sv3-more:hover{text-decoration:underline}" +
+      /* §15.4（v391）：「查看全部 N 个模型」模型列表下方水平居中、轻量次级文本按钮 */
+      ".zu-sv3-root .zu-sv3-more{appearance:none;border:0;background:transparent;font-family:inherit;" +
+        "display:block;width:100%;text-align:center;color:var(--color-tooltip-tag-foreground,#a6a6a6);" +
+        "font-size:calc(var(--ui-font-size,14px) - 3px);padding:5px 8px;margin:2px 0 0;border-radius:7px;cursor:pointer}" +
+      ".zu-sv3-root .zu-sv3-more:hover{color:var(--color-foreground,#e9edf4);background:rgba(255,255,255,.05)}" +
+      ".zu-light .zu-sv3-root .zu-sv3-more:hover{background:rgba(0,0,0,.04)}" +
+      ".zu-sv3-root .zu-sv3-more:active{opacity:.7}" +
       ".zu-sv3-root .zu-sv3-more:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
       /* §13.5 stats 恢复 Footer 语义（推翻 v388 §12.2 的「禁 auto」：第三轮断层实为
        * 分布表缺失时的推底空腔，§12.2 分布表 Grid 化后左卡内容密度已足够）——内容少
@@ -10585,18 +10648,25 @@
         : rows === 5 ? { tier: "month-r5", px: 450 }
         : { tier: "month-r6", px: 470 };
     }
-    /* all：日历式（.zu3-cal，覆盖 ≤56 天或自然周 ≤8 行）按**覆盖自然周行数 R**
-     * 分档（v390 审查 M1 接线：R6-7 需 420、R8 需 460，380 档 6 行日历纵挤）；
-     * 周列式（>56 天）按日桶数映射。R 复算公式与 heat 分派一致
-     * （ceil((轴首星期偏移+coverDays)/7)）。 */
+    /* all：日历式（.zu3-cal，覆盖 ≤60 天，v391 §15.3 阈值对齐 PRD）按**覆盖自然周行数
+     * R** 分档（R≤5→380、R6-7→420、R≥8→460；行高帽 84px 下 R9-10 在 460 档每行
+     * ≥30px 可读）；周列式（>60 天）按日桶数映射。R 只决定日历档内 px（v391 起
+     * heat 分派以 cover 天数为唯一轴，R 公式=ceil((轴首星期偏移+coverDays)/7)）。 */
     var dA = (typeof an.axisA === "number" && isFinite(an.axisA) && an.axisA > 0) ? an.axisA
       : (typeof an.spanA === "number" ? an.spanA : 0);
     var dB = (typeof an.axisB === "number" && isFinite(an.axisB) && an.axisB > 0) ? an.axisB
       : (typeof an.spanB === "number" ? an.spanB : 0);
     if (dA > 0 && dB > 0) {
+      /* 轴口径与 heat 分派一致（v391 审查 MINOR-2）：两端归一本地日零点、轴末钳今天
+       * （原始时间戳在傍晚/上午轮时 cover 可差 1 天，60/61 边界形态错档） */
+      var dA0 = spdDate(dA);
+      dA = new Date(dA0.getFullYear(), dA0.getMonth(), dA0.getDate()).getTime();
+      var dB0 = spdDate(dB);
+      dB = Math.min(new Date(dB0.getFullYear(), dB0.getMonth(), dB0.getDate()).getTime(),
+        new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()).getTime());
       var d0 = new Date(dA), cover = Math.round((dB - dA) / 864e5) + 1;
       var R = Math.ceil((d0.getDay() + cover) / 7);
-      if (cover <= 42 || R <= 8)
+      if (cover <= 60)
         return R <= 5 ? { tier: "all-s", px: 380 }
           : R <= 7 ? { tier: "all-m", px: 420 }
           : { tier: "all-l", px: 460 };

@@ -215,11 +215,10 @@ test('spd3CardHTML 结构锁: 根类/data-sv-key/双 Tab 组/chips/单多左卡�
     '06/01 委托分支 all-time → period="all"');
 });
 
-// ---------- ② 单模型五态标题 + 本期统计（覆盖范围单值 kv，M4/m3） ----------
-test('单模型左卡: 五 period 标题文案、主数字/档位/模型行/本期统计组、覆盖范围单值 kv、日均标签切换', () => {
+// ---------- ② 单模型五态标题 + 精简左卡（v391 §15.1：「本期统计」「覆盖范围」已删） ----------
+test('单模型左卡: 五 period 标题文案、主数字/档位/模型行/请求轮次、组标题与覆盖范围已删、日均标签切换', () => {
   const ctx = makeCtx();
   const h = fixture();
-  const wantCov = { recent: '最近 \\d+ 轮', today: '今天', week: '近 7 天', month: '本月', all: '全部历史' };
   for (const period of ['recent', 'today', 'week', 'month', 'all']) {
     const sel = { range: 'session', period, sid: 'sess_main', filt: { mode: 'sel', keys: [KEYS.a] } };
     const dom = stripStyle(cardHTML(ctx, analyze(ctx, h, sel), sel));
@@ -228,14 +227,11 @@ test('单模型左卡: 五 period 标题文案、主数字/档位/模型行/本�
     assert.match(dom, want, 'period=' + period + ' 左卡标题');
     assert.match(dom, /zu-sv3-main-num/, 'period=' + period + ' 主数字在场');
     assert.doesNotMatch(dom, /唯一模型|zu-sv3-only/);
-    // m3：「本期统计」组标题 + 请求轮次/覆盖范围 kv（§12.2「当前模型」行去重见 fmtTok 用例）
-    assert.match(dom, /zu-sv3-cov-h">本期统计</, 'period=' + period + ' 本期统计组标题');
+    // v391 §15.1：「本期统计」组标题与「覆盖范围」kv 删除（范围语义由标题行承载）
+    assert.doesNotMatch(dom, /本期统计|zu-sv3-cov-h/, 'period=' + period + ' 组标题已删');
+    assert.doesNotMatch(dom, /覆盖范围/, 'period=' + period + ' 覆盖范围已删');
     assert.match(dom, /请求轮次/);
-    assert.match(dom, /覆盖范围/, 'period=' + period + ' 覆盖范围块');
     assert.ok(!dom.includes('zu-sv3-cov-set'), 'period=' + period + ' 五值 set 已废除');
-    // 覆盖范围=单值 kv，随 an.period 直读本视图（recent 的 N=items.length）
-    assert.match(dom, new RegExp('覆盖范围</i><b>' + wantCov[period] + '</b>'),
-      'period=' + period + ' 覆盖范围单值=' + wantCov[period]);
     // §12.2「当前模型」行去重：真单模型池与模型行 Chip 恒完全同名；本层 ctx 无 fmtTok
     // （cardHTML 默认 o={}）→ 整行省略，不虚构格式化值
     assert.ok(!dom.includes('当前模型'), 'period=' + period + ' 无 fmtTok：当前模型行整行省略');
@@ -389,7 +385,7 @@ test('i18n: lang=en 关键文案切英文（SPD_L 桩实现真实 L 逻辑）', 
   const domB = stripStyle(cardHTML(ctx, analyze(ctx, h, selB), selB));
   assert.doesNotMatch(domB, /Only model/);
   assert.match(domB, /zu-sv3-stat"><i>Peak<\/i>/);
-  assert.match(domB, /Coverage/);
+  assert.doesNotMatch(domB, /Coverage|This period/, 'v391 §15.1：组标题/覆盖范围英文态同样已删');
   assert.match(domB, /Last \d+ turns · average speed/, 'recent 英文标题');
   assert.match(domB, /turns<\/b>/, '请求轮次英文');
   // 弹出层英文
@@ -544,22 +540,25 @@ test('spd3HeightTier: empty 320 / recent 三档 340/360/390 / today/week 400 / m
   assert.deepEqual(tier({ real: [1], overall: {}, period: 'month', daysGrid: dgrid(2026, 7) }),
     { tier: 'month-r6', px: 470 }, '2026-08：1 前导 + 31 天 = 6 行 → 470');
   assert.deepEqual(tier({ real: [1], overall: {}, period: 'month' }), { tier: 'month-r6', px: 470 }, 'daysGrid 缺席兜底 6 行');
-  // all：日历式（覆盖 ≤56 天或周数 ≤8）按覆盖自然周行数 R 分档（v390 审查 M1 接线：
-  // R≤5→380、R6-7→420、R8→460）；周列式（>56 天）按日桶数 420/460。
+  // all：日历式（覆盖 ≤60 天，v391 §15.3）按覆盖自然周行数 R 分档（R≤5→380、
+  // R6-7→420、R≥8→460）；周列式（>60 天）按日桶数 420/460。轴口径与 heat 分派同轴：
+  // 两端日零点归一 + 轴末钳今天（夹具 axisB 一律 ≤ 冻结今天 2026-11-05）。
   // 30 天夹具无 axisA/spanA → 走周列式旧映射（days≤112→420）。
   assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(30).fill(1) }), { tier: 'all-m', px: 420 });
-  // 日历式：axisA=2026-11-01（周日）、37 天覆盖 → R=ceil((0+37)/7)=6 → 420
-  const calA = new Date(2026, 10, 1).getTime();
+  // 日历式：37 天覆盖（轴首 2026-09-30 周三、轴末=今天 11-05）→ R=ceil((3+37)/7)=6 → 420
+  const a37 = new Date(2026, 8, 30).getTime(), t05 = new Date(2026, 10, 5).getTime();
   assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(37).fill(1),
-    axisA: calA, axisB: calA + 36 * 864e5 }), { tier: 'all-m', px: 420 }, '37 天 R6→420');
-  // R=3（14 天、轴首周三偏移 3 → ceil(6/7)=1？取轴首周日：14 天 R=2→380）
-  const sunA = new Date(2026, 10, 1).getTime() - 3 * 864e5;   // 10/29 周四？改用确定周日
+    axisA: a37, axisB: t05 }), { tier: 'all-m', px: 420 }, '37 天 R6→420');
+  // 14 天覆盖（轴首 2026-10-25 周日、轴末今天）→ R=ceil((0+12)/7)=2 → 380
   const sun0 = new Date(2026, 9, 25).getTime();              // 2026-10-25 周日
   assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(14).fill(1),
-    axisA: sun0, axisB: sun0 + 13 * 864e5 }), { tier: 'all-s', px: 380 }, '14 天 R2→380');
-  // R8（50 天自周日起）→ 460
+    axisA: sun0, axisB: t05 }), { tier: 'all-s', px: 380 }, '14 天 R2→380');
+  // R8（50 天：轴首 2026-09-17 周四）→ 460
   assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(50).fill(1),
-    axisA: sun0, axisB: sun0 + 49 * 864e5 }), { tier: 'all-l', px: 460 }, '50 天 R8→460');
+    axisA: new Date(2026, 8, 17).getTime(), axisB: t05 }), { tier: 'all-l', px: 460 }, '50 天 R8→460');
+  // v391 §15.3：57–60 天 R9-10 → 460（行高帽下每行 ≥30px 可读；60 天轴首 09-07 周一 R9）
+  assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(60).fill(1),
+    axisA: new Date(2026, 8, 7).getTime(), axisB: t05 }), { tier: 'all-l', px: 460 }, '60 天 R9→460（v391 档）');
   // 周列式（>56 天）：days 112→420、200→460
   assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(112).fill(1) }), { tier: 'all-m', px: 420 });
   assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(200).fill(1) }), { tier: 'all-l', px: 460 });
@@ -692,4 +691,40 @@ test('v390 §14.2 dbar 轨道: 段 min-width:0/stretch 废除 2px 下限；8 模
   assert.match(domSk, /zu-sv3-pct" role="cell">&lt;0\.1%</, '占比列显 <0.1%（1/2001≈0.05%，不显 0%）');
   assert.match(domSk, /title="Tiny · 1 次请求 · &lt;0\.1%"/, '段 title 同步 <0.1%');
   assert.match(domSk, /zu-sv3-dbar" role="img" aria-label="模型分布：2 个模型，前 \d+ 占 \d+%"/);
+});
+
+// ---------- ⑫ v391 §15.2/§15.4 边框收窄 + 「查看全部」居中 + §11.3 主数字恒在 ----------
+test('v391 §15.2/§15.4: 图表边框只挂外层 [data-sv3-chart]、内层盒不再命中；查看全部居中次级样式；19 模型主数字恒在+7 段', () => {
+  const ctx = makeCtx();
+  const sel = { range: 'session', period: 'all', sid: 'sess_main' };
+  const an = analyze(ctx, fixture(), sel);
+  const style = cardHTML(ctx, an, sel).match(/<style>[\s\S]*?<\/style>/)[0];
+  // §15.2：边框/圆角/padding 收窄到外层卡 [data-sv3-chart]（charts 分片内层同名盒
+  // 曾双重命中 → 绘图区外多一层边框+双层 padding）
+  assert.match(style, /\.zu-sv3-root \.zu-sv3-chart\[data-sv3-chart\]\{border:1px solid/,
+    '边框规则挂 [data-sv3-chart]（外层卡）');
+  const flexRule = style.match(/\.zu-sv3-root \.zu-sv3-chart\{[^}]*\}/)[0];
+  assert.ok(!flexRule.includes('border'), '无属性限定符的 .zu-sv3-chart 规则不再带边框');
+  // §15.4：「查看全部」块级全宽水平居中、次级文本色、hover/active/focus 反馈
+  const moreRule = style.match(/\.zu-sv3-root \.zu-sv3-more\{[^}]*\}/)[0];
+  assert.match(moreRule, /display:block;width:100%;text-align:center/, '块级全宽水平居中');
+  assert.match(moreRule, /var\(--color-tooltip-tag-foreground/, '次级文本色');
+  assert.match(style, /\.zu-sv3-root \.zu-sv3-more:active\{opacity:\.7\}/, 'active 反馈');
+  assert.match(style, /\.zu-sv3-root \.zu-sv3-more:hover\{color:var\(--color-foreground/, 'hover 提亮');
+  assert.match(style, /\.zu-sv3-root \.zu-sv3-more:focus-visible\{outline:2px solid/, 'focus-visible 焦点环');
+  // §11.3 主数字恒在 + §14.2 Top6+其他：19 模型 → 主数字在场、恰 7 段（6+其他）
+  const an19 = analyze(ctx, multiFixture(19), sel);
+  const dom19 = stripStyle(cardHTML(ctx, an19, sel));
+  assert.match(dom19, /zu-sv3-main-num"><span class="[a-z-]+">\d/, '19 模型主数字恒在（不隐藏）');
+  const bar19 = dom19.slice(dom19.indexOf('zu-sv3-dbar'), dom19.indexOf('zu-sv3-dwrap'));
+  assert.equal((bar19.match(/<i style=/g) || []).length, 7, '19 模型 → 恰 7 段（Top6+其他，无碎片）');
+  assert.match(bar19, /title="其他 13 个模型/, '其他段聚合 13 模型');
+  // 4 模型边界（PRD 阶段 E）：≤Top6 全直出无「其他」段；明细表默认 4 行恰全显无折叠按钮
+  const an4 = analyze(ctx, multiFixture(4), sel);
+  const dom4 = stripStyle(cardHTML(ctx, an4, sel));
+  const bar4 = dom4.slice(dom4.indexOf('zu-sv3-dbar'), dom4.indexOf('zu-sv3-dwrap'));
+  assert.equal((bar4.match(/<i style=/g) || []).length, 4, '4 模型 → 4 段（无其他段）');
+  assert.ok(!dom4.includes('data-sv3-more'), '4 模型 ≤ DEF_ROWS 不出「查看全部」');
+  assert.equal((dom4.match(/role="row"/g) || []).length, 5, '表头+4 数据行全显');
+  assert.match(dom4, /zu-sv3-main-num"><span class="[a-z-]+">\d/, '4 模型主数字恒在');
 });

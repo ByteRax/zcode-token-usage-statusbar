@@ -98,6 +98,10 @@
     ".zu-sv3-bars .zu-sc-x b{display:block;width:100%;overflow:hidden;text-overflow:ellipsis;text-align:center;line-height:14px}" +
     /* 隔槽隐藏标签：visibility 占位（槽几何不变），首/末/悬停槽恒显在构建侧判定 */
     ".zu-sv3-bars .zu-sc-x b.zu-sv3-xoff{visibility:hidden}" +
+    /* §15.5 首末柱标签防裁切：estW>slotW 时钉在槽内缘（align-self 覆盖列居中），
+     * 不越出 plot 左右缘（曾可触发 wrap 横滚） */
+    ".zu-sv3-bars .zu-sc-val.zu-sv3-vpin-l{align-self:flex-start}" +
+    ".zu-sv3-bars .zu-sc-val.zu-sv3-vpin-r{align-self:flex-end}" +
     /* 槽 hover 十字参考线（纯 CSS 显现，零 JS 监听；随槽位水平居中，高=值区） */
     ".zu-sv3-bars .zu-sv3-xline{position:absolute;left:50%;top:0;width:0;height:calc(100% - " + SPD3_X_H + "px);border-left:1px dashed var(--color-border,rgba(255,255,255,.3));opacity:0;pointer-events:none}" +
     ".zu-sv3-bars .zu-sc-col:hover>.zu-sv3-xline,.zu-sv3-bars .zu-sc-col:focus-within>.zu-sv3-xline{opacity:1}" +
@@ -262,6 +266,9 @@
       spdEsc((fmtCnt ? fmtCnt(turns) : String(turns)) + SPD_L(" 轮", " turns")) + "</b></div>" +
       '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("有效输出", "Output")) + "</span><b>" +
       spdEsc((fmtTok ? fmtTok(spdNum(it.out)) : String(spdNum(it.out))) + SPD_L(" token", " tokens")) + "</b></div>" +
+      /* §15.5（v391）：生成耗时（Σ有效生成窗口；降级 ms=0 整行省略） */
+      (spdNum(it.ms) > 0 ? '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("生成耗时", "Gen time")) +
+        "</span><b>" + spdEsc(spd3DurTxt(it.ms)) + "</b></div>" : "") +
       '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("区间", "Range")) + "</span><b>" +
       spdEsc(spd3SlotRange(it, dayMode)) + "</b></div>" +
       '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("预估费用", "Est. cost")) + "</span><b>" + cost + "</b></div>";
@@ -270,25 +277,55 @@
   /* ==================== ④ 柱状图槽位列构建（recent / 今天单模型共用） ====================
    * 槽位满幅（spec §11.2）：每槽 .zu-sv3-slot flex:1 1 0 均摊全宽，槽即命中区
    * （data-i/tabindex/role/aria/混合 title 契约全在槽上），柱按密度 18/14/10px 槽内
-   * 水平居中。数值标签（PRD 3.2）：n≤8 全显；>8 时 峰值/最低/最新/悬停 恒显 + 其余按
-   * valEvery=ceil(n/8) 抽稀，估宽=字符数×6px+8 超槽宽（SPD3_PLOT_W_EST/n）让位跳过，
-   * 绝不重叠。X 标签每槽显示，估宽 <34px 且 n>10 时隔槽显示（首/末/悬停恒显），
-   * b 兜底 ellipsis。柱色规则（spec §5）：行 models.length===1 → 柱色=spd3Color(模型
-   * key)（内联 background，速度档位色阶不再上柱体）；>1 → .zu-sv3-mix 中性灰（绝不
-   * 用主导模型色）+ title/aria 标「混合」；=0（旧帧无 msl）→ 中性默认色。柱顶读数
-   * 一位小数；最新柱（最右）latest 描边。 */
+   * 水平居中。数值标签三档（spec §15.5，PRD 六轮）：估宽 estW=字符数×6px+8、槽宽
+   * slotW=estPlotW/n；n≤12 全显（estW 超槽宽的非关键位让位=碰撞避让）；13–24 全试
+   * 显、让位时峰值/最低/最新恒显（其余确定性隐藏）；>24 按可用空间抽样 step=
+   * ceil((maxLblW+8)/slotW)（≥2，step×slotW≥maxLblW+8 保证采样位间距，不再叠加
+   * fits 门槛——窄槽下叠加会全部让位、抽样失去意义），关键值恒显。
+   * 悬停位恒显；其自身让位时临时隐藏左右邻已显的非关键标签（关键位恒显优先，
+   * 确定性、收起即恢复）。首末柱
+   * estW>slotW 时标签 align-self 钉在槽内（.zu-sv3-vpin-l/r，不越出 plot 触发横滚）。
+   * 0 值柱不显 0.0（无意义读数，绝不伪造）。X 标签每槽显示，估宽 <34px 且 n>10 时
+   * 隔槽显示（首/末/悬停恒显），b 兜底 ellipsis。柱色规则（spec §5）：行
+   * models.length===1 → 柱色=spd3Color(模型 key)（内联 background，速度档位色阶不再
+   * 上柱体）；>1 → .zu-sv3-mix 中性灰（绝不用主导模型色）+ title/aria 标「混合」；
+   * =0（旧帧无 msl）→ 中性默认色。柱顶读数一位小数；最新柱（最右）latest 描边。 */
+  /* estPlotW 视口感知（§15.5）：标签密度输入要贴近真实可视宽——tip=min(952,100vw−24)
+   * （v387 宽度链），再减 tip border/padding 26、左卡 250（窄窗 220 取宽者保守）、
+   * main gap 12、plot 左缩进 30、wrap 呼吸 10。VM/无 window 回退 SPD3_PLOT_W_EST。
+   * 仅用于标签密度（数值让位、抽样步长），布局仍由 flex 自适应，不参与几何。 */
+  function spd3PlotEstW() {
+    var vw = 0;
+    try { vw = (typeof window !== "undefined" && window.innerWidth) || 0; } catch (eW) { vw = 0; }
+    if (!(vw > 0)) return SPD3_PLOT_W_EST;
+    var w = Math.min(vw - 24, 952) - 26 - 250 - 12 - 30 - 10;
+    return Math.max(180, Math.min(SPD3_PLOT_W_EST, w));
+  }
   function spd3BarCols(items, hoverIdx, yMax) {
-    var n = items.length, valEvery = Math.max(1, Math.ceil(n / 8));
-    var slotW = SPD3_PLOT_W_EST / Math.max(n, 1);
+    var n = items.length;
+    var slotW = spd3PlotEstW() / Math.max(n, 1);
     var xThin = n > 10 && slotW < 34, cols = "";
-    var peakI = -1, minI = -1;
+    var peakI = -1, minI = -1, maxLbl = 0;
     for (var p = 0; p < n; p++) {
       var pv = items[p].empty ? 0 : spdNum(items[p].v);
       if (pv > 0) {
         if (peakI < 0 || pv > spdNum(items[peakI].v)) peakI = p;
         if (minI < 0 || pv < spdNum(items[minI].v)) minI = p;
+        maxLbl = Math.max(maxLbl, pv.toFixed(1).length * 6);
       }
     }
+    /* 恒显关键位（峰/低/新）：不吃估宽让位（PRD：碰撞时优先保留） */
+    var keep = {};
+    keep[peakI] = true; keep[minI] = true; keep[n - 1] = true;
+    var fits = function (t) { return t.length * 6 + 8 <= slotW; };
+    /* n>24 抽样步长按可视宽算：step×slotW ≥ maxLblW+8 → 采样位间距保证不重叠
+     * （fits 门槛只用于 step=1 的 n≤24 相邻让位；抽样位若再叠加 fits，窄槽下
+     * 全部让位、抽样失去意义） */
+    var step = n > 24 ? Math.max(2, Math.ceil((maxLbl + 8) / slotW)) : 1;
+    /* 抑制前提=悬停位有值（空槽/0 值槽不出读数，无避让收益不出邻位抖动）且自身让位 */
+    var hoverHasVal = hoverIdx >= 0 && hoverIdx < n && !items[hoverIdx].empty &&
+      spdNum(items[hoverIdx].v) > 0;
+    var curFits = hoverHasVal && fits(spdNum(items[hoverIdx].v).toFixed(1));
     for (var c = 0; c < n; c++) {
       var it = items[c], isCur = c === hoverIdx, empty = !!it.empty;
       var mcolor = "", mix = false, mname = "";
@@ -299,9 +336,14 @@
       var vv = spdNum(it.v);
       var hPct = empty || !(vv > 0) ? 0 : Math.max(1.2, Math.round(vv / yMax * 1000) / 10);
       var txt = vv.toFixed(1);
-      /* 恒显集合（峰值/最低/最新/悬停）不吃估宽让位；其余采样位超槽宽即跳过 */
-      var shown = !empty && (n <= 8 || isCur || c === n - 1 || c === peakI || c === minI ||
-        (c % valEvery === 0 && txt.length * 6 + 8 <= slotW));
+      /* 三档显隐（§15.5）：关键位/悬停恒显；n≤24 相邻位估宽让位、n>24 按步长抽样；
+       * 悬停位自身让位时左右邻非关键标签临时隐藏（关键位恒显优先，hover 变化即重编
+       * 恢复；hoverIdx=-1 不抑制） */
+      var shown = !empty && vv > 0 && (isCur || keep[c] ||
+        (c % step === 0 && (step > 1 || fits(txt)) &&
+          !(hoverHasVal && Math.abs(c - hoverIdx) === 1 && !curFits)));
+      var pinL = shown && c === 0 && !fits(txt);
+      var pinR = shown && c === n - 1 && !fits(txt);
       var xShow = !xThin || c % 2 === 0 || c === n - 1 || c === hoverIdx;
       var aria = it.label + SPD_L("，", ", ") + (empty || !(vv > 0) ? SPD_L("无数据", "no data") : (vv.toFixed(1) + " t/s")) +
         (mname ? SPD_L("，", ", ") + mname : "") + (mix ? SPD_L("，", ", ") + SPD_L("混合", "mixed") : "");
@@ -309,7 +351,8 @@
         (c === n - 1 ? " latest" : "") + ' zu-sv3-slot" role="img" tabindex="0" data-i="' + c + '"' +
         (mix ? ' title="' + spdEsc(SPD_L("混合（" + it.models.length + " 种模型）", "Mixed (" + it.models.length + " models)")) + '"' : "") +
         ' aria-label="' + spdEsc(aria) + '">' +
-        '<span class="zu-sc-vz"><span class="zu-sc-val">' + (shown ? txt : "") + "</span>" +
+        '<span class="zu-sc-vz"><span class="zu-sc-val' + (pinL ? " zu-sv3-vpin-l" : pinR ? " zu-sv3-vpin-r" : "") + '">' +
+        (shown ? txt : "") + "</span>" +
         '<i class="zu-sc-bar' + (mix ? " zu-sv3-mix" : "") + '" style="height:' + hPct + "%" +
         (mcolor ? ";background:" + mcolor : "") + '"></i></span>' +
         '<span class="zu-sc-x"><b' + (xShow ? "" : ' class="zu-sv3-xoff"') + ">" + spdEsc(it.label) + "</b></span>" +
@@ -346,6 +389,19 @@
    * today/week 槽位卡自 v389 起改走 spd3SlotCardHTML（§13.2 增强字段 + 空槽轻卡），
    * 本函数保留给 recent 一轮一柱形态。hoverIdx 可选：≥0 时卡根携带 data-i（Portal
    * 定位与键盘焦点归位消费）。 */
+  /* 生成耗时文本（§15.5 hover 六要素）：ms→人读时长，中文值与单位紧邻（v125 口径）、
+   * 英文值与单位紧邻+时段间空格；秒 <60 一位小数，向上分段零段省略；ms≤0 空串
+   * （调用点整行省略，绝不显示 0）。 */
+  function spd3DurTxt(ms) {
+    if (!(spdNum(ms) > 0)) return "";
+    if (ms < 100) return SPD_L("<0.1秒", "<0.1s");   /* 绝不显示 0.0（v391 审查 MINOR-3） */
+    var tot = Math.round(ms / 1000);
+    var h = Math.floor(tot / 3600), mnt = Math.floor((tot % 3600) / 60), sec = tot % 60;
+    if (tot < 60) return (ms / 1000).toFixed(1) + SPD_L("秒", "s");
+    var zh = (h ? h + "时" : "") + (mnt ? mnt + "分" : "") + (sec ? sec + "秒" : "");
+    var en = (h ? h + " h " : "") + (mnt ? mnt + " m " : "") + (sec ? sec + " s" : "");
+    return SPD_L(zh, en.replace(/\s+$/, ""));
+  }
   function spd3HoverCardHTML(item, o, hoverIdx) {
     if (!item || item.empty || !(spdNum(item.v) > 0)) return "";
     var bd = tpsBand(item.v), vv = spdNum(item.v);
@@ -390,6 +446,10 @@
     }
     rows += '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("Token 总消耗", "Total tokens")) + '</span><b>' + spdEsc(tokLine) +
       '<small>' + spdEsc(sub) + "</small></b></div>" +
+      /* §15.5（v391）：生成耗时行（Σ有效生成窗口；降级帧 ms=0 整行省略，绝不造 0）——
+       * 时间/模型/速度/Token/耗时/费用六要素齐 */
+      (spdNum(item.ms) > 0 ? '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("生成耗时", "Gen time")) +
+        '</span><b>' + spdEsc(spd3DurTxt(item.ms)) + "</b></div>" : "") +
       '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("预估价格", "Est. cost")) + "</span><b>" + cost + "</b></div>";
     return '<div class="' + cls + '" role="tooltip"' +
       (typeof hoverIdx === "number" && hoverIdx >= 0 ? ' data-i="' + hoverIdx + '"' : "") + ">" + rows + "</div>";

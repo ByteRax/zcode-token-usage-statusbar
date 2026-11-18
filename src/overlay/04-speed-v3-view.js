@@ -17,8 +17,7 @@
    * 集成契约：spd3LeftHTML 第三参 expanded（多模型分布表展开态，调用方传布尔）、第四参
    * poolSingle（chips 池恰一模型=「真单模型池」，驱动「当前模型」行去重；v390 用户
    * 裁定「唯一模型」徽标与供应商副标 .zu-sv3-msub/.zu-sv3-only 均去除）；
-   * 覆盖范围五值读可选 an.cov={recent,today,week,month,all}（集成方按五个 period 各跑一次
-   * spd3AnalyzeCached 汇总轮数，缺席显 —）；筛选 chips 池缺省取 an.perModel+an.selMissing，
+   * 筛选 chips 池缺省取 an.perModel+an.selMissing，
    * 筛选激活时集成方应传 ctx.pool=未筛选全量模型（否则 chips 收缩为已选集，无法点回）。
    * v387 实机修复批（spec §11）：宽度链 border-box 释放（§11.1）；多模型态主数字恒在
    * （§11.3）；an.real 空时图表区渲染居中空态 spd3EmptyStateHTML（§11.4，占位 <!--CHART-->
@@ -206,17 +205,17 @@
       (capped ? '<div class="zu-sv3-fpop-cap">' + spdEsc(SPD_L("输入以搜索更多", "Type to search more")) + "</div>" : "") +
       acts + "</div>";
   }
-  /* ==================== ④ 左摘要卡（spec §6 + §11.3/§11.4/§11.5） ====================
-   * 三态：空（无 perModel 或无 overall）→ 主数字 — + 本期统计 0/0 + 峰最低新 —；
-   * 单模型（perModel 恰 1，无数据模型不计）→ 主数字/档位/模型行/本期统计；
-   * 多模型 → 主数字恒在（v387 §11.3：任何模型数不缺均速大数字）→ 档位胶囊 →
-   * 「本期有效 N 个模型 · M 轮」（selMissing 非空追加无有效记录提示）→ 分布
+  /* ==================== ④ 左摘要卡（spec §6 + §11.3/§11.4/§11.5/§15.1） ====================
+   * 三态：空（无 perModel 或无 overall）→ 主数字 — + 请求轮次 0/有效模型 0 + 峰最低新 —；
+   * 单模型（perModel 恰 1，无数据模型不计）→ 主数字/档位/模型行/请求轮次/有效输出
+   * （或当前模型）；多模型 → 主数字恒在（v387 §11.3：任何模型数不缺均速大数字）→
+   * 档位胶囊 → 「本期有效 N 个模型 · M 轮」（selMissing 非空追加无有效记录提示）→ 分布
    * （堆叠条 + div Grid 网格表默认 ≤4 行，data-sv3-more 查看全部；表容器 max-height
    * 内滚，展开态不撑高主卡）→ 峰/低/新。分布行序按 share（请求数占比）降序；
    * msAvail=false 降级：隐藏「均速」列（.zu-sv3-dtab-noms 两列变体），绝不出现 t/s 假值。
    * poolSingle = chips 池恰 1 个真模型——驱动「当前模型」行去重（v390 起「唯一模型」
-   * 徽标已按用户裁定去除）；筛选缩到单模型不冒充。覆盖范围单值随 an.period 直读
-   * （v384 M4：an.cov 五值契约废除）。 */
+   * 徽标已按用户裁定去除）；筛选缩到单模型不冒充。「本期统计」组标题与「覆盖范围」
+   * kv 已随 v391 §15.1 删除（范围语义由标题行承载）。 */
   function spd3LeftTitle(an) {
     var n = an && an.items ? an.items.length : 0;
     var t = an && an.period === "recent" ? SPD_L("最近 " + n + " 轮", "Last " + n + " turns")
@@ -258,10 +257,9 @@
       spd3StatHTML(SPD_L("最低", "Low"), an.low, dayLbl ? SPD_L("最低日均", "Worst daily") : "") +
       spd3StatHTML(SPD_L("最新", "Latest"), an.latest, dayLbl ? SPD_L("最近日均", "Latest daily") : "") + "</div>";
     if (!models.length || !overall) {
-      /* 空池/显式空筛选（§11.4）：标题 + — 主数字 + 本期统计（0 轮 / 0 模型）+
+      /* 空池/显式空筛选（§11.4）：标题 + — 主数字 + 请求轮次 0 / 有效模型 0 +
        * 峰最低新 —，绝不造 0 t/s；图表区由 spd3CardHTML 换居中空态块 */
       return '<div class="zu-sv3-left">' + headRow + spd3MainNumHTML(null) +
-        '<i class="zu-sv3-cov-h">' + spdEsc(SPD_L("本期统计", "This period")) + "</i>" +
         '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("请求轮次", "Turns")) + "</i><b>" +
         spdEsc(spdNum(0) + SPD_L("轮", " turns")) + "</b></div>" +
         '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("有效模型", "Active models")) + "</i><b>0</b></div>" +
@@ -269,13 +267,8 @@
     }
     if (models.length === 1) {
       var m = models[0];
-      /* v384 M4：覆盖范围单值直读本视图（an.cov 五值生产者无人实现，砍掉）；
-       * m3：补「本期统计」组标题（设计稿单模型态三行 kv 的分组标签） */
-      var covLbl = an.period === "recent" ? SPD_L("最近 " + (an.items ? an.items.length : 0) + " 轮", "Last " + (an.items ? an.items.length : 0) + " turns")
-        : an.period === "today" ? SPD_L("今天", "Today")
-        : an.period === "week" ? SPD_L("近 7 天", "Last 7 days")
-        : an.period === "month" ? SPD_L("本月", "This month")
-        : SPD_L("全部历史", "All history");
+      /* §15.1：「本期统计」组标题与「覆盖范围」kv 删除（v391）——范围语义由标题行
+       * （「最近 N 轮平均速度」等）承载，kv 组紧凑直达数据 */
       /* §12.2 当前模型行去重：真单模型池（poolSingle）时本行与模型行 Chip 恒完全同名
        * （同一 perModel 条目），替换为「有效输出」（overall.out 经 o.fmtTok 格式化）；
        * fmtTok 缺席整行省略（不虚构格式化值），非真单模型池（筛选缩到单模型）保留原名 */
@@ -290,11 +283,9 @@
       return '<div class="zu-sv3-left">' + headRow + spd3MainNumHTML(overall.v) +
         (bd ? spd3BandHTML(bd) : "") +
         '<div class="zu-sv3-model">' + spd3DotAndName(m.key, m.name) + "</div>" +
-        '<i class="zu-sv3-cov-h">' + spdEsc(SPD_L("本期统计", "This period")) + "</i>" +
         '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("请求轮次", "Turns")) + "</i><b>" +
         spdEsc(spdNum(overall.turns) + SPD_L("轮", " turns")) + "</b></div>" +
         modelKv +
-        '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("覆盖范围", "Coverage")) + "</i><b>" + spdEsc(covLbl) + "</b></div>" +
         stats + "</div>";
     }
     /* ---- 多模型态（§11.3）：标题 → 主数字 → 档位胶囊 → 本期有效计数 →
@@ -512,9 +503,12 @@
       ".zu-sv3-root .zu-sv3-left{flex:0 0 250px;min-width:0;display:flex;flex-direction:column;min-height:0;" +
         "border:1px solid var(--color-popover-border,rgba(255,255,255,.14));border-radius:12px;padding:10px 12px 12px}" +
       ".zu-light .zu-sv3-root .zu-sv3-left{border-color:rgba(15,23,42,.14)}" +
-      ".zu-sv3-root .zu-sv3-chart{flex:1 1 0;min-width:0;max-width:100%;display:flex;flex-direction:column;min-height:0;" +
-        "border:1px solid var(--color-popover-border,rgba(255,255,255,.14));border-radius:12px;padding:10px 12px}" +
-      ".zu-light .zu-sv3-root .zu-sv3-chart{border-color:rgba(15,23,42,.14)}" +
+      /* §15.2（v391）：边框/圆角/padding 只挂外层卡 [data-sv3-chart]——charts 分片内层
+       * 内容盒同名 .zu-sv3-chart 曾双重命中同一规则，绘图区外多一层边框+双层 padding */
+      ".zu-sv3-root .zu-sv3-chart{flex:1 1 0;min-width:0;max-width:100%;display:flex;flex-direction:column;min-height:0}" +
+      ".zu-sv3-root .zu-sv3-chart[data-sv3-chart]{border:1px solid var(--color-popover-border,rgba(255,255,255,.14));" +
+        "border-radius:12px;padding:10px 12px}" +
+      ".zu-light .zu-sv3-root .zu-sv3-chart[data-sv3-chart]{border-color:rgba(15,23,42,.14)}" +
       "@media (max-width:760px){.zu-sv3-root .zu-sv3-left{flex:0 0 220px}}" +
       /* ---- 图表标题栏（.zu-sc-* 基类属 V1 共享，这里只做 V3 作用域覆写） ---- */
       ".zu-sv3-chart .zu-sc-head{margin-left:0;align-items:center;flex-wrap:wrap;row-gap:2px}" +
@@ -568,8 +562,7 @@
       ".zu-sv3-root .zu-sv3-kv i{font-style:normal;color:var(--color-tooltip-tag-foreground,#a6a6a6);flex:0 0 auto}" +
       ".zu-sv3-root .zu-sv3-kv b{font-weight:600;font-variant-numeric:tabular-nums;min-width:0;overflow:hidden;" +
         "text-overflow:ellipsis;white-space:nowrap;text-align:right}" +
-      /* v384 M4：覆盖范围改单值 kv（.zu-sv3-kv 承载），五值结构 CSS 删除 */
-      ".zu-sv3-root .zu-sv3-cov-h{font-style:normal;color:var(--color-tooltip-tag-foreground,#a6a6a6);display:block;margin-top:10px}" +
+      /* v391 §15.1：「本期统计」组标题（.zu-sv3-cov-h）随字段删除整链退役 */
       /* §13.5 分布条对齐：dist-h/dbar/dwrap 同为左卡内容盒的全宽块级子元素，三者一律
        * 零水平 margin/padding（v388 态核查已达标，此处显式锁口径）——左右缘对齐误差
        * ≤2px；dbar 的 4px 圆角端头是视觉内收（≤4px 感知差）而非几何错位；dwrap 展开
@@ -599,9 +592,13 @@
       ".zu-sv3-root .zu-sv3-dnum{text-align:right;white-space:nowrap}" +
       ".zu-sv3-root .zu-sv3-dname{display:flex;align-items:center;gap:6px}" +
       ".zu-sv3-root .zu-sv3-dname .zu-sv3-chip-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
-      ".zu-sv3-root .zu-sv3-more{appearance:none;border:0;background:transparent;color:var(--color-brand,#a3cfff);" +
-        "font-family:inherit;font-size:calc(var(--ui-font-size,14px) - 3px);padding:4px 0 0;margin:0;cursor:pointer;text-align:left}" +
-      ".zu-sv3-root .zu-sv3-more:hover{text-decoration:underline}" +
+      /* §15.4（v391）：「查看全部 N 个模型」模型列表下方水平居中、轻量次级文本按钮 */
+      ".zu-sv3-root .zu-sv3-more{appearance:none;border:0;background:transparent;font-family:inherit;" +
+        "display:block;width:100%;text-align:center;color:var(--color-tooltip-tag-foreground,#a6a6a6);" +
+        "font-size:calc(var(--ui-font-size,14px) - 3px);padding:5px 8px;margin:2px 0 0;border-radius:7px;cursor:pointer}" +
+      ".zu-sv3-root .zu-sv3-more:hover{color:var(--color-foreground,#e9edf4);background:rgba(255,255,255,.05)}" +
+      ".zu-light .zu-sv3-root .zu-sv3-more:hover{background:rgba(0,0,0,.04)}" +
+      ".zu-sv3-root .zu-sv3-more:active{opacity:.7}" +
       ".zu-sv3-root .zu-sv3-more:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
       /* §13.5 stats 恢复 Footer 语义（推翻 v388 §12.2 的「禁 auto」：第三轮断层实为
        * 分布表缺失时的推底空腔，§12.2 分布表 Grid 化后左卡内容密度已足够）——内容少
@@ -731,18 +728,25 @@
         : rows === 5 ? { tier: "month-r5", px: 450 }
         : { tier: "month-r6", px: 470 };
     }
-    /* all：日历式（.zu3-cal，覆盖 ≤56 天或自然周 ≤8 行）按**覆盖自然周行数 R**
-     * 分档（v390 审查 M1 接线：R6-7 需 420、R8 需 460，380 档 6 行日历纵挤）；
-     * 周列式（>56 天）按日桶数映射。R 复算公式与 heat 分派一致
-     * （ceil((轴首星期偏移+coverDays)/7)）。 */
+    /* all：日历式（.zu3-cal，覆盖 ≤60 天，v391 §15.3 阈值对齐 PRD）按**覆盖自然周行数
+     * R** 分档（R≤5→380、R6-7→420、R≥8→460；行高帽 84px 下 R9-10 在 460 档每行
+     * ≥30px 可读）；周列式（>60 天）按日桶数映射。R 只决定日历档内 px（v391 起
+     * heat 分派以 cover 天数为唯一轴，R 公式=ceil((轴首星期偏移+coverDays)/7)）。 */
     var dA = (typeof an.axisA === "number" && isFinite(an.axisA) && an.axisA > 0) ? an.axisA
       : (typeof an.spanA === "number" ? an.spanA : 0);
     var dB = (typeof an.axisB === "number" && isFinite(an.axisB) && an.axisB > 0) ? an.axisB
       : (typeof an.spanB === "number" ? an.spanB : 0);
     if (dA > 0 && dB > 0) {
+      /* 轴口径与 heat 分派一致（v391 审查 MINOR-2）：两端归一本地日零点、轴末钳今天
+       * （原始时间戳在傍晚/上午轮时 cover 可差 1 天，60/61 边界形态错档） */
+      var dA0 = spdDate(dA);
+      dA = new Date(dA0.getFullYear(), dA0.getMonth(), dA0.getDate()).getTime();
+      var dB0 = spdDate(dB);
+      dB = Math.min(new Date(dB0.getFullYear(), dB0.getMonth(), dB0.getDate()).getTime(),
+        new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()).getTime());
       var d0 = new Date(dA), cover = Math.round((dB - dA) / 864e5) + 1;
       var R = Math.ceil((d0.getDay() + cover) / 7);
-      if (cover <= 42 || R <= 8)
+      if (cover <= 60)
         return R <= 5 ? { tier: "all-s", px: 380 }
           : R <= 7 ? { tier: "all-m", px: 420 }
           : { tier: "all-l", px: 460 };

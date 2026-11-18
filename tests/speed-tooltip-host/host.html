@@ -532,6 +532,17 @@ var FIXTURES = {
     for (var i = 0; i < 20; i++) list.push({ at: daysAgo(19 - i, 11 + (i % 6), 15), sps: 100 + ((i * 37) % 90), gen: 6000 });
     return hist(buildTurns(list));
   },
+  hist7: function () {     /* v391 §15.3：7 天（日历式下沿，PRD「7–14 紧凑日历」） */
+    var list = [];
+    for (var i = 0; i < 7; i++) list.push({ at: daysAgo(6 - i, 12 + (i % 8), 10), sps: 95 + ((i * 53) % 110), gen: 6000 });
+    return hist(buildTurns(list));
+  },
+  hist90: function () {    /* v391 §15.3：90 天（>60 周列式贡献热力图档） */
+    var list = [];
+    for (var i = 0; i < 90; i++) list.push({ at: daysAgo(89 - i, 9 + (i % 10), 10 + (i % 50)),
+      sps: 60 + ((i * 83) % 220), gen: 6000 });
+    return hist(buildTurns(list));
+  },
   hist400: function () {   /* v291：约 400 天逐日 1 轮（历史热力图密集 + 内部横滚 + 首开滚到最右） */
     var list = [];
     for (var i = 0; i < 400; i++) list.push({ at: daysAgo(399 - i, 9 + (i % 10), 10 + (i % 50)),
@@ -1146,7 +1157,15 @@ window.__zuDiag = function () {
  *   拉伸、X 标签带恒贴底——recent/today/week 三形态有 .zu-sc-plot，热力自动跳过）；
  * ⑪ 筛选弹出层锚定（v390 §14.1）：fpop 打开时 top ≥ fbar 底（锚定筛选栏正下方、
  *   贴近触发器，间距 ≤24px——默认 top:87px/动态 pop.top 两路径均应落在带内）且
- *   完全在视口内；fpop 未打开自动跳过。 */
+ *   完全在视口内；fpop 未打开自动跳过。
+ * ⑫ 分布条段等高（v390 第五轮专项，详见下方块注释）；
+ * ⑬ 图表单层边框（v391 §15.2）：外层卡 [data-sv3-chart] computed border 恒 1px，
+ *   charts 注入的内层 .zu-speed-chart 同名盒 border/padding 恒 0（曾双重命中）；
+ * ⑭ 柱图数值标签不重叠不裁切（v391 §15.5）：可见 .zu-sc-val 两两矩形不相交
+ *   （≥0.5px 容差），首末柱标签完全在 plot 矩形内（钉边类防裁切验证）；
+ * ⑮ 短历史整组居中（v391 §15.3）：cal/day-cards 挂载态周头+网格（或卡组）的
+ *   上留白与下留白差 ≤16px（行高帽/卡高帽封顶后 justify-content:center 均分），
+ *   行多填满时上下留白≈0 自然满足；非稀疏热力形态自动跳过。 */
 window.__zuGeometryChecks = function () {
   var out = { checks: [], failures: [] };
   var tipBox = document.getElementById('zu-spd-replica');
@@ -1308,6 +1327,78 @@ window.__zuGeometryChecks = function () {
     f('fpop-in-viewport-anchored', fp11.x >= 0 && fp11.y >= 0 && fp11.right <= vw11 && fp11.bottom <= vh11,
       'rect=' + [Math.round(fp11.x), Math.round(fp11.y), Math.round(fp11.right), Math.round(fp11.bottom)].join(',') +
       ' vp=' + vw11 + 'x' + vh11);
+  }
+  /* ---------- §15.2（v391 单层边框）----------
+   * ⑬ 外层卡 [data-sv3-chart] computed border 恒 1px（外层卡边界保留）；charts 注入
+   *   的内层 .zu-speed-chart 同名盒 border/padding 恒 0（曾双重命中同一规则）。
+   *   内层盒仅柱/折线视图存在（热力内层类 zu-sv-chart 不带 zu-sv3-chart），
+   *   缺席自动跳过。 */
+  if (chart) {
+    var bcs13 = getComputedStyle(chart);
+    var bw13 = parseFloat(bcs13.borderRightWidth) || 0;
+    f('chart-card-border-1px', Math.abs(bw13 - 1) < 0.3, 'outerBorder=' + bcs13.borderRightWidth);
+    var inner13 = chart.querySelector('.zu-speed-chart');
+    if (inner13) {
+      var ics13 = getComputedStyle(inner13);
+      var ibw = parseFloat(ics13.borderRightWidth) || 0, ipad = (parseFloat(ics13.paddingLeft) || 0) +
+        (parseFloat(ics13.paddingRight) || 0);
+      f('chart-inner-no-border', ibw === 0 && ipad === 0,
+        'innerBorder=' + ics13.borderRightWidth + ' innerPadH=' + ipad);
+    }
+  }
+  /* ---------- §15.5（v391 柱标统一）----------
+   * ⑭ 可见 .zu-sc-val（有文本读数）两两矩形不相交（横向交叠且纵向交叠均 >0.5px 才
+   *   算重叠——同列上下关系不存在，标签只在柱顶）；首末柱标签完全在 plot 矩形内
+   *   （estW>slotW 时 vpin-l/r 钉边防裁切）。折线/热力无 .zu-sc-val 自动跳过。 */
+  var plot14 = root.querySelector('.zu-sc-plot');
+  if (plot14) {
+    var labs = [];
+    for (var lv = root.querySelectorAll('.zu-sc-val'), li = 0; li < lv.length; li++) {
+      if ((lv[li].textContent || '').length && lv[li].offsetParent) labs.push(lv[li].getBoundingClientRect());
+    }
+    var overlap = 0;
+    for (var la = 0; la < labs.length; la++) for (var lb2 = la + 1; lb2 < labs.length; lb2++) {
+      var ox = Math.min(labs[la].right, labs[lb2].right) - Math.max(labs[la].left, labs[lb2].left);
+      var oy = Math.min(labs[la].bottom, labs[lb2].bottom) - Math.max(labs[la].top, labs[lb2].top);
+      if (ox > 0.5 && oy > 0.5) overlap++;
+    }
+    f('bar-labels-no-overlap', overlap === 0,
+      'labels=' + labs.length + ' overlaps=' + overlap);
+    var pr14 = plot14.getBoundingClientRect();
+    var edge = 0;
+    for (var le = 0; le < labs.length; le++) {
+      if (labs[le].left < pr14.left - 0.5 || labs[le].right > pr14.right + 0.5) edge++;
+    }
+    f('bar-labels-in-plot', edge === 0, 'out-of-plot=' + edge + ' of ' + labs.length);
+  }
+  /* ---------- §15.3（v391 短历史居中）----------
+   * ⑮ cal 形态：行高帽封顶后周头+网格作为整组在 wrap 内垂直居中——组上留白与组下
+   *   留白差 ≤16px（行多填满时两侧留白≈0 自然满足）。dc 形态：卡高帽下卡组在网格
+   *   内垂直居中（首卡上留白 vs 末卡下留白差 ≤16px）。柱/折线形态自动跳过。 */
+  var cal15 = root.querySelector('.zu3-cal');
+  var dc15 = root.querySelector('.zu3-dc');
+  if (cal15) {
+    var w15 = cal15.querySelector('.zu-sc-wrap');
+    var grid15 = cal15.querySelector('.zu3-hm-grid');
+    if (w15 && grid15) {
+      var wr15 = w15.getBoundingClientRect(), gr15 = grid15.getBoundingClientRect();
+      var wk15 = cal15.querySelector('.zu3-hm-week');
+      var gTop = wk15 ? wk15.getBoundingClientRect().top : gr15.top;
+      var gapTop = gTop - wr15.top, gapBot = wr15.bottom - gr15.bottom;
+      f('sparse-centered', Math.abs(gapTop - gapBot) <= 16,
+        'gapTop=' + Math.round(gapTop) + ' gapBot=' + Math.round(gapBot));
+    }
+  } else if (dc15) {
+    var dg15 = dc15.querySelector('.zu3-dc-grid');
+    var cells15 = dg15 ? dg15.querySelectorAll('.zu-hm-cell') : [];
+    if (dg15 && cells15.length) {
+      var dgr = dg15.getBoundingClientRect();
+      var cTop = cells15[0].getBoundingClientRect().top;
+      var cBot = cells15[cells15.length - 1].getBoundingClientRect().bottom;
+      var dGapT = cTop - dgr.top, dGapB = dgr.bottom - cBot;
+      f('sparse-centered', Math.abs(dGapT - dGapB) <= 16,
+        'gapTop=' + Math.round(dGapT) + ' gapBot=' + Math.round(dGapB));
+    }
   }
   return out;
 };
