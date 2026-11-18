@@ -272,30 +272,36 @@ test('hist: 550 天 → 19 月列月聚合（根类 zu3-hh-mo、YYYY/MM 列帽�
   assert.match(htmlB2, /zu3-hh-mo/, '27 列 > 26 → 切月聚合');
   assert.match(htmlB2, /data-head-sub="按月聚合"/);
 
-  // 短历史：列数=1、逐列显标签（不稀疏）、空日=灰格如实显示
+  // 短历史（池覆盖 11-03..11-05 = 3 天 ≤7）→ v389 §13.4 紧凑日卡形态（.zu3-dc），
+  // 不再走周网格：每日一卡（含空日「无记录」灰卡）、无星期行/列头/补位
   const ctxS = makeCtx();
   ctxS.__sd = { v: 1, source: 'local', start: new Date(2026, 10, 3).getTime(),
     days: [[300, 1000, 1, 1, 0, [[0, 300, 1000, 1, 1]]], [0, 0, 0, 0, 0, 0],
       [500, 5000, 1, 1, 0, [[0, 500, 5000, 1, 1]]]],
     mnames: ['GLM-A'], mkeys: [K.a], truncated: 0 };
-  const htmlS = dom(histHTML(ctxS, analyzeAll(ctxS, '__sd'), ctxS.__sd));
-  assert.match(htmlS, /--zu3-cols:1/);
-  assert.equal(count(htmlS, 'zu-hm-cell'), 3);
-  assert.equal(count(htmlS, 'zu-hm-pad'), 4, '周首对齐前后补位');
-  assert.equal(count(htmlS, 'class="zu3-cl'), 1, '≤14 列逐列显标签');
-  assert.match(cellOf(htmlS, 1), /zu-hm-void/, '中间空日=灰格（空=无数据）');
+  const rawS = histHTML(ctxS, analyzeAll(ctxS, '__sd'), ctxS.__sd);
+  const htmlS = dom(rawS);
+  assert.match(htmlS, /class="zu-speed-chart zu-sv-chart zu3-dc"/, '覆盖 ≤7 天切紧凑日卡（v389 §13.4）');
+  assert.match(rawS, /data-head-sub="按日 · 覆盖 3 天"/, '日卡形态副题=覆盖天数');
+  assert.equal(count(htmlS, 'zu-hm-cell'), 3, '11-03..11-05 每日一卡（含空日）');
+  assert.equal(count(htmlS, 'zu3-dcw'), 3, '每卡周几副标');
+  assert.equal(count(htmlS, '<span>周'), 0, '无周列星期行');
+  assert.equal(count(htmlS, 'zu-hm-pad'), 0, '日卡形态无补位');
+  assert.doesNotMatch(htmlS, /zu3-hh-grid|zu3-cl|--zu3-cols/, '不走周网格（无列头/列数下发）');
+  assert.match(cellOf(htmlS, 0), /zu3-dcv">300</, '首日速度大字');
+  assert.match(cellOf(htmlS, 1), /zu-hm-void/, '中间空日=灰卡（空=无数据）');
+  assert.match(cellOf(htmlS, 1), /zu3-dcnone">无记录</, '空日「无记录」轻字');
+  assert.match(cellOf(htmlS, 2), /zu-hm-today/, '今天卡描边');
 });
 
 // ---------- ⑤b v388 §12.6 热力密度：≤14 列整块水平居中（zu3-hh-c），>14 列左对齐 ----------
-test('hist §12.6 列数分档对齐: 短历史根挂 zu3-hh-c（cols/grid 同规则居中）、>14 列维持 flex-start、短月史同款', () => {
+test('hist §12.6 列数分档对齐: 短周史（≤14 列）根挂 zu3-hh-c（cols/grid 同规则居中）、>14 列维持 flex-start、短月史同款（日卡形态只归 ≤7 天覆盖）', () => {
   const ctx = makeCtx();
-  // 短历史 3 天 → 1 列 ≤14：根挂 zu3-hh-c；样式段含居中规则（两容器同 justify）
-  ctx.__sd = { v: 1, source: 'local', start: new Date(2026, 10, 3).getTime(),
-    days: [[300, 1000, 1, 1, 0, [[0, 300, 1000, 1, 1]]], [0, 0, 0, 0, 0, 0],
-      [500, 5000, 1, 1, 0, [[0, 500, 5000, 1, 1]]]],
-    mnames: ['GLM-A'], mkeys: [K.a], truncated: 0 };
+  // 短周史 10 天（覆盖 >7 → 不切日卡）→ 2 列 ≤14：根挂 zu3-hh-c；样式段含居中规则
+  ctx.__sd = daysN(10);
   const rawS = histHTML(ctx, analyzeAll(ctx, '__sd'), ctx.__sd);
-  assert.match(rawS, /class="zu-speed-chart zu-sv-chart zu3-hh zu3-hh-c"/, '短历史（1 列）根挂 zu3-hh-c');
+  assert.match(rawS, /class="zu-speed-chart zu-sv-chart zu3-hh zu3-hh-c"/, '短周史（2 列）根挂 zu3-hh-c');
+  assert.doesNotMatch(dom(rawS), /zu3-dc-grid/, '覆盖 10 天 > 7 不切日卡（形态边界归 §13.4 边界用例）');
   assert.match(rawS, /\.zu-sv3-root \.zu3-hh-c \.zu3-hh-cols,\.zu-sv3-root \.zu3-hh-c \.zu3-hh-grid\{justify-content:center\}/,
     '居中规则：cols 与 grid 同步 justify-content:center');
   // 26 列（177 天）>14：不挂居中类（flex-start 左对齐，横滚有意义）
@@ -484,4 +490,72 @@ test('v387 区间文案: 已结束日=全天；进行中=截至 HH:mm；距末 �
   assert.match(vm.runInContext(`spd3DaySpanTxt(${d0}, ${b3})`, ctx), /全天|All day/);
   // b 缺席/越界（≥次日零点）按全天处理，绝不猜进行中
   assert.match(vm.runInContext(`spd3DaySpanTxt(${d0})`, ctx), /全天|All day/);
+});
+
+// ---------- v389 §13.4 day-cards 判定边界（覆盖跨度 7/8 天两态） ----------
+test('v389 §13.4 day-cards 边界: 池覆盖 7 自然日→紧凑日卡、8 天→周网格（轴末恒钳今天，日历跨度判定）', () => {
+  // 7 天覆盖（10-30..11-05，含今天）→ zu3-dc：恰 7 卡、无星期行、副题=覆盖 7 天
+  const ctx7 = makeCtx();
+  ctx7.__sd = daysN(7);
+  const raw7 = histHTML(ctx7, analyzeAll(ctx7, '__sd'), ctx7.__sd);
+  const html7 = dom(raw7);
+  assert.match(html7, /class="zu-speed-chart zu-sv-chart zu3-dc"/, '覆盖 7 天 → 紧凑日卡');
+  assert.match(raw7, /data-head-sub="按日 · 覆盖 7 天"/, '副题=覆盖 7 天');
+  assert.equal(count(html7, 'zu-hm-cell'), 7, '每天一卡（逐日递增均速）');
+  assert.equal(count(html7, 'zu-hm-pad'), 0, '日卡无补位');
+  assert.equal(count(html7, '<span>周'), 0, '无周列星期行');
+  assert.match(cellOf(html7, 0), /zu3-dcd">10\/30</, '首卡=轴首日（今天−6）');
+  assert.match(cellOf(html7, 6), /zu-hm-today/, '末卡=今天描边');
+  // 8 天覆盖（10-29..11-05）→ 既有周网格（zu3-hh），不切日卡
+  const ctx8 = makeCtx();
+  ctx8.__sd = daysN(8);
+  const raw8 = histHTML(ctx8, analyzeAll(ctx8, '__sd'), ctx8.__sd);
+  const html8 = dom(raw8);
+  assert.match(html8, /class="zu-speed-chart zu-sv-chart zu3-hh[ "]/, '覆盖 8 天 → 周网格');
+  assert.doesNotMatch(html8, /zu3-dc/, '8 天不切日卡');
+  assert.match(raw8, /data-head-sub="按日聚合"/, '周网格副题不变');
+  assert.match(html8, /--zu3-cols:2/, '8 天 → 2 周列');
+  assert.equal(count(html8, '<span>周'), 7, '行首星期行在场');
+});
+
+// ---------- v389 §13.4 axisA 优先：day-cards 判定读未筛选池时间轴（PRD 5.5 形态稳定） ----------
+test('v389 §13.4 axisA 优先: spanA 随筛选收缩但 axisA（全池 10 天）在场 → 仍周网格不收缩成日卡；老帧缺 axisA 退化读 spanA → 日卡', () => {
+  const ctx = makeCtx();
+  // A 模型 10-27..11-05 每天一轮（全池覆盖 10 天）；B 模型只 11-04/11-05 各一轮（2 天）
+  const raw = [];
+  for (let i = 0; i < 10; i++) {
+    const at = new Date(2026, 9, 27 + i, 10).getTime();
+    raw.push({ t: at, out: 200, ms: 2000, msl: [[0, 200, 2000, 1, 1]] });
+  }
+  for (const dd of [4, 5]) {
+    const at = new Date(2026, 10, dd, 11).getTime();
+    raw.push({ t: at, out: 100, ms: 1000, msl: [[1, 100, 1000, 1, 1]] });
+  }
+  ctx.__h = frameFrom(raw, { mnames: ['GLM-A', 'Claude-B'], mkeys: [K.a, K.b] });
+  // axisA 前提自检：spd3Analyze 产物 axisA=全池首日（10-27）、spanA=筛选后池首日（11-04）
+  const anF = vm.runInContext(
+    'spd3Analyze(__h, null, {range:"all", period:"all", sid:"", filt:{mode:"sel",keys:[' +
+    JSON.stringify(K.b) + ']}})', ctx);
+  assert.equal(anF.axisA, new Date(2026, 9, 27, 9, 59).getTime(),
+    'axisA=未筛选池首轮 b（10-27 09:59，筛选不收缩时间轴）');
+  assert.equal(anF.spanA, new Date(2026, 10, 4, 10, 59).getTime(),
+    'spanA=筛选后展示轴首日（11-04，池收缩）');
+  // 行为锁：判定读 axisA（10-27..今天 = 10 天 > 7）→ 仍周网格，不随筛选收缩成日卡
+  const htmlF = dom(histHTML(ctx, anF, ctx.__sd));
+  assert.match(htmlF, /class="zu-speed-chart zu-sv-chart zu3-hh[ "]/, 'axisA 宽（10 天）→ 周网格');
+  assert.doesNotMatch(htmlF, /zu3-dc-grid/, '不随筛选收缩成日卡（PRD 5.5 覆盖=池时间轴）');
+  assert.equal(count(htmlF, 'zu-hm-data'), 2, '着色仍按筛选：只 11-04/11-05 两格有数据');
+  // 老帧缺 axisA/axisB（旧版本快照）：退化读 spanA（11-04 起 2 天 ≤7）→ 日卡
+  ctx.__ANF = anF;
+  const anNA = vm.runInContext(
+    '(function () { var c = JSON.parse(JSON.stringify(__ANF)); delete c.axisA; delete c.axisB; return c; })()', ctx);
+  const htmlNA = dom(histHTML(ctx, anNA, ctx.__sd));
+  assert.match(htmlNA, /class="zu-speed-chart zu-sv-chart zu3-dc"/, '老帧缺 axisA → 退化读 spanA（2 天）→ 日卡');
+  assert.equal(count(htmlNA, 'zu-hm-cell'), 2, '轴首=11-04、轴末=今天 → 2 卡');
+  // 再退化（spanA/spanB 也缺）：回退 items 首日（11-04）→ 同为 2 天日卡（旧行为轴）
+  const anLegacy = vm.runInContext(
+    '(function () { var c = JSON.parse(JSON.stringify(__ANF)); delete c.axisA; delete c.axisB;' +
+    ' delete c.spanA; delete c.spanB; return c; })()', ctx);
+  const htmlLG = dom(histHTML(ctx, anLegacy, ctx.__sd));
+  assert.match(htmlLG, /zu3-dc-grid/, '全缺回退 items 首日（旧行为轴）仍稳定出日卡');
 });

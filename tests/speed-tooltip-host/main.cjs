@@ -108,7 +108,9 @@ if (process.argv.includes('--selftest')) {
     'function spd3HistHTML(', 'function spd3DayCardHTML(', 'function spd3ChartFor(',
     'function spd3RebuildOr(', 'var SPD3_POOL = [];', 'function spdFitTip(',
     'function spdHoverPortalSync(', 'function spdLegendTipShow(',
-    'function spd3HeightTier(', 'function spd3BarDensityStyle('];   /* v388 §12.1/§12.3 新函数锚 */
+    'function spd3HeightTier(', 'function spd3BarDensityStyle(',
+    /* v389 §13.4/§13.2：未筛选时间轴字段 + 日卡形态 + 槽位卡构建器锚 */
+    'axisA: axisA, axisB: axisB', 'function spd3DayCardsHTML(', 'function spd3SlotCardHTML('];
   const missing = need.filter(s => !slice.includes(s));
   if (missing.length) { console.error('SELFTEST_FAIL missing: ' + missing.join(' | ')); process.exit(1); }
   try { new Function('L', '"' + 'use strict' + '";\n' + slice); }   /* 只编译不执行 */
@@ -304,6 +306,24 @@ async function runChain(wc, win, steps, log) {
       const b = await center(wc, `window.__zuCellRect(${st.hoverCell})`);
       if (!b) { log.push({ shot: st.shot, error: 'no cell ' + st.hoverCell }); continue; }
       await send(wc, 'mouseMove', b.x, b.y); await sleep(600);
+    }
+    if (st.hitProbe) {   /* v389 §13.2/§13.7：折线 hit 合成 mouseover 出卡（有数据日 +
+      * 无数据日「无有效速度记录」轻卡；__zuHitHover 页面侧 dispatchEvent 生产同款委托） */
+      const hd = await wc.executeJavaScript(`window.__zuHitHover(${st.hitProbe.dataDay})`, true);
+      if (!hd || !hd.ok || !hd.shown || !hd.dayCard || hd.noRecord)
+        log.push({ shot: st.shot, hitErr: 'dataDay', hitProbe: hd });
+      await sleep(350);
+      try { preShots[st.shot] = await wc.capturePage(); } catch (e) { }
+      const he = await wc.executeJavaScript(`window.__zuHitHover(${st.hitProbe.emptyDay})`, true);
+      if (!he || !he.ok || !he.shown || !he.noRecord)
+        log.push({ shot: st.shot, hitErr: 'emptyDay', hitProbe: he });
+      await sleep(350);
+      try {
+        const img2 = await wc.capturePage();
+        if (img2) fs.writeFileSync(path.join(OUT, 'shots',
+          st.hitProbe.shot2 || st.shot.replace(/\.png$/, '-empty.png')), img2.toPNG());
+      } catch (e) { }
+      log.push({ shot: st.shot, hitProbe: { dataDay: hd, emptyDay: he } });
     }
     if (st.padProbe) {
       const probe = await wc.executeJavaScript(`(function(){
@@ -646,6 +666,14 @@ app.whenReady().then(async () => {
     { reload: true, fixture: 'hist400', theme: 'dark', sel: { range: 'all', period: 'all' },
       wheel: { ticks: 6, deltaY: 240 }, shot: 'h14-hist-wheel.png' },
     { reload: true, fixture: 'hist400', theme: 'dark', lang: 'en', sel: { range: 'all', period: 'all' }, shot: 'h15-hist-en.png' },
+  ], log);
+
+  /* 链 D（v389 §13.2/§13.7）：折线 hit 合成 mouseover 出卡——projWeek 近 7 天 5 天有
+   * 数据：槽 4（2 天前）有数据出综合日均槽位卡、槽 6（今天空槽）出「无有效速度记录」
+   * 轻卡（-empty.png 第二拍）；几何断言含 ⑩ plot 弹性高 ∈[200,300]（§13.1）。 */
+  await runChain(wc, win, [
+    { reload: true, fixture: 'projWeek', theme: 'dark', sel: { period: 'week' },
+      hitProbe: { dataDay: 4, emptyDay: 6 }, shot: 'd1-week-hit-cards.png' },
   ], log);
 
   /* 链 G：Tab 切换宽度稳定性 + hover 边界（首柱/末柱/滚后末柱） */

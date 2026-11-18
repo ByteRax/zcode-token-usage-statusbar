@@ -360,7 +360,9 @@
     if (range === "recent") pool = pool.slice(-SPD_BARS_MAX);
     if (period === "recent") pool = pool.slice(-SPD_BARS_MAX);
     /* 降级提示的池规模判据（M1/S8）：取筛选前的原始池模型数——筛选只删分量，
-     * 池里「有没有第二个模型可比」不该随筛选翻转。 */
+     * 池里「有没有第二个模型可比」不该随筛选翻转。rawPool 引用=v389 §13.4
+     * axisA/axisB（未筛选时间轴）复用。 */
+    var rawPool = pool;
     var rawPoolModelCount = 0, rawPoolKeys = {};
     for (var rk = 0; rk < pool.length; rk++) {
       var rkm = pool[rk].models;
@@ -461,6 +463,16 @@
      * 比较不受顺序影响；spanA/spanB 取自筛选后池（沿用 V2 取法：时间窗优先）。 */
     var real = items.filter(function (x) { return !x.empty; });
     var overall = spd3Aggregate(pool, true);
+    /* v389 §13.4：未筛选原始池时间轴（axisA/axisB）——heat 短历史形态判定读它，
+     * 保证「覆盖跨度=池时间轴、着色=筛选」（PRD 5.5 时间轴稳定：极端筛选不使
+     * 形态在日卡/周网格间跳变）；spanA/spanB 仍是筛选后展示轴（图表头区间）。 */
+    var axisA = spanA0v(), axisB = 0;
+    function spanA0v() {
+      var lo = Infinity;
+      for (var ai = 0; ai < rawPool.length; ai++) if (rawPool[ai].b < lo) lo = rawPool[ai].b;
+      return isFinite(lo) ? lo : 0;
+    }
+    for (var abi = 0; abi < rawPool.length; abi++) if (rawPool[abi].t > axisB) axisB = rawPool[abi].t;
     var spanA = a || (pool.length ? pool[0].b : 0);
     var spanB = b || (pool.length ? pool[pool.length - 1].t : 0);
     if (period === "all" && pool.length) { spanA = pool[0].b; spanB = pool[pool.length - 1].t; }
@@ -502,7 +514,8 @@
       peak: peak, low: low, latest: latest, unit: unit2, title: title,
       range: range, period: period, spanA: spanA, spanB: spanB,
       notice: notices.join(SPD_L(" · ", " · ")), truncated: !!(u && u.truncated),
-      msAvail: msAvail, pool: pool, selMissing: selMissing };
+      msAvail: msAvail, pool: pool, selMissing: selMissing,
+      axisA: axisA, axisB: axisB };   /* v389 §13.4：未筛选时间轴（heat 形态判定） */
     /* v387 §11.4：空态原因分类（view 空态页据此给针对性提示与恢复动作，
      * 不再千篇一律「尝试更长时间范围」）。按池构成与筛选态判定，顺序即优先级。 */
     if (!real.length) {

@@ -143,7 +143,7 @@ test('spd3RebuildOr: 闭包读显式 curHover/curSel；不传 curSel 回退外�
   assert.match(html3, /zu-sv3-fcount">已选 2\/2 · 本期有效 2</, '缺 filt → auto（计数=已选 2/2 · 本期有效 2）');
 });
 
-test('spd3RebuildOr: period 分发 recent/today/week→charts、month→月历、all→历史热力', () => {
+test('spd3RebuildOr: period 分发 recent/today/week→charts、month→月历、all→历史热力（短池日卡/长池周网格）', () => {
   const ctx = makeCtx();
   const h = fixture();
   const disp = (period) => cardOf(ctx, rebuild(ctx, h, { range: 'all', period, sid: 'sess_main' }));
@@ -160,9 +160,20 @@ test('spd3RebuildOr: period 分发 recent/today/week→charts、month→月历�
   const month = stripStyle(disp('month'));
   assert.match(month, /zu3-hm-grid/, 'month → 月历热力网格');
   assert.match(month, /role="grid"/, 'month grid role');
+  // all：fixture 池覆盖 11-04..11-05（2 天 ≤7）→ v389 §13.4 紧凑日卡形态
   const all = stripStyle(disp('all'));
-  assert.match(all, /zu3-hh-grid/, 'all → 历史热力网格');
-  assert.match(all, /zu3-hh-wds/, 'all 行首星期列');
+  assert.match(all, /zu3-dc-grid/, 'all 短池（2 天覆盖）→ 紧凑日卡（§13.4）');
+  assert.doesNotMatch(all, /zu3-hh-grid|zu3-hh-wds/, '短池不出周网格');
+  // all 长历史（160 天 speed_days）→ 既有历史热力周网格
+  const days = [];
+  for (let i = 0; i < 160; i++)
+    days.push([1000 + i, 10000, 2, 2, 0, [[0, 1000 + i, 10000, 2, 2]]]);
+  const sdLong = { v: 1, source: 'local', start: new Date(2026, 10, 5).getTime() - 159 * 864e5,
+    days, mnames: ['GLM-A'], mkeys: [KEYS.a], truncated: 0 };
+  const allLong = stripStyle(cardOf(ctx, rebuild(ctx, h,
+    { range: 'all', period: 'all', sid: 'sess_main' }, -1, O, null, sdLong)));
+  assert.match(allLong, /zu3-hh-grid/, 'all 长历史 → 历史热力网格');
+  assert.match(allLong, /zu3-hh-wds/, 'all 行首星期列');
 });
 
 test('spd3RebuildOr: sel.filt=显式筛选时 SPD3_POOL 侧信道=未筛选池（「全选」依赖）', () => {

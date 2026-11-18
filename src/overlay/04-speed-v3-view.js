@@ -28,7 +28,12 @@
    * 真单模型池「当前模型」行去重为「有效输出」（值经 o.fmtTok，缺席整行省略），§12.2）；
    * 多模型分布表 table→div Grid 三列（minmax(0,1fr) 64px 44px，根除 23px 横向溢出，
    * msAvail=false 两列变体，§12.2）；筛选栏恒单行（fbar/chips nowrap + overflow:hidden，
-   * 常驻 chips 预算 6→3，§12.4）。 */
+   * 常驻 chips 预算 6→3，§12.4）。
+   * v389 自适应批（spec §13.5）：stats 恢复 margin-top:auto Footer 语义（推翻 §12.2
+   * 「禁 auto」——第三轮断层实为分布表缺失时的推底空腔，Grid 化后左卡内容密度已
+   * 足够），卡 padding-bottom ≥12 保呼吸；分布条 role=img + aria-label（「模型分布：
+   * A 20%、B 13%、…」拼接）+ 段级 title（名 · 请求数 · 占比）；dist-h/dbar/dwrap
+   * 三容器零水平 margin/padding 锁对齐；极小段 min-width:2px 仅为可见性下限。 */
   /* SPD_V3_VIEW_BEGIN */
   var SPD3_SVG_FUNNEL = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8v5l-4 2v-7L3 5Z"/></svg>';
   var SPD3_SVG_SEARCH = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>';
@@ -288,12 +293,22 @@
     }
     /* ---- 多模型态（§11.3）：标题 → 主数字 → 档位胶囊 → 本期有效计数 →
      * 分布（堆叠条+网格表，默认 ≤4 行）→ 峰最低最新 ---- */
+    /* §13.5 分布条：width 恒按真实 share（极小段不放大，可见性走 CSS min-width:2px
+     * 下限，见样式注释）；段 title=名 · 请求数 · 占比（请求数用 spdNum 原值——本分片
+     * 无 fmtCnt）；占比文本与表列同式（round 1 位小数）。barLabels 按同序拼接成
+     * dbar role=img 的 aria-label（「模型分布：A 20%、B 13%、…」）。 */
     var shareSorted = models.slice().sort(function (a, b) { return (b.share || 0) - (a.share || 0); });
     var turns = spdNum(overall.turns);
-    var bar = "";
+    var bar = "", barLabels = [];
     for (var bi = 0; bi < shareSorted.length; bi++) {
       var bm = shareSorted[bi];
-      bar += '<i style="background:' + spd3Color(bm.key) + ";width:" + (Math.max(0, (bm.share || 0) * 100)) + '%"></i>';
+      var bName = bm.name || spd3KeyName(bm.key);
+      var bPct = Math.max(0, (bm.share || 0) * 100);
+      var bPctTxt = String(Math.round(bPct * 10) / 10) + "%";
+      barLabels.push(bName + " " + bPctTxt);
+      bar += '<i style="background:' + spd3Color(bm.key) + ";width:" + bPct +
+        '%" title="' + spdEsc(bName + " · " + spdNum(bm.n) +
+          SPD_L(" 次请求", " requests") + " · " + bPctTxt) + '"></i>';
     }
     var msAvail = an.msAvail !== false;
     /* §12.2 分布表 div Grid：三列 minmax(0,1fr) 64px 44px（名称可收缩+ellipsis →
@@ -330,7 +345,8 @@
       (missN ? '<em class="zu-sv3-count-miss">' + spdEsc(SPD_L("已选模型中 " + missN + " 个在当前范围无有效记录",
         missN + " selected models have no valid records in this range")) + "</em>" : "") + "</div>" +
       '<div class="zu-sv3-dist-h">' + spdEsc(SPD_L("所选模型分布 · 按请求数", "Selected models · by requests")) + "</div>" +
-      '<div class="zu-sv3-dbar" aria-hidden="true">' + bar + "</div>" +
+      '<div class="zu-sv3-dbar" role="img" aria-label="' +
+      spdEsc(SPD_L("模型分布：", "Model distribution: ") + barLabels.join(SPD_L("、", ", "))) + '">' + bar + "</div>" +
       '<div class="zu-sv3-dwrap"><div class="zu-sv3-dtab' + (msAvail ? "" : " zu-sv3-dtab-noms") +
       '" role="table">' + thead + rowsHtml + "</div></div>" + more + stats + "</div>";
   }
@@ -463,8 +479,9 @@
       ".zu-sv3-root .zu-sv3-fsearch:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
       /* ---- 主区：左卡 250px 固定 + 右图表自适应（≤760px 视口左卡收 220px） ---- */
       ".zu-sv3-root .zu-sv3-main{display:flex;gap:12px;align-items:stretch;flex:1;min-height:0}" +
+      /* §13.5：padding-bottom 12px（原 10px）——stats 恢复 Footer 贴底后卡底仍保呼吸 */
       ".zu-sv3-root .zu-sv3-left{flex:0 0 250px;min-width:0;display:flex;flex-direction:column;min-height:0;" +
-        "border:1px solid var(--color-popover-border,rgba(255,255,255,.14));border-radius:12px;padding:10px 12px}" +
+        "border:1px solid var(--color-popover-border,rgba(255,255,255,.14));border-radius:12px;padding:10px 12px 12px}" +
       ".zu-light .zu-sv3-root .zu-sv3-left{border-color:rgba(15,23,42,.14)}" +
       ".zu-sv3-root .zu-sv3-chart{flex:1 1 0;min-width:0;max-width:100%;display:flex;flex-direction:column;min-height:0;" +
         "border:1px solid var(--color-popover-border,rgba(255,255,255,.14));border-radius:12px;padding:10px 12px}" +
@@ -526,12 +543,19 @@
         "text-overflow:ellipsis;white-space:nowrap;text-align:right}" +
       /* v384 M4：覆盖范围改单值 kv（.zu-sv3-kv 承载），五值结构 CSS 删除 */
       ".zu-sv3-root .zu-sv3-cov-h{font-style:normal;color:var(--color-tooltip-tag-foreground,#a6a6a6);display:block;margin-top:10px}" +
+      /* §13.5 分布条对齐：dist-h/dbar/dwrap 同为左卡内容盒的全宽块级子元素，三者一律
+       * 零水平 margin/padding（v388 态核查已达标，此处显式锁口径）——左右缘对齐误差
+       * ≤2px；dbar 的 4px 圆角端头是视觉内收（≤4px 感知差）而非几何错位；dwrap 展开
+       * 出纵向滚动条时表内容随宿主滚动条形态内缩，同非容器错位。 */
       ".zu-sv3-root .zu-sv3-dist-h{margin-top:10px;font-size:calc(var(--ui-font-size,14px) - 3px);" +
         "color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-sv3-root .zu-sv3-dbar{display:flex;height:8px;border-radius:4px;overflow:hidden;margin-top:6px;" +
         "background:rgba(255,255,255,.06)}" +
       ".zu-light .zu-sv3-root .zu-sv3-dbar{background:rgba(0,0,0,.06)}" +
-      ".zu-sv3-root .zu-sv3-dbar i{display:block;height:100%}" +
+      /* §13.5：段 min-width:2px 仅极小占比的可见性下限——真实宽度仍按 share 计算、
+       * 不做比例放大（多极小段叠加超宽由 overflow:hidden 兜底）；cursor:default
+       * 表明非交互，悬停信息走段级 title */
+      ".zu-sv3-root .zu-sv3-dbar i{display:block;height:100%;min-width:2px;cursor:default}" +
       /* §11.3：分布表容器 150px 内滚——展开全部行也不撑高左卡；§12.2 表体 div Grid：
        * 每行同款三列模板 minmax(0,1fr) 64px 44px（名称列可收缩至 0 + ellipsis → 行恒
        * 不溢出，根除旧 table 23px 横向溢出；行/容器不写 overflow-x，由 grid 保证）；
@@ -550,9 +574,11 @@
         "font-family:inherit;font-size:calc(var(--ui-font-size,14px) - 3px);padding:4px 0 0;margin:0;cursor:pointer;text-align:left}" +
       ".zu-sv3-root .zu-sv3-more:hover{text-decoration:underline}" +
       ".zu-sv3-root .zu-sv3-more:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
-      /* §12.2 峰/低/新前固定分隔线：margin-top:auto 推底废除（真机 stats 被推底/
-       * 重叠），各段自然流 8/10px 节奏 */
-      ".zu-sv3-root .zu-sv3-stats{display:flex;gap:10px;margin-top:10px;padding-top:10px;" +
+      /* §13.5 stats 恢复 Footer 语义（推翻 v388 §12.2 的「禁 auto」：第三轮断层实为
+       * 分布表缺失时的推底空腔，§12.2 分布表 Grid 化后左卡内容密度已足够）——内容少
+       * 时 margin-top:auto 贴底成 Footer，多模型分布表长时 auto=0 自然紧贴上一节；
+       * 分隔线（border-top）与 padding-top 固定间距保留 */
+      ".zu-sv3-root .zu-sv3-stats{display:flex;gap:10px;margin-top:auto;padding-top:10px;" +
         "border-top:1px solid var(--color-popover-border,rgba(255,255,255,.1))}" +
       ".zu-light .zu-sv3-root .zu-sv3-stats{border-color:rgba(15,23,42,.1)}" +
       ".zu-sv3-root .zu-sv3-stat{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:2px}" +
@@ -646,7 +672,8 @@
    * 刷新不改变 tier；时间 Tab 切换允许跳档；模型展开不撑高（分布表内滚上限不变）。
    * 返回 {tier, px}：tier 进 root data-h-tier（测试/harness 定位），px 进内联
    * min-height。root 高度语义=min-height（内容可超出）；左卡与图表卡等高由
-   * .zu-sv3-main 的 flex stretch 承担，内部内容自然流（§12.2 禁 margin-top:auto）。 */
+   * .zu-sv3-main 的 flex stretch 承担；左卡自然内容流、stats 段 margin-top:auto
+   * Footer 化（§13.5，推翻 §12.2 的「禁 auto」）。 */
   function spd3HeightTier(an) {
     an = an || {};
     /* empty 判据与 spd3CardHTML 同源（real 空 / overall 缺） */

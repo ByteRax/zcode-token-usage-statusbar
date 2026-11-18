@@ -482,10 +482,13 @@ test('CSS 锁: .zu-sv3-root 定宽变量、.zu-light 浅色覆写、focus-visibl
   assert.match(style, /\.zu-sv3-fbar\{display:flex;align-items:center;flex-wrap:nowrap/, 'fbar nowrap 恒单行（§12.4）');
   assert.match(style, /\.zu-sv3-chips\{display:flex;flex:1 1 auto;flex-wrap:nowrap;gap:4px;min-width:0;overflow:hidden\}/,
     'chips nowrap + overflow:hidden（§12.4）');
-  // §12.2 左卡自然内容流：stats 分隔线固定间距（margin-top:auto 推底废除）
-  assert.ok(!style.includes('margin-top:auto'), '§12.2 禁止 margin-top:auto 推底');
-  assert.match(style, /\.zu-sv3-stats\{display:flex;gap:10px;margin-top:10px;padding-top:10px;border-top:1px solid var\(--color-popover-border/,
-    'stats 固定分隔线 8/10px 节奏（§12.2）');
+  // §13.5 stats 恢复 Footer 语义（推翻 §12.2「禁 auto」：分布表 Grid 化后断层根除）——
+  // margin-top:auto 内容少时贴底、分布表长时 auto=0 自然紧贴；分隔线节奏保留
+  assert.match(style, /\.zu-sv3-root \.zu-sv3-stats\{display:flex;gap:10px;margin-top:auto;padding-top:10px;border-top:1px solid var\(--color-popover-border/,
+    'stats margin-top:auto Footer 语义（§13.5）');
+  // §13.5 卡底呼吸：左卡 padding-bottom ≥12（stats 贴底后仍与卡缘保持距离）
+  assert.match(style, /\.zu-sv3-root \.zu-sv3-left\{[^}]*padding:10px 12px 12px\}/,
+    '左卡 padding-bottom 12px（§13.5 呼吸）');
   // tip 宽帽释放（§11.1 唯一权威方案）：border-box + 952 帽 → 两链内容区 ≥922 ≥ 根 920
   assert.match(style,
     /\.tip:has\(\.zu-sv3-root\),\.zusage-tps-tip:has\(\.zu-sv3-root\)\{box-sizing:border-box!important;width:min\(952px,calc\(100vw - 24px\)\)!important;max-width:calc\(100vw - 24px\)!important\}/,

@@ -8,7 +8,9 @@
    * hist=行=星期（7 行周日..周六）、列=周（列头=周起始 MM/DD，跨月首列加亮；>14 列
    * 时隔列显标签防挤、首列恒显），列宽帽 minmax(34px,64px)（v387 §11.6 去无限 1fr
    * 拉伸，短跨度不再超宽格；v388 §12.6 列数分档对齐：≤14 列根挂 zu3-hh-c 整块水平
-   * 居中、>14 列 flex-start 左对齐贴满容器）；周列数 >SPD3_HIST_MONTH_COLS(26) 切月
+   * 居中、>14 列 flex-start 左对齐贴满容器）；池时间轴覆盖跨度 ≤7 自然日切紧凑日卡
+   * （v389 §13.4，.zu3-dc 横排日期卡，判定读 an.spanA/spanB、缺失回退 items 首日→
+   * 今天）；周列数 >SPD3_HIST_MONTH_COLS(26) 切月
    * 粒度（v387 §11.6/PRD 7.2：
    * 每列=日历月竖条格，月 v=Σout÷Σms 加权、列头 YYYY/MM、550 日 ≤19 月列无横滚，
    * 原 spec §5「110 列硬帽」被月聚合取代）。格状态五态可区分（spec §5）：补位更暗
@@ -197,6 +199,25 @@
       ".zu-light .zu-sv3-root .zu3-hh-grid .zu-hm-cell.zu-hm-void{background:rgba(0,0,0,.045)}" +
       /* v384 S6-MINOR3：V3 图表横滚条隐藏（06 旧规则只匹配 .zu-sv-chart） */
       ".zu-sv3-root .zu3-hh .zu-sc-wrap::-webkit-scrollbar,.zu-sv3-root .zu3-hm .zu-sc-wrap::-webkit-scrollbar{display:none}" +
+      /* ---------- v389 §13.4 hist ≤7 天紧凑日卡（.zu3-dc）：横排日期卡 ----------
+       * 复用 .zu-hm-cell 基座（宿主 mouseover/focus/keydown 委托按该类+data-i 命中，
+       * 零宿主改动）；卡级覆写：min 120px / flex 1 1 0 / 帽 160px，wrap 允许 7 天在
+       * 窄窗折两行；justify/align-content center=居中分布（spec §13.4）。速度大字
+       * .zu3-dcv 不设 color——继承卡上档位类的 currentColor，color-mix 混底（既有
+       * .zu-hm-data 规则）与速度字同源一色；无记录卡走 .zu-hm-void 灰。 */
+      ".zu-sv3-root .zu3-dc{flex:1;min-height:0;min-width:0;display:flex;flex-direction:column}" +
+      ".zu-sv3-root .zu3-dc .zu-sc-wrap{flex:1;min-height:0;display:flex;flex-direction:column}" +
+      ".zu-sv3-root .zu3-dc-grid{flex:1;min-height:0;display:flex;flex-wrap:wrap;gap:6px;" +
+        "justify-content:center;align-content:center;align-items:stretch}" +
+      ".zu-sv3-root .zu3-dc-grid .zu-hm-cell{flex:1 1 0;min-width:120px;max-width:160px;box-sizing:border-box;" +
+        "border-radius:9px;padding:8px 10px;gap:2px}" +
+      ".zu-sv3-root .zu3-dchd{display:flex;align-items:center;justify-content:space-between;gap:4px;min-width:0}" +
+      ".zu-sv3-root .zu3-dcd{font-size:15px;line-height:1.1;font-weight:600;font-variant-numeric:tabular-nums;" +
+        "color:var(--color-tooltip-foreground,#fff)}" +
+      ".zu-sv3-root .zu3-dcw{font-size:9px;line-height:1.2;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-sv3-root .zu3-dcv{font-size:18px;line-height:1.1;font-weight:600;font-variant-numeric:tabular-nums;" +
+        "white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
+      ".zu-sv3-root .zu3-dcv.zu3-dcnone{font-size:11px;font-weight:500}" +
       /* ---------- 共用：模型色点 / 空态（图例行样式已随 v388 §12.6 删除） ---------- */
       ".zu-sv3-root .zu3-mdots,.zu-sv-portal .zu3-mdots{display:inline-flex;align-items:center;gap:2px;flex:0 0 auto}" +
       ".zu-sv3-root .zu3-mdot,.zu-sv-portal .zu3-mdot{width:6px;height:6px;border-radius:50%;display:inline-block;flex:0 0 auto}" +
@@ -302,6 +323,36 @@
       return '<div class="zu-speed-chart zu-sv-chart zu3-hh">' + spd3HeatStyle() +
         spd3ChartHeadHTML(an, SPD_L("按日聚合", "aggregated by day") + truncTxt) + '<div class="zu3-empty">' +
         SPD_L("暂无有效速度记录", "no rated speed data yet") + "</div></div>";
+    var single = !!(an.perModel && an.perModel.length === 1);
+    var meta = spd3DayMeta(an.pool);
+    /* ---- v389 §13.4 覆盖跨度 ≤7 自然日 → 紧凑日卡形态（spd3DayCardsHTML） ----
+     * 判定轴=「池时间轴」：首日读 an.axisA（v389：core 未筛选原始池时间轴——
+     * spanA 随筛选收缩会让形态在日卡/周网格间跳变，PRD 5.5 时间轴稳定），
+     * 老帧缺 axisA 退化读 an.spanA，再缺回退 items 首日（旧行为轴）；轴末=
+     * 取大者(今天, an.axisB/spanB 所在日)=今天（见下方钳制注释）。日历跨度=轴末−首日+1
+     * 天（Math.round 折算 DST 23h/25h 日，口径同下方 totalDays）；≤7 切日卡，8+
+     * 天走既有周网格/月聚合（两既有分支零改动）。着色仍按筛选（byDay 已是筛选后
+     * 桶），跨度判定与筛选无关的语义由 axis 轴承载。 */
+    var spanA0 = first, spanB0 = todayStart;
+    var axisSrcA = (typeof an.axisA === "number" && isFinite(an.axisA) && an.axisA > 0) ? an.axisA : an.spanA;
+    if (typeof axisSrcA === "number" && isFinite(axisSrcA) && axisSrcA > 0) {
+      var sa3 = spdDate(axisSrcA);
+      spanA0 = new Date(sa3.getFullYear(), sa3.getMonth(), sa3.getDate()).getTime();
+    }
+    var axisSrcB = (typeof an.axisB === "number" && isFinite(an.axisB) && an.axisB > 0) ? an.axisB : an.spanB;
+    if (typeof axisSrcB === "number" && isFinite(axisSrcB) && axisSrcB > 0) {
+      var sb3 = spdDate(axisSrcB);
+      spanB0 = new Date(sb3.getFullYear(), sb3.getMonth(), sb3.getDate()).getTime();
+    }
+    if (spanA0 > todayStart) spanA0 = todayStart;   /* 时钟异常守卫：首日不晚于今天 */
+    /* 轴末=取大者(今天, 末日日)：池行恒历史/当日，末日日零点不晚于今天，取大者恒
+     * 今天——今天无记录也出灰卡（周网格「今天无数据=灰格照画」同口径）；外层 min
+     * 钳卫异常未来值（周网格对 ds>todayStart 一律补位不铺格）。 */
+    spanB0 = Math.min(Math.max(spanB0, todayStart), todayStart);
+    var coverDays = Math.round((spanB0 - spanA0) / 864e5) + 1;
+    if (coverDays <= 7)
+      return spd3DayCardsHTML(an, hoverIdx, o, { byDay: byDay, single: single, meta: meta,
+        start: spanA0, end: spanB0, todayStart: todayStart, truncTxt: truncTxt });
     var fd0 = spdDate(first);
     var fy = fd0.getFullYear(), fmo = fd0.getMonth(), fd = fd0.getDate();
     var totalDays = Math.round((todayStart - first) / 864e5) + 1;
@@ -309,8 +360,6 @@
      * column-major 教训沿用）；首数据日周中的偏移补位由 ds<first 分支产出 */
     var lead = new Date(fy, fmo, fd).getDay();
     var cols = Math.ceil((lead + totalDays) / 7);
-    var single = !!(an.perModel && an.perModel.length === 1);
-    var meta = spd3DayMeta(an.pool);
     /* ---- 月粒度分支（spec §11.6/PRD 7.2，v387）：周列数 >26 切日历月聚合 ----
      * 每列=月竖条格（grid-row:1/8 跨满 7 行，column-major 行结构保留、星期行首标签
      * 列不渲染——月粒度无星期语义）；月 v=Σout÷Σms 加权（spd3MonthBuckets，绝不
@@ -415,6 +464,53 @@
       '<div class="zu3-hh-cols" style="--zu3-cols:' + cols + '">' + labels + "</div>" +
       '<div class="zu3-hh-grid" role="grid" style="--zu3-cols:' + cols + '">' + rowsHtml + "</div>" +
       "</div></div></div></div>";
+  }
+  /* hist ≤7 自然日紧凑日卡（v389 §13.4，唯一消费者 spd3HistHTML 覆盖分支）：横排
+   * 日期卡替代周网格——跨度 ≤7 天时周列×星期行只剩 1-2 列、周头/行头占掉近半高度。
+   * axis={byDay, single, meta, start 首日零点, end 末日零点（≤今天）, todayStart,
+   * truncTxt}。span 内每一天都有卡（含无数据日=「无记录」灰卡）：卡=日期 M/D 大字+
+   * 周几+日均速度（档位色大字，.zu3-dcv 继承卡上档位类 currentColor）+模型点 ≤3+
+   * 「+N」（spd3DotsHTML 复用）+档位 color-mix 混底（.zu-hm-data 既有规则）+今天
+   * 描边（.zu-hm-today）。交互零宿主改动：卡挂 .zu-hm-cell+data-i=日序（本视图
+   * 平铺序），宿主 mouseover/focus/keydown 委托按既有契约命中；悬停日卡=
+   * spd3DayCardHTML 既有（无数据日不出卡，SPD_PORTAL 保持空串）。a11y：容器
+   * role=grid、每卡包 display:contents 行（月聚合分支同款）、卡 role=gridcell，
+   * tabindex 首卡 0 其余 -1（roving 翻转由 06/01 keydown 委托承担），aria=
+   * spd3CellAria（完整日期+均速档位/无记录，绝不 0 t/s）。日进位一律 Date 构造器
+   * （DST 安全），末毫秒 end=次日零点供悬停卡「全天/截至 HH:mm」区分。 */
+  function spd3DayCardsHTML(an, hoverIdx, o, axis) {
+    var byDay = axis.byDay, single = axis.single, meta = axis.meta;
+    var start = axis.start, nDays = Math.round((axis.end - start) / 864e5) + 1;
+    var s0 = spdDate(start);
+    var sy = s0.getFullYear(), smo = s0.getMonth(), sd3 = s0.getDate();
+    var cards = [], days = [];
+    for (var i = 0; i < nDays; i++) {
+      var ds = new Date(sy, smo, sd3 + i).getTime();   /* Date 构造器日进位，DST 安全 */
+      var it = byDay[ds] || null, bd = it ? tpsBand(it.v) : null;
+      var di = days.length;
+      days.push({ t: ds, end: new Date(sy, smo, sd3 + i + 1).getTime(),
+        agg: it, capped: !!meta.capByDay[ds] });
+      var d3 = spdDate(ds);
+      var cls = "zu-hm-cell zu3-dcc " + (it ? "zu-hm-data" + (bd ? " " + bd.cls : "") : "zu-hm-void") +
+        (ds === axis.todayStart ? " zu-hm-today" : "");
+      var head = '<span class="zu3-dchd"><span class="zu3-dcd">' + (d3.getMonth() + 1) + "/" + d3.getDate() +
+        "</span>" + spd3DotsHTML(it, single) + "</span>" +
+        '<span class="zu3-dcw">' + spdEsc(spd3Wd(d3.getDay())) + "</span>";
+      var inner = it
+        ? head + '<span class="zu3-dcv">' + spdEsc(spd3Fmt1(it.v)) + "</span>"
+        : head + '<span class="zu3-dcv zu3-dcnone">' + SPD_L("无记录", "no data") + "</span>";
+      cards.push('<div role="row" style="display:contents"><div class="' + cls +
+        '" role="gridcell" tabindex="' + (i === 0 ? "0" : "-1") + '" data-i="' + di +
+        '" aria-label="' + spdEsc(spd3CellAria(ds, it)) + '">' + inner + "</div></div>");
+    }
+    if (hoverIdx >= 0 && hoverIdx < nDays && days[hoverIdx] && days[hoverIdx].agg)
+      SPD_PORTAL = spd3DayCardHTML({ t: days[hoverIdx].t, b: Math.min(days[hoverIdx].end, Date.now()),
+        agg: days[hoverIdx].agg, capped: days[hoverIdx].capped,
+        tn: meta.tnByDay[days[hoverIdx].t] || null, di: hoverIdx }, o);
+    return '<div class="zu-speed-chart zu-sv-chart zu3-dc">' + spd3HeatStyle() +
+      spd3ChartHeadHTML(an, SPD_L("按日 · 覆盖 " + nDays + " 天",
+        "daily · " + nDays + (nDays === 1 ? " day" : " days") + " covered") + axis.truncTxt) +
+      '<div class="zu-sc-wrap"><div class="zu3-dc-grid" role="grid">' + cards.join("") + "</div></div></div>";
   }
   /* 日悬停卡（SPD_PORTAL 内容生产者，纯字符串）：item={t 日零点, b? 进行中当前时刻
    * （调用点已钳 Math.min(桶末, now)；缺席=全天）, agg spd3Aggregate 结果,

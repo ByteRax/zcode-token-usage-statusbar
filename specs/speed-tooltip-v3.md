@@ -203,3 +203,45 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 
 - harness 追加：**柱/折线图表作用域内** wrap scrollWidth==clientWidth（heat 长历史设计内横滚不在此列）；分布表无横向溢出；fbar 高度 ≤44px（单行）；root 带 data-h-tier 且 min-height∈[300,480]；柱组居中分组由 charts VM 断言覆盖（n≤3 max-width 档位内联在产物）。
 - 真机：2 轮/18 轮/多模型 10+/月/全部短历史 截图前后对比。
+
+## 13. v389 图表弹性高与折线交互批（2026-11-18，第四轮）
+
+真机诊断定案：折线 hover 委托链完好（合成 mouseover 逐 hit 验证 portal shown、无数据日不吸附、tier 生效 rootH 493≥400）——「无提示」观感真因=无数据日零反馈 + 信息卡字段不足；图表底部空白真因=plot 固定 216 不随左卡拉伸（today gap 49 / all gap 127px）。
+
+### 13.1 plot 弹性高（P0）
+
+- `.zu-sv3-chart .zu-sc-plot{height:216px}` 改 `flex:1;min-height:200px;max-height:300px`（吸收左卡/档位拉伸；卡内容少时 200 保底，主体高时最多 300）。
+- 折线 SVG 全部 **y 坐标百分比化**（svg `height="100%"`、y=百分比、圆点/线宽 px；hit rect height 100%）；面积 path、grid 线、X 轴带同步。柱图 DOM 槽天然 height:100% 已自适应。
+- X 轴标签行高度独立固定（16px），最后一行标签距卡内边界 ≤28px（PRD §2.4）。
+
+### 13.2 折线 hover 完整化（P0）
+
+- **无数据日出卡**：空槽 hover → 「M/D（周X）· 无有效速度记录」轻卡（不再静默）；进行日/已结束日区间文案沿 §11.5。
+- 有数据日卡字段增强：综合日均（档位色大字）→ 模型明细（色点+名+供应商副标+均速+请求数，>6 行截断+「另有 N 个模型」）→ 有效轮次/有效输出 → 预估费用（o.fmtMoney，缺失「暂无估价」）。
+- 两级 hover：列级（既有）+ **线级**——line path `pointer-events:stroke`，mouseover 给该模型线加高亮类（自身加粗/其余降透明），mouseout 还原；模型身份=颜色+卡内名称双识别。
+- 键盘：hit 列已有 tabindex+方向键（v387）；aria-label 补「无数据」明示。
+
+### 13.3 多模型折线视觉层级（P0）
+
+- 三层：综合虚线（中性灰、dasharray 既有）< 模型实线（1.8px、模型色）< hover 高亮；模型 >4 时第 3 条起透明度 .6（排序按 out 降序，前 2 全不透明）。
+- 稀疏规则不变：缺失日断线（分段 path）、单点不连线、无假点。
+
+### 13.4 hist ≤7 天紧凑日卡（P1）
+
+- 日历覆盖跨度 ≤7 自然日（按首末数据日+自然日覆盖算，非有数据日数）→ **day-cards 形态**：横排日期卡（日期+周几+日均速度+模型点 ≤3+`+N`，速度色阶底、今天描边、空日「无记录」态），flex 居中分布；hover 日卡=spd3DayCardHTML 既有。
+- 8-35 天=既有周列×星期行（≤14 列已居中）；>35 天不变（月聚合阈值 26 周既有）。
+- 覆盖跨度判定用 an.items 首末日日历差，**不受筛选影响跳变**（覆盖=池时间轴，着色=筛选）。
+
+### 13.5 左卡 Footer 与分布条对齐（P1）
+
+- `.zu-sv3-stats` 恢复 `margin-top:auto`（Footer 语义：内容少时贴底、多模型内容多时自然紧贴，卡 padding-bottom ≥12 保证呼吸）——推翻 v388 §12.2 的"禁 auto"（第三轮断层实为分布表缺失时的推底空腔，Grid 化后左卡内容密度已足够）。
+- 分布条对齐：dbar 与标题/表格同左右缘（统一容器 padding，误差 ≤2px）；dbar 加 role="img"+aria-label（各模型名:占比）；段 hover title=名+请求数+占比。
+
+### 13.6 today 提示（P1）
+
+- today 单模型柱图 head sub「有效 X 个小时」（X=非空桶数，X<轴长时）。
+
+### 13.7 验收
+
+- harness：today/week 的 plot 高度∈[200,300] 且 plot 底距卡底 ≤28px；折线 hit hover 出卡（合成 mouseover）含无数据日「无记录」卡；day-cards 形态（≤7 天夹具）与周网格（8+ 天）分发断言；dbar 左右缘与标题/表对齐 ≤2px。
+- 真机：week 有数据日/无数据日 hover 各一实测。

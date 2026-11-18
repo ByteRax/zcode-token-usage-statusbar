@@ -240,8 +240,8 @@ test('today 单模型: focus full 15 桶全铺、空桶无柱无读数、实桶�
   assert.equal((html.match(/<style>/g) || []).length, 1);
 });
 
-// ---------- ⑤ today 多模型折线（§11.2 满幅：width=100% + 百分比 x） ----------
-test('today 多模型折线: 每模型一条分段线、缺小时断线、点色正确、命中列数=当前小时+1、svg 满幅 % 坐标', () => {
+// ---------- ⑤ today 多模型折线（§11.2 满幅：width/height=100% + 百分比 x/y） ----------
+test('today 多模型折线: 每模型一条 lineg 分组线（data-m）、缺小时断线、点色正确、命中列数=当前小时+1、svg 满幅 % 坐标', () => {
   const ctx = makeCtx();
   const an = analyze(ctx, fixture(), { range: 'all', period: 'today', sid: 'sess_main' });
   assert.equal(an.perModel.length, 2);
@@ -250,28 +250,37 @@ test('today 多模型折线: 每模型一条分段线、缺小时断线、点色
   const html = chart(ctx, an, -1);
   const dom = domOf(html);
   const colorA = colorOf(ctx, KEYS.a), colorB = colorOf(ctx, KEYS.b);
-  // 两条模型实线（g 按模型色 stroke）、无总体虚线（总体线是近 7 天形态专属）
-  assert.equal((dom.match(/<g class="zu-sv3-line" stroke="/g) || []).length, 2);
+  // 两条模型实线（v389 §13.2 lineg 分组：线+点同组、data-m=模型身份键、模型色 stroke）、
+  // 无总体虚线（总体线是近 7 天形态专属）
+  assert.equal((dom.match(/<g class="zu-sv3-lineg zu-sv3-line" data-m="[^"]*" stroke="/g) || []).length, 2);
+  assert.ok(dom.includes('data-m="' + KEYS.a + '"'), 'A 线携带 data-m 模型键');
+  assert.ok(dom.includes('data-m="' + KEYS.b + '"'), 'B 线携带 data-m 模型键');
   assert.equal((dom.match(/zu-sv3-oline/g) || []).length, 0);
   // 相邻非空点一连、缺口断线不插值：A 在 9,10,12 有分量 → 9→10 一段（11 缺口、
   // 12 单点不成段）；B 在 10,11 连续 → 一段
-  const segsOf = c => (dom.match(new RegExp('<g class="zu-sv3-line" stroke="' + c + '">([\\s\\S]*?)</g>')) || ['', ''])[1];
+  const segsOf = c => (dom.match(new RegExp('<g class="zu-sv3-lineg zu-sv3-line" data-m="[^"]*" stroke="' + c + '">([\\s\\S]*?)</g>')) || ['', ''])[1];
   const segA = segsOf(colorA), segB = segsOf(colorB);
   assert.equal((segA.match(/<line /g) || []).length, 1, 'A 线恰一段（9→10）');
   assert.equal((segB.match(/<line /g) || []).length, 1, 'B 线恰一段（10→11）');
-  // 满幅几何（§11.2）：svg width="100%" 无 viewBox（y/线宽/圆点 px 不失真）、
-  // 分段 line x 全百分比 + y px、命中列 x/width 均 %。v388 §12.5 绘图区紧凑档
-  // PLOT_H 200 + X 轴 16 → svg 高 216、hit 高 200
-  assert.match(html, /<svg class="zu-sv3-svg" width="100%" height="216">/);
+  // 满幅几何（§11.2 + v389 §13.1）：svg width/height 均 "100%" 无 viewBox 缩放、
+  // 分段 line x/y 全百分比（yPct=2+(1−v/yMax)×98，顶部余量 2%）、命中列 x/width/
+  // height 均 %；X 标签带独立 xsvg（高 16 恒定，text y=11 恒贴 plot 底）
+  assert.match(html, /<svg class="zu-sv3-svg" width="100%" height="100%">/);
   assert.doesNotMatch(html, /<svg class="zu-sv3-svg"[^>]*viewBox/, '主 svg 无 viewBox 缩放');
-  assert.match(segA, /<line x1="[\d.]+%" y1="[\d.]+" x2="[\d.]+%" y2="[\d.]+"\/>/, '分段 line：x 百分比 + y px');
-  assert.match(html, /<rect class="zu-sv3-hit" data-i="0" x="0%" y="0" width="6\.667%" height="200"/,
-    '命中列 % 几何（15 桶 → 6.667%/格，高=PLOT 200）');
-  assert.doesNotMatch(html, /height="148"/, 'v387 档 148 已随 §12.5 紧凑档退役');
+  assert.match(segA, /<line x1="[\d.]+%" y1="[\d.]+%" x2="[\d.]+%" y2="[\d.]+%"\/>/, '分段 line：x/y 全百分比');
+  assert.match(html, /<rect class="zu-sv3-hit" data-i="0" x="0%" y="0" width="6\.667%" height="100%"/,
+    '命中列 % 几何（15 桶 → 6.667%/格，高 100% 随弹性值区）');
+  assert.match(html, /<svg class="zu-sv3-xsvg" width="100%" height="16">/, 'X 标签带独立 xsvg 16px（§13.1）');
+  assert.match(html, /<text class="zu-sv3-xtxt" x="[\d.]+%" y="11">/, 'xsvg 标签 y=11 恒贴 plot 底');
+  assert.match(html, /<line class="zu-sv3-xline" x1="[\d.]+%" x2="[\d.]+%" y1="0" y2="100%"\/>/,
+    '十字参考线纵线 y2=100%（值区满高）');
+  assert.doesNotMatch(html, /height="148"|height="216"/, '固定 148/216 高已随 §13.1 弹性化退役');
   // §12.5 多模型端数值标签默认不画（today/week 同款）：perModel=2 → 0 枚 elabel
   assert.equal((html.match(/class="zu-sv3-elabel/g) || []).length, 0, 'today 多模型端标签 0（§12.5）');
-  // 数据点：A 3 个 + B 2 个 = 5，点色=模型色
+  // 数据点：A 3 个 + B 2 个 = 5，点色=模型色、cy 随值区百分比
   assert.equal((html.match(/<circle class="zu-sv3-pt"/g) || []).length, 5);
+  assert.match(html, /<circle class="zu-sv3-pt" cx="[\d.]+%" cy="[\d.]+%" r="2\.5" fill="/,
+    '数据点 cy 百分比化（§13.1）、半径恒 px');
   assert.ok(html.includes('fill="' + colorA + '"'));
   assert.ok(html.includes('fill="' + colorB + '"'));
   // 悬停命中列（每小时一条）+ 同组十字参考线
@@ -285,8 +294,8 @@ test('today 多模型折线: 每模型一条分段线、缺小时断线、点色
   assert.equal(portal(ctx), '');
 });
 
-// ---------- ⑥ week 单/多模型（§11.2 满幅：% 坐标 + §12.5 多模型端标签不画） ----------
-test('week 单/多: 单=分段线+面积+端标签且无总体虚线；多=逐模型线+总体虚线+端标签不画；缺失日断线+覆盖提示', () => {
+// ---------- ⑥ week 单/多模型（§11.2 + v389 §13.1 百分比 x/y + §12.5 多模型端标签不画） ----------
+test('week 单/多: 单=lineg 分段线+面积+端标签且无总体虚线；多=逐模型线+总体虚线+端标签不画；缺失日断线+空槽轻卡+覆盖提示', () => {
   const ctx = makeCtx();
   // 单模型：只看 A
   const w1 = analyze(ctx, fixture(), { range: 'all', period: 'week', sid: 'sess_main',
@@ -296,37 +305,48 @@ test('week 单/多: 单=分段线+面积+端标签且无总体虚线；多=逐�
   const colorA = colorOf(ctx, KEYS.a);
   assert.equal((h1.match(/class="zu-sv3-hit" data-i="/g) || []).length, 7, '恒 7 个本地日命中列');
   assert.equal((h1.match(/class="zu-sv3-xtxt"/g) || []).length, 7, 'X 轴 7 个日标签（含无数据日）');
-  assert.equal((h1.match(/<g class="zu-sv3-line" stroke="/g) || []).length, 1, '单条模型线（分段 g）');
-  assert.equal((h1.match(/class="zu-sv3-line zu-sv3-oline"/g) || []).length, 0, '单模型无总体虚线');
-  assert.match(h1, new RegExp('<path class="zu-sv3-area" fill="' + colorA + '" d="M [\\d.]+ 200'),
-    '单模型面积填充（% x + px y 基线，v388 PLOT 200）');
+  assert.equal((h1.match(/<g class="zu-sv3-lineg zu-sv3-line" data-m="[^"]*" stroke="/g) || []).length, 1, '单条模型线（lineg 分组 + data-m）');
+  assert.equal((domOf(h1).match(/zu-sv3-oline/g) || []).length, 0, '单模型无总体虚线');
+  // v389 §13.1：面积载体嵌套 svg viewBox 0..100 百分比坐标、基线 y=100（原 px 200 退役）
+  assert.match(h1, /<svg class="zu-sv3-asvg" width="100%" height="100%" viewBox="0 0 100 100" preserveAspectRatio="none">/,
+    '面积载体 viewBox 0..100（百分比高）');
+  assert.match(h1, new RegExp('<path class="zu-sv3-area" fill="' + colorA + '" d="M [\\d.]+ 100'),
+    '单模型面积填充（% x/y、基线 y=100）');
   assert.equal((h1.match(/<circle class="zu-sv3-pt"/g) || []).length, 2, '11-04 与 11-05 两个真实日点');
   assert.equal((h1.match(/class="zu-sv3-elabel/g) || []).length, 1, '单个末端数值标签');
   assert.match(h1, /zu-sv3-elabel[^>]*x="99\.2%"/, '端标签收进右缘 x=99.2%（§11.2）');
   assert.match(h1, /zu-sv3-elabel[^>]*>1\d\d\.0</, '端标签为一位小数速度值');
+  assert.match(h1, /zu-sv3-elabel[^>]*y="[\d.]+%" dy="3"/, '端标签 y 百分比化 + dy 基线微调（§13.1）');
   // 多模型：全池
   const w2 = analyze(ctx, fixture(), { range: 'all', period: 'week', sid: 'sess_main' });
   const h2 = chart(ctx, w2, -1);
   // 分段线按「相邻非空点一连」产出：A 两日连续 → 1 条线；B 周内仅 11-05 一个真实
-  // 点（11-04 轮全 A 输出、无 B 分量）→ 单点不成段，点由 circle+端标签承载
-  assert.equal((h2.match(/<g class="zu-sv3-line" stroke="/g) || []).length, 1, 'A 模型线恰一条分段 g');
-  assert.equal((h2.match(/class="zu-sv3-line zu-sv3-nline zu-sv3-oline"/g) || []).length, 1, '总体虚线仅多模型在场');
-  const ptB = new RegExp('<circle class="zu-sv3-pt" cx="[\\d.]+%" cy="[\\d.]+" r="2\\.5" fill="' + colorOf(ctx, KEYS.b) + '"');
-  assert.match(h2, ptB, 'B 单点仍落真实数据点');
+  // 点（11-04 轮全 A 输出、无 B 分量）→ 单点不成段（v389 点归组：B 组只有 circle 无 line）
+  assert.equal((h2.match(/<g class="zu-sv3-lineg zu-sv3-line" data-m="[^"]*" stroke="/g) || []).length, 2, 'A/B 两条模型 lineg 组（v389 圆点归入线组）');
+  const gB = h2.match(new RegExp('<g class="zu-sv3-lineg zu-sv3-line" data-m="' + KEYS.b + '"[^>]*>([\\s\\S]*?)</g>'));
+  assert.ok(gB && gB[1].indexOf('<line ') < 0 && gB[1].indexOf('<circle') >= 0, 'B 单点不成段：组内只有圆点无分段线');
+  const gA = h2.match(new RegExp('<g class="zu-sv3-lineg zu-sv3-line" data-m="' + KEYS.a + '"[^>]*>([\\s\\S]*?)</g>'));
+  assert.ok(gA && (gA[1].match(/<line /g) || []).length === 1, 'A 模型线恰一段（11-04→11-05）');
+  assert.equal((h2.match(/class="zu-sv3-lineg zu-sv3-line zu-sv3-nline zu-sv3-oline"/g) || []).length, 1, '总体虚线仅多模型在场（无 data-m 身份键）');
+  const ptB = new RegExp('<circle class="zu-sv3-pt" cx="[\\d.]+%" cy="[\\d.]+%" r="2\\.5" fill="' + colorOf(ctx, KEYS.b) + '"');
+  assert.match(h2, ptB, 'B 单点仍落真实数据点（cy 百分比）');
   // §12.5（新契约）：week 多模型端数值标签默认不画——多线右缘堆叠实测重叠，
   // 数值经悬停十字卡承载；单模型保留端标签（上方 h1 已断言 1 枚）
   const labelYs = [];
-  const re = /<text class="zu-sv3-elabel[^"]*" x="99\.2%" y="([-\d.]+)"/g;
+  const re = /<text class="zu-sv3-elabel[^"]*" x="99\.2%" y="([-\d.]+)%"/g;
   let m;
   while ((m = re.exec(h2)) !== null) labelYs.push(parseFloat(m[1]));
   assert.equal(labelYs.length, 0, '多模型端标签 0（§12.5：perModel>1 不画端数值标签）');
   assert.equal((h2.match(/class="zu-sv3-elabel/g) || []).length, 0, 'A/B/总体三线均无端标签');
   // 缺失日（10-31..11-03）无点：总点数 = A2 + B1 + 总体不加 = 3
   assert.equal((h2.match(/<circle class="zu-sv3-pt"/g) || []).length, 3);
-  // 缺失日命中列可悬停且报无数据（悬停无卡）
+  // 缺失日命中列可悬停且报无数据；v389 §13.2 空槽不再静默——出「无有效速度记录」轻卡
   assert.match(h2, /aria-label="10\/31，无数据"/);
-  const h2h = chart(ctx, w2, 0);
-  assert.equal(portal(ctx), '', '缺失日悬停不产卡');
+  chart(ctx, w2, 0);
+  const p0 = portal(ctx);
+  assert.match(p0, /zu-sv-card/, '缺失日悬停出轻卡（§13.2）');
+  assert.match(p0, /10\/30（周五） · 无有效速度记录/, '空槽轻卡标题=日期+周几');
+  assert.match(p0, /区间[^]*2026\/10\/30 · 全天/, '已结束空日区间=全天（§11.5）');
   // §12.5 week 覆盖提示：有效 X/7 天（head sub，数据=7 日槽非空数）；fixture 周内
   // 仅 10-30..11-05 中 11-04/11-05 有数据 → 「有效 2/7 天」；X<7 才追加
   assert.match(h2, /data-head-sub="有效 2\/7 天"/, '覆盖提示=有效 2/7 天');
@@ -361,16 +381,27 @@ function fixtureN(n) {
   return { sid: 's', source: 'local', truncated: false, sids: ['s'], snames: ['S'],
     pids: [['p', 'P']], mnames: ['GLM-A'], mkeys: [KEYS.a], turns };
 }
-test('v388 §12.3/§12.5: plot width:auto 串、柱组密度分档（n≤3→120/n≤8→140/n>8 无内联）、week 满 7 天无覆盖提示', () => {
+test('v388 §12.3 + v389 §13.1: plot width:auto + 弹性高 flex 三值、柱组密度分档（n≤3→120/n≤8→140/n>8 无内联）、week 满 7 天无覆盖提示', () => {
   const ctx = makeCtx();
-  // plot 定宽串锁：width:auto（块级 + margin-left:30 自动填满剩余，§12.3 幻影溢出根除），
-  // 高 = PLOT 200 + X_H 16 = 216；CSS 内不再有 width:100% plot
+  // plot 串锁：width:auto（块级 + margin-left:30 自动填满剩余，§12.3 幻影溢出根除）；
+  // v389 §13.1 高弹性 flex 三值：flex:1 吸收左卡/档位拉伸、min-height 200 保底、
+  // max-height 300 封顶——CSS 内不再有固定 216/200px plot 高
   const an2 = analyze(ctx, fixtureN(2), { range: 'session', period: 'recent', sid: 's' });
   const html2 = chart(ctx, an2, -1);
   assert.match(html2,
-    /\.zu-sv3-chart \.zu-sc-plot\{height:216px;margin-left:30px;min-width:0;width:auto;box-sizing:border-box\}/,
-    'plot width:auto + 高 216（§12.3/§12.5）');
+    /\.zu-sv3-chart \.zu-sc-plot\{flex:1 1 auto;min-height:200px;max-height:300px;margin-left:30px;min-width:0;width:auto;box-sizing:border-box\}/,
+    'plot width:auto + 弹性高 200..300（§12.3/§13.1）');
   assert.doesNotMatch(html2, /\.zu-sv3-chart \.zu-sc-plot\{[^}]*width:100%/, 'plot 100% 宽幻影溢出路径已除名');
+  assert.doesNotMatch(html2, /\.zu-sv3-chart \.zu-sc-plot\{[^}]*[^-]height:\d+px/, 'plot 固定 px 高已退役（min/max-height 之外无 height 键，§13.1）');
+  // 值区链同步弹性：网格/沟槽=plot−16px X 带；svg 高 calc(100%−16)（§13.1 折线）
+  assert.match(html2, /\.zu-sv3-chart \.zu-sc-grid,\.zu-sv3-chart \.zu-sc-gutter\{height:calc\(100% - 16px\)\}/,
+    '网格/沟槽高=值区（plot−X 带 16px）');
+  assert.match(html2, /\.zu-sv3-svg\{display:block;overflow:visible;height:calc\(100% - 16px\)\}/,
+    '折线 svg 高=值区百分比（§13.1）');
+  // wrap flex 列 + justify-content:flex-end：plot 拉伸到 300 封顶后多余高度留在上方，
+  // X 标签带恒贴 plot 底/卡底（PRD §2.4 距卡内边界 ≤28px）
+  assert.match(html2, /\.zu-sv3-chart \.zu-sc-wrap\{flex:1;min-height:0;display:flex;flex-direction:column;justify-content:flex-end;/,
+    'wrap 底对齐（X 轴带恒贴底，§13.1）');
   // 柱组密度分档纯函数：n≤3→n×120、n≤8→n×140、n>8→无内联
   const density = n => vm.runInContext('spd3BarDensityStyle(' + n + ')', ctx);
   assert.equal(density(1), ' style="max-width:min(100%,120px);margin:0 auto"', 'n=1 → 120px 居中');
@@ -519,4 +550,75 @@ test('负向: 无「功能说明」常驻块、无 V2 专属类残留、无口�
     assert.ok(!s.includes('spdChartHTML') && !s.includes('spdCardHTML'), '不引用 V2 函数名');
   }
   for (const s of outs.slice(0, 5)) assert.equal((s.match(/<style>/g) || []).length, 1, '样式段恰一次');
+});
+
+// ---------- ⑪ v389 §13.2 槽位卡（today/week 统一 spd3SlotCardHTML） ----------
+test('v389 §13.2 槽位卡: today 空小时/week 空日出「无有效速度记录」轻卡；有数据卡=综合大字+模型明细+轮次/输出/费用三态+另有 N 个模型', () => {
+  const ctx = makeCtx();
+  // today 单模型（柱）：空小时槽悬停 → 轻卡（§13.2 不再静默；hourMode 区间文案）
+  const tdBar = analyze(ctx, fixture(), { range: 'all', period: 'today', sid: 'sess_main',
+    focus: 'full', filt: { mode: 'sel', keys: [KEYS.a] } });
+  chart(ctx, tdBar, 0);
+  const pBar = portal(ctx);
+  assert.match(pBar, /zu-sv3-daycard/, '槽位卡根类（today 小时桶）');
+  assert.match(pBar, /11\/05（周四） · 无有效速度记录/, '空槽轻卡标题');
+  assert.match(pBar, /区间[^]*2026\/11\/05 00:00 – 01:00/, 'hourMode 已结束空槽区间=整小时');
+  // today 进行中空槽（当前 14 时，b 钳 now=槽起）：区间含「截至」
+  chart(ctx, tdBar, 14);
+  assert.match(portal(ctx), /区间[^]*2026\/11\/05 14:00 – 截至 14:00/, '进行中小时槽区间（§11.5，b 钳 now）');
+  // week 多模型：有数据日（今天）→ 综合日均大字 + 模型明细 + 轮次/输出/费用
+  const w2 = analyze(ctx, fixture(), { range: 'all', period: 'week', sid: 'sess_main' });
+  chart(ctx, w2, 6);
+  const pDay = portal(ctx);
+  assert.match(pDay, /zu-sv3-daycard/, 'week 日桶同走槽位卡');
+  assert.match(pDay, /综合日均</, 'dayMode 主行标签');
+  assert.match(pDay, /zu-sv-cval [\w-]+ zu-sv3-big">111\.8 t\/s/, '综合日均档位色大字（11.5 = 全天加权）');
+  assert.match(pDay, /GLM-A<\/span><i class="zu-sv3-mv">150\.0 t\/s<\/i><i class="zu-sv3-mt">3 次/,
+    '模型明细行：均速+请求数');
+  assert.match(pDay, /Claude-B[^]*?77\.8 t\/s[^]*?2 次/, '多模型逐行（当日分量口径）');
+  assert.match(pDay, /有效轮次<\/span><b>4 轮/, '有效轮次（fmtCnt 在场）');
+  assert.match(pDay, /有效输出<\/span><b>1900 token/, '有效输出（fmtTok 在场）');
+  assert.match(pDay, /区间<\/span><b>2026\/11\/05 · 00:00 – 截至 14:00/, '进行中日区间（b 钳 now）');
+  assert.match(pDay, /预估费用[^]*?¥0\.15<i class="zu-sv-partial"> · 含兜底估价/, '预估费用=正常值+兜底注记（c=null 轮入日）');
+  // 费用三态（槽位卡，直接调构建器锁纯函数契约）：fmtMoney 缺失=关闭、c=null=暂无估价
+  ctx.__itC = { v: 100, empty: false, turns: 1, out: 100, c: null,
+    a: new Date(2026, 10, 5).getTime(), b: new Date(2026, 10, 5, 14).getTime(),
+    models: [{ key: KEYS.a, name: 'GLM-A', o: 100, ms: 1000, n: 1, tps: 100 }] };
+  ctx.__oN = { fmtTok: String, fmtCnt: String };
+  assert.match(vm.runInContext('spd3SlotCardHTML(__itC, __oN, 1, true)', ctx),
+    /费用显示已关闭/, '槽位卡费用态一：显示关闭');
+  ctx.__oF = FMTS;
+  assert.match(vm.runInContext('spd3SlotCardHTML(__itC, __oF, 1, true)', ctx),
+    /暂无估价/, '槽位卡费用态二：暂无估价（绝不显 0）');
+  // >6 模型截断 +「另有 N 个模型」（直接调用构建器，纯字符串契约）
+  const models = [];
+  for (let i = 0; i < 8; i++) models.push({ key: 'k\x1fm' + i, name: 'M' + i, o: 100, ms: 1000, n: 1, tps: 100 });
+  ctx.__it8 = { v: 100, empty: false, turns: 8, out: 800, c: 0.5, costFull: true,
+    a: new Date(2026, 10, 5).getTime(), b: new Date(2026, 10, 5, 14).getTime(),
+    models };
+  ctx.__o3 = FMTS;
+  const p8 = vm.runInContext('spd3SlotCardHTML(__it8, __o3, 2, true)', ctx);
+  assert.equal((p8.match(/zu-sv3-mi"/g) || []).length, 6, '模型明细 ≤6 行');
+  assert.match(p8, /zu-sv3-more">另有 2 个模型/, '截断汇总行');
+  assert.match(p8, /data-i="2"/, '卡根携带悬停序号');
+});
+
+// ---------- ⑫ v389 §13.2/§13.3 折线两级 hover CSS 与 lineg 分组串锁 ----------
+test('v389 §13.2/§13.3: lineg 分组（线+点同组 data-m）+ 四条纯 CSS hover 串在场（线级加粗/提亮/兄弟弱化/指针让位）', () => {
+  const ctx = makeCtx();
+  const an = analyze(ctx, fixture(), { range: 'all', period: 'today', sid: 'sess_main' });
+  const html = chart(ctx, an, -1);
+  // 四条 hover CSS（§13.2 两级 hover 的线级视觉，零 JS 监听）
+  assert.match(html, /\.zu-sv3-lineg\{pointer-events:stroke\}/, '线体命中（pointer-events:stroke）');
+  assert.match(html, /\.zu-sv3-lineg:hover\{stroke-width:2\.6\}/, 'hover 自身加粗 2.6px');
+  assert.match(html, /\.zu-sv3-lineg:hover \.zu-sv3-pt\{filter:brightness\(1\.3\)\}/, 'hover 圆点提亮');
+  assert.match(html, /\.zu-sv3-lines:hover \.zu-sv3-lineg:not\(:hover\)\{opacity:\.45\}/, '容器 hover 弱化兄弟线');
+  // 标签/线不抢指针（线级 hover 让位）
+  assert.match(html, /\.zu-sv3-xtxt\{[^}]*pointer-events:none\}/, 'X 标签不截获指针');
+  // 分组结构：g.zu-sv3-lines 容器画在命中列上层（后绘），线+点同组（§13.3 三层层级）
+  assert.match(html, /<g class="zu-sv3-lines">[\s\S]*<\/g><text class="zu-sv3-elabel|<g class="zu-sv3-lines">/,
+    'lineg 容器在场');
+  const orderHit = html.indexOf('class="zu-sv3-hit"');
+  const orderLines = html.indexOf('<g class="zu-sv3-lines">');
+  assert.ok(orderHit >= 0 && orderLines > orderHit, 'lineg 组绘制在命中列之后（上层，线级 hover 可命中）');
 });

@@ -832,3 +832,49 @@ test('v387 进行桶钳 now: today 最后一小时 item.b=now 而非下一整点
   assert.equal(anF.items[anF.items.length - 1].b, new Date(2026, 10, 5, 10).getTime(),
     '聚焦形态末桶（9 时）b=10:00（钳后桶末）');
 });
+
+// ---------- v389 §13.4 axisA/axisB：未筛选池时间轴（heat 形态判定消费） ----------
+test('v389 §13.4 axisA/axisB: 未筛选池时间轴在场——全池 10 天/筛选后 2 天，axisA/axisB 恒=全池首末日、spanA/spanB 仍=筛选后展示轴；unfiltered 两轴重合', () => {
+  const ctx = makeCtx();
+  // A 模型 10-27..11-05 每天一轮（全池覆盖 10 天）；B 模型只 11-04/11-05 各一轮（2 天）
+  const raw = [];
+  for (let i = 0; i < 10; i++) {
+    const at = new Date(2026, 9, 27 + i, 10).getTime();
+    raw.push([0, at, at - 60000, 200, 2000, 100, 200, 1, [[0, 200, 2000, 1]], 0.01, 1]);
+  }
+  for (const dd of [4, 5]) {
+    const at = new Date(2026, 10, dd, 11).getTime();
+    raw.push([0, at, at - 60000, 100, 1000, 50, 100, 1, [[1, 100, 1000, 1]], 0.01, 1]);
+  }
+  raw.sort((x, y) => x[1] - y[1]);
+  let prev = 0;
+  const turns = raw.map(r => {
+    const o = { s: r[0], t: r[1] - prev, b: r[2], out: r[3], ms: r[4], i: r[5], o: r[6], n: r[7], msl: r[8] };
+    prev = r[1];
+    o.c = r[9]; o.cf = 1;
+    return o;
+  });
+  const h = { sid: 's', source: 'local', truncated: false, sids: ['s'], snames: ['S'],
+    pids: [['p', 'P']], mnames: ['GLM-A', 'Claude-B'], mkeys: [KEYS.a, KEYS.b], turns };
+  const firstB = new Date(2026, 9, 27, 9, 59).getTime();   // 全池首轮 b（10-27 09:59）
+  const lastT = new Date(2026, 10, 5, 11).getTime();       // 全池末轮 t（11-05 11:00，B）
+  // 筛选只看 B：展示轴收缩到 2 天，未筛选时间轴保持全池 10 天跨度
+  const anB = analyze(ctx, h, null, { range: 'all', period: 'all', sid: 's',
+    filt: { mode: 'sel', keys: [KEYS.b] } });
+  assert.equal(anB.pool.length, 2, '筛选后池=2 行（B 的两轮）');
+  assert.equal(anB.axisA, firstB, 'axisA=未筛选池首轮 b（10-27，筛选不收缩时间轴）');
+  assert.equal(anB.axisB, lastT, 'axisB=未筛选池末轮 t（11-05）');
+  assert.equal(anB.spanA, new Date(2026, 10, 4, 10, 59).getTime(), 'spanA=筛选后展示轴首日（11-04）');
+  assert.equal(anB.spanB, new Date(2026, 10, 5, 11).getTime(), 'spanB=筛选后展示轴末轮');
+  assert.ok(anB.axisA < anB.spanA, 'axisA 严格早于收缩后的 spanA（覆盖判定不随筛选跳变的输入前提）');
+  // 无筛选：两轴重合（未筛选池自身）
+  const anAll = analyze(ctx, h, null, { range: 'all', period: 'all', sid: 's' });
+  assert.equal(anAll.axisA, firstB, '无筛选时 axisA=池首日');
+  assert.equal(anAll.axisB, lastT, '无筛选时 axisB=池末日');
+  assert.equal(anAll.spanA, anAll.axisA, 'auto 池 spanA 与 axisA 重合');
+  // 显式空筛选（清空）：池清空但未筛选时间轴仍在（形态判定仍有稳定输入）
+  const anEmpty = analyze(ctx, h, null, { range: 'all', period: 'all', sid: 's',
+    filt: { mode: 'sel', keys: [] } });
+  assert.equal(anEmpty.axisA, firstB, '空筛选 axisA 仍=全池首日');
+  assert.equal(anEmpty.axisB, lastT, '空筛选 axisB 仍=全池末日');
+});

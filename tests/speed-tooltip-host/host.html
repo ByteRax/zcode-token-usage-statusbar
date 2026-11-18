@@ -801,8 +801,9 @@ window.__zuMount = function (sel, hover) {
     tip.addEventListener('mouseover', function (e) {
       var lb = e.target && e.target.closest && e.target.closest('.zu-sv-legend-btn');
       if (lb) { window.__legend.show(lb); return; }   /* 生产同款：问号 hover 即显 */
-      /* v291 生产同款：热力图格子（.zu-hm-cell）与柱体共用 data-i 悬停契约 */
-      var col = e.target && e.target.closest && e.target.closest('.zu-sc-col,.zu-hm-cell');
+      /* v291 生产同款：热力图格子（.zu-hm-cell）与柱体共用 data-i 悬停契约；
+       * v389 §13.2：折线命中列 .zu-sv3-hit 同款并入（生产委托链 closest 三选择器对齐） */
+      var col = e.target && e.target.closest && e.target.closest('.zu-sc-col,.zu-hm-cell,.zu-sv3-hit');
       if (!col) return;
       var idx = parseInt(col.getAttribute('data-i'), 10) || 0;
       if (idx !== window.__zuHover) {
@@ -944,6 +945,25 @@ window.__zuCellRect = function (idx) {
   if (!cells[0]) return null;
   var r = cells[0].getBoundingClientRect();
   return { x: r.x, y: r.y, w: r.width, h: r.height };
+};
+/* v389 §13.2/§13.7：折线命中列合成 mouseover（冒泡 MouseEvent 走生产同款 tip 委托：
+ * hover 序号入重建 ⇒ SPD_PORTAL 槽位卡经 __setSPDPortal+portal.sync 出卡）。
+ * 返回 Portal 可见性与卡文案摘要：有数据日=综合日均/模型明细卡，无数据日=
+ * 「无有效速度记录」轻卡。idx=槽位序（today 小时桶 / week 日桶 data-i）。 */
+window.__zuHitHover = function (idx) {
+  var tip = document.getElementById('zu-spd-replica');
+  var hit = tip && tip.querySelector('.zu-sv3-hit[data-i="' + idx + '"]');
+  if (!hit) return { ok: false, err: 'no hit ' + idx };
+  var r = hit.getBoundingClientRect();
+  hit.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true,
+    clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 }));
+  var p = window.__portalEl;
+  var shown = !!(p && p.style.display === 'block' && p.offsetWidth > 0);
+  var txt = shown ? (p.textContent || '') : '';
+  return { ok: true, idx: idx, shown: shown,
+    noRecord: txt.indexOf('无有效速度记录') >= 0 || txt.indexOf('no rated speed records') >= 0,
+    dayCard: txt.indexOf('综合日均') >= 0 || txt.indexOf('Daily avg') >= 0,
+    txt: shown ? txt.slice(0, 120) : null };
 };
 window.__zuScrollEnd = function () {
   var wrap = document.querySelector('#zu-spd-replica .zu-sc-wrap');
@@ -1107,8 +1127,9 @@ window.__zuDiag = function () {
   };
   function head(t) { return t.querySelector('.zu-sv-head'); }
 };
-/* ---------- §11.7 + §12.7 布局断言（v387 实机修复批 + v388 自适应批验收，PRD 14.2） ----------
- * 九项几何不变量按当前挂载卡形态计算，不适用项自动跳过；调用方只看 failures。
+/* ---------- §11.7 + §12.7 + §13.7 布局断言（v387 实机修复批 + v388 自适应批 +
+ * v389 弹性高批验收，PRD 14.2） ----------
+ * 十项几何不变量按当前挂载卡形态计算，不适用项自动跳过；调用方只看 failures。
  * 全部读真实 getBoundingClientRect/scroll 几何——修复纪律禁止 overflow 掩盖，
  * 断言因此可以在任何视口宽度下抓越界形态：
  * ① tip root 存在时 scrollWidth==clientWidth（无横向溢出，含根节点自身）；
@@ -1120,7 +1141,9 @@ window.__zuDiag = function () {
  * ⑥ V3 图表 .zu-sc-wrap scrollWidth==clientWidth（§12.7 全形态挂载态，幻影溢出根除）；
  * ⑦ .zu-sv3-fbar 高度 ≤ 44px（§12.7 恒单行）；
  * ⑧ root data-h-tier 在场且内联 min-height ∈ [300,480]（§12.1 档位表覆盖）；
- * ⑨ 分布表 .zu-sv3-dwrap scrollWidth==clientWidth（§12.7 多模型态 Grid 无溢出）。 */
+ * ⑨ 分布表 .zu-sv3-dwrap scrollWidth==clientWidth（§12.7 多模型态 Grid 无溢出）；
+ * ⑩ plot 弹性高 ∈ [200,300] 且 plot 底距图表卡内容底 ≤28px（§13.1/§13.7：flex 吸收
+ *   拉伸、X 标签带恒贴底——recent/today/week 三形态有 .zu-sc-plot，热力自动跳过）。 */
 window.__zuGeometryChecks = function () {
   var out = { checks: [], failures: [] };
   var tipBox = document.getElementById('zu-spd-replica');
@@ -1212,6 +1235,22 @@ window.__zuGeometryChecks = function () {
   if (dwrap) {
     f('dist-no-hscroll', dwrap.scrollWidth === dwrap.clientWidth,
       'scroll=' + dwrap.scrollWidth + ' client=' + dwrap.clientWidth);
+  }
+  /* ---------- §13.1/§13.7（v389 弹性高批验收）----------
+   * ⑩ plot 弹性高：flex:1 吸收左卡/档位拉伸——高度钳在 [200,300]（min/max-height）；
+   *   X 标签带贴底：plot 底距图表卡内容底 ≤28px（wrap 5px + 卡 padding 10px 正常
+   *   ≈15px；>28px 即 plot 未贴底/卡底出现推底空腔的形态回归）。
+   *   recent/today/week 三形态有 .zu-sc-plot；month/hist 热力无 plot 自动跳过。 */
+  if (plot && chart) {
+    var pb10 = plot.getBoundingClientRect();
+    f('plot-flex-height', pb10.height >= 199 && pb10.height <= 301,
+      'plotH=' + Math.round(pb10.height));
+    var cb10 = chart.getBoundingClientRect();
+    var ccs10 = getComputedStyle(chart);
+    var gap10 = cb10.bottom - (parseFloat(ccs10.paddingBottom) || 0) - pb10.bottom;
+    f('plot-bottom-gap-28', gap10 <= 28.5,
+      'gap=' + Math.round(gap10) + ' (plotBottom=' + Math.round(pb10.bottom) +
+      ' contentBottom=' + Math.round(cb10.bottom - (parseFloat(ccs10.paddingBottom) || 0)) + ')');
   }
   return out;
 };
