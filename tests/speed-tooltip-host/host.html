@@ -1239,6 +1239,39 @@ window.__zuGeometryChecks = function () {
     f('dist-no-hscroll', dwrap.scrollWidth === dwrap.clientWidth,
       'scroll=' + dwrap.scrollWidth + ' client=' + dwrap.clientWidth);
   }
+  /* ---------- ⑫ 分布条段等高（v390 第五轮专项）----------
+   * .zu-sv3-dbar 每个可见段（width>0.5px，排除亚像素不可见段）与轨道的
+   * top/bottom 误差 ≤0.5px、段间高度差 ≤0.5px；无独立圆角/边框/阴影/垂直
+   * 位移（computed 核对）。真因甄别用：若几何全等仍观感参差，即颜色亮度/
+   * 抗锯齿错觉，不是布局错位。 */
+  var dbar = root.querySelector('.zu-sv3-dbar');
+  if (dbar) {
+    var brail = dbar.getBoundingClientRect();
+    var vis = [];
+    for (var dc = dbar.firstElementChild; dc; dc = dc.nextElementSibling) {
+      var dr = dc.getBoundingClientRect();
+      if (dr.width > 0.5) vis.push({ el: dc, r: dr });
+    }
+    if (vis.length) {
+      var tops = vis.map(function (v) { return +(v.r.top - brail.top).toFixed(2); });
+      var bots = vis.map(function (v) { return +(v.r.bottom - brail.bottom).toFixed(2); });
+      var hs2 = vis.map(function (v) { return +v.r.height.toFixed(2); });
+      var dTop = Math.max.apply(null, tops) - Math.min.apply(null, tops);
+      var dBot = Math.max.apply(null, bots) - Math.min.apply(null, bots);
+      var dH = Math.max.apply(null, hs2) - Math.min.apply(null, hs2);
+      f('dbar-segs-equal', dTop <= 0.5 && dBot <= 0.5 && dH <= 0.5,
+        'segs=' + vis.length + ' dTop=' + dTop + ' dBot=' + dBot + ' dH=' + dH +
+        ' railH=' + Math.round(brail.height));
+      var badStyle = vis.filter(function (v) {
+        var s = getComputedStyle(v.el);
+        return s.display !== 'block' || s.borderRadius !== '0px' ||
+          parseFloat(s.borderTopWidth) > 0 || s.boxShadow !== 'none' ||
+          (s.transform && s.transform !== 'none');
+      });
+      f('dbar-segs-style', badStyle.length === 0,
+        badStyle.length ? 'bad=' + badStyle.length : 'all-segments-clean');
+    }
+  }
   /* ---------- §13.1/§13.7（v389 弹性高批验收）----------
    * ⑩ plot 弹性高：flex:1 吸收左卡/档位拉伸——高度钳在 [200,300]（min/max-height）；
    *   X 标签带贴底：plot 底距图表卡内容底 ≤28px（wrap 5px + 卡 padding 10px 正常
