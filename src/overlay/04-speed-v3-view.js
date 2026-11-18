@@ -14,17 +14,25 @@
    * 纪律（spec §7）：模型 key 不进 className（只进 data-k）；动态文本一律 spdEsc；全部
    * 文案走 SPD_L；颜色语义两套不混用——模型身份色 = spd3Color（SPD3_PALETTE），速度
    * 色阶 = TPS_BANDS 档位类（zu-ultra/ok/warm… 全局色规则继承）。
-   * 集成契约：spd3LeftHTML 第三参 expanded（多模型分布表展开态，调用方传布尔）；覆盖
-   * 范围五值读可选 an.cov={recent,today,week,month,all}（集成方按五个 period 各跑一次
+   * 集成契约：spd3LeftHTML 第三参 expanded（多模型分布表展开态，调用方传布尔）、第四参
+   * poolSingle（chips 池恰一模型=「真单模型池」，仅此时渲染「唯一模型」徽标，v387 §11.5）；
+   * 覆盖范围五值读可选 an.cov={recent,today,week,month,all}（集成方按五个 period 各跑一次
    * spd3AnalyzeCached 汇总轮数，缺席显 —）；筛选 chips 池缺省取 an.perModel+an.selMissing，
-   * 筛选激活时集成方应传 ctx.pool=未筛选全量模型（否则 chips 收缩为已选集，无法点回）。 */
+   * 筛选激活时集成方应传 ctx.pool=未筛选全量模型（否则 chips 收缩为已选集，无法点回）。
+   * v387 实机修复批（spec §11）：宽度链 border-box 释放（§11.1）；多模型态主数字恒在
+   * （§11.3）；an.real 空时图表区渲染居中空态 spd3EmptyStateHTML（§11.4，占位 <!--CHART-->
+   * 在本文件内被替换、wire 的 replace 自然落空）；计数行统一「已选 X/Y · 本期有效 N」、
+   * live 徽标估算态固定文案、同名异供应商副标 spd3ModelLabel、标题 SVG（§11.5）。 */
   /* SPD_V3_VIEW_BEGIN */
   var SPD3_SVG_FUNNEL = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8v5l-4 2v-7L3 5Z"/></svg>';
   var SPD3_SVG_SEARCH = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>';
   var SPD3_SVG_CUBE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>';
+  /* v387 §11.5：标题 📈 emoji 换自包含 SVG（16×16 轴+折线，stroke currentColor 随主题） */
+  var SPD3_SVG_TREND = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4v16h18"/><path d="m7 14 4-5 3 3 5-7"/></svg>';
   /* 数值格式沿用 V2 口径：整数直显、小数留 1 位、空值 em dash（绝不显 0 t/s） */
   function spd3FmtV(x) { return x == null ? "—" : (x % 1 ? x.toFixed(1) : String(x)); }
-  /* chips/弹出行共用：色点 + 名称（超长 ellipsis，全文走 title） */
+  /* 色点 + 名称（单模型态模型行专用；chips/弹层/分布行走 spd3ModelLabel——同名异
+   * 供应商需要副标）。超长 ellipsis，全文走 title */
   function spd3DotAndName(key, name) {
     return '<i class="zu-sv3-dot" style="background:' + spd3Color(key) + '" aria-hidden="true"></i>' +
       '<span class="zu-sv3-chip-name">' + spdEsc(name) + "</span>";
@@ -35,6 +43,43 @@
     var s = String(key == null ? "" : key), cut = s.indexOf("\x1f");
     var mid = cut >= 0 ? s.slice(cut + 1) : s;
     return mid || SPD_L("未知模型", "Unknown model");
+  }
+  /* v387 §11.5 同名不同供应商（同 name 异 key 不合并身份）：显示名后追加供应商副标。
+   * spd3Parts(entry) = {pid, mid}：entry 自带 pid/mid（spd3 解包产物）优先，缺席按
+   * 身份键切段兜底（chips 池条目只有 key/name）；title 恒为完整 pid/model（pid 空只显
+   * model 段，退化名键无供应商信息不硬造）。spd3TailSeg = 「/」末段（provider id 常是
+   * 长路径，尾段才有辨识度），空串兜底原串。 */
+  function spd3TailSeg(s) {
+    var parts = String(s == null ? "" : s).split("/");
+    return parts[parts.length - 1] || String(s);
+  }
+  function spd3Parts(entry) {
+    var key = spd3ModelKey(entry);
+    var cut = key.indexOf("\x1f");
+    var kpid = cut >= 0 ? key.slice(0, cut) : "";
+    var kmid = cut >= 0 ? key.slice(cut + 1) : key;
+    return { pid: (entry && entry.pid) || kpid, mid: (entry && entry.mid) || kmid || (entry && entry.name) || "" };
+  }
+  function spd3ModelTitle(entry) {
+    var p = spd3Parts(entry);
+    return p.pid ? p.pid + "/" + p.mid : p.mid;
+  }
+  /* chips/弹层/分布行共用：色点 + 名称（allEntries 存在同 name 异 key 时追加
+   * span.zu-sv3-msub 供应商副标——pid 尾段，pid 空退 key 首段，仍空则省副标） */
+  function spd3ModelLabel(entry, allEntries) {
+    var key = spd3ModelKey(entry);
+    var name = (entry && entry.name) || spd3KeyName(key);
+    var dup = false, list = allEntries || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] && spd3ModelKey(list[i]) !== key && list[i].name === name) { dup = true; break; }
+    }
+    var sub = "";
+    if (dup) {
+      var tail = spd3TailSeg(spd3Parts(entry).pid);
+      if (tail) sub = ' <span class="zu-sv3-msub">' + spdEsc(tail) + "</span>";
+    }
+    return '<i class="zu-sv3-dot" style="background:' + spd3Color(key) + '" aria-hidden="true"></i>' +
+      '<span class="zu-sv3-chip-name">' + spdEsc(name) + sub + "</span>";
   }
   /* ==================== ① 头部：标题 + 范围/时间双 Tab 组（V2 spdTabRow/spdHeadHTML 同构改名） ==================== */
   function spd3TabRow(group, list, cur, labels) {
@@ -53,17 +98,20 @@
       project: SPD_L("项目", "Project"), all: SPD_L("全部", "All") };
     var pl = { recent: SPD_L("最近", "Recent"), today: SPD_L("今天", "Today"),
       week: SPD_L("近 7 天", "7 days"), month: SPD_L("本月", "Month"), all: SPD_L("全部", "All") };
-    return '<div class="zu-sv-head"><div class="zu-sv-title">📈 ' + spdEsc(SPD_L("生成速度", "Generation speed")) + "</div>" +
+    return '<div class="zu-sv-head"><div class="zu-sv-title">' + SPD3_SVG_TREND +
+      "<span>" + spdEsc(SPD_L("生成速度", "Generation speed")) + "</span></div>" +
       '<div class="zu-sv-filter"><span class="zu-sv-flabel">' + spdEsc(SPD_L("范围", "Scope")) + "</span>" +
       spd3TabRow("range", SPD_RANGES, an.range, rl) +
       '<span class="zu-sv-time"><span class="zu-sv-flabel">' + spdEsc(SPD_L("时间", "Time")) + "</span>" +
       spd3TabRow("period", SPD_PERIODS, an.period, pl) + "</span></div></div>";
   }
   /* ==================== ② 筛选条（spec §3）：漏斗 + chips + 计数 + 搜索入口 ====================
-   * pool = [{key,name,n?,missing?}]（spd3ChipPool 产出）；o = {selMissing?, pop?}。
+   * pool = [{key,name,n?,missing?}]（spd3ChipPool 产出）；o = {selMissing?, pop?, active?}。
    * 选中态 = filt.mode==="sel" 且含该 key；无数据模型（missing / o.selMissing 命中，
    * 含 pool 外的 selMissing key 兜底补一枚）加 .zu-sv3-chip-empty + 「无数据」标记。
-   * ≤6 枚全显、超出收 +N；≥9 模型才渲染搜索按钮；pool 为空不渲染整条。 */
+   * ≤6 枚全显、超出收 +N；≥9 模型才渲染搜索按钮；pool 为空不渲染整条。
+   * 计数行（v387 §11.5 三语义统一）：已选 X/Y · 本期有效 N —— X=显式筛选键数（auto=X=Y）、
+   * Y=池模型数、N=o.active=本期有效模型数（an.perModel.length，调用方传入）。 */
   function spd3FilterBarHTML(pool, filt, o) {
     pool = pool || [];
     o = o || {};
@@ -82,17 +130,17 @@
       if (on) onCount++;
       chips += '<button type="button" class="zu-sv3-chip' + (on ? " on" : "") + (empty ? " zu-sv3-chip-empty" : "") +
         '" data-k="' + spdEsc(p.key) + '"' + (on ? ' aria-pressed="true"' : ' aria-pressed="false"') +
-        ' title="' + spdEsc(p.name) + '" aria-label="' + spdEsc(p.name + (empty ? SPD_L("（无数据）", " (no data)") : "")) + '">' +
-        spd3DotAndName(p.key, p.name) +
+        ' title="' + spdEsc(spd3ModelTitle(p)) + '" aria-label="' + spdEsc(p.name + (empty ? SPD_L("（无数据）", " (no data)") : "")) + '">' +
+        spd3ModelLabel(p, rows) +
         (empty ? '<em class="zu-sv3-chip-miss">' + spdEsc(SPD_L("无数据", "no data")) + "</em>" : "") + "</button>";
     }
     var hidden = rows.length - Math.min(rows.length, MAX);
     if (hidden > 0) chips += '<span class="zu-sv3-chip-more" title="' +
       spdEsc(SPD_L("其余 " + hidden + " 个模型，可搜索查看", hidden + " more models — use search")) + '">+' + hidden + "</span>";
-    var selCount = filt && filt.mode === "sel" && filt.keys ? filt.keys.length : rows.length;
-    var count = filt && filt.mode === "sel"
-      ? SPD_L("已选 " + selCount + "/" + rows.length, "Selected " + selCount + "/" + rows.length)
-      : SPD_L("全部 " + rows.length, "All " + rows.length);
+    var selX = filt && filt.mode === "sel" && filt.keys ? filt.keys.length : rows.length;
+    var act = typeof o.active === "number" ? o.active : 0;
+    var count = SPD_L("已选 " + selX + "/" + rows.length + " · 本期有效 " + act,
+      "Selected " + selX + "/" + rows.length + " · " + act + " active");
     var search = rows.length >= 9 ? '<button type="button" class="zu-sv3-fsearch" aria-haspopup="dialog" aria-expanded="' +
       (o.pop && o.pop.open ? "true" : "false") + '" title="' + spdEsc(SPD_L("搜索模型", "Search models")) +
       '" aria-label="' + spdEsc(SPD_L("搜索模型", "Search models")) + '">' + SPD3_SVG_SEARCH + "</button>" : "";
@@ -120,8 +168,8 @@
     for (var j = 0; j < rows.length; j++) {
       var r = rows[j], on = isOn(r.key);
       list += '<button type="button" class="zu-sv3-fpop-row' + (on ? " on" : "") + '" data-k="' + spdEsc(r.key) + '"' +
-        (on ? ' aria-pressed="true"' : ' aria-pressed="false"') + ' title="' + spdEsc(r.name) + '">' +
-        spd3DotAndName(r.key, r.name) +
+        (on ? ' aria-pressed="true"' : ' aria-pressed="false"') + ' title="' + spdEsc(spd3ModelTitle(r)) + '">' +
+        spd3ModelLabel(r, rows) +
         '<span class="zu-sv3-fpop-n">' + spdEsc(String(spdNum(r.n))) + "</span></button>";
     }
     var box = '<input type="text" class="zu-sv3-fpop-input" aria-label="' + spdEsc(SPD_L("搜索模型", "Search models")) +
@@ -137,11 +185,17 @@
       (capped ? '<div class="zu-sv3-fpop-cap">' + spdEsc(SPD_L("输入以搜索更多", "Type to search more")) + "</div>" : "") +
       acts + "</div>";
   }
-  /* ==================== ④ 左摘要卡（spec §6 单/多模型两态） ====================
-   * 单模型判定 = an.perModel（筛选后池内有输出分量模型）恰 1 个（无数据模型不计）。
-   * 多模型分布行序按 share（请求数占比）降序、最多 6 行 + data-sv3-more 展开按钮
-   * （expanded 由调用方传）；msAvail=false 降级：隐藏「均速」列（表格退两列），
-   * 绝不出现 t/s 假值。覆盖范围单值随 an.period 直读（v384 M4：an.cov 五值契约废除）。 */
+  /* ==================== ④ 左摘要卡（spec §6 + §11.3/§11.4/§11.5） ====================
+   * 三态：空（无 perModel 或无 overall）→ 主数字 — + 本期统计 0/0 + 峰最低新 —；
+   * 单模型（perModel 恰 1，无数据模型不计）→ 主数字/档位/模型行/本期统计；
+   * 多模型 → 主数字恒在（v387 §11.3：任何模型数不缺均速大数字）→ 档位胶囊 →
+   * 「本期有效 N 个模型 · M 轮」（selMissing 非空追加无有效记录提示）→ 分布
+   * （堆叠条 + 表格默认 ≤4 行，data-sv3-more 查看全部；表容器 max-height 内滚，
+   * 展开态不撑高主卡）→ 峰/低/新。分布行序按 share（请求数占比）降序；
+   * msAvail=false 降级：隐藏「均速」列（表格退两列），绝不出现 t/s 假值。
+   * poolSingle（v387 §11.5）= chips 池恰 1 个真模型——「唯一模型」徽标只用于真
+   * 单模型池，筛选缩到单模型不冒充。覆盖范围单值随 an.period 直读（v384 M4：an.cov
+   * 五值契约废除）。 */
   function spd3LeftTitle(an) {
     var n = an && an.items ? an.items.length : 0;
     var t = an && an.period === "recent" ? SPD_L("最近 " + n + " 轮", "Last " + n + " turns")
@@ -160,22 +214,37 @@
     return '<div class="zu-sv3-band"><b class="' + bd.cls + '" style="font-weight:600">' +
       spdEsc(tpsBandText(bd)) + "</b></div>";
   }
-  function spd3LeftHTML(an, live, expanded) {
+  /* 主数字构建函数（§11.3 单/多/空三态共用同一结构）：overall.v 档位色 + t/s 单位，
+   * v 缺席显 — 绝不造 0 t/s */
+  function spd3MainNumHTML(v) {
+    var bd = v != null ? tpsBand(v) : null;
+    return '<div class="zu-sv3-main-num"><span class="' + (bd ? bd.cls : "dim") + '">' + spdEsc(spd3FmtV(v)) +
+      '</span><span class="zu-sv3-unit">t/s</span></div>';
+  }
+  function spd3LeftHTML(an, live, expanded, poolSingle) {
     an = an || {};
     var overall = an.overall || null;
     var models = an.perModel || [];
     var bd = overall ? tpsBand(overall.v) : null;
     var dayLbl = an.unit === "day";
+    /* live 徽标（§11.5）：估算态固定「实时估算中」（历史均速含义不被污染），
+     * 非估算实时态（思考/工具）statusText 透传不变 */
+    var liveTxt = live ? (live.speedIsEstimated ? SPD_L("实时估算中", "live estimate") : (live.statusText || "")) : "";
     var headRow = '<div class="zu-sv3-title-row"><span class="zu-sv3-ltitle">' + spdEsc(spd3LeftTitle(an)) + "</span>" +
-      (live && live.statusText ? '<span class="zu-sv3-sub">' + spdEsc(live.statusText) + "</span>" : "") + "</div>";
+      (liveTxt ? '<span class="zu-sv3-sub">' + spdEsc(liveTxt) + "</span>" : "") + "</div>";
     var stats = '<div class="zu-sv3-stats">' +
       spd3StatHTML(SPD_L("峰值", "Peak"), an.peak, dayLbl ? SPD_L("最高日均", "Best daily") : "") +
       spd3StatHTML(SPD_L("最低", "Low"), an.low, dayLbl ? SPD_L("最低日均", "Worst daily") : "") +
       spd3StatHTML(SPD_L("最新", "Latest"), an.latest, dayLbl ? SPD_L("最近日均", "Latest daily") : "") + "</div>";
     if (!models.length || !overall) {
-      /* 空池/显式空筛选：标题 + em dash 主数字 + 峰最低最新，绝不造 0 t/s */
-      return '<div class="zu-sv3-left">' + headRow +
-        '<div class="zu-sv3-main-num"><span class="dim">—</span><span class="zu-sv3-unit">t/s</span></div>' + stats + "</div>";
+      /* 空池/显式空筛选（§11.4）：标题 + — 主数字 + 本期统计（0 轮 / 0 模型）+
+       * 峰最低新 —，绝不造 0 t/s；图表区由 spd3CardHTML 换居中空态块 */
+      return '<div class="zu-sv3-left">' + headRow + spd3MainNumHTML(null) +
+        '<i class="zu-sv3-cov-h">' + spdEsc(SPD_L("本期统计", "This period")) + "</i>" +
+        '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("请求轮次", "Turns")) + "</i><b>" +
+        spdEsc(spdNum(0) + SPD_L("轮", " turns")) + "</b></div>" +
+        '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("有效模型", "Active models")) + "</i><b>0</b></div>" +
+        stats + "</div>";
     }
     if (models.length === 1) {
       var m = models[0];
@@ -186,12 +255,10 @@
         : an.period === "week" ? SPD_L("近 7 天", "Last 7 days")
         : an.period === "month" ? SPD_L("本月", "This month")
         : SPD_L("全部历史", "All history");
-      return '<div class="zu-sv3-left">' + headRow +
-        '<div class="zu-sv3-main-num"><span class="' + (bd ? bd.cls : "dim") + '">' + spdEsc(spd3FmtV(overall.v)) +
-        '</span><span class="zu-sv3-unit">t/s</span></div>' +
+      return '<div class="zu-sv3-left">' + headRow + spd3MainNumHTML(overall.v) +
         (bd ? spd3BandHTML(bd) : "") +
         '<div class="zu-sv3-model">' + spd3DotAndName(m.key, m.name) +
-        '<em class="zu-sv3-only">' + spdEsc(SPD_L("唯一模型", "Only model")) + "</em></div>" +
+        (poolSingle ? '<em class="zu-sv3-only">' + spdEsc(SPD_L("唯一模型", "Only model")) + "</em>" : "") + "</div>" +
         '<i class="zu-sv3-cov-h">' + spdEsc(SPD_L("本期统计", "This period")) + "</i>" +
         '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("请求轮次", "Turns")) + "</i><b>" +
         spdEsc(spdNum(overall.turns) + SPD_L("轮", " turns")) + "</b></div>" +
@@ -200,7 +267,8 @@
         '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("覆盖范围", "Coverage")) + "</i><b>" + spdEsc(covLbl) + "</b></div>" +
         stats + "</div>";
     }
-    /* ---- 多模型态：计数行 → 档位胶囊 → 所选模型分布（堆叠条+表格）→ 峰最低最新 ---- */
+    /* ---- 多模型态（§11.3）：标题 → 主数字 → 档位胶囊 → 本期有效计数 →
+     * 分布（堆叠条+表格，默认 ≤4 行）→ 峰最低最新 ---- */
     var shareSorted = models.slice().sort(function (a, b) { return (b.share || 0) - (a.share || 0); });
     var turns = spdNum(overall.turns);
     var bar = "";
@@ -212,28 +280,57 @@
     var thead = "<tr><th>" + spdEsc(SPD_L("模型", "Model")) + "</th>" +
       (msAvail ? "<th>" + spdEsc(SPD_L("均速", "Avg speed")) + "</th>" : "") +
       "<th>" + spdEsc(SPD_L("占比", "Share")) + "</th></tr>";
-    var shown = expanded ? shareSorted : shareSorted.slice(0, 6);
+    var DEF_ROWS = 4;   /* §11.3：默认 ≤4 行，data-sv3-more 查看全部（展开态内滚不撑高） */
+    var shown = expanded ? shareSorted : shareSorted.slice(0, DEF_ROWS);
     var rowsHtml = "";
     for (var ri = 0; ri < shown.length; ri++) {
       var rm = shown[ri];
-      rowsHtml += '<tr><td><span class="zu-sv3-dmodel">' + spd3DotAndName(rm.key, rm.name) + "</span></td>" +
+      rowsHtml += '<tr><td><span class="zu-sv3-dmodel" title="' + spdEsc(spd3ModelTitle(rm)) + '">' +
+        spd3ModelLabel(rm, shareSorted) + "</span></td>" +
         (msAvail ? "<td>" + (rm.tps != null ? spdEsc(spd3FmtV(rm.tps) + SPD_L(" t/s", " t/s")) : "—") + "</td>" : "") +
         '<td class="zu-sv3-pct">' + spdEsc(String(Math.round((rm.share || 0) * 1000) / 10)) + "%</td></tr>";
     }
     var more = "";
-    if (shareSorted.length > 6) {
+    if (shareSorted.length > DEF_ROWS) {
       more = '<button type="button" class="zu-sv3-more" data-sv3-more aria-expanded="' + (expanded ? "true" : "false") + '">' +
         spdEsc(expanded ? SPD_L("收起", "Show less")
-          : SPD_L("展开全部 " + shareSorted.length + " 个模型", "Show all " + shareSorted.length + " models")) + "</button>";
+          : SPD_L("查看全部 " + shareSorted.length + " 个模型", "Show all " + shareSorted.length + " models")) + "</button>";
     }
+    var missN = an.selMissing && an.selMissing.length ? an.selMissing.length : 0;
     return '<div class="zu-sv3-left">' + headRow +
-      '<div class="zu-sv3-count">' + SPD3_SVG_CUBE + "<span>" +
-      spdEsc(SPD_L("已选 " + models.length + " 个模型 · " + turns + " 轮",
-        models.length + " models · " + turns + " turns")) + "</span></div>" +
+      spd3MainNumHTML(overall.v) +
       (bd ? spd3BandHTML(bd) : "") +
+      '<div class="zu-sv3-count">' + SPD3_SVG_CUBE + "<span>" +
+      spdEsc(SPD_L("本期有效 " + models.length + " 个模型 · " + turns + " 轮",
+        models.length + " active models · " + turns + " turns")) + "</span>" +
+      (missN ? '<em class="zu-sv3-count-miss">' + spdEsc(SPD_L("已选模型中 " + missN + " 个在当前范围无有效记录",
+        missN + " selected models have no valid records in this range")) + "</em>" : "") + "</div>" +
       '<div class="zu-sv3-dist-h">' + spdEsc(SPD_L("所选模型分布 · 按请求数", "Selected models · by requests")) + "</div>" +
       '<div class="zu-sv3-dbar" aria-hidden="true">' + bar + "</div>" +
-      '<table class="zu-sv3-dtab">' + thead + rowsHtml + "</table>" + more + stats + "</div>";
+      '<div class="zu-sv3-dwrap"><table class="zu-sv3-dtab">' + thead + rowsHtml + "</table></div>" + more + stats + "</div>";
+  }
+  /* ==================== ④b 图表区空态（v387 §11.4） ====================
+   * an.real 空（或 !an.overall）时 spd3CardHTML 用本函数替换 <!--CHART--> 占位——占位
+   * 不复存在，wire 的 replace 自然落空、不注入 charts 产物（链路无需改 wire）。
+   * 原因行 an.emptyReason 由 core 按池构成供给（有则显），缺席回退通用句；
+   * 动作按钮 data-sv3-act（委托接入归 01/06 集成线）：clear-filter=清除模型筛选
+   * （仅显式筛选/filt 缺席时以 selMissing 在场判定）、all-time=查看全部时间
+   * （period≠all）。 */
+  function spd3EmptyStateHTML(an, filt) {
+    an = an || {};
+    var acts = "";
+    if ((filt && filt.mode === "sel") || (an.selMissing && an.selMissing.length))
+      acts += '<button type="button" class="zu-sv3-act" data-sv3-act="clear-filter">' +
+        spdEsc(SPD_L("清除模型筛选", "Clear model filter")) + "</button>";
+    if (an.period !== "all")
+      acts += '<button type="button" class="zu-sv3-act" data-sv3-act="all-time">' +
+        spdEsc(SPD_L("查看全部时间", "View all time")) + "</button>";
+    var reason = an.emptyReason ||
+      SPD_L("当前范围和模型筛选下暂无可用数据", "No data available for the current scope and model filter");
+    return '<div class="zu-sv3-empty-wrap"><div class="zu-sv3-empty" role="status">' +
+      '<div class="zu-sv3-empty-t">' + spdEsc(SPD_L("暂无生成速度数据", "No generation speed data")) + "</div>" +
+      '<div class="zu-sv3-empty-r">' + spdEsc(reason) + "</div>" +
+      (acts ? '<div class="zu-sv3-empty-acts">' + acts + "</div>" : "") + "</div></div>";
   }
   /* ==================== ⑤ 通知行（spec §6 仅在有内容时渲染，非常驻说明条） ====================
    * core 管线已把 selMissing 计数并入 an.notice（「已选 N 个模型中 M 个在当前范围无
@@ -269,16 +366,19 @@
   /* ==================== ⑦ 内联样式块（全部 .zu-sv3-root 作用域；.zu-light 祖先类切浅色） ==================== */
   function spd3StylesHTML() {
     return "<style>" +
-      /* 根：920×480 基准定宽，高度自适应；--zu-sv3-w/--zu-sv3-h 暴露给集成方钳制 */
+      /* 根（§11.1 宽度链）：920 基准定宽、视口余量 60px；max-width:100% 保证窄窗时
+       * 根 ≤ tip 内容区、不反向撑大；高度自适应，禁止根容器 overflow:hidden */
       ".zu-sv3-root{position:relative;display:flex;flex-direction:column;box-sizing:border-box;" +
-        "width:var(--zu-sv3-w,min(920px,calc(100vw - 24px)));min-height:min(480px,calc(100vh - 16px));" +
+        "width:min(920px,calc(100vw - 60px));max-width:100%;min-height:min(480px,calc(100vh - 16px));" +
         "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);" +
         "color:var(--color-foreground,#e9edf4)}" +
       ".zu-sv3-root,.zu-sv3-root *{box-sizing:border-box}" +
       ".zu-light .zu-sv3-root{color:var(--color-foreground,#1c212b)}" +
       /* ---- 头部：标题居左，范围/时间双 Tab 组整体靠右（V2 .zu-sv-head 视觉契约） ---- */
       ".zu-sv3-root .zu-sv-head{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px;margin-bottom:10px}" +
-      ".zu-sv3-root .zu-sv-title{font-weight:700;font-size:calc(var(--ui-font-size,14px) + 6px);letter-spacing:.2px;min-width:0}" +
+      ".zu-sv3-root .zu-sv-title{display:inline-flex;align-items:center;gap:6px;font-weight:700;" +
+        "font-size:calc(var(--ui-font-size,14px) + 6px);letter-spacing:.2px;min-width:0}" +
+      ".zu-sv3-root .zu-sv-title svg{flex:0 0 auto}" +
       ".zu-sv3-root .zu-sv-filter{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-left:auto;justify-content:flex-end}" +
       ".zu-sv3-root .zu-sv-flabel{font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6);flex:0 0 auto}" +
       ".zu-sv3-root .zu-sv-time{display:flex;align-items:center;gap:6px;margin-left:14px}" +
@@ -316,6 +416,9 @@
       ".zu-sv3-root .zu-sv3-chip:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
       ".zu-sv3-root .zu-sv3-dot{display:inline-block;width:8px;height:8px;border-radius:50%;flex:0 0 auto}" +
       ".zu-sv3-root .zu-sv3-chip-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+      /* §11.5 同名异供应商副标（pid 尾段小字，跟随名称同行） */
+      ".zu-sv3-root .zu-sv3-msub{font-size:calc(var(--ui-font-size,14px) - 4px);font-weight:400;" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6);margin-left:4px}" +
       ".zu-sv3-root .zu-sv3-chip-miss{font-style:normal;font-size:calc(var(--ui-font-size,14px) - 4px);" +
         "color:var(--color-tooltip-tag-foreground,#a6a6a6);opacity:.85;flex:0 0 auto}" +
       ".zu-sv3-root .zu-sv3-chip-empty{border-style:dashed;opacity:.8}" +
@@ -382,9 +485,12 @@
       ".zu-light .zu-sv3-root .zu-sv3-model{border-color:rgba(15,23,42,.14);background:rgba(0,0,0,.04)}" +
       ".zu-sv3-root .zu-sv3-only{font-style:normal;font-size:calc(var(--ui-font-size,14px) - 4px);" +
         "color:var(--color-tooltip-tag-foreground,#a6a6a6);flex:0 0 auto}" +
-      ".zu-sv3-root .zu-sv3-count{display:flex;align-items:center;gap:6px;margin-top:8px;min-width:0;" +
+      ".zu-sv3-root .zu-sv3-count{display:flex;align-items:center;flex-wrap:wrap;gap:4px 6px;margin-top:8px;min-width:0;" +
         "font-size:calc(var(--ui-font-size,14px) - 1px);font-weight:600}" +
       ".zu-sv3-root .zu-sv3-count svg{flex:0 0 auto;opacity:.85}" +
+      /* §11.3：selMissing 非空时计数行下的无有效记录提示（整行小字） */
+      ".zu-sv3-root .zu-sv3-count-miss{flex:1 1 100%;font-style:normal;font-weight:400;" +
+        "font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-sv3-root .zu-sv3-kv{display:flex;align-items:baseline;justify-content:space-between;gap:8px;" +
         "font-size:calc(var(--ui-font-size,14px) - 2px);margin-top:6px;min-width:0}" +
       ".zu-sv3-root .zu-sv3-kv i{font-style:normal;color:var(--color-tooltip-tag-foreground,#a6a6a6);flex:0 0 auto}" +
@@ -398,7 +504,9 @@
         "background:rgba(255,255,255,.06)}" +
       ".zu-light .zu-sv3-root .zu-sv3-dbar{background:rgba(0,0,0,.06)}" +
       ".zu-sv3-root .zu-sv3-dbar i{display:block;height:100%}" +
-      ".zu-sv3-root .zu-sv3-dtab{width:100%;border-collapse:collapse;margin-top:6px;" +
+      /* §11.3：分布表容器 150px 内滚——展开全部行也不撑高左卡；margin 从表移到容器 */
+      ".zu-sv3-root .zu-sv3-dwrap{max-height:150px;overflow-y:auto;margin-top:6px;min-height:0}" +
+      ".zu-sv3-root .zu-sv3-dtab{width:100%;border-collapse:collapse;" +
         "font-size:calc(var(--ui-font-size,14px) - 3px);font-variant-numeric:tabular-nums}" +
       ".zu-sv3-root .zu-sv3-dtab th{font-weight:400;color:var(--color-tooltip-tag-foreground,#a6a6a6);text-align:left;padding:2px 0}" +
       ".zu-sv3-root .zu-sv3-dtab td{padding:3px 0;color:var(--color-foreground,#e9edf4);min-width:0}" +
@@ -417,6 +525,19 @@
         "font-size:calc(var(--ui-font-size,14px) + 2px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
       ".zu-sv3-root .zu-sv3-notice{margin-top:8px;font-size:calc(var(--ui-font-size,14px) - 3px);" +
         "color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      /* ---- §11.4 图表区空态：占满图表卡余高居中，标题+原因行+动作按钮 ---- */
+      ".zu-sv3-root .zu-sv3-empty-wrap{flex:1 1 auto;min-height:160px;display:flex;align-items:center;justify-content:center}" +
+      ".zu-sv3-root .zu-sv3-empty{text-align:center;max-width:420px;padding:12px}" +
+      ".zu-sv3-root .zu-sv3-empty-t{font-weight:600;font-size:calc(var(--ui-font-size,14px) + 2px)}" +
+      ".zu-sv3-root .zu-sv3-empty-r{margin-top:6px;font-size:calc(var(--ui-font-size,14px) - 2px);" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-sv3-root .zu-sv3-empty-acts{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:12px}" +
+      ".zu-sv3-root .zu-sv3-act{appearance:none;border:1px solid var(--color-popover-border,rgba(255,255,255,.16));" +
+        "background:transparent;color:var(--color-brand,#a3cfff);font-family:inherit;" +
+        "font-size:calc(var(--ui-font-size,14px) - 2px);padding:4px 12px;border-radius:999px;cursor:pointer;white-space:nowrap}" +
+      ".zu-sv3-root .zu-sv3-act:hover{color:var(--color-foreground,#e9edf4);background:rgba(255,255,255,.06)}" +
+      ".zu-light .zu-sv3-root .zu-sv3-act:hover{background:rgba(0,0,0,.05)}" +
+      ".zu-sv3-root .zu-sv3-act:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
       /* ---- 筛选弹出层：absolute 于卡内右下 ---- */
       ".zu-sv3-root .zu-sv3-fpop{position:absolute;right:10px;bottom:10px;z-index:6;width:280px;max-width:calc(100% - 20px);" +
         "max-height:320px;display:flex;flex-direction:column;padding:8px;border-radius:10px;" +
@@ -450,10 +571,14 @@
       ".zu-sv3-root .zu-sv3-fpop-btn:hover{color:var(--color-foreground,#e9edf4);background:rgba(255,255,255,.06)}" +
       ".zu-light .zu-sv3-root .zu-sv3-fpop-btn:hover{background:rgba(0,0,0,.05)}" +
       ".zu-sv3-root .zu-sv3-fpop-btn:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
-      /* v384 B1：V2 的 :has 定宽释放规则随 V2 块删除——V3 卡 920 基准必须压过 .tip 基类
-       * 560 帽与 tpsTip 内联 520 帽，否则整卡被 tip 宽度裁剪（红队 BLOCKER） */
-      ".tip:has(.zu-sv3-root),.zusage-tps-tip:has(.zu-sv3-root){width:min(920px,calc(100vw - 24px))!important;" +
-        "max-width:min(920px,calc(100vw - 24px))!important}" +
+      /* v387 §11.1 宽度链（P0-01 唯一权威方案）：V3 卡 920 基准必须压过 .tip 基类 560 帽与
+       * tpsTip 内联 520 帽。真机实测两链 tip 均为 border-box（.tip padding 10/13、compact
+       * padding 10/14 + border 1px）→ 内容区 = 宽 − padding − border；释放规则改 952 帽 +
+       * border-box 后两链内容区 ≥922 ≥ 根 920，根不再越出 tip 外缘。max-width 用纯视口帽
+       * （952 帽只在 width 生效）；根侧 max-width:100% 保证窄窗不反向撑大。禁止给根加
+       * overflow:hidden 掩盖；验收=tip.scrollWidth==clientWidth 且筛选行右缘 ≤ 内容右缘 */
+      ".tip:has(.zu-sv3-root),.zusage-tps-tip:has(.zu-sv3-root){box-sizing:border-box!important;" +
+        "width:min(952px,calc(100vw - 24px))!important;max-width:calc(100vw - 24px)!important}" +
       "</style>";
   }
   /* ==================== ⑧ chips 池与整卡装配 ====================
@@ -485,11 +610,18 @@
     var pool = spd3ChipPool(an, ctx);
     var notice = spd3NoticeHTML(an);
     var pop = ctx.pop && ctx.pop.open ? spd3FilterPopHTML(pool, filt, ctx.pop.query) : "";
+    /* 真单模型池（§11.5）：chips 池恰 1 个且非 missing——「唯一模型」徽标只在场 */
+    var poolSingle = pool.length === 1 && !pool[0].missing;
+    /* §11.4：real 空 / overall 缺 → 图表占位换居中空态（占位不在，wire replace 落空
+     * 自然不注入 charts 产物）；有数据恒保留占位原样 */
+    var empty = !(an.perModel && an.perModel.length) || !an.overall;
+    var chartSlot = empty ? spd3EmptyStateHTML(an, filt) : "<!--CHART-->";
     return '<div class="zu-sv3-root" data-sv-key="' + key + '">' + spd3StylesHTML() +
       spd3HeadHTML(an) +
-      spd3FilterBarHTML(pool, filt, { selMissing: an.selMissing, pop: ctx.pop }) +
-      '<div class="zu-sv3-main">' + spd3LeftHTML(an, ctx.live, !!ctx.expanded) +
-      '<div class="zu-speed-chart zu-sv3-chart" data-sv3-chart><!--CHART--></div></div>' +
+      spd3FilterBarHTML(pool, filt, { selMissing: an.selMissing, pop: ctx.pop,
+        active: an.perModel ? an.perModel.length : 0 }) +
+      '<div class="zu-sv3-main">' + spd3LeftHTML(an, ctx.live, !!ctx.expanded, poolSingle) +
+      '<div class="zu-speed-chart zu-sv3-chart" data-sv3-chart>' + chartSlot + "</div></div>" +
       (notice ? '<div class="zu-sv3-notice">' + spdEsc(notice) + "</div>" : "") +
       pop + "</div>";
   }

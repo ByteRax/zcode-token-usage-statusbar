@@ -2,7 +2,7 @@
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const test = require('node:test');
-const { readOverlayPart, sliceOverlay } = require('./helpers/overlay-extract.cjs');
+const { readOverlayPart, sliceOverlay, readOverlaySource } = require('./helpers/overlay-extract.cjs');
 
 // v384 速度 Tooltip V3 视图层：04-speed-v3-view.js 全文 + 04-speed-v3-core.js 全文进 VM，
 // 存活符号切片取自 worktree 根 overlay.js（specs/speed-tooltip-v3.md §0：这些函数在 V3
@@ -134,10 +134,13 @@ test('spd3CardHTML 结构锁: 根类/data-sv-key/双 Tab 组/chips/单多左卡�
   assert.match(dom, /data-sv-val="recent" aria-pressed="false"/);
   // auto 筛选：2 枚 chips 全部非 on
   assert.equal((dom.match(/class="zu-sv3-chip"/g) || []).length, 2, 'auto 下 chips 无选中态');
-  assert.match(dom, /zu-sv3-fcount">全部 2</);
+  // 计数行三语义统一（§11.5）：已选 X/Y（auto 时 X=Y）· 本期有效 N（an.perModel.length）
+  assert.match(dom, /zu-sv3-fcount">已选 2\/2 · 本期有效 2</);
   assert.doesNotMatch(dom, /zu-sv3-fsearch/, '<9 模型不渲染搜索按钮');
-  // 多模型左卡：计数行 + 分布表，无「唯一模型」
-  assert.match(dom, /已选 2 个模型 · 3 轮/);
+  // 多模型左卡（§11.3）：主数字恒在 → 档位胶囊 → 本期有效计数行 → 分布表，无「唯一模型」
+  assert.match(dom, /zu-sv3-main-num"><span class="[a-z-]+">\d/, '多模型主数字恒在（非 —）');
+  assert.match(dom, /本期有效 2 个模型 · 3 轮/);
+  assert.doesNotMatch(dom, /已选 \d+ 个模型/, '旧「已选 N 个模型」计数行已被本期有效语义替换');
   assert.match(dom, /zu-sv3-dtab/);
   assert.match(dom, /所选模型分布 · 按请求数/);
   assert.doesNotMatch(dom, /唯一模型/);
@@ -146,7 +149,9 @@ test('spd3CardHTML 结构锁: 根类/data-sv-key/双 Tab 组/chips/单多左卡�
   assert.match(html, /class="zu-speed-chart zu-sv3-chart" data-sv3-chart><!--CHART--><\/div>/);
   // 无 notice 不渲染通知行
   assert.ok(!dom.includes('zu-sv3-notice'), '无通知不渲染常驻行');
-  // 单模型态（只选 B）：互斥——无分布表/分布条，有唯一模型行
+  // 单模型态（只选 B）：互斥——无分布表/分布条，有唯一模型行。本层直调的 chips 池
+  // 缺省=an.perModel（恰 B 一个）→ poolSingle=true；wire 集成传全量池时筛选缩到
+  // 单模型不冒充「唯一模型」（§11.5 真单模型池语义，wire/v2 测试锁另一态）。
   const selB = { range: 'session', period: 'all', sid: 'sess_main', filt: { mode: 'sel', keys: [KEYS.b] } };
   const anB = analyze(ctx, h, selB);
   const domB = stripStyle(cardHTML(ctx, anB, selB));
@@ -169,6 +174,45 @@ test('spd3CardHTML 结构锁: 根类/data-sv-key/双 Tab 组/chips/单多左卡�
   assert.match(domA, /data-k="prov_b\x1fclaude-b" aria-pressed="false"/, 'B chip 可点回');
   assert.equal((domA.match(/class="zu-sv3-chip on"/g) || []).length, 1, '恰一枚 chip on');
   assert.match(domA, /已选 1\/2/, '计数按全量池分母');
+  // §11.4 空态：real 空 → view 接管图表区（<!--CHART--> 占位被替换、charts 空态退场），
+  // emptyReason 按 core 分类，data-sv3-act 动作按钮按门控出现
+  const selGhost = { range: 'session', period: 'today', sid: 'sess_main',
+    filt: { mode: 'sel', keys: ['ghost\x1fmodel'] } };
+  const domG = stripStyle(cardHTML(ctx, analyze(ctx, h, selGhost), selGhost));
+  assert.match(domG, /class="zu-sv3-empty" role="status"/, 'view 空态接管 charts 空态');
+  assert.doesNotMatch(domG, /<!--CHART-->/, '空态不保留图表占位（wire replace 自然落空）');
+  assert.doesNotMatch(domG, /当前筛选无有效速度数据/, 'charts 层空态文案随接管退场');
+  assert.match(domG, /zu-sv3-empty-t">暂无生成速度数据/);
+  assert.match(domG, /zu-sv3-empty-r">已选模型在当前范围暂无有效速度记录/, 'emptyReason 按池构成分类');
+  assert.match(domG, /data-sv3-act="clear-filter">清除模型筛选</);
+  assert.match(domG, /data-sv3-act="all-time">查看全部时间</, 'period≠all → all-time 在场');
+  // 门控矩阵：period=all → 只 clear-filter；无筛选时间窗空 → 只 all-time
+  const selGA = { range: 'session', period: 'all', sid: 'sess_main',
+    filt: { mode: 'sel', keys: ['ghost\x1fmodel'] } };
+  const domGA = stripStyle(cardHTML(ctx, analyze(ctx, h, selGA), selGA));
+  assert.match(domGA, /data-sv3-act="clear-filter"/);
+  assert.doesNotMatch(domGA, /data-sv3-act="all-time"/, 'period=all 无 all-time 动作');
+  const y2 = new Date(2026, 10, 4, 15).getTime();
+  const hPast = { sid: 'sess_main', source: 'local', truncated: false, sids: ['sess_main'],
+    snames: ['本会话'], pids: [['proj_a', '项目A']], mnames: ['GLM-A'], mkeys: [KEYS.a],
+    turns: [{ s: 0, t: y2, b: y2 - 60000, out: 500, ms: 5000, i: 400, o: 500, n: 1,
+      msl: [[0, 500, 5000, 1]], c: 0.03, cf: 1 }] };
+  const selPast = { range: 'session', period: 'today', sid: 'sess_main' };
+  const domP = stripStyle(cardHTML(ctx, analyze(ctx, hPast, selPast), selPast));
+  assert.match(domP, /zu-sv3-empty-r">当前会话暂无已完成请求/, '无筛选空态 reason=会话无已完成请求');
+  assert.match(domP, /data-sv3-act="all-time"/);
+  assert.doesNotMatch(domP, /data-sv3-act="clear-filter"/, '无显式筛选无 clear-filter');
+  // 两链源码锁（§11.4）：06 全量链与 01 精简链的 closest 白名单、mousedown 名单、
+  // 委托分支（clear-filter → spd3FilterAll；all-time → period="all"）
+  const src = readOverlaySource();
+  assert.equal((src.match(/\[data-sv3-more\],\[data-sv3-act\]/g) || []).length, 2,
+    '06/01 两链 closest 白名单补 data-sv3-act');
+  assert.equal((src.match(/closest\("\.zu-sv3-empty-wrap"\)/g) || []).length, 2,
+    '06/01 两链 mousedown 名单补空态块');
+  assert.equal((src.match(/act\d === "clear-filter"\) spd3FilterAll\(/g) || []).length, 2,
+    '06/01 委托分支 clear-filter → spd3FilterAll');
+  assert.equal((src.match(/act\d === "all-time"\) \{\s*\n\s*\w+\.period = "all";/g) || []).length, 2,
+    '06/01 委托分支 all-time → period="all"');
 });
 
 // ---------- ② 单模型五态标题 + 本期统计（覆盖范围单值 kv，M4/m3） ----------
@@ -232,24 +276,33 @@ test('多模型分布: share 数据级和=1、显示占比和=100%、行序按 s
   let sum = 0;
   for (const e of an.perModel) sum += e.share;
   assert.ok(Math.abs(sum - 1) < 1e-9, '数据级 share 和恰为 1');
-  // 折叠态：6 行 + 「展开全部 8 个模型」按钮（表格外）；chips 6 枚 + 「+2」；8<9 无搜索
+  // 折叠态（§11.3）：默认 ≤4 行 + 「查看全部 8 个模型」；主数字恒在；chips 6 枚 + 「+2」；8<9 无搜索
   const dom = stripStyle(cardHTML(ctx, an, sel));
   const tab = dom.slice(dom.indexOf('zu-sv3-dtab'), dom.indexOf('</table>'));
-  assert.equal((tab.match(/<tr>/g) || []).length, 7, '表头 + 6 行');
-  assert.match(dom, /<button type="button" class="zu-sv3-more" data-sv3-more aria-expanded="false">展开全部 8 个模型</);
+  assert.equal((tab.match(/<tr>/g) || []).length, 5, '表头 + 4 行（DEF_ROWS=4）');
+  assert.match(dom, /<button type="button" class="zu-sv3-more" data-sv3-more aria-expanded="false">查看全部 8 个模型</);
+  assert.match(dom, /zu-sv3-main-num"><span class="[a-z-]+">\d/, '多模型主数字恒在（§11.3 折叠态）');
+  assert.match(dom, /本期有效 8 个模型 · 8 轮/, '本期有效计数行');
   assert.match(dom, /\+2<\/span>/, 'chips 超出收 +N');
   assert.doesNotMatch(dom, /zu-sv3-fsearch/);
-  // 行序：share 降序；同 share 内保持 perModel（Σ输出降序）稳定序
-  // （3/15 档：Model-5 out600 → Model-2 out300；2/15 档：Model-7 out800 → Model-4 out500）
+  // 行序：share 降序；同 share 内保持 perModel（Σ输出降序）稳定序。
+  // 折叠窗只看前 4 行（3/15 档：Model-5 out600 → Model-2 out300；2/15 档前两枚）
   assert.ok(tab.indexOf('Model-5') >= 0 && tab.indexOf('Model-5') < tab.indexOf('Model-2') &&
-    tab.indexOf('Model-2') < tab.indexOf('Model-7') && tab.indexOf('Model-7') < tab.indexOf('Model-4') &&
-    tab.indexOf('Model-4') < tab.indexOf('Model-1'), '行序按请求数占比降序（同档稳定）');
-  // 展开态：8 行全显 + 占比显示和 = 100%
+    tab.indexOf('Model-2') < tab.indexOf('Model-7') && tab.indexOf('Model-7') < tab.indexOf('Model-4'),
+    '折叠态前 4 行按请求数占比降序（同档稳定）');
+  // 展开态：8 行全显（dwrap 150px 内滚不撑高）+ 占比显示和 = 100%
   const domX = stripStyle(cardHTML(ctx, an, sel, { expanded: true }));
   const tabX = domX.slice(domX.indexOf('zu-sv3-dtab'), domX.indexOf('</table>'));
   assert.equal((tabX.match(/<tr>/g) || []).length, 9, '表头 + 8 行');
   assert.match(domX, /data-sv3-more/);
   assert.match(domX, /aria-expanded="true"/);
+  assert.match(domX, /zu-sv3-more"[^>]*>收起</, '展开态按钮切「收起」');
+  // 完整行序（8 行）：3/15 档 → 2/15 档 → 1/15 档，档内按 Σ输出降序稳定
+  assert.ok(tabX.indexOf('Model-5') < tabX.indexOf('Model-2') &&
+    tabX.indexOf('Model-2') < tabX.indexOf('Model-7') && tabX.indexOf('Model-7') < tabX.indexOf('Model-4') &&
+    tabX.indexOf('Model-4') < tabX.indexOf('Model-1') && tabX.indexOf('Model-1') < tabX.indexOf('Model-6') &&
+    tabX.indexOf('Model-6') < tabX.indexOf('Model-3') && tabX.indexOf('Model-3') < tabX.indexOf('Model-0'),
+    '展开态 8 行完整降序（同档稳定）');
   const pcts = [...tabX.matchAll(/class="zu-sv3-pct">([\d.]+)%</g)].map(m => parseFloat(m[1]));
   assert.equal(pcts.length, 8);
   const pctSum = pcts.reduce((a, b) => a + b, 0);
@@ -264,6 +317,15 @@ test('多模型分布: share 数据级和=1、显示占比和=100%、行序按 s
   assert.match(tabL, /<th>模型<\/th><th>占比<\/th>/, '降级两列：模型/占比');
   assert.ok(!tabL.includes('均速'), '降级无均速列');
   assert.ok(!tabL.includes('t/s'), '降级表格无 t/s 单位');
+  // §11.3 主数字恒在（任何模型数）：2/7/20 模型夹具均为「主数字 → 档位胶囊 → 本期有效」结构
+  for (const n of [2, 7, 20]) {
+    const anN = analyze(ctx, multiFixture(n), { range: 'session', period: 'all', sid: 'sess_main' });
+    const domN = stripStyle(cardHTML(ctx, anN, { range: 'session', period: 'all', sid: 'sess_main' }));
+    assert.match(domN, /zu-sv3-main-num"><span class="[a-z-]+">\d/, 'n=' + n + ' 主数字恒在（非 —）');
+    assert.match(domN, /zu-sv3-band">/, 'n=' + n + ' 档位胶囊随主数字在场');
+    assert.match(domN, new RegExp('本期有效 ' + n + ' 个模型 · \\d+ 轮'), 'n=' + n + ' 本期有效计数');
+    assert.doesNotMatch(domN, /class="dim">—/, 'n=' + n + ' 多模型态不显空读数');
+  }
 });
 
 // ---------- ④ i18n ----------
@@ -277,14 +339,14 @@ test('i18n: lang=en 关键文案切英文（SPD_L 桩实现真实 L 逻辑）', 
   assert.match(dom, /zu-sv-flabel">Scope</, '范围标签');
   assert.match(dom, /zu-sv-flabel">Time</, '时间标签');
   assert.match(dom, /Model filter/, '筛选标签');
-  assert.match(dom, /zu-sv3-fcount">All 2</, 'auto 计数');
-  assert.match(dom, /2 models · 3 turns/, '多模型计数行');
+  assert.match(dom, /zu-sv3-fcount">Selected 2\/2 · 2 active</, 'auto 计数（已选=池全量）');
+  assert.match(dom, /2 active models · 3 turns/, '多模型计数行（本期有效语义）');
   assert.match(dom, /Selected models · by requests/, '分布标题');
   assert.match(dom, /<th>Model<\/th><th>Avg speed<\/th><th>Share<\/th>/, '表头');
   // chips 显式选中英文计数
   const selAB = { range: 'session', period: 'all', sid: 'sess_main', filt: { mode: 'sel', keys: [KEYS.a, KEYS.b] } };
   const domAB = stripStyle(cardHTML(ctx, analyze(ctx, h, selAB), selAB));
-  assert.match(domAB, /zu-sv3-fcount">Selected 2\/2</);
+  assert.match(domAB, /zu-sv3-fcount">Selected 2\/2 · 2 active</, '显式选中英文计数（三语义统一）');
   // 单模型英文
   const selB = { range: 'session', period: 'recent', sid: 'sess_main', filt: { mode: 'sel', keys: [KEYS.b] } };
   const domB = stripStyle(cardHTML(ctx, analyze(ctx, h, selB), selB));
@@ -370,13 +432,17 @@ test('CSS 锁: .zu-sv3-root 定宽变量、.zu-light 浅色覆写、focus-visibl
   const an = analyze(ctx, fixture(), { range: 'session', period: 'all', sid: 'sess_main' });
   const html = cardHTML(ctx, an, { range: 'session', period: 'all', sid: 'sess_main' });
   const style = html.match(/<style>[\s\S]*?<\/style>/)[0];
-  assert.match(style, /width:var\(--zu-sv3-w,min\(920px,calc\(100vw - 24px\)\)\)/, '根定宽 920 基准');
+  // §11.1 根宽：920 基准 + 视口余量 60px，max-width:100% 窄窗不反向撑大 tip
+  assert.match(style, /width:min\(920px,calc\(100vw - 60px\)\);max-width:100%/, '根定宽 920 基准（视口余量 60px）');
+  assert.ok(!style.includes('--zu-sv3-w'), '根定宽变量已废除');
   // 矮视口防纵滚：480 基准高钳进视口（min-height 不再暴露 --zu-sv3-h 变量）
   assert.match(style, /min-height:min\(480px,calc\(100vh - 16px\)\)/, '480 基准高钳视口');
   assert.ok(!style.includes('--zu-sv3-h'), '定高变量已废除');
-  // tip 宽帽释放：宿主 .tip / .zusage-tps-tip 的 760 定宽对 V3 卡释放到 920 视口帽
-  assert.match(style, /\.tip:has\(\.zu-sv3-root\),\.zusage-tps-tip:has\(\.zu-sv3-root\)\{width:min\(920px,calc\(100vw - 24px\)\)!important;max-width:min\(920px,calc\(100vw - 24px\)\)!important\}/,
-    'tip 宽帽释放规则（920 视口钳）');
+  assert.ok(!/\.zu-sv3-root\{[^}]*overflow/.test(style), '根容器无 overflow 裁切路径（§11.1）');
+  // tip 宽帽释放（§11.1 唯一权威方案）：border-box + 952 帽 → 两链内容区 ≥922 ≥ 根 920
+  assert.match(style,
+    /\.tip:has\(\.zu-sv3-root\),\.zusage-tps-tip:has\(\.zu-sv3-root\)\{box-sizing:border-box!important;width:min\(952px,calc\(100vw - 24px\)\)!important;max-width:calc\(100vw - 24px\)!important\}/,
+    'tip 释放规则（border-box + 952 帽 + 纯视口 max-width）');
   assert.ok(style.includes('.zu-light .zu-sv3-root'), '浅色主题覆写段在场');
   assert.ok(style.includes(':focus-visible'), '焦点环在场');
   assert.match(style, /@media \(max-width:760px\)\{\.zu-sv3-root \.zu-sv3-left\{flex:0 0 220px\}\}/, '窄窗左卡收 220px');

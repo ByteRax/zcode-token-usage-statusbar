@@ -427,9 +427,12 @@
         }
         for (var bi = 0; bi < bkeys.length; bi++) {
           var bk2 = bkeys[bi], rows2 = buckets[bk2] || [], bg = spd3Aggregate(rows2);
-          var nb = spdNextBucket(bk2, unit);
+          /* v387：进行中桶（今天最后一格/跨今天的日桶）b 钳到 now——hover 区间
+           * 「截至 HH:mm」语义由渲染层按 b 与桶末的距离区分（spec §11.5），
+           * 绝不把未发生的时间展示成已统计区间。 */
+          var nb = Math.min(spdNextBucket(bk2, unit), now);
           items.push(bg ? Object.assign(bg, { label: spdLabel(bk2, unit, true),
-              full: spdFull(bk2) + " – " + spdFull(Math.min(nb, now)), a: bk2, b: nb })
+              full: spdFull(bk2) + " – " + spdFull(nb), a: bk2, b: nb })
             : { v: null, label: spdLabel(bk2, unit, true), full: spdFull(bk2) + " – " + spdFull(nb),
                 a: bk2, b: nb, empty: true, models: [] });
         }
@@ -500,6 +503,18 @@
       range: range, period: period, spanA: spanA, spanB: spanB,
       notice: notices.join(SPD_L(" · ", " · ")), truncated: !!(u && u.truncated),
       msAvail: msAvail, pool: pool, selMissing: selMissing };
+    /* v387 §11.4：空态原因分类（view 空态页据此给针对性提示与恢复动作，
+     * 不再千篇一律「尝试更长时间范围」）。按池构成与筛选态判定，顺序即优先级。 */
+    if (!real.length) {
+      if (remote) an.emptyReason = SPD_L("远端会话仅显示本会话历史", "Remote pane shows this session only");
+      else if (!u) an.emptyReason = SPD_L("速度数据尚未加载", "Speed history not loaded yet");
+      else if (filtering && !filt.keys.length) an.emptyReason = SPD_L("未选择任何模型", "No model selected");
+      else if (filtering) an.emptyReason = SPD_L("已选模型在当前范围暂无有效速度记录", "Selected models have no rated turns in this range");
+      else if (range === "session" || range === "recent") an.emptyReason = SPD_L("当前会话暂无已完成请求", "No completed turns in this session yet");
+      else if (range === "project") an.emptyReason = SPD_L("当前项目暂无有效速度数据", "No rated data in this project yet");
+      else if (a && b) an.emptyReason = SPD_L("当前时间范围内暂无请求", "No turns in this time range");
+      else an.emptyReason = SPD_L("暂无有效生成速度记录", "No rated turns yet");
+    }
     if (daysGrid) an.daysGrid = daysGrid;
     return an;
   }

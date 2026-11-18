@@ -1499,7 +1499,7 @@
     if (!el || !el.__zuT) return false;
     var t = el.__zuT, s3 = t.speedSel;
     var hit = e.target && e.target.closest ? e.target.closest(
-      ".zu-sv3-chip,.zu-sv3-fpop-row,.zu-sv3-fsearch,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-more]") : null;
+      ".zu-sv3-chip,.zu-sv3-fpop-row,.zu-sv3-fsearch,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-more],[data-sv3-act]") : null;
     if (!hit || !s3 || typeof spd3FilterToggle !== "function") return false;
     if (!s3.filt) s3.filt = (typeof spd3FilterAuto === "function") ? spd3FilterAuto() : { mode: "auto", keys: null };
     if (!s3.pop) s3.pop = { open: false, query: "" };
@@ -1511,6 +1511,14 @@
     } else if (hit.hasAttribute("data-sv3-all")) {
       /* v384 B2：同 06 分片——SPD3_POOL 是对象数组，全选取 key 串 */
       spd3FilterOnly(s3.filt, (typeof SPD3_POOL !== "undefined" && SPD3_POOL || []).map(function (pm) { return pm.key; }));
+    } else if (hit.hasAttribute("data-sv3-act")) {
+      /* v387 §11.4：空态恢复动作（同 06 分片） */
+      var act1 = hit.getAttribute("data-sv3-act");
+      if (act1 === "clear-filter") spd3FilterAll(s3.filt);
+      else if (act1 === "all-time") {
+        s3.period = "all";
+        if (s3.pop) s3.pop.open = false;
+      } else return false;
     } else if (hit.hasAttribute("data-sv3-none")) {
       spd3FilterOnly(s3.filt, []);
     } else if (hit.hasAttribute("data-sv3-reset")) {
@@ -1535,7 +1543,8 @@
     var t = e.target;
     if (!t || !t.closest) return;
     var interactive = t.closest(".zu-sv-tab") || t.closest(".zu-sv3-fbar") ||
-      (t.closest(".zu-sv3-fpop") && !t.classList.contains("zu-sv3-fpop-input")) || t.closest(".zu-sv3-more");
+      (t.closest(".zu-sv3-fpop") && !t.classList.contains("zu-sv3-fpop-input")) || t.closest(".zu-sv3-more") ||
+      t.closest(".zu-sv3-empty-wrap");   /* v387：空态动作同入名单 */
     if (interactive) {
       e.stopPropagation();
       if (e.preventDefault) e.preventDefault();
@@ -7878,29 +7887,33 @@
   }
   ];
   /* ---------- v384 生成速度 Tooltip V3：图表分片（近/今/近7天三形态 + 悬停卡，纯字符串） ----------
-   * spec §5 三图表形态 + §2 模型色 + §7 悬停卡契约。本分片只做字符串拼装（零 DOM），
-   * 唯一副作用是给模块外变量 SPD_PORTAL 赋值（02 分片声明的悬停卡侧信道，宿主
-   * spdHoverPortalSync 既有机制消费即清）：每次构建先置空串，有悬停才写卡串。
-   * 数据上游 = 04-speed-v3-core.js 的 spd3Analyze 产物 an（结果只读，绝不原地改）；
-   * 图表头 spd3ChartHeadHTML(an, sub) 由 view 分片提供（V3 集成后同 IIFE 可达）。
-   * 只引用存活符号：L / SPD_L / TPS_BANDS / tpsBand / spdEsc / spdNum / spdFull /
+   * spec §5 三图表形态 + §2 模型色 + §7 悬停卡契约 + §11.2 槽位满幅（v387 实机修复批）。
+   * 本分片只做字符串拼装（零 DOM），唯一副作用是给模块外变量 SPD_PORTAL 赋值（02 分片
+   * 声明的悬停卡侧信道，宿主 spdHoverPortalSync 既有机制消费即清）：每次构建先置空串，
+   * 有悬停才写卡串。数据上游 = 04-speed-v3-core.js 的 spd3Analyze 产物 an（结果只读，
+   * 绝不原地改）；图表头 spd3ChartHeadHTML(an, sub) 由 view 分片提供（V3 集成后同 IIFE
+   * 可达）。只引用存活符号：L / SPD_L / TPS_BANDS / tpsBand / spdEsc / spdNum / spdFull /
    * spdLabel / spdCompactRange + core 的 spd3Color / spd3ModelKey。V2 专属函数
    * （spdChartHTML/spdCardHTML/spdChartLayout 等）一律不引用：Y 轴整洁刻度阶梯在本
    * 文件实现 spd3Ticks（算法与 V2 同构：1/2/2.5/5/6/7.5×10^k，同档先 ×4 后 ×5，
    * need ≥ maxV×1.12）。month/all 热力形态归 heat 分片，本函数对未知 period 返回
-   * 空串（错接线显性暴露，不静默画错图）。样式全部 .zu-sv3- 前缀并集中在常量
+   * 空串（错接线显性暴露，不静默画错图）。横向几何 v387 起恒满幅：柱图走槽位 flex
+   * （.zu-sv3-slot 均摊 100%）、折线走 width="100%" + 百分比 x 坐标，无固定柱距、
+   * 无 spacer/min-width 撑宽路径（幻影溢出根治）。样式全部 .zu-sv3- 前缀并集中在常量
    * SPD3_CHART_CSS（只在 recent/today/week 三分支产物头部出现一次；.zu-sc-* 基础
    * 类沿用宿主 06 分片静态样式，这里只做 V3 作用域覆写）。本文件可独立
    * node --check、可单独切片进 VM 夹具。 */
   /* SPD_V3_CHARTS_BEGIN */
   /* ==================== ① 几何常量与 Y 轴整洁刻度 ====================
-   * 几何纪律（.zcode/rules/overlay-ui.md §5）：柱区/绘图区固定 px 不随 --ui-font-size，
-   * 读数一位小数，X 轴每柱恒显时分，多桶横滚兜底。 */
+   * 几何纪律（.zcode/rules/overlay-ui.md §5 + spec §11.2）：柱区/绘图区固定 px 不随
+   * --ui-font-size，读数一位小数；纵向定高、横向满幅自适应（flex 槽位 / 百分比 x），
+   * 不再有固定柱距与横滚撑宽。 */
   var SPD3_PLOT_H = 148;   /* 柱区 / 折线绘图区固定高（px） */
   var SPD3_X_H = 16;       /* X 轴标签带高（px） */
-  var SPD3_GUT_W = 30;     /* Y 轴刻度列宽（px，= 柱图 plot 左缩进） */
-  var SPD3_PITCH = 24;     /* 柱距 / 命中列宽（px，柱 14 + 10 间距） */
-  var SPD3_BAR_W = 14;     /* 柱宽（px） */
+  var SPD3_GUT_W = 30;     /* Y 轴刻度列宽（px，= 柱图 plot 左缩进，刻度走 HTML gutter） */
+  /* 绘图区估宽（spec §11.2 / PRD 3.2）：V3 卡 920 − 左卡 250 − gap/padding。
+   * 估宽仅用于标签密度（数值让位、X 隔槽），布局由 flex 自适应，不参与任何几何。 */
+  var SPD3_PLOT_W_EST = 620;
   /* Y 轴整洁刻度阶梯（V2 算法复刻）：need ≥ maxV×1.12，同档先 ×4 后 ×5；
    * maxV=0 退化为 {yMax:4, step:1}（调用方在无有效数据时走空态，不会用它画图）。 */
   function spd3Ticks(maxV) {
@@ -7919,44 +7932,53 @@
   /* ==================== ② 图表样式（.zu-sv3- 前缀，集中声明一次） ====================
    * 选择器统一挂 .zu-sv3-chart 作用域（0,2,0 特异性稳定压过 06 分片的 .zu-sc-* 基础
    * 规则，不依赖样式表注入顺序）；V2 专属类（zu-sv-bars/zu-sv-plot 等）随 V2 删除，
-   * 柱组容器/几何在本表自带，不依赖其存留。 */
+   * 柱组容器/几何在本表自带，不依赖其存留。横向满幅（spec §11.2）：plot 恒 100% 宽
+   * （无 max-content/min-width 撑宽路径，v387 幻影溢出根治），wrap 保留 overflow-x:auto
+   * 与滚动条隐藏纯作防御（满幅后实测 scrollWidth==clientWidth）。 */
   var SPD3_CHART_CSS = "<style>" +
     /* 容器与滚动 */
     ".zu-sv3-chart{display:flex;flex-direction:column;min-height:0}" +
     ".zu-sv3-chart .zu-sv-empty{flex:1;min-height:120px}" +
     ".zu-sv3-chart .zu-sc-wrap{flex:1;min-height:0;padding:5px 0;box-sizing:border-box;overflow-x:auto;overflow-y:hidden;width:100%}" +
-    /* 柱图 plot 定高 164 = 柱区 148 + X 轴 16；max-content 由 in-flow spacer 撑宽 */
-    ".zu-sv3-chart .zu-sc-plot{height:" + (SPD3_PLOT_H + SPD3_X_H) + "px;min-width:max(240px,100%);width:max-content;max-width:none;box-sizing:content-box}" +
+    /* 槽位满幅 plot：高 164 = 柱区 148 + X 轴 16；左缩进留给 Y 沟槽（基座同款 30px） */
+    ".zu-sv3-chart .zu-sc-plot{height:" + (SPD3_PLOT_H + SPD3_X_H) + "px;margin-left:" + SPD3_GUT_W + "px;min-width:0;width:100%;box-sizing:border-box}" +
     ".zu-sv3-chart .zu-sc-grid,.zu-sv3-chart .zu-sc-gutter{height:" + SPD3_PLOT_H + "px}" +
-    ".zu-sv3-spacer{display:block;height:0}" +
-    /* 柱组：定宽柱距、贴 Y 轴左对齐（v308 纪律）、两侧 5px 呼吸边距（柱顶 nowrap
-     * 数值越缘不撑出横滚）；多柱（n≥10）spread 均匀铺满 */
-    ".zu-sv3-bars{position:absolute;inset:0;display:flex;align-items:flex-end;justify-content:flex-start;gap:0;padding:0 5px}" +
-    ".zu-sv3-bars--spread{justify-content:space-between}" +
-    ".zu-sv3-bars .zu-sc-col{flex:0 0 " + SPD3_PITCH + "px;height:100%}" +
+    ".zu-sv3-chart .zu-sc-wrap::-webkit-scrollbar{display:none}" +
+    /* 柱组：槽位 flex 平铺满幅——每槽 .zu-sv3-slot flex:1 1 0 均摊（min-width:0 防内容
+     * 撑宽），两侧 5px 呼吸边距承担旧 spacer 的缘上呼吸；无 justify-content 挤左路径 */
+    ".zu-sv3-bars{position:absolute;inset:0;display:flex;width:100%;padding:0 5px;box-sizing:border-box}" +
+    ".zu-sv3-bars .zu-sc-col{flex:1 1 0;min-width:0;height:100%;position:relative}" +
     ".zu-sv3-bars .zu-sc-vz{flex:0 0 " + SPD3_PLOT_H + "px;height:" + SPD3_PLOT_H + "px}" +
-    ".zu-sv3-bars .zu-sc-bar{width:" + SPD3_BAR_W + "px;max-width:" + SPD3_BAR_W + "px}" +
-    ".zu-sv3-bars .zu-sc-x{height:" + SPD3_X_H + "px;flex:0 0 " + SPD3_X_H + "px;width:" + SPD3_PITCH + "px;max-width:" + SPD3_PITCH + "px;overflow:visible;justify-content:flex-start;align-items:flex-end;font-size:7px}" +
-    ".zu-sv3-bars .zu-sc-x b{display:block;width:100%;overflow:hidden;text-overflow:clip;text-align:center;line-height:14px}" +
+    /* 柱宽密度三档（spec §11.2 / PRD 3.1）：n≤6→18 / n≤12→14 / 其余→10px，槽内居中 */
+    ".zu-sv3-bars.zu-sv3-w18 .zu-sc-bar{width:18px;max-width:18px}" +
+    ".zu-sv3-bars.zu-sv3-w14 .zu-sc-bar{width:14px;max-width:14px}" +
+    ".zu-sv3-bars.zu-sv3-w10 .zu-sc-bar{width:10px;max-width:10px}" +
+    ".zu-sv3-bars .zu-sc-x{height:" + SPD3_X_H + "px;flex:0 0 " + SPD3_X_H + "px;overflow:hidden;font-size:7px}" +
+    ".zu-sv3-bars .zu-sc-x b{display:block;width:100%;overflow:hidden;text-overflow:ellipsis;text-align:center;line-height:14px}" +
+    /* 隔槽隐藏标签：visibility 占位（槽几何不变），首/末/悬停槽恒显在构建侧判定 */
+    ".zu-sv3-bars .zu-sc-x b.zu-sv3-xoff{visibility:hidden}" +
+    /* 槽 hover 十字参考线（纯 CSS 显现，零 JS 监听；随槽位水平居中） */
+    ".zu-sv3-bars .zu-sv3-xline{position:absolute;left:50%;top:0;width:0;height:" + SPD3_PLOT_H + "px;border-left:1px dashed var(--color-border,rgba(255,255,255,.3));opacity:0;pointer-events:none}" +
+    ".zu-sv3-bars .zu-sc-col:hover>.zu-sv3-xline,.zu-sv3-bars .zu-sc-col:focus-within>.zu-sv3-xline{opacity:1}" +
     ".zu-sv3-bars .zu-sc-col.empty .zu-sc-bar{background:transparent;box-shadow:none}" +
     ".zu-sv3-bars .zu-sc-col.cur .zu-sc-val{font-weight:700}" +
     ".zu-sv3-bars .zu-sc-col.latest .zu-sc-bar{box-shadow:0 0 0 1.5px var(--color-popover-border,rgba(255,255,255,.28))}" +
     ".zu-light .zu-sv3-bars .zu-sc-col.latest .zu-sc-bar{box-shadow:0 0 0 1.5px rgba(15,23,42,.22)}" +
     /* 混合轮中性灰（spec §5：不得用主导模型色填满混合轮） */
     ".zu-sv3-chart .zu-sc-bar.zu-sv3-mix{background:var(--color-tooltip-tag-foreground,#8a8f98)}" +
-    /* SVG 折线（今天多模型 / 近 7 天） */
-    ".zu-sv3-svg{display:block}" +
-    ".zu-sv3-gline{stroke:var(--color-border,rgba(255,255,255,.1));stroke-dasharray:3 3}" +
-    ".zu-sv3-gline[data-base]{stroke:var(--color-border,rgba(255,255,255,.16));stroke-dasharray:none}" +
-    ".zu-sv3-gtxt{fill:var(--color-tooltip-tag-foreground,#a6a6a6);font-size:9px;font-variant-numeric:tabular-nums}" +
-    ".zu-sv3-xtxt{fill:var(--color-tooltip-tag-foreground,#a6a6a6);font-size:8px;text-anchor:middle;font-variant-numeric:tabular-nums}" +
+    /* SVG 折线（今天多模型 / 近 7 天）：width=100% 满幅、x 全百分比、y/线宽/圆点 px；
+     * overflow:visible 让峰值圆点/端标签可越出 svg 顶（wrap 5px padding 内不裁） */
+    ".zu-sv3-svg{display:block;overflow:visible}" +
+    /* 面积载体：嵌套 svg 用 viewBox 0..100 百分比坐标（preserveAspectRatio=none），
+     * 纯填充无描边，横向拉伸不失真；不接指针（命中列在其上层） */
+    ".zu-sv3-asvg{display:block;pointer-events:none}" +
     ".zu-sv3-line{fill:none;stroke-width:1.6;stroke-linejoin:round;stroke-linecap:round}" +
     ".zu-sv3-nline{stroke:var(--color-tooltip-tag-foreground,#8a8f98)}" +
     ".zu-sv3-area{stroke:none;fill-opacity:.12}" +
-    ".zu-sv3-chart .zu-sc-wrap::-webkit-scrollbar{display:none}" +
     ".zu-sv3-oline{fill:none;stroke:var(--color-tooltip-tag-foreground,#8a8f98);stroke-width:1.4;stroke-dasharray:4 3}" +
     ".zu-sv3-pt{stroke:none}" +
     ".zu-sv3-npt{fill:var(--color-tooltip-tag-foreground,#8a8f98)}" +
+    ".zu-sv3-xtxt{fill:var(--color-tooltip-tag-foreground,#a6a6a6);font-size:8px;text-anchor:middle;font-variant-numeric:tabular-nums}" +
     ".zu-sv3-elabel{font-size:9.5px;font-weight:600;font-variant-numeric:tabular-nums;text-anchor:end;fill:var(--color-foreground,#e9edf4)}" +
     ".zu-sv3-elabel.zu-sv3-olabel{fill:var(--color-tooltip-tag-foreground,#a6a6a6);font-weight:400}" +
     /* 悬停命中列与十字参考线（hover/focus 纯 CSS 显现，零 JS 监听） */
@@ -7978,7 +8000,8 @@
     for (var i = 0; i < items.length; i++) if (!items[i].empty && items[i].v > maxV) maxV = items[i].v;
     return maxV;
   }
-  /* 柱图网格线 + Y 轴刻度标签（V2 几何同款：0 基线加粗、顶刻度钉在 100%-13px） */
+  /* 柱图网格线 + Y 轴刻度标签（HTML 绝对定位结构：0 基线加粗、顶刻度钉在 100%-13px；
+   * 横线 left:0;right:0 即 % 宽满幅，柱图/折线共用） */
   function spd3GridTicks(tk) {
     var grid = "", gutter = "";
     for (var g = 0; g < tk.ticks.length; g++) {
@@ -7993,14 +8016,28 @@
     return (hoverIdx >= 0 && items[hoverIdx] && !items[hoverIdx].empty)
       ? spd3HoverCardHTML(items[hoverIdx], o, hoverIdx) : "";
   }
-  /* ==================== ④ 柱状图列构建（recent / 今天单模型共用） ====================
-   * 柱色规则（spec §5）：行 models.length===1 → 柱色=spd3Color(模型key)（内联
-   * background，速度档位色阶不再上柱体）；>1 → .zu-sv3-mix 中性灰（绝不用主导模型
-   * 色）+ title/aria 标「混合」；=0（旧帧无 msl）→ 中性默认色（基础 currentColor）。
-   * 柱顶读数一位小数，n>8 按 valEvery=ceil(n/8) 抽稀（首/末/悬停恒显，空桶不显）；
-   * X 轴每柱恒显时分；最新柱（最右）latest 描边。 */
+  /* ==================== ④ 柱状图槽位列构建（recent / 今天单模型共用） ====================
+   * 槽位满幅（spec §11.2）：每槽 .zu-sv3-slot flex:1 1 0 均摊全宽，槽即命中区
+   * （data-i/tabindex/role/aria/混合 title 契约全在槽上），柱按密度 18/14/10px 槽内
+   * 水平居中。数值标签（PRD 3.2）：n≤8 全显；>8 时 峰值/最低/最新/悬停 恒显 + 其余按
+   * valEvery=ceil(n/8) 抽稀，估宽=字符数×6px+8 超槽宽（SPD3_PLOT_W_EST/n）让位跳过，
+   * 绝不重叠。X 标签每槽显示，估宽 <34px 且 n>10 时隔槽显示（首/末/悬停恒显），
+   * b 兜底 ellipsis。柱色规则（spec §5）：行 models.length===1 → 柱色=spd3Color(模型
+   * key)（内联 background，速度档位色阶不再上柱体）；>1 → .zu-sv3-mix 中性灰（绝不
+   * 用主导模型色）+ title/aria 标「混合」；=0（旧帧无 msl）→ 中性默认色。柱顶读数
+   * 一位小数；最新柱（最右）latest 描边。 */
   function spd3BarCols(items, hoverIdx, yMax) {
-    var n = items.length, valEvery = Math.max(1, Math.ceil(n / 8)), cols = "";
+    var n = items.length, valEvery = Math.max(1, Math.ceil(n / 8));
+    var slotW = SPD3_PLOT_W_EST / Math.max(n, 1);
+    var xThin = n > 10 && slotW < 34, cols = "";
+    var peakI = -1, minI = -1;
+    for (var p = 0; p < n; p++) {
+      var pv = items[p].empty ? 0 : spdNum(items[p].v);
+      if (pv > 0) {
+        if (peakI < 0 || pv > spdNum(items[peakI].v)) peakI = p;
+        if (minI < 0 || pv < spdNum(items[minI].v)) minI = p;
+      }
+    }
     for (var c = 0; c < n; c++) {
       var it = items[c], isCur = c === hoverIdx, empty = !!it.empty;
       var mcolor = "", mix = false, mname = "";
@@ -8010,20 +8047,31 @@
       }
       var vv = spdNum(it.v);
       var hPct = empty || !(vv > 0) ? 0 : Math.max(1.2, Math.round(vv / yMax * 1000) / 10);
-      var shown = !empty && (isCur || n <= 8 || c === n - 1 || c === 0 || c % valEvery === 0);
+      var txt = vv.toFixed(1);
+      /* 恒显集合（峰值/最低/最新/悬停）不吃估宽让位；其余采样位超槽宽即跳过 */
+      var shown = !empty && (n <= 8 || isCur || c === n - 1 || c === peakI || c === minI ||
+        (c % valEvery === 0 && txt.length * 6 + 8 <= slotW));
+      var xShow = !xThin || c % 2 === 0 || c === n - 1 || c === hoverIdx;
       var aria = it.label + SPD_L("，", ", ") + (empty || !(vv > 0) ? SPD_L("无数据", "no data") : (vv.toFixed(1) + " t/s")) +
         (mname ? SPD_L("，", ", ") + mname : "") + (mix ? SPD_L("，", ", ") + SPD_L("混合", "mixed") : "");
       cols += '<div class="zu-sc-col' + (isCur ? " cur" : "") + (empty ? " empty" : "") +
-        (c === n - 1 ? " latest" : "") +
-        '" role="img" tabindex="0" data-i="' + c + '"' +
+        (c === n - 1 ? " latest" : "") + ' zu-sv3-slot" role="img" tabindex="0" data-i="' + c + '"' +
         (mix ? ' title="' + spdEsc(SPD_L("混合（" + it.models.length + " 种模型）", "Mixed (" + it.models.length + " models)")) + '"' : "") +
         ' aria-label="' + spdEsc(aria) + '">' +
-        '<span class="zu-sc-vz"><span class="zu-sc-val">' + (shown ? vv.toFixed(1) : "") + "</span>" +
+        '<span class="zu-sc-vz"><span class="zu-sc-val">' + (shown ? txt : "") + "</span>" +
         '<i class="zu-sc-bar' + (mix ? " zu-sv3-mix" : "") + '" style="height:' + hPct + "%" +
         (mcolor ? ";background:" + mcolor : "") + '"></i></span>' +
-        '<span class="zu-sc-x"><b>' + spdEsc(it.label) + "</b></span></div>";
+        '<span class="zu-sc-x"><b' + (xShow ? "" : ' class="zu-sv3-xoff"') + ">" + spdEsc(it.label) + "</b></span>" +
+        '<i class="zu-sv3-xline"></i></div>';
     }
     return cols;
+  }
+  /* 柱图满幅框架：plot 100% 宽 + HTML 网格/沟槽 + 槽位 flex 柱组（密度类挂柱组） */
+  function spd3BarsFrame(gt, n, cols) {
+    return '<div class="zu-sc-wrap" data-sv-end="1"><div class="zu-sc-plot">' +
+      '<span class="zu-sc-grid">' + gt.grid + '</span>' +
+      '<span class="zu-sc-gutter">' + gt.gutter + '</span>' +
+      '<span class="zu-sv3-bars zu-sv3-w' + (n <= 6 ? 18 : n <= 12 ? 14 : 10) + '">' + cols + "</span></div></div>";
   }
   /* ==================== ⑤ 悬停卡（五字段 + 真实模型组成） ====================
    * 结构沿 V2 spdCardHTML 纪律：时间（tv 覆写保留，缺省聚合桶区间压缩）/ 速度（档位
@@ -8097,12 +8145,7 @@
     SPD_PORTAL = spd3PortalFor(items, hoverIdx, o);
     return SPD3_CHART_CSS +
       '<div class="zu-speed-chart zu-sv3-chart">' + head +
-      '<div class="zu-sc-wrap" data-sv-end="1"><div class="zu-sc-plot">' +
-      '<i class="zu-sv3-spacer" style="width:' + Math.max(240, n * SPD3_PITCH + 12) + 'px"></i>' +
-      '<span class="zu-sc-grid">' + gt.grid + '</span>' +
-      '<span class="zu-sc-gutter">' + gt.gutter + '</span>' +
-      '<span class="zu-sv3-bars' + (n >= 10 ? " zu-sv3-bars--spread" : "") + '">' +
-      spd3BarCols(items, hoverIdx, tk.yMax) + "</span></div></div></div>";
+      spd3BarsFrame(gt, n, spd3BarCols(items, hoverIdx, tk.yMax)) + "</div>";
   }
   /* ==================== ⑧ today：小时桶（单模型柱 / 多模型折线） ====================
    * 单模型判定：筛选后池内 distinct 模型 key 数===1（an.perModel）。单模型（含旧帧
@@ -8119,21 +8162,20 @@
       SPD_PORTAL = spd3PortalFor(items, hoverIdx, o);
       return SPD3_CHART_CSS +
         '<div class="zu-speed-chart zu-sv3-chart">' + head +
-        '<div class="zu-sc-wrap" data-sv-end="1"><div class="zu-sc-plot">' +
-        '<i class="zu-sv3-spacer" style="width:' + Math.max(240, n * SPD3_PITCH + 12) + 'px"></i>' +
-        '<span class="zu-sc-grid">' + gt.grid + '</span>' +
-        '<span class="zu-sc-gutter">' + gt.gutter + '</span>' +
-        '<span class="zu-sv3-bars' + (n >= 10 ? " zu-sv3-bars--spread" : "") + '">' +
-        spd3BarCols(items, hoverIdx, tk.yMax) + "</span></div></div></div>";
+        spd3BarsFrame(gt, n, spd3BarCols(items, hoverIdx, tk.yMax)) + "</div>";
     }
     return spd3LineHTML(an, hoverIdx, o, items, head, false);
   }
   /* ==================== ⑨ 折线图共用（今天多模型 / 近 7 天） ====================
-   * 每系列一条 path（颜色=spd3Color，缺数据断线不插值：连续非空点一段 M…L…）；
-   * 数据点 circle r=2.5 只落在真实点；命中列 rect（data-i=桶序号）承载悬停/键盘，
-   * 同组内竖线十字参考线由 CSS :hover/:focus-within 显现。weekForm=近 7 天形态：
-   * 附加末端数值标签（末端 y 冲突时上下错开 ≥12px）与中性虚线「总体」——spec §5
-   * 的总体线是 week 多模型专属，今天多模型只有逐模型线 + 悬停十字卡。 */
+   * 满幅（spec §11.2）：svg width="100%" 无 viewBox，x 全百分比（槽中心=(i+0.5)/N×100%，
+   * 端标签收进 99.2% + text-anchor:end），y/线宽/圆点恒 px 不失真。每系列一组分段
+   * <line>（相邻非空点一连，缺口断线不插值：null 即断段）；数据点 circle r=2.5 只落
+   * 真实点；命中列 rect（data-i=桶序号，x/width 均 %）承载悬停/键盘，同组内竖线十字
+   * 参考线由 CSS :hover/:focus-within 显现。Y 轴刻度/网格走 HTML gutter/grid（% 宽
+   * 横线），与柱图同构。端标签每线一枚（末个非空点；今天多模型同款，PRD 10.2 每线
+   * 仅端标签），上下错开 ≥12px；weekForm 近 7 天附加中性虚线「总体」与单模型分段
+   * 面积（嵌套 svg viewBox 0..100 百分比坐标，纯填充拉伸不失真）——spec §5 的总体线
+   * 是 week 多模型专属。 */
   function spd3SeriesPts(slots, key) {
     var pts = [];
     for (var i = 0; i < slots.length; i++) {
@@ -8168,12 +8210,11 @@
     return t + SPD_L("，", ", ") + spdNum(it.v).toFixed(1) + " t/s";
   }
   function spd3LineHTML(an, hoverIdx, o, slots, head, weekForm) {
-    var N = slots.length;
-    var TOP = 8, PLOT = SPD3_PLOT_H, XH = SPD3_X_H, GX = SPD3_GUT_W + 4, PITCH = SPD3_PITCH, GR = 10;
-    /* 少桶（focus 后今天常 1–3 桶）放宽列距，图表本体不缩成窄条 */
-    var P = Math.max(PITCH, Math.floor(256 / Math.max(N, 1)));
-    var W = GX + N * P + GR, H = TOP + PLOT + XH, base = TOP + PLOT;
-    var cx = function (i) { return GX + i * P + P / 2; };
+    var N = Math.max(slots.length, 1);
+    var PLOT = SPD3_PLOT_H, XH = SPD3_X_H, BASE = PLOT, H = PLOT + XH;
+    /* 百分比 x（保留 3 位小数）：槽中心 / hit 列几何全部随 100% 宽自适应 */
+    var pc = function (x) { return Math.round(x * 1000) / 1000; };
+    var xc = function (i) { return pc((i + 0.5) * 100 / N); };
     /* 系列组装：多模型（msAvail）=逐模型线 + 总体虚线（an.overall 在场才画）；
      * 其余（单模型 / 降级多模型）=一条桶整值线（单模型上模型色，降级中性灰） */
     var series = [];
@@ -8194,89 +8235,91 @@
       for (var q = 0; q < pp.length; q++) if (pp[q] != null && pp[q] > maxV) maxV = pp[q];
     }
     if (!(maxV > 0)) return spd3ChartEmptyHTML(head);
-    var tk = spd3Ticks(maxV);
-    var yOf = function (v) { return TOP + (1 - v / tk.yMax) * PLOT; };
+    var tk = spd3Ticks(maxV), gt = spd3GridTicks(tk);
+    var yOf = function (v) { return (1 - v / tk.yMax) * PLOT; };
     var r1 = function (x) { return Math.round(x * 10) / 10; };
-    var grid = "", xtxt = "", body = "", labels = [];
-    for (var g = 0; g < tk.ticks.length; g++) {
-      var ty = r1(yOf(tk.ticks[g]));
-      grid += '<line class="zu-sv3-gline"' + (tk.ticks[g] ? "" : ' data-base="1"') +
-        ' x1="' + GX + '" x2="' + (W - GR) + '" y1="' + ty + '" y2="' + ty + '"/>' +
-        '<text class="zu-sv3-gtxt" x="' + (GX - 6) + '" y="' + r1(ty + 3) + '" text-anchor="end">' + tk.ticks[g] + "</text>";
-    }
-    for (var xi = 0; xi < N; xi++) {
-      xtxt += '<text class="zu-sv3-xtxt" x="' + r1(cx(xi)) + '" y="' + (base + 11) + '">' +
-        spdEsc((slots[xi] && slots[xi].label) || "") + "</text>";
+    var xtxt = "", areas = "", body = "", labels = [];
+    /* X 轴标签：week 恒 7 日；today 隔 3 小时（00/03/06…）+ 末槽恒显（spec §11.2）；
+     * 非 HH:MM 标签按显处理（防御未知粒度） */
+    for (var xi = 0; xi < slots.length; xi++) {
+      var lb2 = (slots[xi] && slots[xi].label) || "";
+      var hm = /^(\d{1,2}):/.exec(lb2);
+      if (!(weekForm || !hm || xi === slots.length - 1 || Number(hm[1]) % 3 === 0)) continue;
+      xtxt += '<text class="zu-sv3-xtxt" x="' + xc(xi) + '%" y="' + (BASE + 11) + '">' + spdEsc(lb2) + "</text>";
     }
     for (var si = 0; si < series.length; si++) {
-      var srs = series[si], d = "", seg = false;
+      var srs = series[si], segs = "", segOpen = false, sx = 0, sy = 0;
       for (var i3 = 0; i3 < srs.pts.length; i3++) {
-        if (srs.pts[i3] == null) { seg = false; continue; }
-        d += (seg ? " L " : " M ") + r1(cx(i3)) + " " + r1(yOf(srs.pts[i3]));
-        seg = true;
+        if (srs.pts[i3] == null) { segOpen = false; continue; }
+        var nx = xc(i3), ny = r1(yOf(srs.pts[i3]));
+        if (segOpen) segs += '<line x1="' + sx + '%" y1="' + sy + '" x2="' + nx + '%" y2="' + ny + '"/>';
+        sx = nx; sy = ny; segOpen = true;
       }
-      if (d) body += '<path class="zu-sv3-line' + (srs.color ? "" : " zu-sv3-nline") +
-        (srs.dashed ? " zu-sv3-oline" : "") + '"' + (srs.color ? ' stroke="' + srs.color + '"' : "") +
-        ' d="' + d + '"/>';
-      /* 近 7 天单模型实线：分段面积（模型色 12% 透明度，缺口不填充） */
-      /* v384 S6-MINOR5：多模型周视图纯折线+虚线总体（设计稿无面积；单模型保留） */
-      if (weekForm && !srs.dashed && srs.color && !(an.perModel && an.perModel.length > 1)) {
+      if (segs) body += '<g class="zu-sv3-line' + (srs.color ? "" : " zu-sv3-nline") +
+        (srs.dashed ? " zu-sv3-oline" : "") + '"' + (srs.color ? ' stroke="' + srs.color + '"' : "") + ">" + segs + "</g>";
+      /* 近 7 天单模型实线：分段面积（模型色 12% 透明度，缺口不填充）；面积载体是
+       * 嵌套 svg（viewBox 0..100 百分比坐标、preserveAspectRatio=none，纯填充无描边，
+       * 横向拉伸不失真）。v384 S6-MINOR5：多模型周视图纯折线+虚线总体（设计稿无面积） */
+      if (weekForm && !srs.dashed && srs.color && !multi) {
         var area = "", seg2 = false, segStart = 0;
         for (var i4 = 0; i4 <= srs.pts.length; i4++) {
           var pv2 = i4 < srs.pts.length ? srs.pts[i4] : null;
           if (pv2 == null) {
             if (seg2) {
-              area += " L " + r1(cx(i4 - 1)) + " " + base + " L " + r1(cx(segStart)) + " " + base + " Z";
+              area += " L " + xc(i4 - 1) + " " + BASE + " L " + xc(segStart) + " " + BASE + " Z";
               seg2 = false;
             }
             continue;
           }
           if (!seg2) {
-            area += (area ? " M " : "M ") + r1(cx(i4)) + " " + base + " L " + r1(cx(i4)) + " " + r1(yOf(pv2));
+            area += (area ? " M " : "M ") + xc(i4) + " " + BASE + " L " + xc(i4) + " " + r1(yOf(pv2));
             segStart = i4; seg2 = true;
-          } else area += " L " + r1(cx(i4)) + " " + r1(yOf(pv2));
+          } else area += " L " + xc(i4) + " " + r1(yOf(pv2));
         }
-        if (area) body += '<path class="zu-sv3-area" fill="' + srs.color + '" d="' + area + '"/>';
+        if (area) areas += '<path class="zu-sv3-area" fill="' + srs.color + '" d="' + area + '"/>';
       }
       /* 数据点：只落真实点（虚线总体不加点） */
       if (!srs.dashed) for (var i5 = 0; i5 < srs.pts.length; i5++) if (srs.pts[i5] != null)
-        body += '<circle class="zu-sv3-pt' + (srs.color ? "" : " zu-sv3-npt") + '" cx="' + r1(cx(i5)) +
-          '" cy="' + r1(yOf(srs.pts[i5])) + '" r="2.5"' + (srs.color ? ' fill="' + srs.color + '"' : "") + "/>";
-      /* 末端数值标签：取各系列最后一个非空点 */
-      if (weekForm) for (var i6 = srs.pts.length - 1; i6 >= 0; i6--) if (srs.pts[i6] != null) {
+        body += '<circle class="zu-sv3-pt' + (srs.color ? "" : " zu-sv3-npt") + '" cx="' + xc(i5) +
+          '%" cy="' + r1(yOf(srs.pts[i5])) + '" r="2.5"' + (srs.color ? ' fill="' + srs.color + '"' : "") + "/>";
+      /* 端数值标签：每线一枚（末个非空点；今天多模型同款，PRD 10.2 每线仅端标签） */
+      for (var i6 = srs.pts.length - 1; i6 >= 0; i6--) if (srs.pts[i6] != null) {
         labels.push({ y0: yOf(srs.pts[i6]), text: srs.pts[i6].toFixed(1), color: srs.color, dim: srs.dashed || !srs.color });
         break;
       }
     }
     /* 端标签上下错开 ≥12px：先向下推，越底再从末尾回推（全部钳在绘图区内） */
     labels.sort(function (a, b) { return a.y0 - b.y0; });
-    var minY = TOP + 8, maxY = base - 3;
+    var minY = 6, maxY = BASE - 3;
     for (var e1 = 1; e1 < labels.length; e1++) if (labels[e1].y0 - labels[e1 - 1].y0 < 12) labels[e1].y0 = labels[e1 - 1].y0 + 12;
     if (labels.length && labels[labels.length - 1].y0 > maxY) {
       labels[labels.length - 1].y0 = maxY;
       for (var e2 = labels.length - 2; e2 >= 0; e2--) if (labels[e2 + 1].y0 - labels[e2].y0 < 12) labels[e2].y0 = labels[e2 + 1].y0 - 12;
     }
     for (var e3 = 0; e3 < labels.length; e3++) {
-      var lb = labels[e3];
-      body += '<text class="zu-sv3-elabel' + (lb.dim ? " zu-sv3-olabel" : "") + '" x="' + (W - 2) +
-        '" y="' + r1(lb.y0 + 3) + '"' + (lb.color ? ' fill="' + lb.color + '"' : "") + ">" + lb.text + "</text>";
+      var lb3 = labels[e3];
+      body += '<text class="zu-sv3-elabel' + (lb3.dim ? " zu-sv3-olabel" : "") + '" x="99.2%" y="' +
+        r1(lb3.y0 + 3) + '"' + (lb3.color ? ' fill="' + lb3.color + '"' : "") + ">" + lb3.text + "</text>";
     }
-    /* 命中列 + 同组十字参考线（CSS :hover/:focus-within 显现，零 JS 监听） */
+    /* 命中列（x/width 均 %）+ 同组十字参考线（CSS :hover/:focus-within 显现，零 JS 监听） */
     var hits = "";
-    for (var hi = 0; hi < N; hi++) {
-      hits += '<g class="zu-sv3-hg"><line class="zu-sv3-xline" x1="' + r1(cx(hi)) + '" x2="' + r1(cx(hi)) +
-        '" y1="' + TOP + '" y2="' + base + '"/>' +
-        '<rect class="zu-sv3-hit" data-i="' + hi + '" x="' + (GX + hi * P) + '" y="' + TOP +
-        '" width="' + P + '" height="' + PLOT + '" tabindex="0" role="img" aria-label="' +
+    for (var hi = 0; hi < slots.length; hi++) {
+      hits += '<g class="zu-sv3-hg"><line class="zu-sv3-xline" x1="' + xc(hi) + '%" x2="' + xc(hi) +
+        '%" y1="0" y2="' + BASE + '"/>' +
+        '<rect class="zu-sv3-hit" data-i="' + hi + '" x="' + pc(hi * 100 / N) + '%" y="0" width="' +
+        pc(100 / N) + '%" height="' + PLOT + '" tabindex="0" role="img" aria-label="' +
         spdEsc(spd3HitAria(an, slots[hi])) + '"/></g>';
     }
     SPD_PORTAL = spd3PortalFor(slots, hoverIdx, o);
     return SPD3_CHART_CSS +
       '<div class="zu-speed-chart zu-sv3-chart">' + (head || "") +
-      '<div class="zu-sc-wrap" data-sv-end="1"><div class="zu-sc-plot" style="width:' + W + "px;height:" + H +
-      'px;margin-left:0;min-width:0">' +
-      '<svg class="zu-sv3-svg" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + " " + H + '">' +
-      grid + xtxt + body + hits + "</svg></div></div></div>";
+      '<div class="zu-sc-wrap" data-sv-end="1"><div class="zu-sc-plot">' +
+      '<span class="zu-sc-grid">' + gt.grid + '</span>' +
+      '<span class="zu-sc-gutter">' + gt.gutter + '</span>' +
+      '<svg class="zu-sv3-svg" width="100%" height="' + H + '">' +
+      (areas ? '<svg class="zu-sv3-asvg" width="100%" height="' + PLOT +
+        '" viewBox="0 0 100 ' + PLOT + '" preserveAspectRatio="none">' + areas + "</svg>" : "") +
+      xtxt + body + hits + "</svg></div></div></div>";
   }
   /* ==================== ⑩ week：近 7 天（单模型线+面积 / 多模型线+总体虚线） ====================
    * X 轴恒 7 个本地日（含无数据日：无点断线，不插值不假填）；缺失日合成空桶供命中
@@ -8741,9 +8784,12 @@
         }
         for (var bi = 0; bi < bkeys.length; bi++) {
           var bk2 = bkeys[bi], rows2 = buckets[bk2] || [], bg = spd3Aggregate(rows2);
-          var nb = spdNextBucket(bk2, unit);
+          /* v387：进行中桶（今天最后一格/跨今天的日桶）b 钳到 now——hover 区间
+           * 「截至 HH:mm」语义由渲染层按 b 与桶末的距离区分（spec §11.5），
+           * 绝不把未发生的时间展示成已统计区间。 */
+          var nb = Math.min(spdNextBucket(bk2, unit), now);
           items.push(bg ? Object.assign(bg, { label: spdLabel(bk2, unit, true),
-              full: spdFull(bk2) + " – " + spdFull(Math.min(nb, now)), a: bk2, b: nb })
+              full: spdFull(bk2) + " – " + spdFull(nb), a: bk2, b: nb })
             : { v: null, label: spdLabel(bk2, unit, true), full: spdFull(bk2) + " – " + spdFull(nb),
                 a: bk2, b: nb, empty: true, models: [] });
         }
@@ -8814,6 +8860,18 @@
       range: range, period: period, spanA: spanA, spanB: spanB,
       notice: notices.join(SPD_L(" · ", " · ")), truncated: !!(u && u.truncated),
       msAvail: msAvail, pool: pool, selMissing: selMissing };
+    /* v387 §11.4：空态原因分类（view 空态页据此给针对性提示与恢复动作，
+     * 不再千篇一律「尝试更长时间范围」）。按池构成与筛选态判定，顺序即优先级。 */
+    if (!real.length) {
+      if (remote) an.emptyReason = SPD_L("远端会话仅显示本会话历史", "Remote pane shows this session only");
+      else if (!u) an.emptyReason = SPD_L("速度数据尚未加载", "Speed history not loaded yet");
+      else if (filtering && !filt.keys.length) an.emptyReason = SPD_L("未选择任何模型", "No model selected");
+      else if (filtering) an.emptyReason = SPD_L("已选模型在当前范围暂无有效速度记录", "Selected models have no rated turns in this range");
+      else if (range === "session" || range === "recent") an.emptyReason = SPD_L("当前会话暂无已完成请求", "No completed turns in this session yet");
+      else if (range === "project") an.emptyReason = SPD_L("当前项目暂无有效速度数据", "No rated data in this project yet");
+      else if (a && b) an.emptyReason = SPD_L("当前时间范围内暂无请求", "No turns in this time range");
+      else an.emptyReason = SPD_L("暂无有效生成速度记录", "No rated turns yet");
+    }
     if (daysGrid) an.daysGrid = daysGrid;
     return an;
   }
@@ -8858,12 +8916,16 @@
    * （格挂档位类，CSS color-mix 淡化混底，思路移植 V2 v294 已验证的对比度结论）；
    * 模型身份色唯一来自 SPD3_PALETTE 纯哈希（格右上 ≤3 色点 + 「+N」），两套语义
    * 不混用（PRD 7.3）。网格数学移植 V2 v291 段：month=7 列周日首列（行数=
-   * ceil((首日星期+天数)/7)，4~6 行，行数经 --zu-hm-rows 变量下发）；hist=行=星期
-   * （7 行周日..周六）、列=周（列头=周起始 MM/DD，跨月首列加亮；>14 列时隔列显
-   * 标签防挤、首列恒显），cell 最小 ~34px、超出容器宽经 .zu-sc-wrap 横滚。
-   * 格状态五态可区分（spec §5）：补位更暗不可交互 / 未来遮罩 / 无记录灰 / 有记录
-   * 档位混底 / 今天描边；绝不伪造 0 t/s。
-   * 纯字符串零 DOM：悬停日卡经模块外 SPD_PORTAL 侧信道（charts 纪律：构建前清空、
+   * ceil((首日星期+天数)/7)，4~6 行，行数经 --zu-hm-rows 变量下发，v387 §11.6 行高
+   * 自适应=minmax(0,1fr) 行模板 + wrap flex 链填满可用高，4/5/6 周均无底部大空白）；
+   * hist=行=星期（7 行周日..周六）、列=周（列头=周起始 MM/DD，跨月首列加亮；>14 列
+   * 时隔列显标签防挤、首列恒显），列宽帽 minmax(34px,64px)（v387 §11.6 去无限 1fr
+   * 拉伸，短跨度不再超宽格；justify-content:flex-start=时间轴自左向右、列少时左对齐
+   * 而不是居中漂浮）；周列数 >SPD3_HIST_MONTH_COLS(26) 切月粒度（v387 §11.6/PRD 7.2：
+   * 每列=日历月竖条格，月 v=Σout÷Σms 加权、列头 YYYY/MM、550 日 ≤19 月列无横滚，
+   * 原 spec §5「110 列硬帽」被月聚合取代）。格状态五态可区分（spec §5）：补位更暗
+   * 不可交互 / 未来遮罩 / 无记录灰 / 有记录档位混底 / 今天描边；绝不伪造 0 t/s。
+   * 纯字符串零 DOM：悬停日/月卡经模块外 SPD_PORTAL 侧信道（charts 纪律：构建前清空、
    * 有悬停整体覆写 <div class="zu-sv-card …" data-i="N">、未悬停/无数据日=空串，
    * 消费即清，跨帧/跨 tip 不串）。
    * 引用边界：存活符号 L/SPD_L/TPS_BANDS/tpsBand/spdEsc/spdNum/spd2/spdDate/
@@ -8878,10 +8940,11 @@
   function spd3Wd(wd) { return SPD_L(SPD3_WD_ZH[wd], SPD3_WD_EN[wd]); }
   /* 一位小数速度文本（整数不带小数点，纪律同 V2 spdFmt1） */
   function spd3Fmt1(v) { return v % 1 ? v.toFixed(1) : String(v); }
-  /* 图例两端色（纯静态展示值，无用户数据不需转义）：低=TPS_BANDS 末档 hot 实色、
-   * 高=首档 ultra 渐变，与 06 分片档位调色板同值；档位选取走表序（tpsBand(0)=最低
-   * 档、TPS_BANDS[0]=最高档），表序变化自动跟随，未知类名回退 currentColor。 */
-  var SPD3_LEG_BG = { hot: "#ff6b57", "zu-ultra": "linear-gradient(100deg,#60a5fa 0%,#a78bfa 50%,#c084fc 100%)" };
+  /* hist 粒度切换阈值（spec §11.6/PRD 7.2，v387）：周列数 >26 切月粒度。原 spec §5
+   * 的「110 列硬帽（超出取最近 110 列横滚）」被月聚合取代删除——26 周 ≈ 半年是日
+   * 粒度周格（34px 下限）可读上限，更长跨度按月聚合后 550 日 ≤19 月列，天然无横滚，
+   * 不再横滚兜底也不丢数据。 */
+  var SPD3_HIST_MONTH_COLS = 26;
   /* 格 aria（spec §7）：完整日期 + 均速档位 + 模型数；无记录日显式说明，绝不 0 t/s */
   function spd3CellAria(t, agg) {
     var d = spdDate(t), wd = d.getDay();
@@ -8892,6 +8955,39 @@
     return dateTxt + SPD_L("，均速 ", ", avg ") + spd3Fmt1(agg.v) + SPD_L(" t/s", " t/s") +
       (b ? SPD_L("，" + b.zh, ", " + b.en) : "") +
       SPD_L("，" + agg.modelCount + " 个模型", ", " + agg.modelCount + (agg.modelCount === 1 ? " model" : " models"));
+  }
+  /* 月格 aria（spec §11.6）：完整年月 + 均速档位 + 「N 天有记录 / M 次请求」；空月
+   * 显式说明，绝不 0 t/s */
+  function spd3MonthAria(mb) {
+    var txt = SPD_L(mb.y + "年" + (mb.mo + 1) + "月", SPD3_MO_EN[mb.mo] + " " + mb.y);
+    if (!(mb.v > 0)) return txt + SPD_L("，无有效速度记录", ", no rated speed data");
+    var b = tpsBand(mb.v);
+    return txt + SPD_L("，均速 ", ", avg ") + spd3Fmt1(mb.v) + SPD_L(" t/s", " t/s") +
+      (b ? SPD_L("，" + b.zh, ", " + b.en) : "") +
+      SPD_L("，" + mb.days + " 天有记录，" + mb.n + " 次请求",
+        ", " + mb.days + (mb.days === 1 ? " day" : " days") + " with data, " + mb.n + " requests");
+  }
+  /* hover 卡时间行（spec §11.5，v387）：core 已把进行中日/月桶的 item.b 钳到 now，
+   * 本层调用点对日/月格统一 Math.min(桶末, now) 下发，卡内动态取 b——b 距区间末
+   * （次日/次月零点）2 分钟内 →「全天/全月」，否则显「… – 截至 HH:mm」（月卡含
+   * 日期 MM-DD）。b 缺席（外部直调）按区间末=全天处理，绝不猜进行中。次日零点用
+   * Date 构造器日进位（DST 安全，禁固定 864e5 步长）。 */
+  function spd3HM(t) { var d = spdDate(t); return spd2(d.getHours()) + ":" + spd2(d.getMinutes()); }
+  function spd3DaySpanTxt(t, b) {
+    var d = spdDate(t);
+    var de = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime();
+    var bb = (typeof b === "number" && b > t && b < de) ? b : de;
+    var dateTxt = d.getFullYear() + "/" + (d.getMonth() + 1) + "/" + d.getDate();
+    if (de - bb <= 120000) return dateTxt + SPD_L(" · 全天", " · All day");
+    return dateTxt + SPD_L(" · 00:00 – 截至 ", " · 00:00 – until ") + spd3HM(bb);
+  }
+  function spd3MonthSpanTxt(mb) {
+    var bb = Math.min(mb.t1, Date.now());
+    var moTxt = mb.y + "/" + (mb.mo + 1);
+    if (mb.t1 - bb <= 120000) return moTxt + SPD_L(" · 全月", " · Full month");
+    var d = spdDate(bb);
+    return moTxt + "/1 00:00 – " + SPD_L("截至 ", "until ") +
+      spd2(d.getMonth() + 1) + "-" + spd2(d.getDate()) + " " + spd3HM(bb);
   }
   /* 格右上模型色点：当日 models（spd3Aggregate 已按 out 降序、不截断）取前 3 枚 +
    * 剩余「+N」；单模型视图（an.perModel.length===1）不渲染重复色点（spec §5）。
@@ -8931,18 +9027,14 @@
     for (var i = 0; i < 7; i++) s += "<span>" + spdEsc(spd3Wd(i)) + "</span>";
     return s;
   }
-  /* 底部图例行（spec §6）：左 较低→较高（TPS_BANDS 首末档色两枚小色块，纯静态）；
-   * 右 多模型=「颜色标记代表模型」、单模型=「<模型名> · 单模型」 */
+  /* 底部图例行（spec §6/§11.5）：「较低/较高」双色渐变段已随 v387 移除（PRD 6.3
+   * 禁止替代档位体系，完整档位说明由图表头 ⓘ hover 承载）；保留右侧模型身份行——
+   * 多模型=「颜色标记代表模型」、单模型也保留=「<模型名> · 单模型」。 */
   function spd3LegendHTML(an) {
-    var loBg = SPD3_LEG_BG[tpsBand(0).cls] || "currentColor";
-    var hiBg = SPD3_LEG_BG[TPS_BANDS[0].cls] || "currentColor";
     var right = (an.perModel && an.perModel.length === 1)
       ? spdEsc(an.perModel[0].name) + SPD_L(" · 单模型", " · single model")
       : SPD_L("颜色标记代表模型", "colors mark models");
-    return '<div class="zu3-lg"><span class="zu3-lg-l"><i>' + SPD_L("较低", "Lower") + "</i>" +
-      '<span class="zu3-lg-sw" style="background:' + loBg + '"></span>' +
-      '<span class="zu3-lg-sw" style="background:' + hiBg + '"></span>' +
-      "<i>" + SPD_L("较高", "Higher") + '</i></span><span class="zu3-lg-r">' + right + "</span></div>";
+    return '<div class="zu3-lg"><span class="zu3-lg-r">' + right + "</span></div>";
   }
   /* 内联样式：全部规则挂 .zu-sv3-root（V3 卡根，view 分片）或 .zu-sv-portal（body
    * 级悬停 Portal 容器）作用域，不与 V2 遗留 .zu-hm-* 全局规则互染；档位混底/
@@ -8950,12 +9042,18 @@
    * 数据，不需转义。 */
   function spd3HeatStyle() {
     return "<style>" +
-      /* ---------- month（.zu3-hm）：7 列周日首列 × --zu-hm-rows 行 ---------- */
+      /* ---------- month（.zu3-hm）：7 列周日首列 × --zu-hm-rows 行 ----------
+       * v387 §11.6 行高自适应：wrap 补 display:flex 列链（否则 wrap 塌缩内容高、
+       * grid 的 flex:1 失效），grid 行模板 minmax(0,1fr) 均分可用高——4/5/6 周均
+       * 填满容器、无底部大空白；补位格/未来格同属网格轨道同步拉伸。格内容顶对齐、
+       * 速度值在日号下方剩余空间垂直居中（margin:auto 0），行高变化时布局不散。 */
       ".zu-sv3-root .zu3-hm{flex:1;min-height:0;min-width:0;display:flex;flex-direction:column}" +
+      ".zu-sv3-root .zu3-hm .zu-sc-wrap{flex:1;min-height:0;display:flex;flex-direction:column}" +
       ".zu-sv3-root .zu3-hm-week{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;margin-bottom:4px;" +
         "text-align:center;font-size:9px;line-height:12px;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-sv3-root .zu3-hm-grid{flex:1;min-height:0;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));" +
         "grid-template-rows:repeat(var(--zu-hm-rows,5),minmax(0,1fr));gap:6px}" +
+      ".zu-sv3-root .zu3-hm-grid .zu3-v{margin:auto 0}" +
       ".zu-sv3-root .zu-hm-pad{display:block;min-height:1px}" +
       ".zu-sv3-root .zu-hm-cell{position:relative;display:flex;flex-direction:column;justify-content:space-between;" +
         "min-width:0;min-height:0;box-sizing:border-box;border-radius:7px;padding:3px 4px;" +
@@ -8974,21 +9072,34 @@
       ".zu-sv3-root .zu3-d{flex:0 0 auto;font-size:8px;line-height:1;font-weight:500;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-sv3-root .zu3-v{flex:0 0 auto;font-size:9px;line-height:1.1;font-weight:600;font-variant-numeric:tabular-nums;" +
         "color:var(--color-tooltip-foreground,#fff);white-space:nowrap;overflow:hidden}" +
-      /* ---------- hist（.zu3-hh）：行=星期 7 行、列=周（column-major），横滚 ---------- */
+      /* ---------- hist（.zu3-hh）：行=星期 7 行、列=周（column-major），横滚 ----------
+       * v387 §11.6 列宽帽：minmax(34px,64px) 取代无限 1fr——短跨度（≤26 周）列数少
+       * 时不再把少数周列拉成超宽格；justify-content:flex-start（列少左对齐：时间轴
+       * 自左向右、最新周贴右端数据侧，比 center 稳——居中会让时间轴随列数漂浮）；
+       * max-width:100% 防溢出。>26 周切 .zu3-hh-mo 月粒度：每列=日历月竖条格
+       * （grid-row:1/8 跨满 7 行，星期行首标签列在月分支不渲染），列宽下限放宽到
+       * 18px（19 月列 ×64px 上限仍会超容器，18px 下限 + flex-start 左对齐下 19 列
+       * ≈ (容器-缝隙)/19 ≈ 29px 铺满无横滚），min-width 同步放宽（21=18+gap3）。 */
       ".zu-sv3-root .zu3-hh{flex:1;min-height:0;min-width:0;display:flex;flex-direction:column}" +
       ".zu-sv3-root .zu3-hh-body{flex:1;min-height:0;display:flex;gap:6px;min-width:0}" +
       ".zu-sv3-root .zu3-hh-wds{flex:0 0 auto;display:grid;grid-template-rows:repeat(7,1fr);gap:3px;padding-top:20px;" +
         "font-size:9px;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-sv3-root .zu3-hh-wds span{display:flex;align-items:center;white-space:nowrap}" +
       ".zu-sv3-root .zu3-hh-scroll{flex:1;min-width:0;display:flex;flex-direction:column;min-height:0}" +
-      ".zu-sv3-root .zu3-hh-cols,.zu-sv3-root .zu3-hh-grid{width:100%;min-width:calc(var(--zu3-cols,1)*37px)}" +
-      ".zu-sv3-root .zu3-hh-cols{display:grid;grid-template-columns:repeat(var(--zu3-cols,1),minmax(34px,1fr));" +
+      ".zu-sv3-root .zu3-hh-cols,.zu-sv3-root .zu3-hh-grid{width:100%;max-width:100%;min-width:calc(var(--zu3-cols,1)*37px)}" +
+      ".zu-sv3-root .zu3-hh-cols{display:grid;grid-template-columns:repeat(var(--zu3-cols,1),minmax(34px,64px));" +
         "gap:3px;height:14px;margin-bottom:3px}" +
       ".zu-sv3-root .zu3-cl{grid-row:1;text-align:center;font-size:8px;line-height:14px;white-space:nowrap;" +
         "font-variant-numeric:tabular-nums;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-sv3-root .zu3-cl.zu3-cl-mo{color:var(--color-tooltip-foreground,#fff);font-weight:600}" +
       ".zu-sv3-root .zu3-hh-grid{flex:1;min-height:0;display:grid;grid-auto-flow:column;" +
-        "grid-template-rows:repeat(7,minmax(0,1fr));grid-auto-columns:minmax(34px,1fr);gap:3px}" +
+        "grid-template-rows:repeat(7,minmax(0,1fr));grid-auto-columns:minmax(34px,64px);gap:3px;" +
+        "justify-content:flex-start}" +
+      ".zu-sv3-root .zu3-hh-mo .zu3-hh-cols,.zu-sv3-root .zu3-hh-mo .zu3-hh-grid{min-width:calc(var(--zu3-cols,1)*21px)}" +
+      ".zu-sv3-root .zu3-hh-mo .zu3-hh-cols{grid-template-columns:repeat(var(--zu3-cols,1),minmax(18px,64px))}" +
+      ".zu-sv3-root .zu3-hh-mo .zu3-hh-grid{grid-auto-columns:minmax(18px,64px)}" +
+      ".zu-sv3-root .zu3-hh-mo .zu3-hh-grid .zu-hm-cell{grid-row:1/8;justify-content:flex-start}" +
+      ".zu-sv3-root .zu3-hh-mo .zu3-hh-grid .zu3-v{margin:auto 0}" +
       ".zu-sv3-root .zu3-hh-grid .zu-hm-cell{border-radius:4px;padding:2px 3px;justify-content:flex-end;gap:1px}" +
       /* v384 S6-MAJOR1：V2 的 .zu-hm-hist .zu-sc-wrap flex 列链未随 V3 类名迁移——
        * wrap 塌缩到内容高，grid 的 minmax(0,1fr) 行随之压扁（S6 实测 gridH 122 vs 307） */
@@ -9002,11 +9113,9 @@
       ".zu-sv3-root .zu3-mdots,.zu-sv-portal .zu3-mdots{display:inline-flex;align-items:center;gap:2px;flex:0 0 auto}" +
       ".zu-sv3-root .zu3-mdot,.zu-sv-portal .zu3-mdot{width:6px;height:6px;border-radius:50%;display:inline-block;flex:0 0 auto}" +
       ".zu-sv3-root .zu3-mmore,.zu-sv-portal .zu3-mmore{font-size:7px;line-height:1;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
-      ".zu-sv3-root .zu3-lg{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:8px;" +
+      /* v387 §11.5：左「较低/较高」渐变段删除后仅剩右侧模型身份行，靠右对齐 */
+      ".zu-sv3-root .zu3-lg{flex:0 0 auto;display:flex;align-items:center;justify-content:flex-end;gap:8px;" +
         "margin-top:6px;font-size:9px;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
-      ".zu-sv3-root .zu3-lg-l{display:inline-flex;align-items:center;gap:4px}" +
-      ".zu-sv3-root .zu3-lg-l i{font-style:normal}" +
-      ".zu-sv3-root .zu3-lg-sw{width:14px;height:6px;border-radius:3px;display:inline-block}" +
       ".zu-sv3-root .zu3-empty{flex:1;display:flex;align-items:center;justify-content:center;" +
         "color:var(--color-tooltip-tag-foreground,#a6a6a6);font-size:11px}" +
       /* ---------- 日悬停卡（body 级 Portal 内，.zu-sv3-card 全自持样式） ---------- */
@@ -9067,10 +9176,11 @@
           '" aria-label="' + spdEsc(spd3CellAria(g.t0, null)) + '">' + head + "</div>");
       }
     }
-    /* 悬停日卡经 SPD_PORTAL 侧信道（空日/未来日/越界序号不出卡=保持空串） */
+    /* 悬停日卡经 SPD_PORTAL 侧信道（空日/未来日/越界序号不出卡=保持空串）；
+     * b=min(次日零点, now)：今天=进行中（卡显「截至 HH:mm」），已结束日=全天 */
     if (hoverIdx >= 0 && hoverIdx < nDays && grid[hoverIdx] && grid[hoverIdx].agg)
-      SPD_PORTAL = spd3DayCardHTML({ t: grid[hoverIdx].t0, agg: grid[hoverIdx].agg,
-        tn: meta.tnByDay[grid[hoverIdx].t0] || null, di: hoverIdx }, o);
+      SPD_PORTAL = spd3DayCardHTML({ t: grid[hoverIdx].t0, b: Math.min(grid[hoverIdx].t1, Date.now()),
+        agg: grid[hoverIdx].agg, tn: meta.tnByDay[grid[hoverIdx].t0] || null, di: hoverIdx }, o);
     var body = "";
     for (var r2 = 0; r2 < rows; r2++)
       body += '<div role="row" style="display:contents">' + flat.slice(r2 * 7, r2 * 7 + 7).join("") + "</div>";
@@ -9080,15 +9190,18 @@
       '<div class="zu3-hm-grid" role="grid" style="--zu-hm-rows:' + rows + '">' + body + "</div></div>" +
       spd3LegendHTML(an) + "</div>";
   }
-  /* 全部历史热力（spec §5 all 行）：行=星期（周日..周六，与列首周日对齐，同 V2
-   * hist）、列=周（列头=周起始 MM/DD；跨月首列加亮——MM/DD 自带月份；>14 列时隔
-   * 列显标签防挤，首列恒显）。数据源=an.items 日桶（core 已合并 speed_days+晚于
-   * 覆盖末日的轮表行，无重叠无遗漏）；sd 仅用于截断披露（spec §1.2，N=days 长度，
-   * core 的 an.notice 同源提示由通知行承载）。窗口=首数据日 → 今天（今天无数据=灰
-   * 格照画；长空档如实显示空日，空=无数据）；cell 列宽 min ~34px，超出容器宽经
-   * .zu-sc-wrap 横滚（data-sv-end 供宿主首开滚到最新），列数经 --zu3-cols 下发。
-   * column-major 填格（一列=一周，V2 v292 复验教训），role=grid/row/gridcell，
-   * data-i=本视图日序（平铺顺序，补位不占号）。 */
+  /* 全部历史热力（spec §5 all 行 + §11.6 v387 月聚合）：行=星期（周日..周六，与列首
+   * 周日对齐，同 V2 hist）、列=周（列头=周起始 MM/DD；跨月首列加亮——MM/DD 自带月
+   * 份；>14 列时隔列显标签防挤，首列恒显）；周列数 >SPD3_HIST_MONTH_COLS(26) 切月
+   * 粒度（每列=日历月竖条格、列头 YYYY/MM、副题「按月聚合」，取代原 spec §5 的
+   * 110 列硬帽——月聚合后 550 日 ≤19 列天然无横滚，不再取最近 N 列丢数据）。
+   * 数据源=an.items 日桶（core 已合并 speed_days+晚于覆盖末日的轮表行，无重叠无遗
+   * 漏）；sd 仅用于截断披露（spec §1.2，N=days 长度，core 的 an.notice 同源提示由
+   * 通知行承载）。窗口=首数据日 → 今天（今天无数据=灰格照画；长空档如实显示空日，
+   * 空=无数据）；日粒度 cell 列宽 min ~34px、帽 64px，超出容器宽经 .zu-sc-wrap 横
+   * 滚（data-sv-end 供宿主首开滚到最新），列数经 --zu3-cols 下发。column-major 填
+   * 格（一列=一周/月，V2 v292 复验教训），role=grid/row/gridcell，data-i=本视图序
+   * （日粒度=日序、月粒度=月序，平铺顺序，补位不占号）。 */
   function spd3HistHTML(an, sd, hoverIdx, o) {
     SPD_PORTAL = "";
     if (!an || !Array.isArray(an.items)) return "";
@@ -9098,13 +9211,12 @@
       var it = an.items[i];
       if (!it.empty && it.a) { byDay[it.a] = it; if (it.a < first) first = it.a; }
     }
-    var sub = SPD_L("按日聚合", "aggregated by day");
-    if (sd && sd.truncated && sd.days && typeof sd.days.length === "number")
-      sub = SPD_L("按日聚合 · 已截断 · 仅显示最近 " + sd.days.length + " 天",
-        "aggregated by day · truncated · last " + sd.days.length + " days only");
+    var truncTxt = (sd && sd.truncated && sd.days && typeof sd.days.length === "number")
+      ? SPD_L(" · 已截断 · 仅显示最近 " + sd.days.length + " 天",
+        " · truncated · last " + sd.days.length + " days only") : "";
     if (first === Infinity)
       return '<div class="zu-speed-chart zu-sv-chart zu3-hh">' + spd3HeatStyle() +
-        spd3ChartHeadHTML(an, sub) + '<div class="zu3-empty">' +
+        spd3ChartHeadHTML(an, SPD_L("按日聚合", "aggregated by day") + truncTxt) + '<div class="zu3-empty">' +
         SPD_L("暂无有效速度记录", "no rated speed data yet") + "</div></div>";
     var fd0 = spdDate(first);
     var fy = fd0.getFullYear(), fmo = fd0.getMonth(), fd = fd0.getDate();
@@ -9115,6 +9227,59 @@
     var cols = Math.ceil((lead + totalDays) / 7);
     var single = !!(an.perModel && an.perModel.length === 1);
     var meta = spd3DayMeta(an.pool);
+    /* ---- 月粒度分支（spec §11.6/PRD 7.2，v387）：周列数 >26 切日历月聚合 ----
+     * 每列=月竖条格（grid-row:1/8 跨满 7 行，column-major 行结构保留、星期行首标签
+     * 列不渲染——月粒度无星期语义）；月 v=Σout÷Σms 加权（spd3MonthBuckets，绝不
+     * 算术平均）、days=有记录天数、n=Σ请求；列范围=首数据月 → 当前月连续铺列，
+     * 无数据月=灰条如实显示（空=无数据）。列头=YYYY/MM（首列与跨年 1 月列带年并
+     * 加亮 zu3-cl-mo）；550 日 ≤19 月列、session/project 更长历史按月铺列也无横滚
+     * （18px 下限竖条格，见 spd3HeatStyle .zu3-hh-mo 段）。roving tabindex/空月
+     * aria 纪律同日粒度。 */
+    if (cols > SPD3_HIST_MONTH_COLS) {
+      var months = spd3MonthBuckets(an.items, meta.capByDay);
+      var byMk = {};
+      for (var mi2 = 0; mi2 < months.length; mi2++) byMk[months[mi2].y * 12 + months[mi2].mo] = months[mi2];
+      var dNow2 = spdDate(Date.now());
+      var firstMk = months.length ? months[0].y * 12 + months[0].mo : dNow2.getFullYear() * 12 + dNow2.getMonth();
+      var lastMk = dNow2.getFullYear() * 12 + dNow2.getMonth();
+      var moCols = Math.max(1, lastMk - firstMk + 1);
+      var moFlat = [], moLabels = "", tabMo = false;
+      for (var w2 = 0; w2 < moCols; w2++) {
+        var mk2 = firstMk + w2, my = Math.floor(mk2 / 12), mmo = mk2 - my * 12;
+        var withYear = w2 === 0 || mmo === 0;   /* 首列与跨年 1 月列带年并加亮 */
+        moLabels += '<span class="zu3-cl' + (withYear ? " zu3-cl-mo" : "") + '" style="grid-column:' + (w2 + 1) + '">' +
+          (withYear ? my + "/" : "") + spd2(mmo + 1) + "</span>";
+        var mb3 = byMk[mk2] || null, hasMo = !!(mb3 && mb3.v > 0);
+        var clsMo = "zu-hm-cell " + (hasMo ? "zu-hm-data" : "zu-hm-void");
+        if (hasMo) { var bmo = tpsBand(mb3.v); if (bmo) clsMo += " " + bmo.cls; }
+        var di2 = moFlat.length;
+        var headMo = '<span class="zu3-hd">' + spd3DotsHTML(mb3, single) + "</span>";
+        if (hasMo) {
+          moFlat.push('<div class="' + clsMo + '" role="gridcell" tabindex="' + (tabMo ? "-1" : "0") + '" data-i="' + di2 +
+            '" aria-label="' + spdEsc(spd3MonthAria(mb3)) + '">' + headMo +
+            '<span class="zu3-v">' + spdEsc(spd3Fmt1(mb3.v)) + "</span></div>");
+          tabMo = true;
+        } else {
+          moFlat.push('<div class="' + clsMo + '" role="gridcell" data-i="' + di2 +
+            '" aria-label="' + spdEsc(spd3MonthAria(mb3 || { y: my, mo: mmo, v: null })) + '">' + headMo + "</div>");
+        }
+      }
+      if (hoverIdx >= 0 && hoverIdx < moCols) {
+        var mb4 = byMk[firstMk + hoverIdx];
+        if (mb4 && mb4.v > 0) SPD_PORTAL = spd3MonthCardHTML(mb4);
+      }
+      var moRows = "";
+      for (var r4 = 0; r4 < moFlat.length; r4++)
+        moRows += '<div role="row" style="display:contents">' + moFlat[r4] + "</div>";
+      return '<div class="zu-speed-chart zu-sv-chart zu3-hh zu3-hh-mo">' + spd3HeatStyle() +
+        spd3ChartHeadHTML(an, SPD_L("按月聚合", "aggregated by month") + truncTxt) +
+        '<div class="zu3-hh-body">' +
+        '<div class="zu-sc-wrap" data-sv-end="1"><div class="zu3-hh-scroll">' +
+        '<div class="zu3-hh-cols" style="--zu3-cols:' + moCols + '">' + moLabels + "</div>" +
+        '<div class="zu3-hh-grid" role="grid" style="--zu3-cols:' + moCols + '">' + moRows + "</div>" +
+        "</div></div></div>" + spd3LegendHTML(an) + "</div>";
+    }
+    var sub = SPD_L("按日聚合", "aggregated by day") + truncTxt;
     var labelEvery = cols > 14 ? 2 : 1;
     var flat = [], days = [], labels = "", lastMo = -1, tabSet3 = false;   /* v384 M1：roving tabindex */
     for (var w = 0; w < cols; w++) {
@@ -9128,7 +9293,10 @@
         if (ds < first || ds > todayStart) { flat.push('<i class="zu-hm-pad" aria-hidden="true"></i>'); continue; }
         var it2 = byDay[ds] || null, bd2 = it2 ? tpsBand(it2.v) : null;
         var di = days.length;
-        days.push({ t: ds, agg: it2, capped: !!meta.capByDay[ds] });
+        /* end=次日零点（Date 构造器日进位，DST 安全）：悬停日卡时间行据此区分
+         * 「全天 / 截至 HH:mm」（今天桶 b 由调用点钳到 now，spec §11.5） */
+        days.push({ t: ds, end: new Date(fy, fmo, fd - lead + w * 7 + r + 1).getTime(),
+          agg: it2, capped: !!meta.capByDay[ds] });
         var cls2 = "zu-hm-cell " + (it2 ? "zu-hm-data" + (bd2 ? " " + bd2.cls : "") : "zu-hm-void") +
           (ds === todayStart ? " zu-hm-today" : "");
         var inner = '<span class="zu3-hd">' + spd3DotsHTML(it2, single) + "</span>";
@@ -9144,8 +9312,9 @@
       }
     }
     if (hoverIdx >= 0 && days[hoverIdx] && days[hoverIdx].agg)
-      SPD_PORTAL = spd3DayCardHTML({ t: days[hoverIdx].t, agg: days[hoverIdx].agg,
-        capped: days[hoverIdx].capped, tn: meta.tnByDay[days[hoverIdx].t] || null, di: hoverIdx }, o);
+      SPD_PORTAL = spd3DayCardHTML({ t: days[hoverIdx].t, b: Math.min(days[hoverIdx].end, Date.now()),
+        agg: days[hoverIdx].agg, capped: days[hoverIdx].capped,
+        tn: meta.tnByDay[days[hoverIdx].t] || null, di: hoverIdx }, o);
     var rowsHtml = "", nRows = Math.ceil(flat.length / 7);
     for (var r3 = 0; r3 < nRows; r3++)
       rowsHtml += '<div role="row" style="display:contents">' + flat.slice(r3 * 7, r3 * 7 + 7).join("") + "</div>";
@@ -9157,13 +9326,15 @@
       '<div class="zu3-hh-grid" role="grid" style="--zu3-cols:' + cols + '">' + rowsHtml + "</div>" +
       "</div></div></div>" + spd3LegendHTML(an) + "</div>";
   }
-  /* 日悬停卡（SPD_PORTAL 内容生产者，纯字符串）：item={t 日零点, agg spd3Aggregate
-   * 结果, tn? {key:当日轮数}, capped? 生产端模型列表截断, di? 悬停序号}。
-   * 标题「M/D（周X） · 模型明细」（多模型）/「M/D（周X）」；行1 日均速度（档位色）；
-   * 随后每模型行=色点+名+N轮+均速（模型分量无窗口 → tps=null 只显轮次，绝不冒充
-   * 速度，spec §6 降级模式）；tn 缺席时回退 n（单模型轮 n≈轮数）。capped 日尾注：
-   * 生产端 msl ≤12 截断后真实总数不可知，定性披露不编数字。空 item/无有效速度 →
-   * 空串不出卡。动态内容（模型名）一律 spdEsc 转义。 */
+  /* 日悬停卡（SPD_PORTAL 内容生产者，纯字符串）：item={t 日零点, b? 进行中当前时刻
+   * （调用点已钳 Math.min(桶末, now)；缺席=全天）, agg spd3Aggregate 结果,
+   * tn? {key:当日轮数}, capped? 生产端模型列表截断, di? 悬停序号}。
+   * 标题「M/D（周X） · 模型明细」（多模型）/「M/D（周X）」；区间行=「YYYY/M/D ·
+   * 全天」或「YYYY/M/D · 00:00 – 截至 HH:mm」（spd3DaySpanTxt，spec §11.5）；
+   * 行1 日均速度（档位色）；随后每模型行=色点+名+N轮+均速（模型分量无窗口 →
+   * tps=null 只显轮次，绝不冒充速度，spec §6 降级模式）；tn 缺席时回退 n（单模型
+   * 轮 n≈轮数）。capped 日尾注：生产端 msl ≤12 截断后真实总数不可知，定性披露不
+   * 编数字。空 item/无有效速度 → 空串不出卡。动态内容（模型名）一律 spdEsc 转义。 */
   function spd3DayCardHTML(item, o) {
     if (!item || !item.agg || !(item.agg.v > 0) || !item.t) return "";
     var agg = item.agg, d = spdDate(item.t), wd = d.getDay();
@@ -9175,6 +9346,7 @@
       (typeof item.di === "number" ? ' data-i="' + item.di + '"' : "") + ">" +
       '<div class="zu-sv3-crow zu-sv3-chead"><b>' +
       spdEsc(dayTxt + (multi ? SPD_L(" · 模型明细", " · model detail") : "")) + "</b></div>" +
+      '<div class="zu-sv3-crow"><span>' + spdEsc(spd3DaySpanTxt(item.t, item.b)) + "</span></div>" +
       '<div class="zu-sv3-crow"><span>' + SPD_L("日均速度", "Day avg") + '</span><b class="zu-sv3-cval' +
       (bd ? " " + bd.cls : "") + '">' + spdEsc(spd3Fmt1(agg.v)) + SPD_L(" t/s", " t/s") + "</b></div>";
     for (var i = 0; i < models.length; i++) {
@@ -9189,6 +9361,78 @@
         "</div>";
     }
     if (item.capped)
+      s += '<div class="zu-sv3-crow zu-sv3-capped">' + SPD_L("另有更多模型未列入", "more models not listed") + "</div>";
+    return s + "</div>";
+  }
+  /* 日桶→月桶（spec §11.6/PRD 7.2，v387 月聚合，唯一消费者 spd3HistHTML >26 周分
+   * 支）：items 日桶按日历月重排（mk=年*12+月，列序自然升序）。月 v=Σout÷Σms 加权
+   * （口径 §0：绝不按日算术平均）、n=Σ请求、days=有记录天数；models 按 key 累计
+   * {o,ms,n} 供月卡构成——日桶 models 全空（降级帧筛选清空分量）→ ml 空，月卡如
+   * 实省略构成段，绝不伪造；capped=当月存在 capFlag 日（生产端 msl 截断 → 月卡定
+   * 性尾注，不编数字）。 */
+  function spd3MonthBuckets(items, capByDay) {
+    var byM = {}, keys = [];
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (!it || it.empty || !it.a) continue;
+      var d = spdDate(it.a), mk = d.getFullYear() * 12 + d.getMonth();
+      var mb = byM[mk];
+      if (!mb) {
+        mb = byM[mk] = { y: d.getFullYear(), mo: d.getMonth(), out: 0, ms: 0, n: 0, days: 0, models: {}, capped: false };
+        keys.push(mk);
+      }
+      mb.out += it.out; mb.ms += it.ms; mb.n += spdNum(it.n); mb.days++;
+      if (capByDay && capByDay[it.a]) mb.capped = true;
+      var mm = it.models || [];
+      for (var j = 0; j < mm.length; j++) {
+        var m = mm[j], e = mb.models[m.key];
+        if (!e) e = mb.models[m.key] = { key: m.key, name: m.name, pid: m.pid || "", mid: m.mid || "", o: 0, ms: 0, n: 0 };
+        e.o += m.o; e.ms += spdNum(m.ms); e.n += spdNum(m.n);
+      }
+    }
+    keys.sort(function (a, b) { return a - b; });
+    var months = [];
+    for (var k = 0; k < keys.length; k++) {
+      var b2 = byM[keys[k]], ml = [];
+      for (var key in b2.models) if (b2.models[key].o > 0) ml.push(b2.models[key]);
+      ml.sort(function (a, b) { return b.o - a.o; });
+      months.push({ y: b2.y, mo: b2.mo, t0: new Date(b2.y, b2.mo, 1).getTime(),
+        t1: new Date(b2.y, b2.mo + 1, 1).getTime(),
+        v: b2.ms > 0 ? b2.out / (b2.ms / 1000) : null,
+        out: b2.out, ms: b2.ms, n: b2.n, days: b2.days, models: ml, capped: b2.capped });
+    }
+    return months;
+  }
+  /* 月悬停卡（SPD_PORTAL 内容生产者，纯字符串，spec §11.6）：标题「YYYY年M月 ·
+   * 月度统计」；区间行（进行月=「YYYY/M/1 00:00 – 截至 MM-DD HH:mm」，已结束月=
+   * 「YYYY/M · 全月」，规则同 §11.5 日卡、动态取钳后 b）；月均速度（档位色）；
+   * 「N 天有记录 / M 次请求」；模型构成=各模型 Σout 占比前 3 +「另有 N 个模型」，
+   * 月桶无每模型分量（降级帧）时整段如实省略；capped 定性尾注。空月/无有效速度 →
+   * 空串不出卡。动态内容（模型名）一律 spdEsc 转义。 */
+  function spd3MonthCardHTML(mb) {
+    if (!mb || !(mb.v > 0)) return "";
+    var bd = tpsBand(mb.v);
+    var s = '<div class="zu-sv-card zu-sv3-card" role="tooltip">' +
+      '<div class="zu-sv3-crow zu-sv3-chead"><b>' +
+      spdEsc(SPD_L(mb.y + "年" + (mb.mo + 1) + "月 · 月度统计",
+        SPD3_MO_EN[mb.mo] + " " + mb.y + " · Monthly stats")) + "</b></div>" +
+      '<div class="zu-sv3-crow"><span>' + spdEsc(spd3MonthSpanTxt(mb)) + "</span></div>" +
+      '<div class="zu-sv3-crow"><span>' + SPD_L("月均速度", "Month avg") + '</span><b class="zu-sv3-cval' +
+      (bd ? " " + bd.cls : "") + '">' + spdEsc(spd3Fmt1(mb.v)) + SPD_L(" t/s", " t/s") + "</b></div>" +
+      '<div class="zu-sv3-crow"><span>' + mb.days + SPD_L(" 天有记录 / ", " days with data / ") +
+      mb.n + SPD_L(" 次请求", " requests") + "</span></div>";
+    var ml = mb.models || [], shown = Math.min(3, ml.length);
+    for (var i = 0; i < shown; i++) {
+      var m = ml[i], pct = mb.out > 0 ? Math.round(m.o * 100 / mb.out) : 0;
+      s += '<div class="zu-sv3-crow zu-sv3-mrow"><span class="zu3-mdot" style="background:' +
+        spd3Color(m.key) + '"></span><b class="zu-sv3-mname" title="' + spdEsc(m.name || "") + '">' +
+        spdEsc(m.name || SPD_L("未知模型", "Unknown model")) + "</b>" +
+        '<b class="zu-sv3-mtps">' + pct + "%</b></div>";
+    }
+    if (ml.length > 3)
+      s += '<div class="zu-sv3-crow zu-sv3-capped">' +
+        SPD_L("另有 " + (ml.length - 3) + " 个模型", (ml.length - 3) + " more models") + "</div>";
+    if (mb.capped)
       s += '<div class="zu-sv3-crow zu-sv3-capped">' + SPD_L("另有更多模型未列入", "more models not listed") + "</div>";
     return s + "</div>";
   }
@@ -9209,17 +9453,25 @@
    * 纪律（spec §7）：模型 key 不进 className（只进 data-k）；动态文本一律 spdEsc；全部
    * 文案走 SPD_L；颜色语义两套不混用——模型身份色 = spd3Color（SPD3_PALETTE），速度
    * 色阶 = TPS_BANDS 档位类（zu-ultra/ok/warm… 全局色规则继承）。
-   * 集成契约：spd3LeftHTML 第三参 expanded（多模型分布表展开态，调用方传布尔）；覆盖
-   * 范围五值读可选 an.cov={recent,today,week,month,all}（集成方按五个 period 各跑一次
+   * 集成契约：spd3LeftHTML 第三参 expanded（多模型分布表展开态，调用方传布尔）、第四参
+   * poolSingle（chips 池恰一模型=「真单模型池」，仅此时渲染「唯一模型」徽标，v387 §11.5）；
+   * 覆盖范围五值读可选 an.cov={recent,today,week,month,all}（集成方按五个 period 各跑一次
    * spd3AnalyzeCached 汇总轮数，缺席显 —）；筛选 chips 池缺省取 an.perModel+an.selMissing，
-   * 筛选激活时集成方应传 ctx.pool=未筛选全量模型（否则 chips 收缩为已选集，无法点回）。 */
+   * 筛选激活时集成方应传 ctx.pool=未筛选全量模型（否则 chips 收缩为已选集，无法点回）。
+   * v387 实机修复批（spec §11）：宽度链 border-box 释放（§11.1）；多模型态主数字恒在
+   * （§11.3）；an.real 空时图表区渲染居中空态 spd3EmptyStateHTML（§11.4，占位 <!--CHART-->
+   * 在本文件内被替换、wire 的 replace 自然落空）；计数行统一「已选 X/Y · 本期有效 N」、
+   * live 徽标估算态固定文案、同名异供应商副标 spd3ModelLabel、标题 SVG（§11.5）。 */
   /* SPD_V3_VIEW_BEGIN */
   var SPD3_SVG_FUNNEL = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8v5l-4 2v-7L3 5Z"/></svg>';
   var SPD3_SVG_SEARCH = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>';
   var SPD3_SVG_CUBE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>';
+  /* v387 §11.5：标题 📈 emoji 换自包含 SVG（16×16 轴+折线，stroke currentColor 随主题） */
+  var SPD3_SVG_TREND = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4v16h18"/><path d="m7 14 4-5 3 3 5-7"/></svg>';
   /* 数值格式沿用 V2 口径：整数直显、小数留 1 位、空值 em dash（绝不显 0 t/s） */
   function spd3FmtV(x) { return x == null ? "—" : (x % 1 ? x.toFixed(1) : String(x)); }
-  /* chips/弹出行共用：色点 + 名称（超长 ellipsis，全文走 title） */
+  /* 色点 + 名称（单模型态模型行专用；chips/弹层/分布行走 spd3ModelLabel——同名异
+   * 供应商需要副标）。超长 ellipsis，全文走 title */
   function spd3DotAndName(key, name) {
     return '<i class="zu-sv3-dot" style="background:' + spd3Color(key) + '" aria-hidden="true"></i>' +
       '<span class="zu-sv3-chip-name">' + spdEsc(name) + "</span>";
@@ -9230,6 +9482,43 @@
     var s = String(key == null ? "" : key), cut = s.indexOf("\x1f");
     var mid = cut >= 0 ? s.slice(cut + 1) : s;
     return mid || SPD_L("未知模型", "Unknown model");
+  }
+  /* v387 §11.5 同名不同供应商（同 name 异 key 不合并身份）：显示名后追加供应商副标。
+   * spd3Parts(entry) = {pid, mid}：entry 自带 pid/mid（spd3 解包产物）优先，缺席按
+   * 身份键切段兜底（chips 池条目只有 key/name）；title 恒为完整 pid/model（pid 空只显
+   * model 段，退化名键无供应商信息不硬造）。spd3TailSeg = 「/」末段（provider id 常是
+   * 长路径，尾段才有辨识度），空串兜底原串。 */
+  function spd3TailSeg(s) {
+    var parts = String(s == null ? "" : s).split("/");
+    return parts[parts.length - 1] || String(s);
+  }
+  function spd3Parts(entry) {
+    var key = spd3ModelKey(entry);
+    var cut = key.indexOf("\x1f");
+    var kpid = cut >= 0 ? key.slice(0, cut) : "";
+    var kmid = cut >= 0 ? key.slice(cut + 1) : key;
+    return { pid: (entry && entry.pid) || kpid, mid: (entry && entry.mid) || kmid || (entry && entry.name) || "" };
+  }
+  function spd3ModelTitle(entry) {
+    var p = spd3Parts(entry);
+    return p.pid ? p.pid + "/" + p.mid : p.mid;
+  }
+  /* chips/弹层/分布行共用：色点 + 名称（allEntries 存在同 name 异 key 时追加
+   * span.zu-sv3-msub 供应商副标——pid 尾段，pid 空退 key 首段，仍空则省副标） */
+  function spd3ModelLabel(entry, allEntries) {
+    var key = spd3ModelKey(entry);
+    var name = (entry && entry.name) || spd3KeyName(key);
+    var dup = false, list = allEntries || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] && spd3ModelKey(list[i]) !== key && list[i].name === name) { dup = true; break; }
+    }
+    var sub = "";
+    if (dup) {
+      var tail = spd3TailSeg(spd3Parts(entry).pid);
+      if (tail) sub = ' <span class="zu-sv3-msub">' + spdEsc(tail) + "</span>";
+    }
+    return '<i class="zu-sv3-dot" style="background:' + spd3Color(key) + '" aria-hidden="true"></i>' +
+      '<span class="zu-sv3-chip-name">' + spdEsc(name) + sub + "</span>";
   }
   /* ==================== ① 头部：标题 + 范围/时间双 Tab 组（V2 spdTabRow/spdHeadHTML 同构改名） ==================== */
   function spd3TabRow(group, list, cur, labels) {
@@ -9248,17 +9537,20 @@
       project: SPD_L("项目", "Project"), all: SPD_L("全部", "All") };
     var pl = { recent: SPD_L("最近", "Recent"), today: SPD_L("今天", "Today"),
       week: SPD_L("近 7 天", "7 days"), month: SPD_L("本月", "Month"), all: SPD_L("全部", "All") };
-    return '<div class="zu-sv-head"><div class="zu-sv-title">📈 ' + spdEsc(SPD_L("生成速度", "Generation speed")) + "</div>" +
+    return '<div class="zu-sv-head"><div class="zu-sv-title">' + SPD3_SVG_TREND +
+      "<span>" + spdEsc(SPD_L("生成速度", "Generation speed")) + "</span></div>" +
       '<div class="zu-sv-filter"><span class="zu-sv-flabel">' + spdEsc(SPD_L("范围", "Scope")) + "</span>" +
       spd3TabRow("range", SPD_RANGES, an.range, rl) +
       '<span class="zu-sv-time"><span class="zu-sv-flabel">' + spdEsc(SPD_L("时间", "Time")) + "</span>" +
       spd3TabRow("period", SPD_PERIODS, an.period, pl) + "</span></div></div>";
   }
   /* ==================== ② 筛选条（spec §3）：漏斗 + chips + 计数 + 搜索入口 ====================
-   * pool = [{key,name,n?,missing?}]（spd3ChipPool 产出）；o = {selMissing?, pop?}。
+   * pool = [{key,name,n?,missing?}]（spd3ChipPool 产出）；o = {selMissing?, pop?, active?}。
    * 选中态 = filt.mode==="sel" 且含该 key；无数据模型（missing / o.selMissing 命中，
    * 含 pool 外的 selMissing key 兜底补一枚）加 .zu-sv3-chip-empty + 「无数据」标记。
-   * ≤6 枚全显、超出收 +N；≥9 模型才渲染搜索按钮；pool 为空不渲染整条。 */
+   * ≤6 枚全显、超出收 +N；≥9 模型才渲染搜索按钮；pool 为空不渲染整条。
+   * 计数行（v387 §11.5 三语义统一）：已选 X/Y · 本期有效 N —— X=显式筛选键数（auto=X=Y）、
+   * Y=池模型数、N=o.active=本期有效模型数（an.perModel.length，调用方传入）。 */
   function spd3FilterBarHTML(pool, filt, o) {
     pool = pool || [];
     o = o || {};
@@ -9277,17 +9569,17 @@
       if (on) onCount++;
       chips += '<button type="button" class="zu-sv3-chip' + (on ? " on" : "") + (empty ? " zu-sv3-chip-empty" : "") +
         '" data-k="' + spdEsc(p.key) + '"' + (on ? ' aria-pressed="true"' : ' aria-pressed="false"') +
-        ' title="' + spdEsc(p.name) + '" aria-label="' + spdEsc(p.name + (empty ? SPD_L("（无数据）", " (no data)") : "")) + '">' +
-        spd3DotAndName(p.key, p.name) +
+        ' title="' + spdEsc(spd3ModelTitle(p)) + '" aria-label="' + spdEsc(p.name + (empty ? SPD_L("（无数据）", " (no data)") : "")) + '">' +
+        spd3ModelLabel(p, rows) +
         (empty ? '<em class="zu-sv3-chip-miss">' + spdEsc(SPD_L("无数据", "no data")) + "</em>" : "") + "</button>";
     }
     var hidden = rows.length - Math.min(rows.length, MAX);
     if (hidden > 0) chips += '<span class="zu-sv3-chip-more" title="' +
       spdEsc(SPD_L("其余 " + hidden + " 个模型，可搜索查看", hidden + " more models — use search")) + '">+' + hidden + "</span>";
-    var selCount = filt && filt.mode === "sel" && filt.keys ? filt.keys.length : rows.length;
-    var count = filt && filt.mode === "sel"
-      ? SPD_L("已选 " + selCount + "/" + rows.length, "Selected " + selCount + "/" + rows.length)
-      : SPD_L("全部 " + rows.length, "All " + rows.length);
+    var selX = filt && filt.mode === "sel" && filt.keys ? filt.keys.length : rows.length;
+    var act = typeof o.active === "number" ? o.active : 0;
+    var count = SPD_L("已选 " + selX + "/" + rows.length + " · 本期有效 " + act,
+      "Selected " + selX + "/" + rows.length + " · " + act + " active");
     var search = rows.length >= 9 ? '<button type="button" class="zu-sv3-fsearch" aria-haspopup="dialog" aria-expanded="' +
       (o.pop && o.pop.open ? "true" : "false") + '" title="' + spdEsc(SPD_L("搜索模型", "Search models")) +
       '" aria-label="' + spdEsc(SPD_L("搜索模型", "Search models")) + '">' + SPD3_SVG_SEARCH + "</button>" : "";
@@ -9315,8 +9607,8 @@
     for (var j = 0; j < rows.length; j++) {
       var r = rows[j], on = isOn(r.key);
       list += '<button type="button" class="zu-sv3-fpop-row' + (on ? " on" : "") + '" data-k="' + spdEsc(r.key) + '"' +
-        (on ? ' aria-pressed="true"' : ' aria-pressed="false"') + ' title="' + spdEsc(r.name) + '">' +
-        spd3DotAndName(r.key, r.name) +
+        (on ? ' aria-pressed="true"' : ' aria-pressed="false"') + ' title="' + spdEsc(spd3ModelTitle(r)) + '">' +
+        spd3ModelLabel(r, rows) +
         '<span class="zu-sv3-fpop-n">' + spdEsc(String(spdNum(r.n))) + "</span></button>";
     }
     var box = '<input type="text" class="zu-sv3-fpop-input" aria-label="' + spdEsc(SPD_L("搜索模型", "Search models")) +
@@ -9332,11 +9624,17 @@
       (capped ? '<div class="zu-sv3-fpop-cap">' + spdEsc(SPD_L("输入以搜索更多", "Type to search more")) + "</div>" : "") +
       acts + "</div>";
   }
-  /* ==================== ④ 左摘要卡（spec §6 单/多模型两态） ====================
-   * 单模型判定 = an.perModel（筛选后池内有输出分量模型）恰 1 个（无数据模型不计）。
-   * 多模型分布行序按 share（请求数占比）降序、最多 6 行 + data-sv3-more 展开按钮
-   * （expanded 由调用方传）；msAvail=false 降级：隐藏「均速」列（表格退两列），
-   * 绝不出现 t/s 假值。覆盖范围单值随 an.period 直读（v384 M4：an.cov 五值契约废除）。 */
+  /* ==================== ④ 左摘要卡（spec §6 + §11.3/§11.4/§11.5） ====================
+   * 三态：空（无 perModel 或无 overall）→ 主数字 — + 本期统计 0/0 + 峰最低新 —；
+   * 单模型（perModel 恰 1，无数据模型不计）→ 主数字/档位/模型行/本期统计；
+   * 多模型 → 主数字恒在（v387 §11.3：任何模型数不缺均速大数字）→ 档位胶囊 →
+   * 「本期有效 N 个模型 · M 轮」（selMissing 非空追加无有效记录提示）→ 分布
+   * （堆叠条 + 表格默认 ≤4 行，data-sv3-more 查看全部；表容器 max-height 内滚，
+   * 展开态不撑高主卡）→ 峰/低/新。分布行序按 share（请求数占比）降序；
+   * msAvail=false 降级：隐藏「均速」列（表格退两列），绝不出现 t/s 假值。
+   * poolSingle（v387 §11.5）= chips 池恰 1 个真模型——「唯一模型」徽标只用于真
+   * 单模型池，筛选缩到单模型不冒充。覆盖范围单值随 an.period 直读（v384 M4：an.cov
+   * 五值契约废除）。 */
   function spd3LeftTitle(an) {
     var n = an && an.items ? an.items.length : 0;
     var t = an && an.period === "recent" ? SPD_L("最近 " + n + " 轮", "Last " + n + " turns")
@@ -9355,22 +9653,37 @@
     return '<div class="zu-sv3-band"><b class="' + bd.cls + '" style="font-weight:600">' +
       spdEsc(tpsBandText(bd)) + "</b></div>";
   }
-  function spd3LeftHTML(an, live, expanded) {
+  /* 主数字构建函数（§11.3 单/多/空三态共用同一结构）：overall.v 档位色 + t/s 单位，
+   * v 缺席显 — 绝不造 0 t/s */
+  function spd3MainNumHTML(v) {
+    var bd = v != null ? tpsBand(v) : null;
+    return '<div class="zu-sv3-main-num"><span class="' + (bd ? bd.cls : "dim") + '">' + spdEsc(spd3FmtV(v)) +
+      '</span><span class="zu-sv3-unit">t/s</span></div>';
+  }
+  function spd3LeftHTML(an, live, expanded, poolSingle) {
     an = an || {};
     var overall = an.overall || null;
     var models = an.perModel || [];
     var bd = overall ? tpsBand(overall.v) : null;
     var dayLbl = an.unit === "day";
+    /* live 徽标（§11.5）：估算态固定「实时估算中」（历史均速含义不被污染），
+     * 非估算实时态（思考/工具）statusText 透传不变 */
+    var liveTxt = live ? (live.speedIsEstimated ? SPD_L("实时估算中", "live estimate") : (live.statusText || "")) : "";
     var headRow = '<div class="zu-sv3-title-row"><span class="zu-sv3-ltitle">' + spdEsc(spd3LeftTitle(an)) + "</span>" +
-      (live && live.statusText ? '<span class="zu-sv3-sub">' + spdEsc(live.statusText) + "</span>" : "") + "</div>";
+      (liveTxt ? '<span class="zu-sv3-sub">' + spdEsc(liveTxt) + "</span>" : "") + "</div>";
     var stats = '<div class="zu-sv3-stats">' +
       spd3StatHTML(SPD_L("峰值", "Peak"), an.peak, dayLbl ? SPD_L("最高日均", "Best daily") : "") +
       spd3StatHTML(SPD_L("最低", "Low"), an.low, dayLbl ? SPD_L("最低日均", "Worst daily") : "") +
       spd3StatHTML(SPD_L("最新", "Latest"), an.latest, dayLbl ? SPD_L("最近日均", "Latest daily") : "") + "</div>";
     if (!models.length || !overall) {
-      /* 空池/显式空筛选：标题 + em dash 主数字 + 峰最低最新，绝不造 0 t/s */
-      return '<div class="zu-sv3-left">' + headRow +
-        '<div class="zu-sv3-main-num"><span class="dim">—</span><span class="zu-sv3-unit">t/s</span></div>' + stats + "</div>";
+      /* 空池/显式空筛选（§11.4）：标题 + — 主数字 + 本期统计（0 轮 / 0 模型）+
+       * 峰最低新 —，绝不造 0 t/s；图表区由 spd3CardHTML 换居中空态块 */
+      return '<div class="zu-sv3-left">' + headRow + spd3MainNumHTML(null) +
+        '<i class="zu-sv3-cov-h">' + spdEsc(SPD_L("本期统计", "This period")) + "</i>" +
+        '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("请求轮次", "Turns")) + "</i><b>" +
+        spdEsc(spdNum(0) + SPD_L("轮", " turns")) + "</b></div>" +
+        '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("有效模型", "Active models")) + "</i><b>0</b></div>" +
+        stats + "</div>";
     }
     if (models.length === 1) {
       var m = models[0];
@@ -9381,12 +9694,10 @@
         : an.period === "week" ? SPD_L("近 7 天", "Last 7 days")
         : an.period === "month" ? SPD_L("本月", "This month")
         : SPD_L("全部历史", "All history");
-      return '<div class="zu-sv3-left">' + headRow +
-        '<div class="zu-sv3-main-num"><span class="' + (bd ? bd.cls : "dim") + '">' + spdEsc(spd3FmtV(overall.v)) +
-        '</span><span class="zu-sv3-unit">t/s</span></div>' +
+      return '<div class="zu-sv3-left">' + headRow + spd3MainNumHTML(overall.v) +
         (bd ? spd3BandHTML(bd) : "") +
         '<div class="zu-sv3-model">' + spd3DotAndName(m.key, m.name) +
-        '<em class="zu-sv3-only">' + spdEsc(SPD_L("唯一模型", "Only model")) + "</em></div>" +
+        (poolSingle ? '<em class="zu-sv3-only">' + spdEsc(SPD_L("唯一模型", "Only model")) + "</em>" : "") + "</div>" +
         '<i class="zu-sv3-cov-h">' + spdEsc(SPD_L("本期统计", "This period")) + "</i>" +
         '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("请求轮次", "Turns")) + "</i><b>" +
         spdEsc(spdNum(overall.turns) + SPD_L("轮", " turns")) + "</b></div>" +
@@ -9395,7 +9706,8 @@
         '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("覆盖范围", "Coverage")) + "</i><b>" + spdEsc(covLbl) + "</b></div>" +
         stats + "</div>";
     }
-    /* ---- 多模型态：计数行 → 档位胶囊 → 所选模型分布（堆叠条+表格）→ 峰最低最新 ---- */
+    /* ---- 多模型态（§11.3）：标题 → 主数字 → 档位胶囊 → 本期有效计数 →
+     * 分布（堆叠条+表格，默认 ≤4 行）→ 峰最低最新 ---- */
     var shareSorted = models.slice().sort(function (a, b) { return (b.share || 0) - (a.share || 0); });
     var turns = spdNum(overall.turns);
     var bar = "";
@@ -9407,28 +9719,57 @@
     var thead = "<tr><th>" + spdEsc(SPD_L("模型", "Model")) + "</th>" +
       (msAvail ? "<th>" + spdEsc(SPD_L("均速", "Avg speed")) + "</th>" : "") +
       "<th>" + spdEsc(SPD_L("占比", "Share")) + "</th></tr>";
-    var shown = expanded ? shareSorted : shareSorted.slice(0, 6);
+    var DEF_ROWS = 4;   /* §11.3：默认 ≤4 行，data-sv3-more 查看全部（展开态内滚不撑高） */
+    var shown = expanded ? shareSorted : shareSorted.slice(0, DEF_ROWS);
     var rowsHtml = "";
     for (var ri = 0; ri < shown.length; ri++) {
       var rm = shown[ri];
-      rowsHtml += '<tr><td><span class="zu-sv3-dmodel">' + spd3DotAndName(rm.key, rm.name) + "</span></td>" +
+      rowsHtml += '<tr><td><span class="zu-sv3-dmodel" title="' + spdEsc(spd3ModelTitle(rm)) + '">' +
+        spd3ModelLabel(rm, shareSorted) + "</span></td>" +
         (msAvail ? "<td>" + (rm.tps != null ? spdEsc(spd3FmtV(rm.tps) + SPD_L(" t/s", " t/s")) : "—") + "</td>" : "") +
         '<td class="zu-sv3-pct">' + spdEsc(String(Math.round((rm.share || 0) * 1000) / 10)) + "%</td></tr>";
     }
     var more = "";
-    if (shareSorted.length > 6) {
+    if (shareSorted.length > DEF_ROWS) {
       more = '<button type="button" class="zu-sv3-more" data-sv3-more aria-expanded="' + (expanded ? "true" : "false") + '">' +
         spdEsc(expanded ? SPD_L("收起", "Show less")
-          : SPD_L("展开全部 " + shareSorted.length + " 个模型", "Show all " + shareSorted.length + " models")) + "</button>";
+          : SPD_L("查看全部 " + shareSorted.length + " 个模型", "Show all " + shareSorted.length + " models")) + "</button>";
     }
+    var missN = an.selMissing && an.selMissing.length ? an.selMissing.length : 0;
     return '<div class="zu-sv3-left">' + headRow +
-      '<div class="zu-sv3-count">' + SPD3_SVG_CUBE + "<span>" +
-      spdEsc(SPD_L("已选 " + models.length + " 个模型 · " + turns + " 轮",
-        models.length + " models · " + turns + " turns")) + "</span></div>" +
+      spd3MainNumHTML(overall.v) +
       (bd ? spd3BandHTML(bd) : "") +
+      '<div class="zu-sv3-count">' + SPD3_SVG_CUBE + "<span>" +
+      spdEsc(SPD_L("本期有效 " + models.length + " 个模型 · " + turns + " 轮",
+        models.length + " active models · " + turns + " turns")) + "</span>" +
+      (missN ? '<em class="zu-sv3-count-miss">' + spdEsc(SPD_L("已选模型中 " + missN + " 个在当前范围无有效记录",
+        missN + " selected models have no valid records in this range")) + "</em>" : "") + "</div>" +
       '<div class="zu-sv3-dist-h">' + spdEsc(SPD_L("所选模型分布 · 按请求数", "Selected models · by requests")) + "</div>" +
       '<div class="zu-sv3-dbar" aria-hidden="true">' + bar + "</div>" +
-      '<table class="zu-sv3-dtab">' + thead + rowsHtml + "</table>" + more + stats + "</div>";
+      '<div class="zu-sv3-dwrap"><table class="zu-sv3-dtab">' + thead + rowsHtml + "</table></div>" + more + stats + "</div>";
+  }
+  /* ==================== ④b 图表区空态（v387 §11.4） ====================
+   * an.real 空（或 !an.overall）时 spd3CardHTML 用本函数替换 <!--CHART--> 占位——占位
+   * 不复存在，wire 的 replace 自然落空、不注入 charts 产物（链路无需改 wire）。
+   * 原因行 an.emptyReason 由 core 按池构成供给（有则显），缺席回退通用句；
+   * 动作按钮 data-sv3-act（委托接入归 01/06 集成线）：clear-filter=清除模型筛选
+   * （仅显式筛选/filt 缺席时以 selMissing 在场判定）、all-time=查看全部时间
+   * （period≠all）。 */
+  function spd3EmptyStateHTML(an, filt) {
+    an = an || {};
+    var acts = "";
+    if ((filt && filt.mode === "sel") || (an.selMissing && an.selMissing.length))
+      acts += '<button type="button" class="zu-sv3-act" data-sv3-act="clear-filter">' +
+        spdEsc(SPD_L("清除模型筛选", "Clear model filter")) + "</button>";
+    if (an.period !== "all")
+      acts += '<button type="button" class="zu-sv3-act" data-sv3-act="all-time">' +
+        spdEsc(SPD_L("查看全部时间", "View all time")) + "</button>";
+    var reason = an.emptyReason ||
+      SPD_L("当前范围和模型筛选下暂无可用数据", "No data available for the current scope and model filter");
+    return '<div class="zu-sv3-empty-wrap"><div class="zu-sv3-empty" role="status">' +
+      '<div class="zu-sv3-empty-t">' + spdEsc(SPD_L("暂无生成速度数据", "No generation speed data")) + "</div>" +
+      '<div class="zu-sv3-empty-r">' + spdEsc(reason) + "</div>" +
+      (acts ? '<div class="zu-sv3-empty-acts">' + acts + "</div>" : "") + "</div></div>";
   }
   /* ==================== ⑤ 通知行（spec §6 仅在有内容时渲染，非常驻说明条） ====================
    * core 管线已把 selMissing 计数并入 an.notice（「已选 N 个模型中 M 个在当前范围无
@@ -9464,16 +9805,19 @@
   /* ==================== ⑦ 内联样式块（全部 .zu-sv3-root 作用域；.zu-light 祖先类切浅色） ==================== */
   function spd3StylesHTML() {
     return "<style>" +
-      /* 根：920×480 基准定宽，高度自适应；--zu-sv3-w/--zu-sv3-h 暴露给集成方钳制 */
+      /* 根（§11.1 宽度链）：920 基准定宽、视口余量 60px；max-width:100% 保证窄窗时
+       * 根 ≤ tip 内容区、不反向撑大；高度自适应，禁止根容器 overflow:hidden */
       ".zu-sv3-root{position:relative;display:flex;flex-direction:column;box-sizing:border-box;" +
-        "width:var(--zu-sv3-w,min(920px,calc(100vw - 24px)));min-height:min(480px,calc(100vh - 16px));" +
+        "width:min(920px,calc(100vw - 60px));max-width:100%;min-height:min(480px,calc(100vh - 16px));" +
         "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);" +
         "color:var(--color-foreground,#e9edf4)}" +
       ".zu-sv3-root,.zu-sv3-root *{box-sizing:border-box}" +
       ".zu-light .zu-sv3-root{color:var(--color-foreground,#1c212b)}" +
       /* ---- 头部：标题居左，范围/时间双 Tab 组整体靠右（V2 .zu-sv-head 视觉契约） ---- */
       ".zu-sv3-root .zu-sv-head{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px;margin-bottom:10px}" +
-      ".zu-sv3-root .zu-sv-title{font-weight:700;font-size:calc(var(--ui-font-size,14px) + 6px);letter-spacing:.2px;min-width:0}" +
+      ".zu-sv3-root .zu-sv-title{display:inline-flex;align-items:center;gap:6px;font-weight:700;" +
+        "font-size:calc(var(--ui-font-size,14px) + 6px);letter-spacing:.2px;min-width:0}" +
+      ".zu-sv3-root .zu-sv-title svg{flex:0 0 auto}" +
       ".zu-sv3-root .zu-sv-filter{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-left:auto;justify-content:flex-end}" +
       ".zu-sv3-root .zu-sv-flabel{font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6);flex:0 0 auto}" +
       ".zu-sv3-root .zu-sv-time{display:flex;align-items:center;gap:6px;margin-left:14px}" +
@@ -9511,6 +9855,9 @@
       ".zu-sv3-root .zu-sv3-chip:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
       ".zu-sv3-root .zu-sv3-dot{display:inline-block;width:8px;height:8px;border-radius:50%;flex:0 0 auto}" +
       ".zu-sv3-root .zu-sv3-chip-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+      /* §11.5 同名异供应商副标（pid 尾段小字，跟随名称同行） */
+      ".zu-sv3-root .zu-sv3-msub{font-size:calc(var(--ui-font-size,14px) - 4px);font-weight:400;" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6);margin-left:4px}" +
       ".zu-sv3-root .zu-sv3-chip-miss{font-style:normal;font-size:calc(var(--ui-font-size,14px) - 4px);" +
         "color:var(--color-tooltip-tag-foreground,#a6a6a6);opacity:.85;flex:0 0 auto}" +
       ".zu-sv3-root .zu-sv3-chip-empty{border-style:dashed;opacity:.8}" +
@@ -9577,9 +9924,12 @@
       ".zu-light .zu-sv3-root .zu-sv3-model{border-color:rgba(15,23,42,.14);background:rgba(0,0,0,.04)}" +
       ".zu-sv3-root .zu-sv3-only{font-style:normal;font-size:calc(var(--ui-font-size,14px) - 4px);" +
         "color:var(--color-tooltip-tag-foreground,#a6a6a6);flex:0 0 auto}" +
-      ".zu-sv3-root .zu-sv3-count{display:flex;align-items:center;gap:6px;margin-top:8px;min-width:0;" +
+      ".zu-sv3-root .zu-sv3-count{display:flex;align-items:center;flex-wrap:wrap;gap:4px 6px;margin-top:8px;min-width:0;" +
         "font-size:calc(var(--ui-font-size,14px) - 1px);font-weight:600}" +
       ".zu-sv3-root .zu-sv3-count svg{flex:0 0 auto;opacity:.85}" +
+      /* §11.3：selMissing 非空时计数行下的无有效记录提示（整行小字） */
+      ".zu-sv3-root .zu-sv3-count-miss{flex:1 1 100%;font-style:normal;font-weight:400;" +
+        "font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-sv3-root .zu-sv3-kv{display:flex;align-items:baseline;justify-content:space-between;gap:8px;" +
         "font-size:calc(var(--ui-font-size,14px) - 2px);margin-top:6px;min-width:0}" +
       ".zu-sv3-root .zu-sv3-kv i{font-style:normal;color:var(--color-tooltip-tag-foreground,#a6a6a6);flex:0 0 auto}" +
@@ -9593,7 +9943,9 @@
         "background:rgba(255,255,255,.06)}" +
       ".zu-light .zu-sv3-root .zu-sv3-dbar{background:rgba(0,0,0,.06)}" +
       ".zu-sv3-root .zu-sv3-dbar i{display:block;height:100%}" +
-      ".zu-sv3-root .zu-sv3-dtab{width:100%;border-collapse:collapse;margin-top:6px;" +
+      /* §11.3：分布表容器 150px 内滚——展开全部行也不撑高左卡；margin 从表移到容器 */
+      ".zu-sv3-root .zu-sv3-dwrap{max-height:150px;overflow-y:auto;margin-top:6px;min-height:0}" +
+      ".zu-sv3-root .zu-sv3-dtab{width:100%;border-collapse:collapse;" +
         "font-size:calc(var(--ui-font-size,14px) - 3px);font-variant-numeric:tabular-nums}" +
       ".zu-sv3-root .zu-sv3-dtab th{font-weight:400;color:var(--color-tooltip-tag-foreground,#a6a6a6);text-align:left;padding:2px 0}" +
       ".zu-sv3-root .zu-sv3-dtab td{padding:3px 0;color:var(--color-foreground,#e9edf4);min-width:0}" +
@@ -9612,6 +9964,19 @@
         "font-size:calc(var(--ui-font-size,14px) + 2px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
       ".zu-sv3-root .zu-sv3-notice{margin-top:8px;font-size:calc(var(--ui-font-size,14px) - 3px);" +
         "color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      /* ---- §11.4 图表区空态：占满图表卡余高居中，标题+原因行+动作按钮 ---- */
+      ".zu-sv3-root .zu-sv3-empty-wrap{flex:1 1 auto;min-height:160px;display:flex;align-items:center;justify-content:center}" +
+      ".zu-sv3-root .zu-sv3-empty{text-align:center;max-width:420px;padding:12px}" +
+      ".zu-sv3-root .zu-sv3-empty-t{font-weight:600;font-size:calc(var(--ui-font-size,14px) + 2px)}" +
+      ".zu-sv3-root .zu-sv3-empty-r{margin-top:6px;font-size:calc(var(--ui-font-size,14px) - 2px);" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-sv3-root .zu-sv3-empty-acts{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:12px}" +
+      ".zu-sv3-root .zu-sv3-act{appearance:none;border:1px solid var(--color-popover-border,rgba(255,255,255,.16));" +
+        "background:transparent;color:var(--color-brand,#a3cfff);font-family:inherit;" +
+        "font-size:calc(var(--ui-font-size,14px) - 2px);padding:4px 12px;border-radius:999px;cursor:pointer;white-space:nowrap}" +
+      ".zu-sv3-root .zu-sv3-act:hover{color:var(--color-foreground,#e9edf4);background:rgba(255,255,255,.06)}" +
+      ".zu-light .zu-sv3-root .zu-sv3-act:hover{background:rgba(0,0,0,.05)}" +
+      ".zu-sv3-root .zu-sv3-act:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
       /* ---- 筛选弹出层：absolute 于卡内右下 ---- */
       ".zu-sv3-root .zu-sv3-fpop{position:absolute;right:10px;bottom:10px;z-index:6;width:280px;max-width:calc(100% - 20px);" +
         "max-height:320px;display:flex;flex-direction:column;padding:8px;border-radius:10px;" +
@@ -9645,10 +10010,14 @@
       ".zu-sv3-root .zu-sv3-fpop-btn:hover{color:var(--color-foreground,#e9edf4);background:rgba(255,255,255,.06)}" +
       ".zu-light .zu-sv3-root .zu-sv3-fpop-btn:hover{background:rgba(0,0,0,.05)}" +
       ".zu-sv3-root .zu-sv3-fpop-btn:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
-      /* v384 B1：V2 的 :has 定宽释放规则随 V2 块删除——V3 卡 920 基准必须压过 .tip 基类
-       * 560 帽与 tpsTip 内联 520 帽，否则整卡被 tip 宽度裁剪（红队 BLOCKER） */
-      ".tip:has(.zu-sv3-root),.zusage-tps-tip:has(.zu-sv3-root){width:min(920px,calc(100vw - 24px))!important;" +
-        "max-width:min(920px,calc(100vw - 24px))!important}" +
+      /* v387 §11.1 宽度链（P0-01 唯一权威方案）：V3 卡 920 基准必须压过 .tip 基类 560 帽与
+       * tpsTip 内联 520 帽。真机实测两链 tip 均为 border-box（.tip padding 10/13、compact
+       * padding 10/14 + border 1px）→ 内容区 = 宽 − padding − border；释放规则改 952 帽 +
+       * border-box 后两链内容区 ≥922 ≥ 根 920，根不再越出 tip 外缘。max-width 用纯视口帽
+       * （952 帽只在 width 生效）；根侧 max-width:100% 保证窄窗不反向撑大。禁止给根加
+       * overflow:hidden 掩盖；验收=tip.scrollWidth==clientWidth 且筛选行右缘 ≤ 内容右缘 */
+      ".tip:has(.zu-sv3-root),.zusage-tps-tip:has(.zu-sv3-root){box-sizing:border-box!important;" +
+        "width:min(952px,calc(100vw - 24px))!important;max-width:calc(100vw - 24px)!important}" +
       "</style>";
   }
   /* ==================== ⑧ chips 池与整卡装配 ====================
@@ -9680,11 +10049,18 @@
     var pool = spd3ChipPool(an, ctx);
     var notice = spd3NoticeHTML(an);
     var pop = ctx.pop && ctx.pop.open ? spd3FilterPopHTML(pool, filt, ctx.pop.query) : "";
+    /* 真单模型池（§11.5）：chips 池恰 1 个且非 missing——「唯一模型」徽标只在场 */
+    var poolSingle = pool.length === 1 && !pool[0].missing;
+    /* §11.4：real 空 / overall 缺 → 图表占位换居中空态（占位不在，wire replace 落空
+     * 自然不注入 charts 产物）；有数据恒保留占位原样 */
+    var empty = !(an.perModel && an.perModel.length) || !an.overall;
+    var chartSlot = empty ? spd3EmptyStateHTML(an, filt) : "<!--CHART-->";
     return '<div class="zu-sv3-root" data-sv-key="' + key + '">' + spd3StylesHTML() +
       spd3HeadHTML(an) +
-      spd3FilterBarHTML(pool, filt, { selMissing: an.selMissing, pop: ctx.pop }) +
-      '<div class="zu-sv3-main">' + spd3LeftHTML(an, ctx.live, !!ctx.expanded) +
-      '<div class="zu-speed-chart zu-sv3-chart" data-sv3-chart><!--CHART--></div></div>' +
+      spd3FilterBarHTML(pool, filt, { selMissing: an.selMissing, pop: ctx.pop,
+        active: an.perModel ? an.perModel.length : 0 }) +
+      '<div class="zu-sv3-main">' + spd3LeftHTML(an, ctx.live, !!ctx.expanded, poolSingle) +
+      '<div class="zu-speed-chart zu-sv3-chart" data-sv3-chart>' + chartSlot + "</div></div>" +
       (notice ? '<div class="zu-sv3-notice">' + spdEsc(notice) + "</div>" : "") +
       pop + "</div>";
   }
@@ -14534,7 +14910,7 @@
     function spd3Activate(e) {
       if (!speedSel || typeof spd3FilterToggle !== "function" || typeof speedRebuildNow !== "function") return false;
       var el = e.target && e.target.closest ? e.target.closest(
-        ".zu-sv3-chip,.zu-sv3-fpop-row,.zu-sv3-fsearch,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-more]") : null;
+        ".zu-sv3-chip,.zu-sv3-fpop-row,.zu-sv3-fsearch,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-more],[data-sv3-act]") : null;
       if (!el) return false;
       if (!speedSel.filt) speedSel.filt = (typeof spd3FilterAuto === "function") ? spd3FilterAuto() : { mode: "auto", keys: null };
       if (!speedSel.pop) speedSel.pop = { open: false, query: "" };
@@ -14547,6 +14923,14 @@
         /* v384 B2：SPD3_POOL 是对象数组，「全选」必须取 key 串（红队实测：对象入 keys
          * 会被 String() 成 "[object Object]"，全选退化成清空且签名坍缩） */
         spd3FilterOnly(speedSel.filt, (typeof SPD3_POOL !== "undefined" && SPD3_POOL || []).map(function (pm) { return pm.key; }));
+      } else if (el.hasAttribute("data-sv3-act")) {
+        /* v387 §11.4：空态恢复动作（view 空态页按钮，真实生效） */
+        var act6 = el.getAttribute("data-sv3-act");
+        if (act6 === "clear-filter") spd3FilterAll(speedSel.filt);
+        else if (act6 === "all-time") {
+          speedSel.period = "all";
+          if (speedSel.pop) speedSel.pop.open = false;
+        } else return false;
       } else if (el.hasAttribute("data-sv3-none")) {
         spd3FilterOnly(speedSel.filt, []);
       } else if (el.hasAttribute("data-sv3-reset")) {
@@ -14596,7 +14980,7 @@
       if (!t || !t.closest) return;
       var interactive = t.closest(".zu-pj-more") || t.closest(".zu-pj-tab") || t.closest(".zu-sv-tab") || t.closest("[data-zu-sys-th]") ||
         t.closest(".zu-sv3-fbar") || (t.closest(".zu-sv3-fpop") && !t.classList.contains("zu-sv3-fpop-input")) ||
-        t.closest(".zu-sv3-more");   /* v384：V3 筛选区同入名单；搜索输入框豁免（否则点击无法聚焦） */
+        t.closest(".zu-sv3-more") || t.closest(".zu-sv3-empty-wrap");   /* v384 筛选区 + v387 空态动作入名单；搜索输入框豁免 */
       if (interactive) {
         e.stopPropagation();
         if (e.preventDefault) e.preventDefault();

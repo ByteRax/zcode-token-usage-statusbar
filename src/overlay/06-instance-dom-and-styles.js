@@ -2633,7 +2633,7 @@
     function spd3Activate(e) {
       if (!speedSel || typeof spd3FilterToggle !== "function" || typeof speedRebuildNow !== "function") return false;
       var el = e.target && e.target.closest ? e.target.closest(
-        ".zu-sv3-chip,.zu-sv3-fpop-row,.zu-sv3-fsearch,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-more]") : null;
+        ".zu-sv3-chip,.zu-sv3-fpop-row,.zu-sv3-fsearch,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-more],[data-sv3-act]") : null;
       if (!el) return false;
       if (!speedSel.filt) speedSel.filt = (typeof spd3FilterAuto === "function") ? spd3FilterAuto() : { mode: "auto", keys: null };
       if (!speedSel.pop) speedSel.pop = { open: false, query: "" };
@@ -2646,6 +2646,14 @@
         /* v384 B2：SPD3_POOL 是对象数组，「全选」必须取 key 串（红队实测：对象入 keys
          * 会被 String() 成 "[object Object]"，全选退化成清空且签名坍缩） */
         spd3FilterOnly(speedSel.filt, (typeof SPD3_POOL !== "undefined" && SPD3_POOL || []).map(function (pm) { return pm.key; }));
+      } else if (el.hasAttribute("data-sv3-act")) {
+        /* v387 §11.4：空态恢复动作（view 空态页按钮，真实生效） */
+        var act6 = el.getAttribute("data-sv3-act");
+        if (act6 === "clear-filter") spd3FilterAll(speedSel.filt);
+        else if (act6 === "all-time") {
+          speedSel.period = "all";
+          if (speedSel.pop) speedSel.pop.open = false;
+        } else return false;
       } else if (el.hasAttribute("data-sv3-none")) {
         spd3FilterOnly(speedSel.filt, []);
       } else if (el.hasAttribute("data-sv3-reset")) {
@@ -2695,7 +2703,7 @@
       if (!t || !t.closest) return;
       var interactive = t.closest(".zu-pj-more") || t.closest(".zu-pj-tab") || t.closest(".zu-sv-tab") || t.closest("[data-zu-sys-th]") ||
         t.closest(".zu-sv3-fbar") || (t.closest(".zu-sv3-fpop") && !t.classList.contains("zu-sv3-fpop-input")) ||
-        t.closest(".zu-sv3-more");   /* v384：V3 筛选区同入名单；搜索输入框豁免（否则点击无法聚焦） */
+        t.closest(".zu-sv3-more") || t.closest(".zu-sv3-empty-wrap");   /* v384 筛选区 + v387 空态动作入名单；搜索输入框豁免 */
       if (interactive) {
         e.stopPropagation();
         if (e.preventDefault) e.preventDefault();

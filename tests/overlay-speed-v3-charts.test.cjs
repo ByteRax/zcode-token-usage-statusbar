@@ -181,24 +181,36 @@ test('recent 柱色: 单模型行=模型色内联 background；混合行=.zu-sv3
   assert.match(html, /zu-sc-wrap"[^]*zu-sc-plot/);
 });
 
-// ---------- ③ recent 数值稀疏 ----------
-test('recent 数值稀疏: n=18 按 valEvery=3 抽稀、首/末恒显、悬停柱强制显示', () => {
+// ---------- ③ recent 数值稀疏（§11.2 槽位满幅 + 估宽让位） ----------
+test('recent 数值稀疏: n=18 恒显集=峰值/最低/最新（估宽让位）、悬停柱强制显示、槽位 flex 满幅', () => {
   const ctx = makeCtx();
   const an = analyze(ctx, fixture18(), { range: 'session', period: 'recent', sid: 's' });
   assert.equal(an.items.length, 18);
   const html = chart(ctx, an, -1);
+  // 槽位满幅（§11.2）：每柱 .zu-sv3-slot 与 .zu-sc-col 共存；柱组 flex 平铺 CSS 在场；
+  // 无 spacer/min-width 撑宽路径
+  assert.equal((html.match(/zu-sv3-slot"/g) || []).length, 18, '每柱一槽（zu-sv3-slot 与 zu-sc-col 共存）');
+  assert.match(html, /\.zu-sv3-bars\{position:absolute;inset:0;display:flex;width:100%;padding:0 5px;box-sizing:border-box\}/,
+    '柱组 100% flex 平铺');
+  assert.match(html, /\.zu-sv3-bars \.zu-sc-col\{flex:1 1 0;min-width:0;height:100%;position:relative\}/,
+    '槽 flex:1 1 0 满幅均摊');
+  assert.doesNotMatch(html, /zu-sv3-spacer|justify-content:flex-start/, 'spacer/挤左路径已删除');
+  // 数值稀疏：n=18 → valEvery=3、估宽 5 字符×6+8=38px > 槽宽 620/18≈34.4px → 采样位
+  // 全部让位；恒显集=峰值(17)/最低(0)/最新(17) → 恰 2 柱带读数
   const shown = (html.match(/zu-sc-val">[0-9]/g) || []).length;
-  assert.equal(shown, 7, 'idx 0,3,6,9,12,15 + 末柱 17，得到 ' + shown);
-  // 悬停非采样位柱：读数恒显
+  assert.equal(shown, 2, '恒显集=峰值/最低/最新（0 与 17）→ 2 柱，得到 ' + shown);
+  assert.match(colsOf(html)[0], /zu-sc-val">100\.0</, '最低柱读数在场');
+  assert.match(colsOf(html)[17], /zu-sc-val">117\.0</, '最新=峰值柱读数在场');
+  // 悬停非采样位柱：读数强制显示
   const html2 = chart(ctx, an, 2);
   const shown2 = (html2.match(/zu-sc-val">[0-9]/g) || []).length;
-  assert.equal(shown2, 8);
+  assert.equal(shown2, 3);
   const cols2 = colsOf(html2);
   assert.match(cols2[2], /zu-sc-val">102\.0</, '悬停柱数值在场');
-  assert.match(cols2[2], /class="zu-sc-col cur"/, '悬停柱 cur 类');
+  assert.match(cols2[2], /class="zu-sc-col cur zu-sv3-slot"/, '悬停柱 cur 类');
   assert.ok(!cols2[1].includes('zu-sc-val">1'), '非采样位且未悬停不显');
   // 一位小数纪律
-  assert.ok(!/zu-sc-val">\d+\.\d{2,}</.test(html2));
+  assert.ok(!/zu-sc-val">\d+\.\d{2,}/.test(html2));
 });
 
 // ---------- ④ today 单模型柱 ----------
@@ -227,8 +239,8 @@ test('today 单模型: focus full 15 桶全铺、空桶无柱无读数、实桶�
   assert.equal((html.match(/<style>/g) || []).length, 1);
 });
 
-// ---------- ⑤ today 多模型折线 ----------
-test('today 多模型折线: 每模型一条线、缺小时断线分段、点色正确、命中列数=当前小时+1', () => {
+// ---------- ⑤ today 多模型折线（§11.2 满幅：width=100% + 百分比 x） ----------
+test('today 多模型折线: 每模型一条分段线、缺小时断线、点色正确、命中列数=当前小时+1、svg 满幅 % 坐标', () => {
   const ctx = makeCtx();
   const an = analyze(ctx, fixture(), { range: 'all', period: 'today', sid: 'sess_main' });
   assert.equal(an.perModel.length, 2);
@@ -237,16 +249,22 @@ test('today 多模型折线: 每模型一条线、缺小时断线分段、点色
   const html = chart(ctx, an, -1);
   const dom = domOf(html);
   const colorA = colorOf(ctx, KEYS.a), colorB = colorOf(ctx, KEYS.b);
-  // 两条模型实线（带模型色 stroke）、无总体虚线（总体线是近 7 天形态专属）
-  assert.equal((dom.match(/<path class="zu-sv3-line" stroke="/g) || []).length, 2);
-  assert.equal((dom.match(/<path class="zu-sv3-line[^"]*zu-sv3-oline"/g) || []).length, 0);
-  // A: 小时 9,10,12 有分量 → 10 与 12 之间缺口断线（一条 path 内两段 M…L…）
-  const pathA = dom.match(new RegExp('<path class="zu-sv3-line" stroke="' + colorA + '" d="([^"]+)"'));
-  assert.ok(pathA, 'A 线在场');
-  assert.equal((pathA[1].match(/M /g) || []).length, 2, 'A 线断为两段');
-  const pathB = dom.match(new RegExp('<path class="zu-sv3-line" stroke="' + colorB + '" d="([^"]+)"'));
-  assert.ok(pathB, 'B 线在场');
-  assert.equal((pathB[1].match(/M /g) || []).length, 1, 'B 线 10,11 连续一段');
+  // 两条模型实线（g 按模型色 stroke）、无总体虚线（总体线是近 7 天形态专属）
+  assert.equal((dom.match(/<g class="zu-sv3-line" stroke="/g) || []).length, 2);
+  assert.equal((dom.match(/zu-sv3-oline/g) || []).length, 0);
+  // 相邻非空点一连、缺口断线不插值：A 在 9,10,12 有分量 → 9→10 一段（11 缺口、
+  // 12 单点不成段）；B 在 10,11 连续 → 一段
+  const segsOf = c => (dom.match(new RegExp('<g class="zu-sv3-line" stroke="' + c + '">([\\s\\S]*?)</g>')) || ['', ''])[1];
+  const segA = segsOf(colorA), segB = segsOf(colorB);
+  assert.equal((segA.match(/<line /g) || []).length, 1, 'A 线恰一段（9→10）');
+  assert.equal((segB.match(/<line /g) || []).length, 1, 'B 线恰一段（10→11）');
+  // 满幅几何（§11.2）：svg width="100%" 无 viewBox（y/线宽/圆点 px 不失真）、
+  // 分段 line x 全百分比 + y px、命中列 x/width 均 %
+  assert.match(html, /<svg class="zu-sv3-svg" width="100%" height="164">/);
+  assert.doesNotMatch(html, /<svg class="zu-sv3-svg"[^>]*viewBox/, '主 svg 无 viewBox 缩放');
+  assert.match(segA, /<line x1="[\d.]+%" y1="[\d.]+" x2="[\d.]+%" y2="[\d.]+"\/>/, '分段 line：x 百分比 + y px');
+  assert.match(html, /<rect class="zu-sv3-hit" data-i="0" x="0%" y="0" width="6\.667%" height="148"/,
+    '命中列 % 几何（15 桶 → 6.667%/格）');
   // 数据点：A 3 个 + B 2 个 = 5，点色=模型色
   assert.equal((html.match(/<circle class="zu-sv3-pt"/g) || []).length, 5);
   assert.ok(html.includes('fill="' + colorA + '"'));
@@ -258,14 +276,12 @@ test('today 多模型折线: 每模型一条线、缺小时断线分段、点色
   assert.match(html, /aria-label="00:00，无数据"/);
   assert.match(html, /aria-label="11:00，Claude-B 50\.0 t\/s"/);
   assert.match(html, /aria-label="10:00，GLM-A 300\.0 t\/s、Claude-B 300\.0 t\/s"/);
-  // SVG 绘图区定高（148+16+顶部 8）
-  assert.match(html, /<svg class="zu-sv3-svg" width="\d+" height="172" viewBox="0 0 \d+ 172">/);
   // 未悬停：侧信道空
   assert.equal(portal(ctx), '');
 });
 
-// ---------- ⑥ week 单/多模型 ----------
-test('week 单/多: 单=线+面积+端标签且无总体虚线；多=逐模型线+总体虚线+端标签错开≥12px；缺失日断线', () => {
+// ---------- ⑥ week 单/多模型（§11.2 满幅：% 坐标 + 端标签 x=99.2%） ----------
+test('week 单/多: 单=分段线+面积+端标签且无总体虚线；多=逐模型线+总体虚线+端标签错开≥12px；缺失日断线', () => {
   const ctx = makeCtx();
   // 单模型：只看 A
   const w1 = analyze(ctx, fixture(), { range: 'all', period: 'week', sid: 'sess_main',
@@ -275,20 +291,26 @@ test('week 单/多: 单=线+面积+端标签且无总体虚线；多=逐模型�
   const colorA = colorOf(ctx, KEYS.a);
   assert.equal((h1.match(/class="zu-sv3-hit" data-i="/g) || []).length, 7, '恒 7 个本地日命中列');
   assert.equal((h1.match(/class="zu-sv3-xtxt"/g) || []).length, 7, 'X 轴 7 个日标签（含无数据日）');
-  assert.equal((h1.match(/<path class="zu-sv3-line" stroke="/g) || []).length, 1, '单条模型线');
-  assert.equal((h1.match(/<path class="zu-sv3-line[^"]*zu-sv3-oline"/g) || []).length, 0, '单模型无总体虚线');
-  assert.match(h1, new RegExp('<path class="zu-sv3-area" fill="' + colorA + '"'), '单模型面积填充');
+  assert.equal((h1.match(/<g class="zu-sv3-line" stroke="/g) || []).length, 1, '单条模型线（分段 g）');
+  assert.equal((h1.match(/class="zu-sv3-line zu-sv3-oline"/g) || []).length, 0, '单模型无总体虚线');
+  assert.match(h1, new RegExp('<path class="zu-sv3-area" fill="' + colorA + '" d="M [\\d.]+ 148'),
+    '单模型面积填充（% x + px y 基线）');
   assert.equal((h1.match(/<circle class="zu-sv3-pt"/g) || []).length, 2, '11-04 与 11-05 两个真实日点');
   assert.equal((h1.match(/class="zu-sv3-elabel/g) || []).length, 1, '单个末端数值标签');
+  assert.match(h1, /zu-sv3-elabel[^>]*x="99\.2%"/, '端标签收进右缘 x=99.2%（§11.2）');
   assert.match(h1, /zu-sv3-elabel[^>]*>1\d\d\.0</, '端标签为一位小数速度值');
   // 多模型：全池
   const w2 = analyze(ctx, fixture(), { range: 'all', period: 'week', sid: 'sess_main' });
   const h2 = chart(ctx, w2, -1);
-  assert.equal((h2.match(/<path class="zu-sv3-line" stroke="/g) || []).length, 2, '两条模型线');
-  assert.equal((h2.match(/<path class="zu-sv3-line[^"]*zu-sv3-oline"/g) || []).length, 1, '总体虚线仅多模型在场');
-  // 端标签 3 个（A、B、总体），y 两两 ≥12px
+  // 分段线按「相邻非空点一连」产出：A 两日连续 → 1 条线；B 周内仅 11-05 一个真实
+  // 点（11-04 轮全 A 输出、无 B 分量）→ 单点不成段，点由 circle+端标签承载
+  assert.equal((h2.match(/<g class="zu-sv3-line" stroke="/g) || []).length, 1, 'A 模型线恰一条分段 g');
+  assert.equal((h2.match(/class="zu-sv3-line zu-sv3-nline zu-sv3-oline"/g) || []).length, 1, '总体虚线仅多模型在场');
+  const ptB = new RegExp('<circle class="zu-sv3-pt" cx="[\\d.]+%" cy="[\\d.]+" r="2\\.5" fill="' + colorOf(ctx, KEYS.b) + '"');
+  assert.match(h2, ptB, 'B 单点仍落真实数据点');
+  // 端标签 3 个（A、B、总体），x=99.2%、y 两两 ≥12px
   const labelYs = [];
-  const re = /<text class="zu-sv3-elabel[^"]*" x="[-\d.]+" y="([-\d.]+)"/g;
+  const re = /<text class="zu-sv3-elabel[^"]*" x="99\.2%" y="([-\d.]+)"/g;
   let m;
   while ((m = re.exec(h2)) !== null) labelYs.push(parseFloat(m[1]));
   assert.equal(labelYs.length, 3);

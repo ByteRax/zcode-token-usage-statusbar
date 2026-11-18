@@ -509,7 +509,7 @@
     if (!el || !el.__zuT) return false;
     var t = el.__zuT, s3 = t.speedSel;
     var hit = e.target && e.target.closest ? e.target.closest(
-      ".zu-sv3-chip,.zu-sv3-fpop-row,.zu-sv3-fsearch,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-more]") : null;
+      ".zu-sv3-chip,.zu-sv3-fpop-row,.zu-sv3-fsearch,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-more],[data-sv3-act]") : null;
     if (!hit || !s3 || typeof spd3FilterToggle !== "function") return false;
     if (!s3.filt) s3.filt = (typeof spd3FilterAuto === "function") ? spd3FilterAuto() : { mode: "auto", keys: null };
     if (!s3.pop) s3.pop = { open: false, query: "" };
@@ -521,6 +521,14 @@
     } else if (hit.hasAttribute("data-sv3-all")) {
       /* v384 B2：同 06 分片——SPD3_POOL 是对象数组，全选取 key 串 */
       spd3FilterOnly(s3.filt, (typeof SPD3_POOL !== "undefined" && SPD3_POOL || []).map(function (pm) { return pm.key; }));
+    } else if (hit.hasAttribute("data-sv3-act")) {
+      /* v387 §11.4：空态恢复动作（同 06 分片） */
+      var act1 = hit.getAttribute("data-sv3-act");
+      if (act1 === "clear-filter") spd3FilterAll(s3.filt);
+      else if (act1 === "all-time") {
+        s3.period = "all";
+        if (s3.pop) s3.pop.open = false;
+      } else return false;
     } else if (hit.hasAttribute("data-sv3-none")) {
       spd3FilterOnly(s3.filt, []);
     } else if (hit.hasAttribute("data-sv3-reset")) {
@@ -545,7 +553,8 @@
     var t = e.target;
     if (!t || !t.closest) return;
     var interactive = t.closest(".zu-sv-tab") || t.closest(".zu-sv3-fbar") ||
-      (t.closest(".zu-sv3-fpop") && !t.classList.contains("zu-sv3-fpop-input")) || t.closest(".zu-sv3-more");
+      (t.closest(".zu-sv3-fpop") && !t.classList.contains("zu-sv3-fpop-input")) || t.closest(".zu-sv3-more") ||
+      t.closest(".zu-sv3-empty-wrap");   /* v387：空态动作同入名单 */
     if (interactive) {
       e.stopPropagation();
       if (e.preventDefault) e.preventDefault();

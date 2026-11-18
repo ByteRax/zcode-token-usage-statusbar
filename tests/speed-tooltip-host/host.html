@@ -505,11 +505,16 @@ function hist(turns) {
 var FIXTURES = {
   recent16: function () {
     var list = [];
-    for (var i = 0; i < 16; i++) list.push({ at: atHour(14, 5) + i * 12 * 60000, sps: SPD_SPEEDS16[i], gen: 6000 });
+    /* 基准钳到过去（v387 空态语义：自然时间窗过滤 r.t <= now，未来轮=空池空态接管，
+     * 下午 14:05 前跑链会全空）；基准早于当前时刻至少一个全跨度，落点仍在今天 */
+    var base = Math.min(atHour(14, 5), Date.now() - 16 * 12 * 60000 - 120000);
+    for (var i = 0; i < 16; i++) list.push({ at: base + i * 12 * 60000, sps: SPD_SPEEDS16[i], gen: 6000 });
     return hist(buildTurns(list));
   },
-  sparse2: function () {   /* 今天仅两个有效小时桶（聚焦模式） */
-    return hist(buildTurns([{ at: atHour(16, 10), sps: 152, gen: 6000 }, { at: atHour(17, 5), sps: 133, gen: 6000 }]));
+  sparse2: function () {   /* 今天仅两个有效小时桶（聚焦模式）；基准=两小时前的整点后 10 分（跨整点分属两桶） */
+    var d = new Date();
+    var base = new Date(d.getFullYear(), d.getMonth(), d.getDate(), Math.max(1, d.getHours() - 2), 10).getTime();
+    return hist(buildTurns([{ at: base, sps: 152, gen: 6000 }, { at: base + 55 * 60000, sps: 133, gen: 6000 }]));
   },
   projWeek: function () {  /* 近 7 天中 5 天各 1 轮 */
     var sps = [128, 143, 111, 156, 138], list = [];
@@ -766,8 +771,9 @@ window.__zuMount = function (sel, hover) {
     function rebuildKeepScroll() {
       var ow = tip.querySelector('.zu-sc-wrap'), oldRoot = tip.querySelector('.zu-sv3-root');
       var ox = ow ? ow.scrollLeft : null, oldKey = oldRoot && oldRoot.getAttribute('data-sv-key');
-      tip.innerHTML = '<div class="tbody"></div>';
-      tip.firstChild.innerHTML = buildCard();
+      /* v387 适配：与 __zuMount 主路径对齐直塞（V3 生产链无 .tbody 包装——包装层会引入
+       * 生产不存在的 max-height:60vh 截痕，污染 §11.7 几何断言） */
+      tip.innerHTML = buildCard();
       window.__SPD.spdFitTip(tip, false);
       if (tip.getBoundingClientRect().top < 8) { tip.style.bottom = 'auto'; tip.style.top = '8px'; }
       var nw = tip.querySelector('.zu-sc-wrap'), newRoot = tip.querySelector('.zu-sv3-root');
@@ -1097,6 +1103,78 @@ window.__zuDiag = function () {
       return Math.abs(le.getBoundingClientRect().left - anchor.getBoundingClientRect().left) <= 1; })()
   };
   function head(t) { return t.querySelector('.zu-sv-head'); }
+};
+/* ---------- §11.7 布局断言（v387 实机修复批验收，PRD 14.2） ----------
+ * 五项几何不变量按当前挂载卡形态计算，不适用项自动跳过；调用方只看 failures。
+ * 全部读真实 getBoundingClientRect/scroll 几何——修复纪律禁止 overflow 掩盖，
+ * 断言因此可以在任何视口宽度下抓越界形态：
+ * ① tip root 存在时 scrollWidth==clientWidth（无横向溢出，含根节点自身）；
+ * ② .zu-sv-filter 右缘 ≤ tip 内容右缘（§11.1 P0-01 实测越界 14px 的形态回归）；
+ * ③ .zu-sv3-chart 绘图区（.zu-sc-plot）宽 ≥ 容器 85%（recent/today 柱图与 week 折线；
+ *   gutter 30px 缩进下正常 ≈95%；month/hist 热力无 .zu-sc-plot 自动跳过）；
+ * ④ 月历底边空白 ≤ 1 行格高（minmax(0,1fr) 行自适应填满，4/5/6 周均无底部大空白）；
+ * ⑤ 筛选弹出层 .zu-sv3-fpop 完全在视口内。 */
+window.__zuGeometryChecks = function () {
+  var out = { checks: [], failures: [] };
+  var tipBox = document.getElementById('zu-spd-replica');
+  var root = tipBox && tipBox.querySelector('.zu-sv3-root');
+  if (!tipBox || !root) { out.failures.push('no mounted V3 card'); return out; }
+  var f = function (name, ok, detail) {
+    out.checks.push({ name: name, ok: ok, detail: detail });
+    if (!ok) out.failures.push(name + ' (' + detail + ')');
+  };
+  var tb = tipBox.getBoundingClientRect(), tcs = getComputedStyle(tipBox);
+  var padR = parseFloat(tcs.paddingRight) || 0, borR = parseFloat(tcs.borderRightWidth) || 0;
+  /* ① 无横向溢出（tip 容器 + 根节点双层；920 根在 952 释放内容区内应恰好放下） */
+  f('tip-no-hscroll', tipBox.scrollWidth === tipBox.clientWidth,
+    'scroll=' + tipBox.scrollWidth + ' client=' + tipBox.clientWidth);
+  f('root-no-hscroll', root.scrollWidth === root.clientWidth,
+    'scroll=' + root.scrollWidth + ' client=' + root.clientWidth);
+  /* ② 筛选行右缘 ≤ tip 内容右缘（border-box 内容区 = 外缘 − padding − border） */
+  var filt = root.querySelector('.zu-sv-filter');
+  if (filt) {
+    var fr = filt.getBoundingClientRect();
+    var contentRight = tb.right - padR - borR;
+    f('filter-within-tip', fr.right <= contentRight + 0.5,
+      'filtRight=' + Math.round(fr.right) + ' contentRight=' + Math.round(contentRight));
+  }
+  /* ③ 绘图区满幅（charts 分支专属）：plot 与容器**内容盒**同坐标系比较（clientWidth
+   * 扣水平 padding；border 不在 plot 可用区内）。窄窗下 gutter 30px 固定缩进占比升高，
+   * 以 border-box 全宽为分母会把正常形态压到 85% 线下（620 窗实测 84.7%）。 */
+  var chart = root.querySelector('.zu-sv3-chart');
+  var plot = root.querySelector('.zu-sc-plot');
+  if (chart && plot) {
+    var pb = plot.getBoundingClientRect();
+    var ccs = getComputedStyle(chart);
+    var padH = (parseFloat(ccs.paddingLeft) || 0) + (parseFloat(ccs.paddingRight) || 0);
+    var denom = chart.clientWidth - padH;
+    var ratio = denom > 0 ? pb.width / denom : 0;
+    f('plot-fill-85pct', ratio >= 0.85,
+      'plot=' + Math.round(pb.width) + ' contentBox=' + Math.round(denom) +
+      ' ratio=' + (ratio * 100).toFixed(1) + '%');
+  }
+  /* ④ 月历底边空白 ≤ 1 行格高（最后一枚日格底 vs 网格底） */
+  var grid = root.querySelector('.zu3-hm-grid');
+  if (grid) {
+    var cells = grid.querySelectorAll('.zu-hm-cell');
+    var last = cells[cells.length - 1];
+    if (last) {
+      var gb = grid.getBoundingClientRect(), lb = last.getBoundingClientRect();
+      var gap = gb.bottom - lb.bottom;
+      f('month-bottom-gap', gap <= lb.height + 1,
+        'gap=' + Math.round(gap) + ' cellH=' + Math.round(lb.height));
+    }
+  }
+  /* ⑤ 筛选弹出层在视口内 */
+  var fpop = root.querySelector('.zu-sv3-fpop');
+  if (fpop) {
+    var fb = fpop.getBoundingClientRect();
+    var vw = window.innerWidth, vh = window.innerHeight;
+    f('fpop-in-viewport', fb.x >= 0 && fb.y >= 0 && fb.right <= vw && fb.bottom <= vh,
+      'rect=' + [Math.round(fb.x), Math.round(fb.y), Math.round(fb.right), Math.round(fb.bottom)].join(',') +
+      ' vp=' + vw + 'x' + vh);
+  }
+  return out;
 };
 </script>
 </body>

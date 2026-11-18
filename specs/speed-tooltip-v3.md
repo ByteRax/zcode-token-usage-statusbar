@@ -115,3 +115,51 @@
 - VERSION → v384（06 分片台账 + substat 版本锁测试同步）。AGENTS §2 代码地图、build_overlay.py 头注释、本 spec 与 speed-tooltip-adaptive-layout.md（标注 V2 尺寸段落被 V3 取代）同步。
 - 热文件：`overlay.js` + `zusage.py`（运行目录原子替换 + mtime 触发热重载/常驻重启）；`inject-main.cjs` 不动（零冷文件）。
 - 真机验收：CDP 截图 10 场景（5 时间 × 单/多模型）+ 深浅主题 + 键盘路径；headless 仅作回归不替代。
+
+## 11. v387 实机修复批（UI/UX 深审，2026-11-18）
+
+依据真机 CDP 实测（默认主题主链、视口 1527×957）+ 用户 7 张截图。根因均已实测钉死，禁止凭 padding/margin/overflow 掩盖。
+
+### 11.1 宽度链（P0-01/P0-02 外层）
+
+实测：tip 计算样式 border-box、宽 920、padding 10px 13px + border 1px → 内容区 892px < 根节点 920px → 根节点右缘越出 tip 外缘 14px，头部 Tab 组被裁（filtRight 1453 > tipRight 1439）；compact 链（cssText border-box + padding 10px 14px）同病 30px。
+
+修复（唯一权威方案）：
+- 释放规则改 `box-sizing:border-box!important;width:min(952px,calc(100vw - 24px))!important;max-width:calc(100vw - 24px)!important` → 两链内容区 ≥922 ≥ 根 920。
+- 根宽改 `min(920px,calc(100vw - 60px))` + `max-width:100%`（窄窗时根 ≤ tip 内容区，不反向撑大）。
+- 根容器禁止 overflow:hidden 掩盖；验收=任一视口下 tip.scrollWidth==clientWidth 且筛选行右缘 ≤ tip 内容右缘。
+
+### 11.2 图表满幅（P0-04/3.1/5.2）
+
+实测：`.zu-sc-wrap` scrollWidth 636 > clientWidth 606（幻影溢出 30px）；柱组 flex-start 固定 pitch（24px）致 8 柱挤左半幅；折线 SVG 固定宽 n*PITCH+12（min 240）致 7 日线压缩左侧。
+
+修复：
+- 柱图（recent/today 单模型）改**槽位满幅**：柱组 flex 容器 width:100%，每槽 flex:1 1 0 + min-width:0，柱宽按密度 18/14/10px 居中；spacer 机制删除。X 标签每槽显示，槽宽不足时隔槽（首末恒显）。
+- 折线（today 多模型/week）SVG 改 `width:100%` + **百分比 x 坐标**（y 用 px；无 viewBox 缩放，线宽/圆点 px 不失真）；hit 列与网格线同步 %。空槽保留位置（无数据日不插值不造假点）。
+- 数值标签策略：n≤8 全显；>8 时 峰值/最低/最新/悬停优先 + 密度抽稀，标签估宽（字符数×~6px）超槽宽让位；折线仅端标签+避让 ≥12px（保留现机制）。
+
+### 11.3 多模型主数字（P0-03）
+
+实测截图：多模型左卡「已选 N 个模型 · M 轮」直接接档位胶囊，均速大数字消失。修复：多模型分支结构 = 标题行 → **主数字（overall.v）+ t/s** → 档位胶囊 → 「本期有效 N 个模型 · M 轮」（+ 无数据已选提示）→ 分布（≤4 行 + 查看全部）→ 峰/低/新。任何模型数（1/2/7/20/部分无数据/全部无数据）主数字恒在；无数据显示 `—` 不隐藏区块。
+
+### 11.4 空状态（四）
+
+`an.real` 为空时 view 接管渲染居中空态：主布局不变（左卡 —/0/—，图表区居中提示），**原因行按 `an.emptyReason` 区分**（session 无历史 / 筛选空集 / 时间窗无请求 / 已选模型无数据 / 数据未加载 / 旧快照无模型级统计 / 查询失败——按池构成判定，不千篇一律「尝试更长时间范围」），动作按钮真实生效：`[清除模型筛选]`（仅显式筛选时出现）`[查看全部时间]`（period≠all 时）→ `data-sv3-act="clear-filter"|"all-time"`，两链（06/01）委托接入：clear-filter=spd3FilterAll+重建；all-time=speedSel.period="all"+重建。
+
+### 11.5 语义与文案
+
+- 模型数量三语义：可选 Y（池全部）/ 已选 X（filt）/ **本期有效 N**（perModel.length）；计数行与 chips 计数统一「已选 X/Y · 本期有效 N」；「唯一模型」只用于真单模型池。
+- live 徽标：估算态措辞改「实时估算中」（历史均速含义不被污染），非估算实时态（思考/工具）透传不变。
+- 同名不同供应商（同 name 异 key）：分布表/chips 名称右侧加供应商副标（pid 尾段），hover title=全 provider/model；不合并身份。
+- 标题 📈 换自包含 SVG 折线图标（currentColor，随主题）。
+- 今天/进行中日桶 hover 区间：「YYYY/M/D · 00:00 – 截至 HH:mm」；已结束日「YYYY/M/D · 全天」——core 对 today 及跨今天的桶 item.b 钳到 now。
+- 热力底部「较低/较高」双色图例移除（PRD 6.3 禁止替代档位体系；完整档位说明已有标题旁 ⓘ hover 承载）。
+
+### 11.6 月历/历史热力（6.2/7.2）
+
+- month：`grid-template-rows:repeat(var(--zu-hm-rows),minmax(0,1fr))` 行高自适应填满可用高（4/5/6 周均无底部大空白）。
+- hist：列宽帽 `minmax(34px,64px)`（去 1fr 拉伸，短跨度不再异常宽格）；cols>26 时**按日历月聚合**（月格=当月加权 tps，列头 YYYY/MM，hover 月卡给「N 天有记录/综合均速/请求数」），550 日 ≤19 列无横滚；副题标「按月聚合」。
+
+### 11.7 验收断言（新增，PRD 14.2）
+
+harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-filter` 右缘 ≤ tip 内容右缘、图表绘图区宽 ≥ 容器 85%、柱顶标签无碰撞（估宽判定）、Popover 在视口内、月历底边空白 ≤ 1 行格高。真机截图七场景前后对比存档。

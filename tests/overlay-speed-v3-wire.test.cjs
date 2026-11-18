@@ -136,10 +136,11 @@ test('spd3RebuildOr: 闭包读显式 curHover/curSel；不传 curSel 回退外�
   const html2 = cardOf(ctx, rb, -1, { range: 'all', period: 'month', sid: 'sess_main' });
   assert.match(html2, /data-sv-group="range" data-sv-val="all" aria-pressed="true"/);
   assert.match(html2, /zu3-hm-grid/, 'curSel.period=month 分发到月历热力');
-  // curSel 缺 filt → spd3FilterAuto()（auto=全选，不伪装成显式空态）
+  // curSel 缺 filt → spd3FilterAuto()（auto=全选，不伪装成显式空态）；计数行三语义
+  // 统一（§11.5）：auto 时已选=池全量 2/2，本期有效=an.perModel.length=2
   const rb3 = rebuild(ctx, h, { range: 'session', period: 'all', sid: 'sess_main' });
   const html3 = cardOf(ctx, rb3, -1, { range: 'session', period: 'all', sid: 'sess_main' });
-  assert.match(html3, /全部 2/, '缺 filt → auto（筛选计数=全部 2）');
+  assert.match(html3, /zu-sv3-fcount">已选 2\/2 · 本期有效 2</, '缺 filt → auto（计数=已选 2/2 · 本期有效 2）');
 });
 
 test('spd3RebuildOr: period 分发 recent/today/week→charts、month→月历、all→历史热力', () => {
