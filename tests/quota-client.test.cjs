@@ -387,6 +387,17 @@ test("client: 宿主 3.18+ 新式登录态键回退（issue #391）——旧键�
   assert.equal(b.calls[0].auth, "legacy.jwt.token");
   b.calls[0].d.resolve(fakeRes(200, OK_BODY));
   await flush();
+  /* ③' 旧键为空串等同缺席：文档声明的「缺失或空串才回退」 */
+  const e = makeClient({ creds: {
+    "oauth:bigmodel:access_token": "",
+    "oauth:linked_bigmodel": encryptValue(linkedJson("empty.legacy.tok")),
+  } });
+  e.client.noteProvider("account:bigmodel-individual-coding-plan");
+  e.client.tick();
+  assert.equal(e.calls.length, 1);
+  assert.equal(e.calls[0].auth, "empty.legacy.tok");
+  e.calls[0].d.resolve(fakeRes(200, OK_BODY));
+  await flush();
   /* ④ 回退信封解不出可用 token（非 JSON / accessToken 缺失或非字符串）按 decryptFailed 降级，零请求 */
   for (const bad of ["not-json{", JSON.stringify({ userId: "u1", accessToken: 42 }), JSON.stringify({ userId: "u1" })]) {
     const c = makeClient({ creds: { "oauth:linked_bigmodel": encryptValue(bad) } });

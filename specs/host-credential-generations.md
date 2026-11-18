@@ -41,4 +41,5 @@
 
 - Windows 凭据管理器与 Linux secret-service：Windows 已由贡献者在实机验证（PR #289），Linux 未实机验证。凭据库条目按凭据文件路径定位，Windows 上路径拼写（盘符大小写、8.3 短名、home 目录来源）是否与宿主逐字符一致未逐项验证，不一致时表现为取不到密钥。
 - `env` 来源只有夹具验证和对宿主实现的静态对照，没有真实的 managed secret 环境。
+- `oauth:zai_cn:access_token` 回退（个人/团队 zai 侧）未在真实 Z.ai 账号实测；且宿主源码把 zai_cn 的 coding plan 归入 bigmodel family（`zai_cn→bigmodel` 映射），该 token 对 zai 家族适配器的 api.z.ai 端点是否受认存疑——若不受认，行为是从「未配置」变为 401 auth 冻结（契约内中性降级，不产生错误数据），后续按实测定回退键与端点的映射。
 - 凭据库被锁定或需要系统授权时的表现：macOS 一台实机观察到读取即时完成；Windows 实机由贡献者验证；其它情形未验证。

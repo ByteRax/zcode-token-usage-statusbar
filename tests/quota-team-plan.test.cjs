@@ -32,7 +32,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-function makeTeamClient(t, { setting = SETTING, fam = "bigmodel", creds, calls } = {}) {
+function makeTeamClient(t, { setting = SETTING, fam = "bigmodel", creds, calls, monitor = null } = {}) {
   const credsPath = "/virtual/team/credentials.json";
   const clock = { t: T0 };
   const client = Q.createQuotaClient({
@@ -61,7 +61,10 @@ function makeTeamClient(t, { setting = SETTING, fam = "bigmodel", creds, calls }
       if (url.indexOf("/access_tokens") >= 0) return Promise.resolve(fakeRes(200, JSON.stringify({ code: 200, data: {
         enable: true, accessToken: "pat.team.token", tokenType: "Bearer", expiresIn: 3600, expiresAt: T0 + 3600 * 1000,
       } })));
-      if (url === TEAM_MONITOR[fam]) return Promise.resolve(fakeRes(200, OK_BODY));
+      if (url === TEAM_MONITOR[fam]) {   // monitor 可变应答（{status}，换发解冻用例先 401 后 200）；缺省 200+OK_BODY
+        const st = (monitor && monitor.status) || 200;
+        return Promise.resolve(fakeRes(st, st === 200 ? OK_BODY : "{}"));
+      }
       if (url.indexOf("/reset/status") >= 0) return Promise.resolve(fakeRes(200, JSON.stringify({ code: 0, success: true, data: { available_five_hour_resets: [], available_week_resets: [] } })));
       if (url.indexOf("customer-package-reset/list") >= 0) return Promise.resolve(fakeRes(200, JSON.stringify({ code: 0, success: true, data: {
         fiveHourResets: [{ available: true, expireTime: 1793176110955 }, { available: false, expireTime: 1793006110955 }],
@@ -90,6 +93,15 @@ const TEAM_CREDS = (Q, key) => {
     file: { "oauth:bigmodel:access_token": entry, "oauth:zai:access_token": entry, zcodejwttoken: entry },
   };
 };
+/* 复用 TEAM_CREDS 的 v2:env 密钥重封任意明文（新式登录态键用例：linked 信封封 JSON、zai_cn 封 token 本体） */
+function teamSeal(tc, plain) {
+  const crypto = require("crypto");
+  const iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv("aes-256-gcm", tc.key, iv);
+  const ct = Buffer.concat([c.update(plain, "utf8"), c.final()]);
+  const keyId = crypto.createHash("sha256").update(tc.key).digest("hex").slice(0, 24);
+  return "enc:v2:env:" + keyId + ":" + [iv, c.getAuthTag(), ct].map((b) => b.toString("base64url")).join(".");
+}
 
 test("team: 未切团队（无选择）fail-closed——not_configured、零请求", async (t) => {
   const calls = [];
@@ -161,21 +173,13 @@ test("team: zai 家族走 api.z.ai + Bearer", async (t) => {
 
 test("team: 旧平铺键缺席回退 oauth:linked_bigmodel（issue #391）——PAT 交换链照常走通", async (t) => {
   const tc = TEAM_CREDS(Q, "plan.team.key");
-  const crypto = require("crypto");
-  const seal = (plain) => {   // 复用 TEAM_CREDS 的 v2:env 密钥重封任意明文
-    const iv = crypto.randomBytes(12);
-    const c = crypto.createCipheriv("aes-256-gcm", tc.key, iv);
-    const ct = Buffer.concat([c.update(plain, "utf8"), c.final()]);
-    const keyId = crypto.createHash("sha256").update(tc.key).digest("hex").slice(0, 24);
-    return "enc:v2:env:" + keyId + ":" + [iv, c.getAuthTag(), ct].map((b) => b.toString("base64url")).join(".");
-  };
   const linkedJson = JSON.stringify({ userId: "u1", customerId: "c1", accessToken: "plan.team.key" });
   const calls = [];
   /* org/project 避开前序用例：teamPatCache 模块级按 fam|org|project 缓存，同键会跳过 PAT 交换链 */
   const setting = { providerFamilyConnectionSelections: { bigmodel: { kind: "team-coding-plan", organizationId: "org-alt", projectId: "proj-alt" } } };
   const { client, clock } = makeTeamClient(t, {
     setting, fam: "bigmodel",
-    creds: { "oauth:linked_bigmodel": seal(linkedJson) },
+    creds: { "oauth:linked_bigmodel": teamSeal(tc, linkedJson) },
     calls,
   });
   Q.setDefaultDecryptCtx({ credsPath: "/virtual/team/credentials.json", credsDir: "/virtual/team", env: { ZCODE_CREDENTIAL_SECRET: tc.env } });
@@ -192,6 +196,80 @@ test("team: 旧平铺键缺席回退 oauth:linked_bigmodel（issue #391）——
   assert.equal(monitor.length, 1);
   assert.equal(monitor[0].headers.authorization, "pat.team.token");
   assert.equal(monitor[0].headers["Bigmodel-Organization"], "org-alt");
+  assert.equal(client.view().sources["bigmodel-team"].status, "ok");
+});
+
+test("team: zai 家族旧键缺席回退 oauth:zai_cn:access_token（issue #391）", async (t) => {
+  const tc = TEAM_CREDS(Q, "plan.team.key");
+  const setting = { providerFamilyConnectionSelections: { zai: { kind: "team-coding-plan", organizationId: "org-zalt", projectId: "proj-zalt" } } };
+  const calls = [];
+  const { client, clock } = makeTeamClient(t, {
+    setting, fam: "zai",
+    creds: { "oauth:zai_cn:access_token": teamSeal(tc, "zai.cn.team.tok") },   // 信封即 token 本体
+    calls,
+  });
+  Q.setDefaultDecryptCtx({ credsPath: "/virtual/team/credentials.json", credsDir: "/virtual/team", env: { ZCODE_CREDENTIAL_SECRET: tc.env } });
+  client.noteProvider("account:zai-team-coding-plan");
+  client.setProviders(["account:zai-team-coding-plan"]);
+  client.tick();
+  await Q.ensureDefaultV2Key();
+  clock.t += 1100;
+  client.tick();
+  await new Promise((r) => setTimeout(r, 10));
+  const info = calls.find((c) => c.url.indexOf("/api/biz/customer/getCustomerInfo") >= 0);
+  assert.ok(info, "PAT 交换链第一步发出");
+  assert.equal(info.headers.authorization, "zai.cn.team.tok");
+  const monitor = calls.filter((c) => c.url === TEAM_MONITOR.zai);
+  assert.equal(monitor.length, 1);
+  assert.equal(monitor[0].headers.authorization, "pat.team.token");
+  assert.equal(client.view().sources["zai-team"].status, "ok");
+});
+
+test("team: 回退信封解不出可用 token 按 decryptFailed 降级（issue #391）", async (t) => {
+  const tc = TEAM_CREDS(Q, "plan.team.key");
+  const setting = { providerFamilyConnectionSelections: { bigmodel: { kind: "team-coding-plan", organizationId: "org-df", projectId: "proj-df" } } };
+  const calls = [];
+  const { client, clock } = makeTeamClient(t, {
+    setting, fam: "bigmodel",
+    creds: { "oauth:linked_bigmodel": teamSeal(tc, "not-json{") },
+    calls,
+  });
+  Q.setDefaultDecryptCtx({ credsPath: "/virtual/team/credentials.json", credsDir: "/virtual/team", env: { ZCODE_CREDENTIAL_SECRET: tc.env } });
+  client.noteProvider("account:bigmodel-team-coding-plan");
+  client.tick();
+  await Q.ensureDefaultV2Key();
+  clock.t += 1100;
+  client.tick();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(calls.length, 0);   // fail-closed 零请求
+  const entry = client.view().sources["bigmodel-team"];
+  assert.equal(entry.status, "not_configured");
+  assert.equal(entry.error, "credential decrypt failed");
+});
+
+test("team: 指纹跟随回退信封——401 冻结后宿主换发解冻重查（issue #391）", async (t) => {
+  const tc = TEAM_CREDS(Q, "plan.team.key");
+  const linkedJson = (tok) => JSON.stringify({ userId: "u1", customerId: "c1", accessToken: tok });
+  const mon = { status: 401 };
+  const setting = { providerFamilyConnectionSelections: { bigmodel: { kind: "team-coding-plan", organizationId: "org-fr", projectId: "proj-fr" } } };
+  const calls = [];
+  const creds = { "oauth:linked_bigmodel": teamSeal(tc, linkedJson("team.tok.v1")) };
+  const { client, clock } = makeTeamClient(t, { setting, fam: "bigmodel", creds, calls, monitor: mon });
+  Q.setDefaultDecryptCtx({ credsPath: "/virtual/team/credentials.json", credsDir: "/virtual/team", env: { ZCODE_CREDENTIAL_SECRET: tc.env } });
+  client.noteProvider("account:bigmodel-team-coding-plan");
+  client.tick();
+  await Q.ensureDefaultV2Key();
+  clock.t += 1100;
+  client.tick();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(client.view().sources["bigmodel-team"].status, "auth_failed");
+  mon.status = 200;   // PAT 缓存（T0+3600s）运行期内恒有效：第二轮只重打 monitor，不断言 PAT 链重放
+  creds["oauth:linked_bigmodel"] = teamSeal(tc, linkedJson("team.tok.v2"));   // 宿主换发回退信封（新密文=新指纹）
+  client.credentialsChanged();
+  client.tick();
+  await new Promise((r) => setTimeout(r, 10));
+  const mons = calls.filter((c) => c.url === TEAM_MONITOR.bigmodel);
+  assert.equal(mons.length, 2);
   assert.equal(client.view().sources["bigmodel-team"].status, "ok");
 });
 
