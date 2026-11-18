@@ -247,3 +247,37 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 
 - harness：today/week 的 plot 高度∈[200,300] 且 plot 底距卡底 ≤28px；折线 hit hover 出卡（合成 mouseover）含无数据日「无记录」卡；day-cards 形态（≤7 天夹具）与周网格（8+ 天）分发断言；dbar 左右缘与标题/表对齐 ≤2px。
 - 真机：week 有数据日/无数据日 hover 各一实测。
+
+## 14. v390 筛选入口统一与 hist 日历式批（2026-11-18，第五轮）
+
+真机/源码诊断：①fpop `position:absolute;right:10px;bottom:10px` 锚定**卡右下角**（搜索按钮在顶部栏——距离远实锤）；②`+N`（.zu-sv3-chip-more）是纯 span 不可点；③dbar 19 段碎片化 + `min-width:2px` 下限使 Σ宽>100% 触发 flex 收缩、比例失真；④hist 37 天=周列式 6 列（64px 帽+居中）两侧大空白。
+
+### 14.1 筛选入口统一（P0）
+
+- **方案 A**：删除右侧放大镜按钮（.zu-sv3-fsearch 整链退役——含 01/06 委托、CSS、测试）；入口=`+N` button 与「模型筛选」标签 button（.zu-sv3-fopen，data-sv3-fopen），同一面板/同一状态/同一关闭行为。
+- `+N` 与 fopen 均为真 button：aria-expanded（随 pop.open）、aria-haspopup、pointer/键盘（既有 pointerdown 委托白名单扩展）、Hover 反馈。
+- fpop 定位改**锚定筛选栏正下方**：`top` 对齐 fbar 底 +8px（fbar 单行高稳定）、右缘对齐 `right:10px`、宽度 340px；卡内空间恒够（卡高 ≥320）无需翻转；`bottom:10px` 废除。
+- 打开时焦点入搜索框（既有）；Esc/外点关闭（既有）；关闭焦点归还触发按钮。
+
+### 14.2 dbar 轨道契约 + Top6+其他（P0/P1）
+
+- 轨道：`display:flex;align-items:stretch;height:8px;overflow:hidden;border-radius:4px;gap:0`；子段 `display:block;height:100%;align-self:stretch;flex-shrink:0;min-width:0;margin:0;padding:0;border:0;border-radius:0`——**废除 min-width:2px**（19 段碎片化与比例失真根源）。
+- **Top6+其他**：shareSorted 前 6 段 + 「其他模型」中性灰段（占其余请求合计，严格按原始计数差）；段数 ≤7 无碎片。
+- 极小占比显示 `<0.1%`（表格与 title 同步），不显 0%。
+- dbar aria 简化为概况（「模型分布：N 个模型，前 6 占 X%」），完整数据由下方表格承载；段 title 保留（名+请求数+占比）。
+- 分布表同步：默认 4 行含其他段行？——其他段不入明细表（表仍列真实模型全量）；仅条聚合。
+
+### 14.3 hist 密度选择器（P0）
+
+按覆盖跨度（an.axisA/axisB 日历差，不受筛选影响）分四档：
+- **≤7 天**：day-cards（v389 既有 .zu3-dc）。
+- **8–42 天**：**七列日历式**（新 .zu3-cal）：横向 7 列周日首、纵向自然周、完整覆盖跨度（含跨月/补位），格=日号+日均速度+模型点 ≤3+`+N`，速度色阶底/今天描边/空日灰/未来不渲染；月首列带月标记；hover 走既有日卡。与 month 组件同构复用（span 代替当月）。
+- **43–90 天**：周列贡献式（既有 .zu3-hh，列帽 64px）与日历式按行数自动选择（自然周数 ≤8 用日历式防纵挤，否则周列式）。
+- **>90 天**：周列式；周列 >26 既有月聚合（粒度文案同步）。
+- 色阶/模型点/今天描边/空日语义全形态一致（tpsBand 唯一来源不变）。
+- 日历式行数驱动卡高档位（month 同款 430-470 映射）。
+
+### 14.4 验收
+
+- harness/VM：跨度 37 天→zu3-cal（7 列、行数=ceil、两侧无大空白=网格宽≥容器 85%）；8/42 边界；43-90 按周数选档；>90 周列式/月聚合不变；fpop top 锚定串断言；+N button 化（aria-expanded/键盘）；dbar 无 min-width、Top6+其他占比和=100%、`<0.1%` 显示。
+- 真机：37 天场景截图（消除两侧空白）、+N 点击开面板、fpop 紧贴筛选栏。

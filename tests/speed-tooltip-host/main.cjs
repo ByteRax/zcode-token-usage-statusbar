@@ -110,7 +110,9 @@ if (process.argv.includes('--selftest')) {
     'function spdHoverPortalSync(', 'function spdLegendTipShow(',
     'function spd3HeightTier(', 'function spd3BarDensityStyle(',
     /* v389 §13.4/§13.2：未筛选时间轴字段 + 日卡形态 + 槽位卡构建器锚 */
-    'axisA: axisA, axisB: axisB', 'function spd3DayCardsHTML(', 'function spd3SlotCardHTML('];
+    'axisA: axisA, axisB: axisB', 'function spd3DayCardsHTML(', 'function spd3SlotCardHTML(',
+    /* v390 §14：占比 <0.1% 文案 + hist 日历式构建器 + 密度选择器阈值常量 */
+    'function spd3PctTxt(', 'function spd3CalHTML(', 'var SPD3_HIST_CAL_MAX_DAYS = 42;'];
   const missing = need.filter(s => !slice.includes(s));
   if (missing.length) { console.error('SELFTEST_FAIL missing: ' + missing.join(' | ')); process.exit(1); }
   try { new Function('L', '"' + 'use strict' + '";\n' + slice); }   /* 只编译不执行 */
@@ -481,13 +483,27 @@ app.whenReady().then(async () => {
         /* §11.7 ④：月历底边空白 ≤ 1 行格高 */
         g = window.__zuGeometryChecks();
         for (const s of g.failures) failures.push('§11.7 month ' + font + 'px: ' + s);
-        /* §11.7 ⑤：筛选弹出层（sel.pop open 重挂）完全在视口内 */
-        window.__zuMount({ pop: { open: true, query: '' } }, -1);
-        if (!document.querySelector('#zu-spd-replica .zu-sv3-fpop')) {
-          failures.push('fpop not rendered at ' + font);
+        /* §11.7 ⑤ + v390 §14.1 ⑪：筛选弹出层锚定——先挂无 pop 卡读 fbar 实测底缘
+         * （生产 06/01 fopen 分支同款算法），再带 pop.top 重挂（复刻页无 06 委托，
+         * 动态锚定按生产算法模拟）；断言内联覆写渲染 + fpop 完全在视口内 + 贴近 fbar */
+        window.__zuMount({}, -1);
+        const root0 = document.querySelector('#zu-spd-replica .zu-sv3-root');
+        const fb0 = root0 && root0.querySelector('.zu-sv3-fbar');
+        if (!fb0) {
+          failures.push('no fbar at ' + font);
         } else {
-          g = window.__zuGeometryChecks();
-          for (const s of g.failures) failures.push('§11.7 fpop ' + font + 'px: ' + s);
+          const rt0 = root0.getBoundingClientRect(), fb0r = fb0.getBoundingClientRect();
+          const topDyn = Math.round(fb0r.bottom - rt0.top + 8);
+          window.__zuMount({ pop: { open: true, query: '', top: topDyn } }, -1);
+          const fpopEl = document.querySelector('#zu-spd-replica .zu-sv3-fpop');
+          if (!fpopEl) {
+            failures.push('fpop not rendered at ' + font);
+          } else {
+            if (fpopEl.style.top !== topDyn + 'px')
+              failures.push('fpop inline top missing at ' + font + ': got "' + fpopEl.style.top + '" want ' + topDyn + 'px');
+            g = window.__zuGeometryChecks();
+            for (const s of g.failures) failures.push('§11.7 fpop ' + font + 'px: ' + s);
+          }
         }
         window.__zuMount({}, -1);   /* 还原无弹出层卡（下一字号 scenario 重挂，防串态） */
       }

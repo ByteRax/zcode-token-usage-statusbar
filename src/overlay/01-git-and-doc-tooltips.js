@@ -509,7 +509,7 @@
     if (!el || !el.__zuT) return false;
     var t = el.__zuT, s3 = t.speedSel;
     var hit = e.target && e.target.closest ? e.target.closest(
-      ".zu-sv3-chip,.zu-sv3-fpop-row,.zu-sv3-fsearch,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-more],[data-sv3-act]") : null;
+      ".zu-sv3-chip,.zu-sv3-chip-more,.zu-sv3-fopen,.zu-sv3-fpop-row,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-more],[data-sv3-act]") : null;   /* v390：fopen 入口 */
     if (!hit || !s3 || typeof spd3FilterToggle !== "function") return false;
     if (!s3.filt) s3.filt = (typeof spd3FilterAuto === "function") ? spd3FilterAuto() : { mode: "auto", keys: null };
     if (!s3.pop) s3.pop = { open: false, query: "" };
@@ -517,7 +517,13 @@
     if (key && (hit.classList.contains("zu-sv3-chip") || hit.classList.contains("zu-sv3-fpop-row"))) {
       spd3FilterToggle(s3.filt, key);
     } else if (hit.classList.contains("zu-sv3-fsearch")) {
+      s3.pop.open = !s3.pop.open;   /* v390 兼容分支 */
+    } else if (hit.hasAttribute("data-sv3-fopen") || hit.classList.contains("zu-sv3-fsearch")) {
       s3.pop.open = !s3.pop.open;
+      if (s3.pop.open) {
+        var fb1 = tpsTip.querySelector(".zu-sv3-fbar"), rt1 = tpsTip.querySelector(".zu-sv3-root");
+        if (fb1 && rt1) s3.pop.top = Math.round(fb1.getBoundingClientRect().bottom - rt1.getBoundingClientRect().top + 8);
+      }
     } else if (hit.hasAttribute("data-sv3-all")) {
       /* v384 B2：同 06 分片——SPD3_POOL 是对象数组，全选取 key 串 */
       spd3FilterOnly(s3.filt, (typeof SPD3_POOL !== "undefined" && SPD3_POOL || []).map(function (pm) { return pm.key; }));
@@ -667,7 +673,7 @@
       s3.pop.open = false; s3.pop.query = "";
       tpsTip.__zuTipSig = "";
       showTpsTip(tpsTipFor);
-      var fsBtn3 = tpsTip.querySelector(".zu-sv3-fsearch");
+      var fsBtn3 = tpsTip.querySelector("[data-sv3-fopen]");   /* v390：同 06——归还现役触发按钮 */
       if (fsBtn3 && fsBtn3.focus) fsBtn3.focus();
       return;
     }

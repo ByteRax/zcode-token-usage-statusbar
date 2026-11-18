@@ -2634,7 +2634,7 @@
     function spd3Activate(e) {
       if (!speedSel || typeof spd3FilterToggle !== "function" || typeof speedRebuildNow !== "function") return false;
       var el = e.target && e.target.closest ? e.target.closest(
-        ".zu-sv3-chip,.zu-sv3-fpop-row,.zu-sv3-fsearch,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-more],[data-sv3-act]") : null;
+        ".zu-sv3-chip,.zu-sv3-chip-more,.zu-sv3-fopen,.zu-sv3-fpop-row,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-more],[data-sv3-act]") : null;   /* v390：fsearch 退役，入口=+N/「模型筛选」标签（fopen） */
       if (!el) return false;
       if (!speedSel.filt) speedSel.filt = (typeof spd3FilterAuto === "function") ? spd3FilterAuto() : { mode: "auto", keys: null };
       if (!speedSel.pop) speedSel.pop = { open: false, query: "" };
@@ -2642,7 +2642,15 @@
       if (key && (el.classList.contains("zu-sv3-chip") || el.classList.contains("zu-sv3-fpop-row"))) {
         spd3FilterToggle(speedSel.filt, key);
       } else if (el.classList.contains("zu-sv3-fsearch")) {
+        speedSel.pop.open = !speedSel.pop.open;   /* v390 兼容分支：按钮已退役，防旧缓存帧 */
+      } else if (el.hasAttribute("data-sv3-fopen") || el.classList.contains("zu-sv3-fsearch")) {
+        /* v390 §14.1：+N/「模型筛选」标签打开面板；动态锚定 fpop 顶到 fbar 底+8
+         * （字号缩放安全，替代静态 top 估算） */
         speedSel.pop.open = !speedSel.pop.open;
+        if (speedSel.pop.open) {
+          var fb6 = tip.querySelector(".zu-sv3-fbar"), rt6 = tip.querySelector(".zu-sv3-root");
+          if (fb6 && rt6) speedSel.pop.top = Math.round(fb6.getBoundingClientRect().bottom - rt6.getBoundingClientRect().top + 8);
+        }
       } else if (el.hasAttribute("data-sv3-all")) {
         /* v384 B2：SPD3_POOL 是对象数组，「全选」必须取 key 串（红队实测：对象入 keys
          * 会被 String() 成 "[object Object]"，全选退化成清空且签名坍缩） */
@@ -2775,7 +2783,7 @@
       if (speedSel && speedSel.pop && speedSel.pop.open) {
         speedSel.pop.open = false; speedSel.pop.query = "";
         speedRebuildNow();
-        var fsBtn = tip.querySelector(".zu-sv3-fsearch");
+        var fsBtn = tip.querySelector("[data-sv3-fopen]");   /* v390：归还 fsearch 退役后的现役触发按钮 */
         if (fsBtn && fsBtn.focus) fsBtn.focus();
         return;
       }

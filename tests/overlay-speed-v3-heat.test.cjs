@@ -295,13 +295,15 @@ test('hist: 550 天 → 19 月列月聚合（根类 zu3-hh-mo、YYYY/MM 列帽�
 });
 
 // ---------- ⑤b v388 §12.6 热力密度：≤14 列整块水平居中（zu3-hh-c），>14 列左对齐 ----------
-test('hist §12.6 列数分档对齐: 短周史（≤14 列）根挂 zu3-hh-c（cols/grid 同规则居中）、>14 列维持 flex-start、短月史同款（日卡形态只归 ≤7 天覆盖）', () => {
+// v390 §14.3：10 天已切日历式（zu3-cal），周列式短档样本改用 57 天（>56 恒周列式、
+// 9 列 ≤14）——≤14 居中分档契约本身不变，只换入档样本
+test('hist §12.6 列数分档对齐: 短周史（≤14 列）根挂 zu3-hh-c（cols/grid 同规则居中）、>14 列维持 flex-start、短月史同款（8–42/低行数归 §14.3 日历式）', () => {
   const ctx = makeCtx();
-  // 短周史 10 天（覆盖 >7 → 不切日卡）→ 2 列 ≤14：根挂 zu3-hh-c；样式段含居中规则
-  ctx.__sd = daysN(10);
+  // 短周史 57 天（覆盖 >56 恒周列式）→ 9 列 ≤14：根挂 zu3-hh-c；样式段含居中规则
+  ctx.__sd = daysN(57);
   const rawS = histHTML(ctx, analyzeAll(ctx, '__sd'), ctx.__sd);
-  assert.match(rawS, /class="zu-speed-chart zu-sv-chart zu3-hh zu3-hh-c"/, '短周史（2 列）根挂 zu3-hh-c');
-  assert.doesNotMatch(dom(rawS), /zu3-dc-grid/, '覆盖 10 天 > 7 不切日卡（形态边界归 §13.4 边界用例）');
+  assert.match(rawS, /class="zu-speed-chart zu-sv-chart zu3-hh zu3-hh-c"/, '短周史（9 列）根挂 zu3-hh-c');
+  assert.doesNotMatch(dom(rawS), /zu3-dc-grid|zu3-cal/, '57 天不走日卡/日历式（归 §13.4/§14.3 边界用例）');
   assert.match(rawS, /\.zu-sv3-root \.zu3-hh-c \.zu3-hh-cols,\.zu-sv3-root \.zu3-hh-c \.zu3-hh-grid\{justify-content:center\}/,
     '居中规则：cols 与 grid 同步 justify-content:center');
   // 26 列（177 天）>14：不挂居中类（flex-start 左对齐，横滚有意义）
@@ -493,7 +495,7 @@ test('v387 区间文案: 已结束日=全天；进行中=截至 HH:mm；距末 �
 });
 
 // ---------- v389 §13.4 day-cards 判定边界（覆盖跨度 7/8 天两态） ----------
-test('v389 §13.4 day-cards 边界: 池覆盖 7 自然日→紧凑日卡、8 天→周网格（轴末恒钳今天，日历跨度判定）', () => {
+test('v389 §13.4/v390 §14.3 day-cards 边界: 池覆盖 7 自然日→紧凑日卡、8 天→七列日历式（轴末恒钳今天，日历跨度判定）', () => {
   // 7 天覆盖（10-30..11-05，含今天）→ zu3-dc：恰 7 卡、无星期行、副题=覆盖 7 天
   const ctx7 = makeCtx();
   ctx7.__sd = daysN(7);
@@ -506,20 +508,23 @@ test('v389 §13.4 day-cards 边界: 池覆盖 7 自然日→紧凑日卡、8 天
   assert.equal(count(html7, '<span>周'), 0, '无周列星期行');
   assert.match(cellOf(html7, 0), /zu3-dcd">10\/30</, '首卡=轴首日（今天−6）');
   assert.match(cellOf(html7, 6), /zu-hm-today/, '末卡=今天描边');
-  // 8 天覆盖（10-29..11-05）→ 既有周网格（zu3-hh），不切日卡
+  // 8 天覆盖（10-29..11-05）→ v390 §14.3 七列日历式（zu3-cal），不切日卡也不走周列式
   const ctx8 = makeCtx();
   ctx8.__sd = daysN(8);
   const raw8 = histHTML(ctx8, analyzeAll(ctx8, '__sd'), ctx8.__sd);
   const html8 = dom(raw8);
-  assert.match(html8, /class="zu-speed-chart zu-sv-chart zu3-hh[ "]/, '覆盖 8 天 → 周网格');
+  assert.match(html8, /class="zu-speed-chart zu-sv-chart zu3-cal"/, '覆盖 8 天 → 七列日历式（§14.3）');
   assert.doesNotMatch(html8, /zu3-dc/, '8 天不切日卡');
-  assert.match(raw8, /data-head-sub="按日聚合"/, '周网格副题不变');
-  assert.match(html8, /--zu3-cols:2/, '8 天 → 2 周列');
-  assert.equal(count(html8, '<span>周'), 7, '行首星期行在场');
+  assert.doesNotMatch(html8, /zu3-hh[ "]/, '8 天不走周列式');
+  assert.match(raw8, /data-head-sub="按日 · 日历视图"/, '日历式副题');
+  assert.match(html8, /--zu-hm-rows:2/, '10-29 周四起 lead=4 → ceil(12/7)=2 行');
+  assert.equal(count(html8, 'zu-hm-pad'), 4, '首周 4 补位（10-25..10-28）');
+  assert.equal(count(html8, 'zu-hm-cell'), 8, '每天一格');
+  assert.equal(count(html8, '<span>周'), 7, '周头 7 列（周日..周六）');
 });
 
 // ---------- v389 §13.4 axisA 优先：day-cards 判定读未筛选池时间轴（PRD 5.5 形态稳定） ----------
-test('v389 §13.4 axisA 优先: spanA 随筛选收缩但 axisA（全池 10 天）在场 → 仍周网格不收缩成日卡；老帧缺 axisA 退化读 spanA → 日卡', () => {
+test('v389 §13.4/v390 §14.3 axisA 优先: spanA 随筛选收缩但 axisA（全池 10 天）在场 → 仍 8–42 天日历式不收缩成日卡；老帧缺 axisA 退化读 spanA → 日卡', () => {
   const ctx = makeCtx();
   // A 模型 10-27..11-05 每天一轮（全池覆盖 10 天）；B 模型只 11-04/11-05 各一轮（2 天）
   const raw = [];
@@ -540,10 +545,12 @@ test('v389 §13.4 axisA 优先: spanA 随筛选收缩但 axisA（全池 10 天�
     'axisA=未筛选池首轮 b（10-27 09:59，筛选不收缩时间轴）');
   assert.equal(anF.spanA, new Date(2026, 10, 4, 10, 59).getTime(),
     'spanA=筛选后展示轴首日（11-04，池收缩）');
-  // 行为锁：判定读 axisA（10-27..今天 = 10 天 > 7）→ 仍周网格，不随筛选收缩成日卡
+  // 行为锁：判定读 axisA（10-27..今天 = 10 天，落 §14.3 8–42 档）→ 仍日历式，
+  // 不随筛选收缩成日卡（PRD 5.5 覆盖=池时间轴，形态稳定语义 v390 延续）
   const htmlF = dom(histHTML(ctx, anF, ctx.__sd));
-  assert.match(htmlF, /class="zu-speed-chart zu-sv-chart zu3-hh[ "]/, 'axisA 宽（10 天）→ 周网格');
+  assert.match(htmlF, /class="zu-speed-chart zu-sv-chart zu3-cal"/, 'axisA 宽（10 天）→ 日历式（8–42 天档）');
   assert.doesNotMatch(htmlF, /zu3-dc-grid/, '不随筛选收缩成日卡（PRD 5.5 覆盖=池时间轴）');
+  assert.doesNotMatch(htmlF, /zu3-hh[ "]/, '10 天不走周列式');
   assert.equal(count(htmlF, 'zu-hm-data'), 2, '着色仍按筛选：只 11-04/11-05 两格有数据');
   // 老帧缺 axisA/axisB（旧版本快照）：退化读 spanA（11-04 起 2 天 ≤7）→ 日卡
   ctx.__ANF = anF;
@@ -558,4 +565,75 @@ test('v389 §13.4 axisA 优先: spanA 随筛选收缩但 axisA（全池 10 天�
     ' delete c.spanA; delete c.spanB; return c; })()', ctx);
   const htmlLG = dom(histHTML(ctx, anLegacy, ctx.__sd));
   assert.match(htmlLG, /zu3-dc-grid/, '全缺回退 items 首日（旧行为轴）仍稳定出日卡');
+});
+
+// ---------- v390 §14.3 hist 日历式结构（.zu3-cal，8–42 天七列满幅） ----------
+test('v390 §14.3 hist 日历式: zu3-cal 结构（7 列 minmax(0,1fr) 满幅、行数 ceil、跨月标记、span 外不渲染、hover/roving 既有契约）', () => {
+  const ctx = makeCtx();
+  ctx.__sd = daysN(10);   // 10-27(周二)..11-05，lead=2 → rows=2
+  const an = analyzeAll(ctx, '__sd');
+  const raw = histHTML(ctx, an, ctx.__sd);
+  const html = dom(raw);
+  assert.match(html, /class="zu-speed-chart zu-sv-chart zu3-cal"/, '日历式根类');
+  assert.match(raw, /data-head-sub="按日 · 日历视图"/, '副题=按日 · 日历视图');
+  assert.match(html, /--zu-hm-rows:2/, '行数=ceil((lead+跨度)/7)=ceil(12/7)=2');
+  // 7 列满幅：网格=month 同款 repeat(7,minmax(0,1fr))（无周列式 34–64px 列帽形态）
+  assert.match(raw, /\.zu-sv3-root \.zu3-hm-grid\{[^}]*grid-template-columns:repeat\(7,minmax\(0,1fr\)\)/,
+    '7 列 minmax(0,1fr) 满幅（消除列帽下短跨度两侧大空白）');
+  assert.equal(count(html, '<span>周'), 7, '周头 7 列（周日..周六）');
+  assert.ok(!html.includes('zu3-cl'), '无周列式列头（64px 列帽形态不回归）');
+  assert.ok(!html.includes('--zu3-cols'), '无周列式列数下发');
+  // 格账本：2 前导补位 + 10 span 内格（全有数据）+ 末行 2 未来槽留白（span 外不渲染）
+  assert.equal(count(html, 'zu-hm-pad'), 2, '首周前 2 格补位（10-25/10-26，邻周占位不可交互）');
+  assert.equal(count(html, 'zu-hm-cell'), 10, 'span 内逐格渲染');
+  assert.equal(count(html, 'zu-hm-void'), 0, 'daysN 逐日有数据');
+  assert.equal(count(html, 'role="row"'), 2, '每自然周一行');
+  // 跨月标记：11-01（data-i=5）日号带月前缀；普通日裸日号
+  assert.match(cellOf(html, 5), /zu3-d">11\/1</, '跨月首日带 M/D 标记');
+  assert.match(cellOf(html, 0), /zu3-d">27</, '普通日裸日号');
+  assert.match(cellOf(html, 9), /zu-hm-today/, '末格=今天描边');
+  // roving tabindex：首个数据格 0、其余 -1（方向键由宿主 keydown 委托承担）
+  assert.match(cellOf(html, 0), /tabindex="0"/);
+  assert.match(cellOf(html, 1), /tabindex="-1"/);
+  assert.match(cellOf(html, 9), /tabindex="-1"/);
+  // aria 沿既有契约：完整日期 + 均速档位（绝不 0 t/s）
+  assert.match(cellOf(html, 9), /aria-label="2026年11月5日 周四，均速 [\d.]+ t\/s，[^"]+"/);
+  // 悬停日卡：SPD_PORTAL 侧信道（无数据日/越界序号=空串，既有契约）
+  ctx.__an = an; ctx.__sdh = ctx.__sd; ctx.__hi = 5;
+  vm.runInContext('spd3HistHTML(__an, __sdh, __hi)', ctx);
+  assert.match(portal(ctx), /data-i="5"/, '悬停出日卡（data-i 平铺序，补位不占号）');
+  assert.match(portal(ctx), /<b>11\/1（周日）<\/b>/, '日卡=跨月首日（标题紧凑日期）');
+  assert.match(portal(ctx), /2026\/11\/1 · 全天/, '日卡日期行=完整日期');
+  vm.runInContext('spd3HistHTML(__an, __sdh, -1)', ctx);
+  assert.equal(portal(ctx), '', '未悬停回空串');
+  vm.runInContext('spd3HistHTML(__an, __sdh, 99)', ctx);
+  assert.equal(portal(ctx), '', '越界序号不出卡');
+});
+
+// ---------- v390 §14.3 密度选择器阈值（四档 + 月聚合不变） ----------
+test('v390 §14.3 密度选择器阈值: ≤7 日卡 / 8–42 日历 / 43–56 按覆盖周数（≤8 日历否则周列）/ >56 周列 / >26 周列月聚合', () => {
+  // 夹具轴末恒钳今天（2026-11-05 周四）：各跨度首日星期确定 → 周数/形态确定
+  // 43 天=09-24 周四 lead4 → 7 行；50 天=09-17 周四 lead4 → 8 行（≤8 上沿）；
+  // 55 天=09-12 周六 lead6 / 56 天=09-11 周五 lead5 → 9 行 >8 → 周列式
+  const shapeOf = n => {
+    const c = makeCtx();
+    c.__sd = daysN(n);
+    const h = dom(histHTML(c, analyzeAll(c, '__sd'), c.__sd));
+    if (h.includes('zu3-dc')) return 'dc';
+    if (h.includes('zu3-cal')) return 'cal';
+    if (h.includes('zu3-hh-mo')) return 'mo';
+    if (h.includes('zu3-hh')) return 'hh';
+    return '?';
+  };
+  assert.equal(shapeOf(7), 'dc', '≤7 → 紧凑日卡（§13.4）');
+  assert.equal(shapeOf(8), 'cal', '8 → 日历式（SPD3_HIST_CAL_MAX_DAYS 档下沿）');
+  assert.equal(shapeOf(42), 'cal', '42 → 日历式（跨度上沿）');
+  assert.equal(shapeOf(43), 'cal', '43 → 覆盖自然周 7 行 ≤8 仍日历（防纵挤）');
+  assert.equal(shapeOf(50), 'cal', '50 → 覆盖自然周 8 行（SPD3_HIST_CAL_WEEKS 上沿）仍日历');
+  assert.equal(shapeOf(55), 'hh', '55 → 覆盖自然周 9 行 >8 → 周列式');
+  assert.equal(shapeOf(56), 'hh', '56 → 覆盖自然周 9 行 → 周列式');
+  assert.equal(shapeOf(57), 'hh', '57 → 恒周列式');
+  assert.equal(shapeOf(177), 'hh', '177 → 周列式 26 列（既有，§12.6 样本）');
+  assert.equal(shapeOf(181), 'mo', '181 → 27 列 >26 切月聚合（既有）');
+  assert.equal(shapeOf(550), 'mo', '550 → 月聚合（既有，spec 上限）');
 });

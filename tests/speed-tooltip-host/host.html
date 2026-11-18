@@ -1143,7 +1143,10 @@ window.__zuDiag = function () {
  * ⑧ root data-h-tier 在场且内联 min-height ∈ [300,480]（§12.1 档位表覆盖）；
  * ⑨ 分布表 .zu-sv3-dwrap scrollWidth==clientWidth（§12.7 多模型态 Grid 无溢出）；
  * ⑩ plot 弹性高 ∈ [200,300] 且 plot 底距图表卡内容底 ≤28px（§13.1/§13.7：flex 吸收
- *   拉伸、X 标签带恒贴底——recent/today/week 三形态有 .zu-sc-plot，热力自动跳过）。 */
+ *   拉伸、X 标签带恒贴底——recent/today/week 三形态有 .zu-sc-plot，热力自动跳过）；
+ * ⑪ 筛选弹出层锚定（v390 §14.1）：fpop 打开时 top ≥ fbar 底（锚定筛选栏正下方、
+ *   贴近触发器，间距 ≤24px——默认 top:87px/动态 pop.top 两路径均应落在带内）且
+ *   完全在视口内；fpop 未打开自动跳过。 */
 window.__zuGeometryChecks = function () {
   var out = { checks: [], failures: [] };
   var tipBox = document.getElementById('zu-spd-replica');
@@ -1251,6 +1254,27 @@ window.__zuGeometryChecks = function () {
     f('plot-bottom-gap-28', gap10 <= 28.5,
       'gap=' + Math.round(gap10) + ' (plotBottom=' + Math.round(pb10.bottom) +
       ' contentBottom=' + Math.round(cb10.bottom - (parseFloat(ccs10.paddingBottom) || 0)) + ')');
+  }
+  /* ---------- §14.1（v390 入口统一批验收）----------
+   * ⑪ fpop 锚定筛选栏正下方：top ≥ fbar 底（gap ≥ −1 容差亚像素）、贴近触发器
+   *   （gap ≤ 24px，默认 top:87px 与 fopen 动态 pop.top 两路径都应落在带内）；
+   *   且完全在视口内（与 ⑤ 同判据——⑤ 沿用旧名保兼容，⑪ 语义=锚定+视口合一）。
+   *   fpop 未挂载（关闭态）自动跳过。 */
+  var fpop11 = root.querySelector('.zu-sv3-fpop');
+  if (fpop11) {
+    var fp11 = fpop11.getBoundingClientRect();
+    var bar11 = root.querySelector('.zu-sv3-fbar');
+    if (bar11) {
+      var bb11 = bar11.getBoundingClientRect();
+      var gap11 = fp11.top - bb11.bottom;
+      f('fpop-below-fbar', gap11 >= -1 && gap11 <= 24,
+        'gap=' + Math.round(gap11) + 'px (fbarBottom=' + Math.round(bb11.bottom) +
+        ' fpopTop=' + Math.round(fp11.top) + ')');
+    }
+    var vw11 = window.innerWidth, vh11 = window.innerHeight;
+    f('fpop-in-viewport-anchored', fp11.x >= 0 && fp11.y >= 0 && fp11.right <= vw11 && fp11.bottom <= vh11,
+      'rect=' + [Math.round(fp11.x), Math.round(fp11.y), Math.round(fp11.right), Math.round(fp11.bottom)].join(',') +
+      ' vp=' + vw11 + 'x' + vh11);
   }
   return out;
 };

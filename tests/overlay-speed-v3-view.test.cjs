@@ -136,8 +136,8 @@ test('spd3CardHTML 结构锁: 根类/data-sv-key/双 Tab 组/chips/单多左卡�
   assert.equal((dom.match(/class="zu-sv3-chip"/g) || []).length, 2, 'auto 下 chips 无选中态');
   // 计数行三语义统一（§11.5）：已选 X/Y（auto 时 X=Y）· 本期有效 N（an.perModel.length）
   assert.match(dom, /zu-sv3-fcount">已选 2\/2 · 本期有效 2</);
-  /* 2 模型 ≤ MAX=3：无收纳 → 无搜索按钮（v388 M3 起 4+ 模型池才出现，见分布用例） */
-  assert.doesNotMatch(dom, /zu-sv3-fsearch/, '无收纳不渲染搜索按钮');
+  /* §14.1：搜索按钮整链退役（入口=「模型筛选」标签 + +N 两枚 fopen button） */
+  assert.doesNotMatch(dom, /zu-sv3-fsearch/, 'fsearch 按钮不渲染（§14.1 退役）');
   // 多模型左卡（§11.3）：主数字恒在 → 档位胶囊 → 本期有效计数行 → 分布表，无「唯一模型」
   assert.match(dom, /zu-sv3-main-num"><span class="[a-z-]+">\d/, '多模型主数字恒在（非 —）');
   assert.match(dom, /本期有效 2 个模型 · 3 轮/);
@@ -294,15 +294,18 @@ test('多模型分布: share 数据级和=1、显示占比和=100%、行序按 s
   let sum = 0;
   for (const e of an.perModel) sum += e.share;
   assert.ok(Math.abs(sum - 1) < 1e-9, '数据级 share 和恰为 1');
-  // 折叠态（§11.3）：默认 ≤4 行 + 「查看全部 8 个模型」；主数字恒在；chips 3 枚 + 「+5」（§12.4 预算 3）；8<9 无搜索
+  // 折叠态（§11.3）：默认 ≤4 行 + 「查看全部 8 个模型」；主数字恒在；chips 3 枚 + 「+5」（§12.4 预算 3）
   const dom = stripStyle(cardHTML(ctx, an, sel));
   const tab = tabSlice(dom);
   assert.equal((tab.match(/zu-sv3-drow/g) || []).length, 5, 'Grid 表头 + 4 行（DEF_ROWS=4）');
   assert.match(dom, /<button type="button" class="zu-sv3-more" data-sv3-more aria-expanded="false">查看全部 8 个模型</);
   assert.match(dom, /zu-sv3-main-num"><span class="[a-z-]+">\d/, '多模型主数字恒在（§11.3 折叠态）');
   assert.match(dom, /本期有效 8 个模型 · 8 轮/, '本期有效计数行');
-  assert.match(dom, /\+5<\/span>/, 'chips 常驻 3 枚超出收 +5（§12.4）');
-  assert.match(dom, /zu-sv3-fsearch/, '8 模型池搜索按钮在场（v388 M3）');
+  // §14.1：+N 为弹出层入口真 button（data-sv3-fopen，关闭态 aria-expanded=false）
+  assert.match(dom,
+    /<button type="button" class="zu-sv3-chip-more" data-sv3-fopen aria-haspopup="dialog" aria-expanded="false" title="其余 5 个模型，可搜索查看" aria-label="还有 5 个未展示模型，点击查看和筛选">\+5<\/button>/,
+    'chips 常驻 3 枚超出收 +N button（§12.4/§14.1）');
+  assert.ok(!dom.includes('zu-sv3-fsearch'), 'fsearch 放大镜按钮已退役（§14.1：入口=+N/模型筛选标签）');
   // 行序：share 降序；同 share 内保持 perModel（Σ输出降序）稳定序。
   // 折叠窗只看前 4 行（3/15 档：Model-5 out600 → Model-2 out300；2/15 档前两枚）
   assert.ok(tab.indexOf('Model-5') >= 0 && tab.indexOf('Model-5') < tab.indexOf('Model-2') &&
@@ -426,7 +429,7 @@ test('转义: 模型名/身份键含 <script>/引号 → spdEsc 后输出，data
 });
 
 // ---------- ⑥ 可达性 ----------
-test('a11y: Tab/chips/搜索/展开全为 button+aria，弹出层 role=dialog 且搜索框带 aria-label', () => {
+test('a11y: Tab/chips/入口/展开全为 button+aria，弹出层 role=dialog 且搜索框带 aria-label', () => {
   const ctx = makeCtx();
   const h10 = multiFixture(10);
   const sel = { range: 'session', period: 'all', sid: 'sess_main' };
@@ -434,15 +437,21 @@ test('a11y: Tab/chips/搜索/展开全为 button+aria，弹出层 role=dialog �
   const dom = stripStyle(cardHTML(ctx, an, sel, { pop: { open: true, query: '' } }));
   // 9 枚 Tab 全是 button
   assert.equal((dom.match(/<button type="button" class="zu-sv-tab/g) || []).length, 9);
-  // §12.4 常驻 chips 预算 6→3：10 模型只显 3 枚 button chip + 「+7」收纳标
-  assert.equal((dom.match(/<button type="button" class="zu-sv3-chip/g) || []).length, 3, 'chips 常驻 3 枚且为 button（§12.4）');
-  assert.match(dom, /class="zu-sv3-chip-more" title="其余 7 个模型，可搜索查看">\+7</, '10 模型 → 3 枚 + 「+7」');
+  // §12.4 常驻 chips 预算 6→3：10 模型只显 3 枚 button chip + 「+7」入口
+  // （[ ] 尾哨兵：zu-sv3-chip-more 是另一类名，不并入 chip 计数）
+  assert.equal((dom.match(/<button type="button" class="zu-sv3-chip[ "]/g) || []).length, 3, 'chips 常驻 3 枚且为 button（§12.4）');
+  assert.match(dom,
+    /<button type="button" class="zu-sv3-chip-more" data-sv3-fopen aria-haspopup="dialog" aria-expanded="true" title="其余 7 个模型，可搜索查看" aria-label="还有 7 个未展示模型，点击查看和筛选">\+7<\/button>/,
+    '10 模型 → 3 枚 + 「+7」button（打开态 aria-expanded=true，§14.1）');
   assert.equal((dom.match(/aria-pressed="(true|false)"/g) || []).length,
     (dom.match(/class="zu-sv-tab[ "]/g) || []).length + (dom.match(/class="zu-sv3-chip[ "]/g) || []).length +
     (dom.match(/class="zu-sv3-fpop-row/g) || []).length,
     'Tab+chips+弹出行全带 aria-pressed');
-  // 搜索按钮（10 模型 ≥9）：button + aria-haspopup + aria-expanded 随弹出层开关
-  assert.match(dom, /<button type="button" class="zu-sv3-fsearch" aria-haspopup="dialog" aria-expanded="true"/);
+  // §14.1：弹出层入口恰两枚 data-sv3-fopen button（「模型筛选」标签 + +N），
+  // aria-haspopup=dialog、aria-expanded 随弹出层开关（本例 open=true）
+  assert.equal((dom.match(/data-sv3-fopen/g) || []).length, 2, '入口恰两枚：标签 + +N');
+  assert.match(dom, /<button type="button" class="zu-sv3-flabel" data-sv3-fopen aria-haspopup="dialog" aria-expanded="true">模型筛选</,
+    '「模型筛选」标签为 fopen button（§14.1）');
   // 展开按钮 aria-expanded
   assert.match(dom, /class="zu-sv3-more" data-sv3-more aria-expanded="false"/);
   // 弹出层：role=dialog + aria-label；输入框 aria-label；三个动作按钮
@@ -577,4 +586,96 @@ test('spd3ChartHeadHTML: 标题/t-s 徽章/data-sv-band=当前档位类/区间�
   // overall 缺席：band 空串不高亮
   ctx.__an2 = Object.assign({}, an, { overall: null });
   assert.match(vm.runInContext('spd3ChartHeadHTML(__an2)', ctx), /data-sv-band=""/);
+});
+
+// ---------- ⑨ v390 §14.1 筛选入口统一 ----------
+test('v390 §14.1 入口统一: fsearch 分片+产物双废；+N/「模型筛选」双 fopen 入口 aria 随开关；06/01 白名单/pop.top/Esc 归还源码锁', () => {
+  const ctx = makeCtx();
+  const sel = { range: 'session', period: 'all', sid: 'sess_main' };
+  const an = analyze(ctx, multiFixture(10), sel);
+  // 负向双查：view 分片与 overlay.js 的 SPD_V3_VIEW 产物段均无 fsearch 功能物
+  // （按钮/CSS 规则/图标常量全删；分片头注释「fsearch 退役」的记录性提及不计；
+  // 01/06 委托里的 zu-sv3-fsearch 字样是防旧缓存帧的有意兼容分支，不在 view 产物内）
+  const noFsearchFn = s => !/var SPD3_SVG_SEARCH/.test(s) &&
+    !/<button[^>]*zu-sv3-fsearch/.test(s) && !/\.zu-sv3-root \.zu-sv3-fsearch\{/.test(s);
+  assert.ok(noFsearchFn(view), 'view 分片无 fsearch 按钮/CSS/图标常量');
+  const srcAll = readOverlaySource();
+  const viewSec = srcAll.slice(srcAll.indexOf('/* SPD_V3_VIEW_BEGIN */'), srcAll.indexOf('/* SPD_V3_VIEW_END */'));
+  assert.ok(viewSec.includes('SPD_V3_VIEW_BEGIN') && noFsearchFn(viewSec),
+    'overlay.js 的 SPD_V3_VIEW 产物段无 fsearch 功能物');
+  // 打开/关闭两态：两枚 fopen 入口（标签 + +N）aria-haspopup=dialog、aria-expanded 随 pop.open
+  const domOpen = stripStyle(cardHTML(ctx, an, sel, { pop: { open: true, query: '' } }));
+  assert.equal((domOpen.match(/aria-haspopup="dialog"/g) || []).length, 2, '两枚入口均 aria-haspopup=dialog');
+  assert.equal((domOpen.match(/data-sv3-fopen aria-haspopup="dialog" aria-expanded="true"/g) || []).length, 2,
+    '打开态两入口 aria-expanded=true');
+  const domClosed = stripStyle(cardHTML(ctx, an, sel));
+  assert.equal((domClosed.match(/data-sv3-fopen aria-haspopup="dialog" aria-expanded="false"/g) || []).length, 2,
+    '关闭态两入口 aria-expanded=false');
+  // 06/01 两链源码锁：closest 白名单收纳入口类名、fopen 分支实测 fbar 底缘写 pop.top、
+  // Esc 关闭后焦点归还 [data-sv3-fopen] 触发按钮
+  const shard06 = readOverlayPart('06-instance-dom-and-styles.js');
+  const shard01 = readOverlayPart('01-git-and-doc-tooltips.js');
+  for (const [tag, shard] of [['06', shard06], ['01', shard01]]) {
+    assert.match(shard, /\.zu-sv3-chip,\.zu-sv3-chip-more,\.zu-sv3-fopen,/, tag + ' 委托白名单含 chip-more/fopen 入口');
+    assert.match(shard, /hasAttribute\("data-sv3-fopen"\)/, tag + ' fopen 打开分支在场');
+    assert.match(shard, /pop\.top = Math\.round\(/, tag + ' fopen 打开时实测 fbar 底缘写 pop.top');
+    assert.match(shard, /querySelector\("\[data-sv3-fopen\]"\)/, tag + ' Esc 关闭焦点归还 fopen 触发按钮');
+  }
+});
+
+// ---------- ⑩ v390 §14.1 fpop 锚定 ----------
+test('v390 §14.1 fpop 锚定: CSS 默认 top:87px/右缘 10px/宽 340 无 bottom；pop.top 内联覆写 style="top:Npx"', () => {
+  const ctx = makeCtx();
+  const sel = { range: 'session', period: 'all', sid: 'sess_main' };
+  const an = analyze(ctx, fixture(), sel);
+  const style = cardHTML(ctx, an, sel).match(/<style>[\s\S]*?<\/style>/)[0];
+  const fpopRule = style.match(/\.zu-sv3-root \.zu-sv3-fpop\{[^}]*\}/)[0];
+  assert.match(fpopRule, /position:absolute;right:10px;top:87px/, '默认锚定筛选栏正下方（头部 ~45 + fbar ~34 + 8px）');
+  assert.match(fpopRule, /width:340px/, '宽 340px');
+  assert.ok(!fpopRule.includes('bottom'), 'bottom:10px 废除（卡右下角锚定不再用）');
+  // pop.top 内联覆写：06/01 fopen 分支实测 fbar 底缘写入 ctx.pop.top → spd3CardHTML replace
+  const dom95 = stripStyle(cardHTML(ctx, an, sel, { pop: { open: true, query: '', top: 95 } }));
+  assert.match(dom95, /class="zu-sv3-fpop" style="top:95px" role="dialog"/, 'pop.top=95 → 内联 style="top:95px"');
+  const domDefault = stripStyle(cardHTML(ctx, an, sel, { pop: { open: true, query: '' } }));
+  assert.match(domDefault, /class="zu-sv3-fpop" role="dialog"/, '无 pop.top → 纯 CSS 默认 87px（无内联 style）');
+});
+
+// ---------- ⑪ v390 §14.2 dbar 轨道契约 + Top6+其他 ----------
+test('v390 §14.2 dbar 轨道: 段 min-width:0/stretch 废除 2px 下限；8 模型→7 段其他灰、计数差宽、占比和=100、<0.1% 显示、aria 概况', () => {
+  const ctx = makeCtx();
+  const sel = { range: 'session', period: 'all', sid: 'sess_main' };
+  const an8 = analyze(ctx, multiFixture(8), sel);
+  const style = cardHTML(ctx, an8, sel).match(/<style>[\s\S]*?<\/style>/)[0];
+  // 轨道：flex + align-items:stretch 恒 8px；段 height:100%/align-self:stretch/min-width:0
+  assert.match(style, /\.zu-sv3-root \.zu-sv3-dbar\{display:flex;align-items:stretch;height:8px;/, '轨道 flex+stretch 恒 8px');
+  const segRule = style.match(/\.zu-sv3-root \.zu-sv3-dbar i\{[^}]*\}/)[0];
+  assert.match(segRule, /height:100%;align-self:stretch;flex-shrink:0;min-width:0/, '段宽=真实 share（min-width:0）');
+  assert.ok(!segRule.includes('min-width:2px'), 'min-width:2px 下限废除（19 段碎片化/比例失真根源）');
+  const dom = stripStyle(cardHTML(ctx, an8, sel));
+  // Top6+其他：8 模型 → 6 真实段 + 1 中性灰其他段（无 19 段碎片），Σ段宽=100%
+  const bar = dom.slice(dom.indexOf('zu-sv3-dbar'), dom.indexOf('zu-sv3-dwrap'));
+  assert.equal((bar.match(/<i style=/g) || []).length, 7, '8 模型 → 7 段（Top6+其他）');
+  const widths = [...bar.matchAll(/width:([\d.]+)%/g)].map(m => parseFloat(m[1]));
+  const wSum = widths.reduce((a, b) => a + b, 0);
+  assert.ok(Math.abs(wSum - 100) < 0.01, '段宽和=100%（其他段按原始计数差），实得 ' + wSum);
+  assert.match(bar, /background:var\(--color-tooltip-tag-foreground,#a6a6a6\)/, '其他段=中性灰');
+  assert.match(bar, /title="其他 2 个模型 · 2 次请求 · 13\.3%"/, '其他段 title=名 · 请求数 · 占比（计数差 15−13=2）');
+  // aria 简化为概况（完整数据由下方表格承载）
+  assert.match(dom, /zu-sv3-dbar" role="img" aria-label="模型分布：8 个模型"/, 'dbar aria=「模型分布：N 个模型」');
+  // <0.1%：share<0.001 显「&lt;0.1%」不显 0%（表占比列与段 title 同口径）
+  const t0 = new Date(2026, 10, 5, 9).getTime();
+  const turns = [];
+  let prev = 0;
+  const mkTurn = (abs, idx, out, n) => {
+    turns.push({ s: 0, t: abs - prev, b: abs - 30000, out, ms: 1000, i: out, o: out, n, msl: [[idx, out, 1000, n]] });
+    prev = abs;
+  };
+  mkTurn(t0, 0, 999, 2000);
+  mkTurn(t0 + 60000, 1, 100, 1);
+  const hSk = { sid: 'sess_main', source: 'local', truncated: false, sids: ['sess_main'], snames: ['S'],
+    pids: [['p', 'P']], mnames: ['Big', 'Tiny'], mkeys: ['p\x1fbig', 'p\x1ftiny'], turns };
+  const domSk = stripStyle(cardHTML(ctx, analyze(ctx, hSk, sel), sel));
+  assert.match(domSk, /zu-sv3-pct" role="cell">&lt;0\.1%</, '占比列显 <0.1%（1/2001≈0.05%，不显 0%）');
+  assert.match(domSk, /title="Tiny · 1 次请求 · &lt;0\.1%"/, '段 title 同步 <0.1%');
+  assert.match(domSk, /zu-sv3-dbar" role="img" aria-label="模型分布：2 个模型"/);
 });
