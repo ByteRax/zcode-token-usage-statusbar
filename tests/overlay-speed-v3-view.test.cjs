@@ -136,7 +136,8 @@ test('spd3CardHTML 结构锁: 根类/data-sv-key/双 Tab 组/chips/单多左卡�
   assert.equal((dom.match(/class="zu-sv3-chip"/g) || []).length, 2, 'auto 下 chips 无选中态');
   // 计数行三语义统一（§11.5）：已选 X/Y（auto 时 X=Y）· 本期有效 N（an.perModel.length）
   assert.match(dom, /zu-sv3-fcount">已选 2\/2 · 本期有效 2</);
-  assert.doesNotMatch(dom, /zu-sv3-fsearch/, '<9 模型不渲染搜索按钮');
+  /* 2 模型 ≤ MAX=3：无收纳 → 无搜索按钮（v388 M3 起 4+ 模型池才出现，见分布用例） */
+  assert.doesNotMatch(dom, /zu-sv3-fsearch/, '无收纳不渲染搜索按钮');
   // 多模型左卡（§11.3）：主数字恒在 → 档位胶囊 → 本期有效计数行 → 分布表，无「唯一模型」
   assert.match(dom, /zu-sv3-main-num"><span class="[a-z-]+">\d/, '多模型主数字恒在（非 —）');
   assert.match(dom, /本期有效 2 个模型 · 3 轮/);
@@ -301,7 +302,7 @@ test('多模型分布: share 数据级和=1、显示占比和=100%、行序按 s
   assert.match(dom, /zu-sv3-main-num"><span class="[a-z-]+">\d/, '多模型主数字恒在（§11.3 折叠态）');
   assert.match(dom, /本期有效 8 个模型 · 8 轮/, '本期有效计数行');
   assert.match(dom, /\+5<\/span>/, 'chips 常驻 3 枚超出收 +5（§12.4）');
-  assert.doesNotMatch(dom, /zu-sv3-fsearch/);
+  assert.match(dom, /zu-sv3-fsearch/, '8 模型池搜索按钮在场（v388 M3）');
   // 行序：share 降序；同 share 内保持 perModel（Σ输出降序）稳定序。
   // 折叠窗只看前 4 行（3/15 档：Model-5 out600 → Model-2 out300；2/15 档前两枚）
   assert.ok(tab.indexOf('Model-5') >= 0 && tab.indexOf('Model-5') < tab.indexOf('Model-2') &&
@@ -320,7 +321,7 @@ test('多模型分布: share 数据级和=1、显示占比和=100%、行序按 s
     tabX.indexOf('Model-4') < tabX.indexOf('Model-1') && tabX.indexOf('Model-1') < tabX.indexOf('Model-6') &&
     tabX.indexOf('Model-6') < tabX.indexOf('Model-3') && tabX.indexOf('Model-3') < tabX.indexOf('Model-0'),
     '展开态 8 行完整降序（同档稳定）');
-  const pcts = [...tabX.matchAll(/zu-sv3-pct">([\d.]+)%</g)].map(m => parseFloat(m[1]));
+  const pcts = [...tabX.matchAll(/zu-sv3-pct"[^>]*>([\d.]+)%</g)].map(m => parseFloat(m[1]));   // v388 M1 role 属性插在 class 后
   assert.equal(pcts.length, 8);
   const pctSum = pcts.reduce((a, b) => a + b, 0);
   assert.ok(Math.abs(pctSum - 100) < 0.2, '显示占比和=100%，实得 ' + pctSum);
@@ -334,8 +335,8 @@ test('多模型分布: share 数据级和=1、显示占比和=100%、行序按 s
   assert.doesNotMatch(dom, /<tr>|<th>|<td>/, '旧 table 语义已由 div Grid 替代');
   // 表头三列 dcell：模型/均速/占比（数字列右对齐 zu-sv3-dnum）
   assert.match(dom,
-    /<span class="zu-sv3-dcell">模型<\/span><span class="zu-sv3-dcell zu-sv3-dnum">均速<\/span><span class="zu-sv3-dcell zu-sv3-dnum">占比<\/span>/,
-    'Grid 表头三列：模型/均速/占比');
+    /<span class="zu-sv3-dcell" role="columnheader">模型<\/span><span class="zu-sv3-dcell zu-sv3-dnum" role="columnheader">均速<\/span><span class="zu-sv3-dcell zu-sv3-dnum" role="columnheader">占比<\/span>/,
+    'Grid 表头三列：模型/均速/占比（v388 M1 ARIA 角色）');
   // 降级模式（msAvail=false）：均速列隐藏（两列变体 .zu-sv3-dtab-noms），表格内无 t/s
   const anL = analyze(ctx, fixtureLegacy(), { range: 'session', period: 'all', sid: 'sess_main' });
   assert.equal(anL.msAvail, false);
@@ -345,8 +346,8 @@ test('多模型分布: share 数据级和=1、显示占比和=100%、行序按 s
   assert.match(htmlL, /\.zu-sv3-dtab\.zu-sv3-dtab-noms \.zu-sv3-drow\{grid-template-columns:minmax\(0,1fr\) 44px\}/,
     'msAvail=false 两列 Grid 变体（去均速列）');
   assert.match(domL, /zu-sv3-dtab zu-sv3-dtab-noms/, '降级表挂两列变体类');
-  assert.match(tabL, /<span class="zu-sv3-dcell">模型<\/span><span class="zu-sv3-dcell zu-sv3-dnum">占比<\/span>/,
-    '降级两列表头：模型/占比');
+  assert.match(tabL, /<span class="zu-sv3-dcell" role="columnheader">模型<\/span><span class="zu-sv3-dcell zu-sv3-dnum" role="columnheader">占比<\/span>/,
+    '降级两列表头：模型/占比（含 ARIA 角色）');
   assert.ok(!tabL.includes('均速'), '降级无均速列');
   assert.ok(!tabL.includes('t/s'), '降级表格无 t/s 单位');
   // §11.3 主数字恒在（任何模型数）：2/7/20 模型夹具均为「主数字 → 档位胶囊 → 本期有效」结构
@@ -375,8 +376,8 @@ test('i18n: lang=en 关键文案切英文（SPD_L 桩实现真实 L 逻辑）', 
   assert.match(dom, /2 active models · 3 turns/, '多模型计数行（本期有效语义）');
   assert.match(dom, /Selected models · by requests/, '分布标题');
   assert.match(dom,
-    /<span class="zu-sv3-dcell">Model<\/span><span class="zu-sv3-dcell zu-sv3-dnum">Avg speed<\/span><span class="zu-sv3-dcell zu-sv3-dnum">Share<\/span>/,
-    'Grid 表头 en 三列');
+    /<span class="zu-sv3-dcell" role="columnheader">Model<\/span><span class="zu-sv3-dcell zu-sv3-dnum" role="columnheader">Avg speed<\/span><span class="zu-sv3-dcell zu-sv3-dnum" role="columnheader">Share<\/span>/,
+    'Grid 表头 en 三列（含 ARIA 角色）');
   // chips 显式选中英文计数
   const selAB = { range: 'session', period: 'all', sid: 'sess_main', filt: { mode: 'sel', keys: [KEYS.a, KEYS.b] } };
   const domAB = stripStyle(cardHTML(ctx, analyze(ctx, h, selAB), selAB));

@@ -54,7 +54,7 @@
    * width:100% 相对 wrap 内容宽、叠加自身 margin-left 曾致 plot 右缘 636>606 的 30px
    * 幻影溢出，真机滚动条直证）；折线 svg width=100% 在 plot 内层，% 坐标随缩窄后的
    * plot 自洽（今日/week 的 x 百分比几何不受影响）。wrap 保留 overflow-x:auto 与
-   * 滚动条隐藏纯作防御（基础 min-width:340px 窄窗下限仍在 06 分片）。 */
+   * 滚动条隐藏纯作防御；V3 已覆写 min-width:0，06 基础 340px 下限对 V3 不生效） */
   var SPD3_CHART_CSS = "<style>" +
     /* 容器与滚动 */
     ".zu-sv3-chart{display:flex;flex-direction:column;min-height:0}" +

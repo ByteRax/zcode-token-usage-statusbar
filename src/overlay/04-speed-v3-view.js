@@ -148,7 +148,9 @@
     var act = typeof o.active === "number" ? o.active : 0;
     var count = SPD_L("已选 " + selX + "/" + rows.length + " · 本期有效 " + act,
       "Selected " + selX + "/" + rows.length + " · " + act + " active");
-    var search = rows.length >= 9 ? '<button type="button" class="zu-sv3-fsearch" aria-haspopup="dialog" aria-expanded="' +
+    /* v388 审查 M3：MAX=3 起收纳即可有被收起模型——搜索入口必须在场（原 ≥9
+     * 使 4–8 模型池的第 4+ 个模型不可达） */
+    var search = rows.length > 3 ? '<button type="button" class="zu-sv3-fsearch" aria-haspopup="dialog" aria-expanded="' +
       (o.pop && o.pop.open ? "true" : "false") + '" title="' + spdEsc(SPD_L("搜索模型", "Search models")) +
       '" aria-label="' + spdEsc(SPD_L("搜索模型", "Search models")) + '">' + SPD3_SVG_SEARCH + "</button>" : "";
     return '<div class="zu-sv3-fbar"><span class="zu-sv3-fico">' + SPD3_SVG_FUNNEL + "</span>" +
@@ -297,18 +299,20 @@
     /* §12.2 分布表 div Grid：三列 minmax(0,1fr) 64px 44px（名称可收缩+ellipsis →
      * 行恒不溢出，根除旧 table 23px 横向溢出；行/容器不写 overflow-x）；msAvail=false
      * 两列变体（.zu-sv3-dtab-noms 去均速列）。表头行同 grid。 */
-    var thead = '<div class="zu-sv3-drow zu-sv3-dhead"><span class="zu-sv3-dcell">' + spdEsc(SPD_L("模型", "Model")) + "</span>" +
-      (msAvail ? '<span class="zu-sv3-dcell zu-sv3-dnum">' + spdEsc(SPD_L("均速", "Avg speed")) + "</span>" : "") +
-      '<span class="zu-sv3-dcell zu-sv3-dnum">' + spdEsc(SPD_L("占比", "Share")) + "</span></div>";
+    /* v388 审查 M1：div 化后补 ARIA 表语义（role=table 需 row/cell 子级，否则 AT
+     * 读到零行空表）；列数随 msAvail 变，role 结构同步 */
+    var thead = '<div class="zu-sv3-drow" role="row"><span class="zu-sv3-dcell" role="columnheader">' + spdEsc(SPD_L("模型", "Model")) + "</span>" +
+      (msAvail ? '<span class="zu-sv3-dcell zu-sv3-dnum" role="columnheader">' + spdEsc(SPD_L("均速", "Avg speed")) + "</span>" : "") +
+      '<span class="zu-sv3-dcell zu-sv3-dnum" role="columnheader">' + spdEsc(SPD_L("占比", "Share")) + "</span></div>";
     var DEF_ROWS = 4;   /* §11.3：默认 ≤4 行，data-sv3-more 查看全部（展开态内滚不撑高） */
     var shown = expanded ? shareSorted : shareSorted.slice(0, DEF_ROWS);
     var rowsHtml = "";
     for (var ri = 0; ri < shown.length; ri++) {
       var rm = shown[ri];
-      rowsHtml += '<div class="zu-sv3-drow"><span class="zu-sv3-dcell zu-sv3-dname" title="' + spdEsc(spd3ModelTitle(rm)) + '">' +
+      rowsHtml += '<div class="zu-sv3-drow" role="row"><span class="zu-sv3-dcell zu-sv3-dname" role="cell" title="' + spdEsc(spd3ModelTitle(rm)) + '">' +
         spd3ModelLabel(rm, shareSorted) + "</span>" +
-        (msAvail ? '<span class="zu-sv3-dcell zu-sv3-dnum">' + (rm.tps != null ? spdEsc(spd3FmtV(rm.tps) + SPD_L(" t/s", " t/s")) : "—") + "</span>" : "") +
-        '<span class="zu-sv3-dcell zu-sv3-dnum zu-sv3-pct">' + spdEsc(String(Math.round((rm.share || 0) * 1000) / 10)) + "%</span></div>";
+        (msAvail ? '<span class="zu-sv3-dcell zu-sv3-dnum" role="cell">' + (rm.tps != null ? spdEsc(spd3FmtV(rm.tps) + SPD_L(" t/s", " t/s")) : "—") + "</span>" : "") +
+        '<span class="zu-sv3-dcell zu-sv3-dnum zu-sv3-pct" role="cell">' + spdEsc(String(Math.round((rm.share || 0) * 1000) / 10)) + "%</span></div>";
     }
     var more = "";
     if (shareSorted.length > DEF_ROWS) {
