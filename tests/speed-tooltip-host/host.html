@@ -1107,8 +1107,8 @@ window.__zuDiag = function () {
   };
   function head(t) { return t.querySelector('.zu-sv-head'); }
 };
-/* ---------- §11.7 布局断言（v387 实机修复批验收，PRD 14.2） ----------
- * 五项几何不变量按当前挂载卡形态计算，不适用项自动跳过；调用方只看 failures。
+/* ---------- §11.7 + §12.7 布局断言（v387 实机修复批 + v388 自适应批验收，PRD 14.2） ----------
+ * 九项几何不变量按当前挂载卡形态计算，不适用项自动跳过；调用方只看 failures。
  * 全部读真实 getBoundingClientRect/scroll 几何——修复纪律禁止 overflow 掩盖，
  * 断言因此可以在任何视口宽度下抓越界形态：
  * ① tip root 存在时 scrollWidth==clientWidth（无横向溢出，含根节点自身）；
@@ -1116,7 +1116,11 @@ window.__zuDiag = function () {
  * ③ .zu-sv3-chart 绘图区（.zu-sc-plot）宽 ≥ 容器 85%（recent/today 柱图与 week 折线；
  *   gutter 30px 缩进下正常 ≈95%；month/hist 热力无 .zu-sc-plot 自动跳过）；
  * ④ 月历底边空白 ≤ 1 行格高（minmax(0,1fr) 行自适应填满，4/5/6 周均无底部大空白）；
- * ⑤ 筛选弹出层 .zu-sv3-fpop 完全在视口内。 */
+ * ⑤ 筛选弹出层 .zu-sv3-fpop 完全在视口内；
+ * ⑥ V3 图表 .zu-sc-wrap scrollWidth==clientWidth（§12.7 全形态挂载态，幻影溢出根除）；
+ * ⑦ .zu-sv3-fbar 高度 ≤ 44px（§12.7 恒单行）；
+ * ⑧ root data-h-tier 在场且内联 min-height ∈ [300,480]（§12.1 档位表覆盖）；
+ * ⑨ 分布表 .zu-sv3-dwrap scrollWidth==clientWidth（§12.7 多模型态 Grid 无溢出）。 */
 window.__zuGeometryChecks = function () {
   var out = { checks: [], failures: [] };
   var tipBox = document.getElementById('zu-spd-replica');
@@ -1176,6 +1180,34 @@ window.__zuGeometryChecks = function () {
     f('fpop-in-viewport', fb.x >= 0 && fb.y >= 0 && fb.right <= vw && fb.bottom <= vh,
       'rect=' + [Math.round(fb.x), Math.round(fb.y), Math.round(fb.right), Math.round(fb.bottom)].join(',') +
       ' vp=' + vw + 'x' + vh);
+  }
+  /* ---------- §12.7（v388 自适应批验收）----------
+   * ⑥ V3 图表横滚容器无幻影溢出：.zu-sc-wrap scrollWidth==clientWidth（柱/折线/
+   *   热力全形态挂载态；plot width:auto 根除 30px 幻影后恒等）；
+   * ⑦ 筛选栏恒单行：.zu-sv3-fbar 高度 ≤ 44px（chips 预算 3 + 双层 nowrap 收纳）；
+   * ⑧ 高度档位内联下发：root data-h-tier 在场且内联 min-height ∈ [300,480]
+   *   （档位表 320..470 全覆盖，±10 盒模型校准余量在内）；
+   * ⑨ 分布表无横向溢出：.zu-sv3-dwrap scrollWidth==clientWidth（§12.2 div Grid
+   *   三列 minmax(0,1fr) 64px 44px 根除旧 table 23px 溢出；仅多模型态在场）。 */
+  var wraps = root.querySelectorAll('.zu-sc-wrap');
+  for (var wi = 0; wi < wraps.length; wi++) {
+    var wEl = wraps[wi];
+    f('wrap-no-hscroll[' + wi + ']', wEl.scrollWidth === wEl.clientWidth,
+      'scroll=' + wEl.scrollWidth + ' client=' + wEl.clientWidth);
+  }
+  var fbar = root.querySelector('.zu-sv3-fbar');
+  if (fbar) {
+    var fh = fbar.getBoundingClientRect().height;
+    f('fbar-single-row', fh <= 44, 'fbarH=' + Math.round(fh));
+  }
+  var tierAttr = root.getAttribute('data-h-tier');
+  var mhPx = parseFloat(root.style.minHeight);
+  f('h-tier-inline', !!tierAttr && mhPx >= 300 && mhPx <= 480,
+    'tier=' + tierAttr + ' min-height=' + root.style.minHeight);
+  var dwrap = root.querySelector('.zu-sv3-dwrap');
+  if (dwrap) {
+    f('dist-no-hscroll', dwrap.scrollWidth === dwrap.clientWidth,
+      'scroll=' + dwrap.scrollWidth + ' client=' + dwrap.clientWidth);
   }
   return out;
 };

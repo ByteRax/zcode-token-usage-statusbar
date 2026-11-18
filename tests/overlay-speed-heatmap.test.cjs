@@ -125,10 +125,10 @@ test('month 经 wire: 2026-11 无补位 5 行、今天=档位混底+描边、未
   assert.match(fut, /aria-hidden="true"/);
   assert.equal(count(html, 'zu-hm-fut'), 25, '11-06..30 共 25 个未来日');
   assert.ok(!/均速 0 t\/s|>0<\/span>/.test(html), '绝不伪造 0 t/s');
-  // 头部与图例经 wire 同卡输出
+  // 头部经 wire 同卡输出；v388 §12.6 底部图例整行删除（身份说明并入悬停卡构成行）
   assert.match(html, /zu-sc-head/, '共享图表标题栏');
   assert.match(html, /本月 · 日均生成速度/, 'V3 month 标题');
-  assert.match(html, /颜色标记代表模型/, '多模型图例');
+  assert.doesNotMatch(html, /zu3-lg|颜色标记代表模型/, '多模型产物无图例行（§12.6 整行删除）');
 });
 
 test('month 经 wire: 补位/闰月数学（2026-06 首格 1 pad；2024-02 闰月前补 4 空 29 格）', () => {
@@ -162,7 +162,8 @@ test('month 模型色点经 wire: 四模型日 ≤3 点 + 「+1」、单模型�
   ]);
   const htmlS = dom(card(ctxS, { h: single, sel: { range: 'all', period: 'month' } }));
   assert.ok(!htmlS.includes('zu3-mdot'), '单模型视图不渲染重复色点');
-  assert.match(htmlS, /GLM-A · 单模型/, '单模型图例文案');
+  assert.ok(!htmlS.includes('zu3-lg') && !htmlS.includes('· 单模型'),
+    '单模型产物无图例行（§12.6 整行删除）');
 });
 
 // ---------- ② all 经 wire：截断披露 + 通知行（§11.6 月聚合） ----------

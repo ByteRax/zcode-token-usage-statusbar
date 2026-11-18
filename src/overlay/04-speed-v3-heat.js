@@ -7,8 +7,9 @@
    * 自适应=minmax(0,1fr) 行模板 + wrap flex 链填满可用高，4/5/6 周均无底部大空白）；
    * hist=行=星期（7 行周日..周六）、列=周（列头=周起始 MM/DD，跨月首列加亮；>14 列
    * 时隔列显标签防挤、首列恒显），列宽帽 minmax(34px,64px)（v387 §11.6 去无限 1fr
-   * 拉伸，短跨度不再超宽格；justify-content:flex-start=时间轴自左向右、列少时左对齐
-   * 而不是居中漂浮）；周列数 >SPD3_HIST_MONTH_COLS(26) 切月粒度（v387 §11.6/PRD 7.2：
+   * 拉伸，短跨度不再超宽格；v388 §12.6 列数分档对齐：≤14 列根挂 zu3-hh-c 整块水平
+   * 居中、>14 列 flex-start 左对齐贴满容器）；周列数 >SPD3_HIST_MONTH_COLS(26) 切月
+   * 粒度（v387 §11.6/PRD 7.2：
    * 每列=日历月竖条格，月 v=Σout÷Σms 加权、列头 YYYY/MM、550 日 ≤19 月列无横滚，
    * 原 spec §5「110 列硬帽」被月聚合取代）。格状态五态可区分（spec §5）：补位更暗
    * 不可交互 / 未来遮罩 / 无记录灰 / 有记录档位混底 / 今天描边；绝不伪造 0 t/s。
@@ -114,15 +115,9 @@
     for (var i = 0; i < 7; i++) s += "<span>" + spdEsc(spd3Wd(i)) + "</span>";
     return s;
   }
-  /* 底部图例行（spec §6/§11.5）：「较低/较高」双色渐变段已随 v387 移除（PRD 6.3
-   * 禁止替代档位体系，完整档位说明由图表头 ⓘ hover 承载）；保留右侧模型身份行——
-   * 多模型=「颜色标记代表模型」、单模型也保留=「<模型名> · 单模型」。 */
-  function spd3LegendHTML(an) {
-    var right = (an.perModel && an.perModel.length === 1)
-      ? spdEsc(an.perModel[0].name) + SPD_L(" · 单模型", " · single model")
-      : SPD_L("颜色标记代表模型", "colors mark models");
-    return '<div class="zu3-lg"><span class="zu3-lg-r">' + right + "</span></div>";
-  }
+  /* 底部图例行已随 v388 §12.6/PRD 10.5 整行删除：模型身份色点说明并入日/月悬停卡
+   * 的模型构成行（色点+名），档位说明归图表头 ⓘ hover，常驻行不再有独立信息量。
+   * 原底部图例构建函数（多模型身份行 / 单模型名行的常驻右行）随之删除。 */
   /* 内联样式：全部规则挂 .zu-sv3-root（V3 卡根，view 分片）或 .zu-sv-portal（body
    * 级悬停 Portal 容器）作用域，不与 V2 遗留 .zu-hm-* 全局规则互染；档位混底/
    * 今天描边/焦点描边/ultra 文字修正思路移植 V2 v294/v297 审查结论。静态串无用户
@@ -161,12 +156,15 @@
         "color:var(--color-tooltip-foreground,#fff);white-space:nowrap;overflow:hidden}" +
       /* ---------- hist（.zu3-hh）：行=星期 7 行、列=周（column-major），横滚 ----------
        * v387 §11.6 列宽帽：minmax(34px,64px) 取代无限 1fr——短跨度（≤26 周）列数少
-       * 时不再把少数周列拉成超宽格；justify-content:flex-start（列少左对齐：时间轴
-       * 自左向右、最新周贴右端数据侧，比 center 稳——居中会让时间轴随列数漂浮）；
-       * max-width:100% 防溢出。>26 周切 .zu3-hh-mo 月粒度：每列=日历月竖条格
-       * （grid-row:1/8 跨满 7 行，星期行首标签列在月分支不渲染），列宽下限放宽到
-       * 18px（19 月列 ×64px 上限仍会超容器，18px 下限 + flex-start 左对齐下 19 列
-       * ≈ (容器-缝隙)/19 ≈ 29px 铺满无横滚），min-width 同步放宽（21=18+gap3）。 */
+       * 时不再把少数周列拉成超宽格。v388 §12.6 列数分档对齐：≤14 列（短历史）根挂
+       * zu3-hh-c，cols/grid 两容器同规则 justify-content:center（两容器同 width:100%
+       * 同 justify → 列头与数据网格轨道逐列对齐保持；时间轴左→右语义保留在列序内，
+       * 推翻 v387「列少左对齐」旧结论——宽卡下短历史左对齐留整块右侧空白）；
+       * >14 列不挂类维持 flex-start（长历史铺满容器，左对齐才有横滚意义）。
+       * >26 周切 .zu3-hh-mo 月粒度：每列=日历月竖条格（grid-row:1/8 跨满 7 行，
+       * 星期行首标签列在月分支不渲染），列宽下限放宽到 18px（19 月列 ×64px 上限仍
+       * 会超容器，18px 下限 + flex-start 左对齐下 19 列 ≈ (容器-缝隙)/19 ≈ 29px 铺满
+       * 无横滚），月列 ≤14 的短月史同挂 zu3-hh-c 居中，min-width 同步放宽（21=18+gap3）。 */
       ".zu-sv3-root .zu3-hh{flex:1;min-height:0;min-width:0;display:flex;flex-direction:column}" +
       ".zu-sv3-root .zu3-hh-body{flex:1;min-height:0;display:flex;gap:6px;min-width:0}" +
       ".zu-sv3-root .zu3-hh-wds{flex:0 0 auto;display:grid;grid-template-rows:repeat(7,1fr);gap:3px;padding-top:20px;" +
@@ -182,6 +180,9 @@
       ".zu-sv3-root .zu3-hh-grid{flex:1;min-height:0;display:grid;grid-auto-flow:column;" +
         "grid-template-rows:repeat(7,minmax(0,1fr));grid-auto-columns:minmax(34px,64px);gap:3px;" +
         "justify-content:flex-start}" +
+      /* v388 §12.6 短历史居中：仅 ≤14 列时 builder 在根挂 zu3-hh-c（特异性 0,3,0 高于
+       * 上行 0,2,0 的 flex-start）；cols 与 grid 同规则同步居中，列头/数据轨道逐列对齐 */
+      ".zu-sv3-root .zu3-hh-c .zu3-hh-cols,.zu-sv3-root .zu3-hh-c .zu3-hh-grid{justify-content:center}" +
       ".zu-sv3-root .zu3-hh-mo .zu3-hh-cols,.zu-sv3-root .zu3-hh-mo .zu3-hh-grid{min-width:calc(var(--zu3-cols,1)*21px)}" +
       ".zu-sv3-root .zu3-hh-mo .zu3-hh-cols{grid-template-columns:repeat(var(--zu3-cols,1),minmax(18px,64px))}" +
       ".zu-sv3-root .zu3-hh-mo .zu3-hh-grid{grid-auto-columns:minmax(18px,64px)}" +
@@ -196,13 +197,10 @@
       ".zu-light .zu-sv3-root .zu3-hh-grid .zu-hm-cell.zu-hm-void{background:rgba(0,0,0,.045)}" +
       /* v384 S6-MINOR3：V3 图表横滚条隐藏（06 旧规则只匹配 .zu-sv-chart） */
       ".zu-sv3-root .zu3-hh .zu-sc-wrap::-webkit-scrollbar,.zu-sv3-root .zu3-hm .zu-sc-wrap::-webkit-scrollbar{display:none}" +
-      /* ---------- 共用：模型色点 / 图例 / 空态 ---------- */
+      /* ---------- 共用：模型色点 / 空态（图例行样式已随 v388 §12.6 删除） ---------- */
       ".zu-sv3-root .zu3-mdots,.zu-sv-portal .zu3-mdots{display:inline-flex;align-items:center;gap:2px;flex:0 0 auto}" +
       ".zu-sv3-root .zu3-mdot,.zu-sv-portal .zu3-mdot{width:6px;height:6px;border-radius:50%;display:inline-block;flex:0 0 auto}" +
       ".zu-sv3-root .zu3-mmore,.zu-sv-portal .zu3-mmore{font-size:7px;line-height:1;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
-      /* v387 §11.5：左「较低/较高」渐变段删除后仅剩右侧模型身份行，靠右对齐 */
-      ".zu-sv3-root .zu3-lg{flex:0 0 auto;display:flex;align-items:center;justify-content:flex-end;gap:8px;" +
-        "margin-top:6px;font-size:9px;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-sv3-root .zu3-empty{flex:1;display:flex;align-items:center;justify-content:center;" +
         "color:var(--color-tooltip-tag-foreground,#a6a6a6);font-size:11px}" +
       /* ---------- 日悬停卡（body 级 Portal 内，.zu-sv3-card 全自持样式） ---------- */
@@ -224,7 +222,7 @@
    * agg=null=空日/未来日，铺格由本层区分）。网格=7 列周日首列 × ceil((首日星期+
    * 天数)/7) 行；补位格（邻月占位）不可交互、未来日 aria-hidden 遮罩、无记录灰、
    * 有记录挂档位类（混底走 CSS）、今天描边。格内容=日号+日均速度（一位小数），
-   * 右上模型点见 spd3DotsHTML。头图 sub=聚合粒度说明；底部图例见 spd3LegendHTML。
+   * 右上模型点见 spd3DotsHTML。头图 sub=聚合粒度说明（模型身份说明走悬停卡构成行）。
    * role=grid/row（display:contents 保网格布局）/gridcell；data-i=daysGrid 日序，
    * 悬停重编按同序取日出卡。 */
   function spd3MonthHTML(an, hoverIdx, o) {
@@ -274,8 +272,7 @@
     return '<div class="zu-speed-chart zu-sv-chart zu3-hm">' + spd3HeatStyle() +
       spd3ChartHeadHTML(an, SPD_L("按日聚合", "aggregated by day")) +
       '<div class="zu-sc-wrap"><div class="zu3-hm-week">' + spd3WeekRow() + "</div>" +
-      '<div class="zu3-hm-grid" role="grid" style="--zu-hm-rows:' + rows + '">' + body + "</div></div>" +
-      spd3LegendHTML(an) + "</div>";
+      '<div class="zu3-hm-grid" role="grid" style="--zu-hm-rows:' + rows + '">' + body + "</div></div></div>";
   }
   /* 全部历史热力（spec §5 all 行 + §11.6 v387 月聚合）：行=星期（周日..周六，与列首
    * 周日对齐，同 V2 hist）、列=周（列头=周起始 MM/DD；跨月首列加亮——MM/DD 自带月
@@ -358,13 +355,16 @@
       var moRows = "";
       for (var r4 = 0; r4 < moFlat.length; r4++)
         moRows += '<div role="row" style="display:contents">' + moFlat[r4] + "</div>";
-      return '<div class="zu-speed-chart zu-sv-chart zu3-hh zu3-hh-mo">' + spd3HeatStyle() +
+      /* §12.6 短月史居中：moCols ≤14 时根挂 zu3-hh-c（cols/grid 同规则居中），
+       * >14 列维持 flex-start（月聚合长史铺满容器） */
+      return '<div class="zu-speed-chart zu-sv-chart zu3-hh zu3-hh-mo' + (moCols <= 14 ? " zu3-hh-c" : "") +
+        '">' + spd3HeatStyle() +
         spd3ChartHeadHTML(an, SPD_L("按月聚合", "aggregated by month") + truncTxt) +
         '<div class="zu3-hh-body">' +
         '<div class="zu-sc-wrap" data-sv-end="1"><div class="zu3-hh-scroll">' +
         '<div class="zu3-hh-cols" style="--zu3-cols:' + moCols + '">' + moLabels + "</div>" +
         '<div class="zu3-hh-grid" role="grid" style="--zu3-cols:' + moCols + '">' + moRows + "</div>" +
-        "</div></div></div>" + spd3LegendHTML(an) + "</div>";
+        "</div></div></div></div>";
     }
     var sub = SPD_L("按日聚合", "aggregated by day") + truncTxt;
     var labelEvery = cols > 14 ? 2 : 1;
@@ -405,13 +405,16 @@
     var rowsHtml = "", nRows = Math.ceil(flat.length / 7);
     for (var r3 = 0; r3 < nRows; r3++)
       rowsHtml += '<div role="row" style="display:contents">' + flat.slice(r3 * 7, r3 * 7 + 7).join("") + "</div>";
-    return '<div class="zu-speed-chart zu-sv-chart zu3-hh">' + spd3HeatStyle() +
+    /* §12.6 短历史居中：cols ≤14 时根挂 zu3-hh-c（cols/grid 两容器同步居中，见
+     * spd3HeatStyle 居中规则注释）；>14 列维持 flex-start 左对齐（有横滚意义） */
+    return '<div class="zu-speed-chart zu-sv-chart zu3-hh' + (cols <= 14 ? " zu3-hh-c" : "") +
+      '">' + spd3HeatStyle() +
       spd3ChartHeadHTML(an, sub) +
       '<div class="zu3-hh-body"><div class="zu3-hh-wds">' + spd3WeekRow() + "</div>" +
       '<div class="zu-sc-wrap" data-sv-end="1"><div class="zu3-hh-scroll">' +
       '<div class="zu3-hh-cols" style="--zu3-cols:' + cols + '">' + labels + "</div>" +
       '<div class="zu3-hh-grid" role="grid" style="--zu3-cols:' + cols + '">' + rowsHtml + "</div>" +
-      "</div></div></div>" + spd3LegendHTML(an) + "</div>";
+      "</div></div></div></div>";
   }
   /* 日悬停卡（SPD_PORTAL 内容生产者，纯字符串）：item={t 日零点, b? 进行中当前时刻
    * （调用点已钳 Math.min(桶末, now)；缺席=全天）, agg spd3Aggregate 结果,

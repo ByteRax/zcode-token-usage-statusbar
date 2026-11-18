@@ -107,7 +107,8 @@ if (process.argv.includes('--selftest')) {
     'function spd3ChartHeadHTML(', 'function spd3ChartHTML(', 'function spd3MonthHTML(',
     'function spd3HistHTML(', 'function spd3DayCardHTML(', 'function spd3ChartFor(',
     'function spd3RebuildOr(', 'var SPD3_POOL = [];', 'function spdFitTip(',
-    'function spdHoverPortalSync(', 'function spdLegendTipShow('];
+    'function spdHoverPortalSync(', 'function spdLegendTipShow(',
+    'function spd3HeightTier(', 'function spd3BarDensityStyle('];   /* v388 §12.1/§12.3 新函数锚 */
   const missing = need.filter(s => !slice.includes(s));
   if (missing.length) { console.error('SELFTEST_FAIL missing: ' + missing.join(' | ')); process.exit(1); }
   try { new Function('L', '"' + 'use strict' + '";\n' + slice); }   /* 只编译不执行 */

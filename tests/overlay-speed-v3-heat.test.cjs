@@ -180,21 +180,28 @@ test('month 模型点: 多模型日 ≤3 点 + 「+N」、单模型日 1 点、�
   assert.ok(!htmlS.includes('zu3-mdot'), '单模型视图（perModel=1）不渲染重复色点');
 });
 
-// ---------- ④ 图例（§11.5：较低/较高渐变段移除，保留右侧模型身份行） ----------
-test('month 图例: 较低/较高渐变段已移除（档位说明归标题 ⓘ），右侧模型身份行单/多模型两态', () => {
+// ---------- ④ 图例（v388 §12.6/PRD 10.5：整行删除——身份说明并入日/月悬停卡构成行） ----------
+test('month 图例: 较低/较高渐变段与右侧模型身份行整行删除（zu3-lg 不再出现在任何产物），档位说明归标题 ⓘ', () => {
   const ctx = makeCtx();
   ctx.__h = multiFrame();
   const html = dom(monthHTML(ctx, analyzeMonth(ctx)));
   assert.doesNotMatch(html, /较低|较高/, '替代档位体系的渐变图例不复存在（PRD 6.3）');
   assert.doesNotMatch(html, /linear-gradient/, '无渐变段');
   assert.doesNotMatch(html, /#ff6b57/, '无最低档实色块');
-  assert.match(html, /class="zu3-lg"><span class="zu3-lg-r">颜色标记代表模型<\/span><\/div>/,
-    '多模型=右侧身份行（颜色标记代表模型）');
+  // §12.6 负向锁：底部图例整行删除（多模型身份行「颜色标记代表模型」随之退场，
+  // 模型身份色点说明并入日悬停卡构成行），产物不得再出现 zu3-lg 结构
+  assert.doesNotMatch(html, /zu3-lg/, '多模型 month 产物无 zu3-lg 图例行');
+  assert.doesNotMatch(html, /颜色标记代表模型/, '身份行文案已删除（说明走悬停卡）');
 
   const ctxS = makeCtx();
   ctxS.__h = singleFrame();
   const htmlS = dom(monthHTML(ctxS, analyzeMonth(ctxS)));
-  assert.match(htmlS, /GLM-A · 单模型/, '单模型文案带模型名');
+  assert.doesNotMatch(htmlS, /zu3-lg/, '单模型 month 产物无 zu3-lg 图例行');
+  assert.doesNotMatch(htmlS, /· 单模型/, '单模型身份行文案已删除');
+  // 负向锁放大到分片样式与拼接产物：spd3LegendHTML 已删除、.zu3-lg 规则不存在
+  assert.ok(!heat.includes('spd3LegendHTML'), '图例构建函数已从 heat 分片删除');
+  assert.ok(!heat.includes('zu3-lg'), 'heat 分片源码无 zu3-lg 选择器');
+  assert.ok(!readOverlaySource().includes('zu3-lg'), '拼接产物 overlay.js 无 zu3-lg 残留');
 });
 
 // 550 天（周数阈值边界内/外两态）：26 列内=日粒度周格；>26 周=月聚合
@@ -235,7 +242,7 @@ test('hist: 550 天 → 19 月列月聚合（根类 zu3-hh-mo、YYYY/MM 列帽�
   assert.match(mo, /aria-label="2026年11月，均速 154\.7 t\/s，较快，5 天有记录，10 次请求"/,
     '月格 aria=年月+均速+档位+天数/请求数');
   assert.ok(!html.includes('zu-hm-today'), '月粒度无日级今天描边');
-  assert.match(html, /GLM-A · 单模型/, '单模型图例（右行身份行保留）');
+  assert.doesNotMatch(html, /zu3-lg|· 单模型/, '§12.6 月聚合分支同样无图例行（整行删除）');
 
   const ctxN = makeCtx();
   ctxN.__sd = days550(0);
@@ -277,6 +284,35 @@ test('hist: 550 天 → 19 月列月聚合（根类 zu3-hh-mo、YYYY/MM 列帽�
   assert.equal(count(htmlS, 'zu-hm-pad'), 4, '周首对齐前后补位');
   assert.equal(count(htmlS, 'class="zu3-cl'), 1, '≤14 列逐列显标签');
   assert.match(cellOf(htmlS, 1), /zu-hm-void/, '中间空日=灰格（空=无数据）');
+});
+
+// ---------- ⑤b v388 §12.6 热力密度：≤14 列整块水平居中（zu3-hh-c），>14 列左对齐 ----------
+test('hist §12.6 列数分档对齐: 短历史根挂 zu3-hh-c（cols/grid 同规则居中）、>14 列维持 flex-start、短月史同款', () => {
+  const ctx = makeCtx();
+  // 短历史 3 天 → 1 列 ≤14：根挂 zu3-hh-c；样式段含居中规则（两容器同 justify）
+  ctx.__sd = { v: 1, source: 'local', start: new Date(2026, 10, 3).getTime(),
+    days: [[300, 1000, 1, 1, 0, [[0, 300, 1000, 1, 1]]], [0, 0, 0, 0, 0, 0],
+      [500, 5000, 1, 1, 0, [[0, 500, 5000, 1, 1]]]],
+    mnames: ['GLM-A'], mkeys: [K.a], truncated: 0 };
+  const rawS = histHTML(ctx, analyzeAll(ctx, '__sd'), ctx.__sd);
+  assert.match(rawS, /class="zu-speed-chart zu-sv-chart zu3-hh zu3-hh-c"/, '短历史（1 列）根挂 zu3-hh-c');
+  assert.match(rawS, /\.zu-sv3-root \.zu3-hh-c \.zu3-hh-cols,\.zu-sv3-root \.zu3-hh-c \.zu3-hh-grid\{justify-content:center\}/,
+    '居中规则：cols 与 grid 同步 justify-content:center');
+  // 26 列（177 天）>14：不挂居中类（flex-start 左对齐，横滚有意义）
+  const ctxB = makeCtx();
+  ctxB.__sd = daysN(177);
+  const rawB = histHTML(ctxB, analyzeAll(ctxB, '__sd'), ctxB.__sd);
+  assert.match(rawB, /class="zu-speed-chart zu-sv-chart zu3-hh">/, '26 列不挂 zu3-hh-c（flex-start）');
+  // 月聚合短月史：181 天 → 7 月列 ≤14 → 挂 zu3-hh-c；550 天 19 月列 >14 → 不挂
+  const ctxM = makeCtx();
+  ctxM.__sd = daysN(181);
+  const rawM = histHTML(ctxM, analyzeAll(ctxM, '__sd'), ctxM.__sd);
+  assert.match(rawM, /zu3-hh-mo zu3-hh-c"/, '短月史（7 月列）同挂 zu3-hh-c');
+  const ctxL = makeCtx();
+  ctxL.__sd = days550(0);
+  const htmlL = dom(histHTML(ctxL, analyzeAll(ctxL, '__sd'), ctxL.__sd));
+  // 边界断言（zu3-hh-cols 含 zu3-hh-c 前缀子串，须跟引号/空格才算独立类名）
+  assert.doesNotMatch(htmlL, /zu3-hh-c(?=[ "])/, '550 天 19 月列 >14：DOM 不挂居中类');
 });
 
 // ---------- ⑥ aria / role ----------

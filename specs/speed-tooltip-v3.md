@@ -163,3 +163,43 @@
 ### 11.7 验收断言（新增，PRD 14.2）
 
 harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-filter` 右缘 ≤ tip 内容右缘、图表绘图区宽 ≥ 容器 85%、柱顶标签无碰撞（估宽判定）、Popover 在视口内、月历底边空白 ≤ 1 行格高。真机截图七场景前后对比存档。
+
+## 12. v388 自适应高度与密度分档批（2026-11-18，第三轮）
+
+依据真机 DOM 逐层量测（PRD §2.2 诊断法）。四大根因实测：①wrap 幻影溢出 30px=`.zu-sv3-chart .zu-sc-plot` 同时 `margin-left:30px`（Y gutter 预留）+`width:100%`（相对 wrap 内容宽）→ plot 右缘 636>606；②多模型分布表溢出 23px（tableSW 232>CW 209）；③筛选栏 ≥10 模型换行两行（fbarH 65px）；④root min-height 恒 480px 与内容脱钩（rootH 543 视图间不变）。
+
+### 12.1 高度自适应档位（P0）
+
+- `min-height:480px` 废除，改**离散档位**（渲染端纯函数按 an 计算，写入 root 内联 min-height + `data-h-tier`）：
+  empty→320 / recent n≤3→340、n≤8→360、n≤18→390 / today→400 / week→400 / month rows≤4→430、5→450、6→470 / all 月列≤8→380、≤14→420、else→460（px，实现允许 ±10 按盒模型校准）。
+- 档位离散保证稳定：hover/快照刷新不改变 tier；时间 Tab 切换允许跳档；模型展开不撑高（分布表内滚上限不变）。
+- root 高度语义=`min-height`（内容可超出）；左卡与图表卡等高由 flex stretch 承担，但**内部内容自然流、禁止 margin-top:auto 推底**（§12.2）；图表绘图区独立固定高（charts 自身参数），不随卡拉伸。
+
+### 12.2 左卡自然内容流（P0）
+
+单/多模型统一顺序：标题→主数字→档位→模型行/计数行→本期统计→**分隔线（固定间距）**→峰/低/新。各段固定 margin（8/10px 节奏），消除大弹性空白；「当前模型」行与模型 Chip 完全同名时去重（替换为 有效输出 Token 或省略）；多模型分布表改 CSS Grid 三列 `minmax(0,1fr) 固定 固定`（数字列右对齐、名称 ellipsis+hover 全名、供应商副标保留），**根除横向滚动**（实测 23px）。
+
+### 12.3 柱图密度分档（P0）
+
+- `bars` 容器 `max-width:min(100%, calc(槽数×最大柱心距))` + `margin:0 auto`：n=1→视觉居中；n≤3 maxPitch≈120px（居中分组，禁止两柱顶到两端）；n≤8→满幅均衡（140px 上限不触发）；n>8→紧凑满幅。柱宽密度三档（18/14/10）保留。
+- wrap 幻影：`.zu-sv3-chart .zu-sc-plot` 的 `width:100%` 改 `width:auto`（block+margin-left:30 自动填剩余），溢出 30px 根除；**禁止仅隐藏滚动条**。
+
+### 12.4 筛选栏单行（P1）
+
+`.zu-sv3-fbar{flex-wrap:nowrap}`：chips 区 `flex:1 1 auto;min-width:0;overflow:hidden`（视觉收纳），常驻 chips 预算降为 3（+N 收纳），计数与搜索 `flex:0 0 auto;white-space:nowrap`；长名 Chip ellipsis+hover 全名（已有）。任何模型数下 fbar 高度恒一行。
+
+### 12.5 折线与覆盖提示（P1）
+
+- today/week 绘图区高度降为紧凑档（≈200px 实测校准），卡高随档位自适应后不再有大空白。
+- week 多模型**端数值标签默认不画**（多线右缘堆叠实测重叠）；单模型保留端标签。全模型数值经悬停十字卡。
+- week 覆盖提示：有效 X/7 天（head sub 轻量文案，数据来自 an.real.length）。
+
+### 12.6 热力密度（P1）
+
+- hist 短历史（列数≤14）：网格整体水平居中（数据左→右语义保留在列序内）；列宽帽 64px 不变；卡高档位下格高自然收敛。
+- month：行高随 --zu-hm-rows 分配（1fr 既有）× 卡高档位；进行中日格与空日强度差已存在，复核不回归。
+
+### 12.7 验收断言
+
+- harness 追加：wrap scrollWidth==clientWidth（V3 图表全视图）；分布表无横向溢出；fbar 高度 ≤ 单行（<40px）；各档位 root 高度∈档位表 ±15px；柱组居中分组断言（n≤3 时 bars 盒宽 ≤ n×140+30 且水平居中）。
+- 真机：2 轮/18 轮/多模型 10+/月/全部短历史 截图前后对比。

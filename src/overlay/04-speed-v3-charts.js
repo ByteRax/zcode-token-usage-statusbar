@@ -11,7 +11,9 @@
    * need ≥ maxV×1.12）。month/all 热力形态归 heat 分片，本函数对未知 period 返回
    * 空串（错接线显性暴露，不静默画错图）。横向几何 v387 起恒满幅：柱图走槽位 flex
    * （.zu-sv3-slot 均摊 100%）、折线走 width="100%" + 百分比 x 坐标，无固定柱距、
-   * 无 spacer/min-width 撑宽路径（幻影溢出根治）。样式全部 .zu-sv3- 前缀并集中在常量
+   * 无 spacer/min-width 撑宽路径；v388（§12.3）plot 改 width:auto（margin-left 之外
+   * 剩余宽自然填满，根除 100%+margin-left 组合的 30px 幻影溢出），柱组 n≤8 按
+   * n×maxPitch 密度收窄居中（§12.3 分档）。样式全部 .zu-sv3- 前缀并集中在常量
    * SPD3_CHART_CSS（只在 recent/today/week 三分支产物头部出现一次；.zu-sc-* 基础
    * 类沿用宿主 06 分片静态样式，这里只做 V3 作用域覆写）。本文件可独立
    * node --check、可单独切片进 VM 夹具。 */
@@ -20,7 +22,10 @@
    * 几何纪律（.zcode/rules/overlay-ui.md §5 + spec §11.2）：柱区/绘图区固定 px 不随
    * --ui-font-size，读数一位小数；纵向定高、横向满幅自适应（flex 槽位 / 百分比 x），
    * 不再有固定柱距与横滚撑宽。 */
-  var SPD3_PLOT_H = 148;   /* 柱区 / 折线绘图区固定高（px） */
+  /* v388 §12.5：today/week 绘图区降为紧凑档，PLOT 200px 实测校准（v387 档 148 偏局促；
+   * 柱/折线共用同一常量，Tab 切换绘图区不跳高）。CSS 内全部高度均由常量拼接，
+   * hit 列（height=PLOT）与 svg（height=PLOT+X_H）天然一致。 */
+  var SPD3_PLOT_H = 200;   /* 柱区 / 折线绘图区固定高（px） */
   var SPD3_X_H = 16;       /* X 轴标签带高（px） */
   var SPD3_GUT_W = 30;     /* Y 轴刻度列宽（px，= 柱图 plot 左缩进，刻度走 HTML gutter） */
   /* 绘图区估宽（spec §11.2 / PRD 3.2）：V3 卡 920 − 左卡 250 − gap/padding。
@@ -44,20 +49,26 @@
   /* ==================== ② 图表样式（.zu-sv3- 前缀，集中声明一次） ====================
    * 选择器统一挂 .zu-sv3-chart 作用域（0,2,0 特异性稳定压过 06 分片的 .zu-sc-* 基础
    * 规则，不依赖样式表注入顺序）；V2 专属类（zu-sv-bars/zu-sv-plot 等）随 V2 删除，
-   * 柱组容器/几何在本表自带，不依赖其存留。横向满幅（spec §11.2）：plot 恒 100% 宽
-   * （无 max-content/min-width 撑宽路径，v387 幻影溢出根治），wrap 保留 overflow-x:auto
-   * 与滚动条隐藏纯作防御（满幅后实测 scrollWidth==clientWidth）。 */
+   * 柱组容器/几何在本表自带，不依赖其存留。plot 定宽（spec §12.3）：块级元素
+   * width:auto + margin-left:30 → 在剩余空间内自动填满，右缘=wrap 内容右缘（v387 的
+   * width:100% 相对 wrap 内容宽、叠加自身 margin-left 曾致 plot 右缘 636>606 的 30px
+   * 幻影溢出，真机滚动条直证）；折线 svg width=100% 在 plot 内层，% 坐标随缩窄后的
+   * plot 自洽（今日/week 的 x 百分比几何不受影响）。wrap 保留 overflow-x:auto 与
+   * 滚动条隐藏纯作防御（基础 min-width:340px 窄窗下限仍在 06 分片）。 */
   var SPD3_CHART_CSS = "<style>" +
     /* 容器与滚动 */
     ".zu-sv3-chart{display:flex;flex-direction:column;min-height:0}" +
     ".zu-sv3-chart .zu-sv-empty{flex:1;min-height:120px}" +
     ".zu-sv3-chart .zu-sc-wrap{flex:1;min-height:0;padding:5px 0;box-sizing:border-box;overflow-x:auto;overflow-y:hidden;width:100%}" +
-    /* 槽位满幅 plot：高 164 = 柱区 148 + X 轴 16；左缩进留给 Y 沟槽（基座同款 30px） */
-    ".zu-sv3-chart .zu-sc-plot{height:" + (SPD3_PLOT_H + SPD3_X_H) + "px;margin-left:" + SPD3_GUT_W + "px;min-width:0;width:100%;box-sizing:border-box}" +
+    /* plot：width:auto（块级+margin-left 自动填剩余，§12.3 幻影溢出根除，不隐藏滚动条
+     * 掩盖）；高 = 柱区 PLOT + X 轴 X_H（v388 紧凑档 200+16=216）；左缩进留给 Y 沟槽 */
+    ".zu-sv3-chart .zu-sc-plot{height:" + (SPD3_PLOT_H + SPD3_X_H) + "px;margin-left:" + SPD3_GUT_W + "px;min-width:0;width:auto;box-sizing:border-box}" +
     ".zu-sv3-chart .zu-sc-grid,.zu-sv3-chart .zu-sc-gutter{height:" + SPD3_PLOT_H + "px}" +
     ".zu-sv3-chart .zu-sc-wrap::-webkit-scrollbar{display:none}" +
     /* 柱组：槽位 flex 平铺满幅——每槽 .zu-sv3-slot flex:1 1 0 均摊（min-width:0 防内容
-     * 撑宽），两侧 5px 呼吸边距承担旧 spacer 的缘上呼吸；无 justify-content 挤左路径 */
+     * 撑宽），两侧 5px 呼吸边距承担旧 spacer 的缘上呼吸；无 justify-content 挤左路径。
+     * v388 §12.3 密度分档（max-width 随槽数 n 变化）以内联 style 追加在本规则之上
+     * （见 spd3BarDensityStyle），CSS 类无法按 n 取值故不在此处声明 */
     ".zu-sv3-bars{position:absolute;inset:0;display:flex;width:100%;padding:0 5px;box-sizing:border-box}" +
     ".zu-sv3-bars .zu-sc-col{flex:1 1 0;min-width:0;height:100%;position:relative}" +
     ".zu-sv3-bars .zu-sc-vz{flex:0 0 " + SPD3_PLOT_H + "px;height:" + SPD3_PLOT_H + "px}" +
@@ -178,12 +189,24 @@
     }
     return cols;
   }
-  /* 柱图满幅框架：plot 100% 宽 + HTML 网格/沟槽 + 槽位 flex 柱组（密度类挂柱组） */
+  /* 柱图密度分档（spec §12.3）：槽 flex:1 1 0 满幅保留，柱组整体按 槽数×最大柱心距
+   * 收窄并水平居中——n≤3 → maxPitch=120px（1 轮视觉居中、2-3 轮居中分组，禁止两柱
+   * 顶到两端）；n≤8 → 140px（估宽 620 下 n≥5 即 100% 吃满，上限通常不触发=满幅均衡）；
+   * n>8 不设上限（紧凑满幅）。max-width 值依赖 n，CSS 类无法表达 n×pitch，故以
+   * 内联 style 下发；柱组 absolute（inset:0）下 width:100% 被上限收窄后由 margin:0
+   * auto 的 auto 边距均分居中（CSS2.1 §10.3.7），n>8 无上限时不出内联（恒满幅）。
+   * 柱宽密度三档 18/14/10 与槽位均摊不变。 */
+  function spd3BarDensityStyle(n) {
+    var pitch = n <= 3 ? 120 : n <= 8 ? 140 : 0;
+    return pitch ? ' style="max-width:min(100%,' + (n * pitch) + 'px);margin:0 auto"' : "";
+  }
+  /* 柱图满幅框架：plot auto 宽 + HTML 网格/沟槽 + 槽位 flex 柱组（宽度密度类 + 密度
+   * 分档内联 style 同挂柱组） */
   function spd3BarsFrame(gt, n, cols) {
     return '<div class="zu-sc-wrap" data-sv-end="1"><div class="zu-sc-plot">' +
       '<span class="zu-sc-grid">' + gt.grid + '</span>' +
       '<span class="zu-sc-gutter">' + gt.gutter + '</span>' +
-      '<span class="zu-sv3-bars zu-sv3-w' + (n <= 6 ? 18 : n <= 12 ? 14 : 10) + '">' + cols + "</span></div></div>";
+      '<span class="zu-sv3-bars zu-sv3-w' + (n <= 6 ? 18 : n <= 12 ? 14 : 10) + '"' + spd3BarDensityStyle(n) + ">" + cols + "</span></div></div>";
   }
   /* ==================== ⑤ 悬停卡（五字段 + 真实模型组成） ====================
    * 结构沿 V2 spdCardHTML 纪律：时间（tv 覆写保留，缺省聚合桶区间压缩）/ 速度（档位
@@ -284,8 +307,10 @@
    * <line>（相邻非空点一连，缺口断线不插值：null 即断段）；数据点 circle r=2.5 只落
    * 真实点；命中列 rect（data-i=桶序号，x/width 均 %）承载悬停/键盘，同组内竖线十字
    * 参考线由 CSS :hover/:focus-within 显现。Y 轴刻度/网格走 HTML gutter/grid（% 宽
-   * 横线），与柱图同构。端标签每线一枚（末个非空点；今天多模型同款，PRD 10.2 每线
-   * 仅端标签），上下错开 ≥12px；weekForm 近 7 天附加中性虚线「总体」与单模型分段
+   * 横线），与柱图同构。端数值标签仅单模型绘制（每线一枚=末个非空点，PRD 10.2 每线
+   * 仅端标签；v388 §12.5 起 today/week 多模型 perModel>1 默认不画——多线右缘堆叠实测
+   * 重叠，全模型数值经悬停十字卡），上下错开 ≥12px；weekForm 近 7 天附加中性虚线
+   * 「总体」与单模型分段
    * 面积（嵌套 svg viewBox 0..100 百分比坐标，纯填充拉伸不失真）——spec §5 的总体线
    * 是 week 多模型专属。 */
   function spd3SeriesPts(slots, key) {
@@ -394,8 +419,11 @@
       if (!srs.dashed) for (var i5 = 0; i5 < srs.pts.length; i5++) if (srs.pts[i5] != null)
         body += '<circle class="zu-sv3-pt' + (srs.color ? "" : " zu-sv3-npt") + '" cx="' + xc(i5) +
           '%" cy="' + r1(yOf(srs.pts[i5])) + '" r="2.5"' + (srs.color ? ' fill="' + srs.color + '"' : "") + "/>";
-      /* 端数值标签：每线一枚（末个非空点；今天多模型同款，PRD 10.2 每线仅端标签） */
-      for (var i6 = srs.pts.length - 1; i6 >= 0; i6--) if (srs.pts[i6] != null) {
+      /* 端数值标签：仅单模型（单线）每线一枚（末个非空点）；多模型（perModel>1，
+       * today/week 同款）默认不画——多线右缘堆叠实测重叠（spec §12.5 / PRD 10.2/9.4），
+       * 数值经悬停十字卡与数据点承载。降级多模型（msAvail=false 单中性线）同样跳过，
+       * 判据恒为 perModel>1 */
+      if (!multi) for (var i6 = srs.pts.length - 1; i6 >= 0; i6--) if (srs.pts[i6] != null) {
         labels.push({ y0: yOf(srs.pts[i6]), text: srs.pts[i6].toFixed(1), color: srs.color, dim: srs.dashed || !srs.color });
         break;
       }
@@ -454,8 +482,14 @@
     return slots;
   }
   function spd3WeekHTML(an, hoverIdx, o) {
-    var head = spd3ChartHeadHTML(an, "") || "";
-    return spd3LineHTML(an, hoverIdx, o, spd3WeekSlots(an), head, true);
+    var slots = spd3WeekSlots(an);
+    /* 覆盖提示（spec §12.5）：head sub 轻量小字「有效 X/7 天」，X=7 日槽非空数；
+     * 仅 week 且 X<7 时追加（满 7 天不添噪） */
+    var filled = 0;
+    for (var f = 0; f < slots.length; f++) if (!slots[f].empty) filled++;
+    var head = spd3ChartHeadHTML(an,
+      filled < 7 ? SPD_L("有效 " + filled + "/7 天", filled + "/7 days with data") : "") || "";
+    return spd3LineHTML(an, hoverIdx, o, slots, head, true);
   }
   /* ==================== ⑪ 三形态分发（唯一入口） ==================== */
   function spd3ChartHTML(an, hoverIdx, o) {
