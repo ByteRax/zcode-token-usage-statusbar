@@ -566,6 +566,30 @@ function customCfgFile(entries) {
 }
 const CUSTOM_OK_BODY = JSON.stringify({ success: true, data: { level: "", limits: [] } });
 
+test("custom provider: deleting and recreating the cfg between calls with the same mtime/size does not revive a stale cache", (t) => {
+  const fs = require("fs");
+  const os = require("os");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-qs-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const cfg = path.join(dir, "provider_config.json");
+  const read = (p) => JSON.parse(fs.readFileSync(p, "utf8"));
+  const write = (host) => fs.writeFileSync(cfg, JSON.stringify({ config: { providerConfigRules: { providerRules: [
+    { providerId: "relay-provider", providerName: "relay", config: { api: { type: "openai-chat-completions", baseUrl: "https://" + host + "/v1" }, access: { type: "api-key", apiKey: "sk-x" } } },
+  ] } } }));
+  const fixed = 1700000002;   // 整秒：重建后 mtimeMs 可逐位相同；Windows 文件隧道化复用 birthtime，stamp 靠 ino/dev 判别重建
+  write("relay0.example.com");
+  fs.utimesSync(cfg, fixed, fixed);
+  assert.equal(Q.resolveCustomProvider("relay-provider", read, cfg, "").baseUrl, "https://relay0.example.com/v1");
+  const before = fs.statSync(cfg);
+  fs.rmSync(cfg);   // 删除重建：writeFileSync 原地截断不换文件实例，不能代表隧道化场景
+  write("relay9.example.com");   // 同长度替换：size 相同，缓存只能靠文件实例识别重建
+  fs.utimesSync(cfg, fixed, fixed);
+  const afterStat = fs.statSync(cfg);
+  assert.equal(afterStat.size, before.size);
+  assert.equal(afterStat.mtimeMs, before.mtimeMs);
+  assert.equal(Q.resolveCustomProvider("relay-provider", read, cfg, "").baseUrl, "https://relay9.example.com/v1");
+});
+
 test("custom provider: official host (DeepSeek) hits its balance endpoint; view exposes balance", async () => {
   const clock = { t: T0 };
   const calls = [];

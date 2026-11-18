@@ -29,7 +29,7 @@
 3. **读取口径在 zusage、token_rate 与 inject-main 三端逐项同款**（`host_config()` + `zcode_db_path()` / `_configured_db_path()` / `resolveConfiguredDbPath()`）：
    - config.json 两跳：脚本同目录 → `~/.zcode/zcode-token-usage-statusbar/config.json`；按 UTF-8 读取（含 BOM 的文件三侧都按损坏忽略）。
    - `hosts` 下按宿主名先到者**整段胜出**：第一个含 `hosts.zcode` **对象**的文件决定结果，其 `db_path` 为空串 / 缺键也遮蔽第二跳（三端一致）；`hosts` 非对象、`hosts.zcode` 非对象的文件视同没有该项，继续下一跳。
-   - 值须为非空（strip 后）字符串，经环境变量展开（`$VAR` / `${VAR}` / Windows `%VAR%`）+ `~` 展开；**不检查存在性、不仲裁、不校验绝对性**（显式来源即写库位，同 specs/db-path-stale-arbitration.md 规则 5；相对路径按进程 cwd 解析，文档建议写绝对路径）。
+   - 值须为非空（strip 后）字符串，经环境变量展开（`$VAR` / `${VAR}` / Windows `%VAR%`）+ `~` 展开，展开结果按宿主平台归一分隔符（Node `path.normalize` / Python `Path` 字符串化，模板字面量 `/` 混入 Windows 反斜杠展开值时三端同形）；**不检查存在性、不仲裁、不校验绝对性**（显式来源即写库位，同 specs/db-path-stale-arbitration.md 规则 5；相对路径按进程 cwd 解析，文档建议写绝对路径）。
 4. **容错**：文件缺失 / 不可读 / 损坏 / 非对象 / 类型异常一律视为未配置，逐级回落，**不抛异常、不拖垮统计链**。覆盖指向**不存在**的库不是异常：按「库缺失」降级（`open_db()` 返回 None → 「暂无已完成的模型请求」/ 空输出；`inject-main.cjs` 的 `dbStamp()` 对该自定义库文件名及其 `-wal`/`-shm` 计戳为 `0`），**不回落默认库**——显式配置的错误应可见，不被静默掩盖。
 5. **覆盖在默认解析之上，不并入它**：`_default_db_path` 与 `resolveHostDbDir` 继续与 `zusage.resolve_db_path` 同源镜像宿主链（三处镜像及其交叉一致性用例不变）；覆盖层叠在默认解析之上。
 6. **只作用于 ZCode 宿主语义**：不读 `hosts.workbuddy.db_path`；token_rate 不适用 WorkBuddy（docs/hosts.md §8）。

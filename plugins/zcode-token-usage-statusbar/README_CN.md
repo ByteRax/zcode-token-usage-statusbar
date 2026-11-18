@@ -15,6 +15,7 @@
 
 - Python **3.8+**，仅标准库，无需安装任何 pip 包。
 - Hook 命令按 `python3` → `python` → `py -3` 自动回退（兼容 Windows）。stdio MCP 服务经 `node` 启动包内 `mcp-launch.cjs`（桌面 ZCode 3.17.1 起给 MCP 子进程 PATH 末尾追加 Electron Node 回退 shim；更旧桌面版或无此机制的宿主需本机装有 Node），由它按同一顺序实测探测解释器并透传 stdio 给 `usage_mcp.py`——任何平台都无需手工改 `.mcp.json`（issue #234）。MCP 工具是可选的，命令与 Hook 不依赖它。
+- 以前用过独立安装器（`install.py`）？它可能把同一个 MCP 服务注册进了 `~/.zcode/cli/config.json`，导致每个会话各拉起两份 `usage_mcp.py`（以及各自的 `node` 启动器）。插件会在会话启动时移除这些遗留注册（历史名 `zcode-token-usage-statusbar` / `token-usage` / `zusage`），且仅当其指向本插件运行目录或插件目录内的 `usage_mcp.py`；带自定义键（如 `env`）的条目与其它条目一律保留。插件自己的 `.mcp.json` 继续提供 `token_usage` 工具；需要保留可把 `ZUSAGE_KEEP_LEGACY_MCP` 设为任意非空值（如 `1`）。
 
 ## 安装与首次运行
 
@@ -34,9 +35,9 @@
 
 | 方面 | 行为 |
 |---|---|
-| Hook | `SessionStart` 同步运行文件、检查更新、未注入时自动安装；`PromptSubmit` 记录提问时间戳并追加逐问速率行。 |
+| Hook | `SessionStart` 同步运行文件、检查更新、未注入时自动安装，并清理 `~/.zcode/cli/config.json` 中独立安装遗留的 MCP 注册（仅限指向本插件 `usage_mcp.py` 的条目，改前在同目录留备份）；`PromptSubmit` 记录提问时间戳并追加逐问速率行。 |
 | MCP 服务 | `.mcp.json` 以 stdio JSON-RPC 启动 `usage_mcp.py`，提供 `token_usage(scope)` 工具，只读本地用量数据库。 |
-| 文件写入 | `~/.zcode/zcode-token-usage-statusbar/`（运行文件、配置、会话状态；凭据文件权限 `0600`）；ZCode 客户端目录内的补丁与备份（`app.asar`）；`~/.zcode/zusage3` 中的浮层设置。卸载插件不删除个人配置。 |
+| 文件写入 | `~/.zcode/zcode-token-usage-statusbar/`（运行文件、配置、会话状态；凭据文件权限 `0600`）；ZCode 客户端目录内的补丁与备份（`app.asar`）；`~/.zcode/zusage3` 中的浮层设置；仅当存在独立安装遗留的 MCP 注册时改写 `~/.zcode/cli/config.json`（移除条目并在同目录留 `.zusage-mcp.bak` 改前备份，见上表 Hook 行）。卸载插件不删除个人配置。 |
 | 网络 | 本地统计查询只读 SQLite，不主动上传用量；显式开启的移动端中继另见下一行。套餐额度 chip 默认开启（⚙ 面板可关）：在**内存中**解密宿主持有的 OAuth 凭据，直连 BigModel / Z.ai 用量端点展示套餐额度；凭据绝不写入配置、日志或诊断。预估费用在常驻进程内每 12 小时匿名同步公开模型单价（`models.dev`）与美元汇率（只下载不上传，设 `"pricing": {"fetch": false}` 可彻底关闭）。插件更新会从已配置来源下载代码（更新日志卡片从 GitHub/GitCode 接口拉取 Release 说明）。可选的 SSH/WSL 远端查询走你自行配置的连接通道；插件不解密复用宿主密码或私钥口令，也不自动部署。Git chip 只在本机只读执行 `git` 查询（不 fetch、不联网）。 |
 | 移动端中继 | 默认关闭，仅显式布尔 `mobile_relay.enabled: true` 启用，经官方中继 `wss://zcode.z.ai/api/v1/remote/ws2` 推送，本项目不新增自有服务器。插件载荷无端到端加密，服务端可见；下行包括当前远控会话标识与数值统计、所属主机的今日及项目聚合（可能包含其他会话贡献），不含正文、工作区路径或凭据。手机上行仅含显示偏好与代际计数。此开关只控制插件扩展，不影响官方远控普通消息。 |
 | 执行的命令 | 随插件分发的 Python 脚本；`git`（只读状态查询）；仅对你配置过的远端查询使用 `ssh`/`wsl.exe`。 |
