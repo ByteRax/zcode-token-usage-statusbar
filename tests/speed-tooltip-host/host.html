@@ -548,6 +548,18 @@ var FIXTURES = {
     for (var i = 0; i < 400; i++) list.push({ at: daysAgo(399 - i, 9 + (i % 10), 10 + (i % 50)),
       sps: 60 + ((i * 83) % 220), gen: 6000 });
     return hist(buildTurns(list));
+  },
+  models20: function () {   /* v394：20 模型各 1 轮（默认全量展开+dwrap 内滚验收） */
+    var mnames = [], mkeys = [], turns = [], prev = 0, t0 = new Date(2026, 10, 8, 20).getTime();
+    for (var i = 0; i < 20; i++) {
+      mnames.push('Model-' + i); mkeys.push('p\x1fm' + i);
+      var out = 100 * (i + 1), abs = t0 + i * 60000;
+      turns.push({ s: 0, t: abs - prev, b: abs - 30000, out: out, ms: 1000,
+        i: 80, o: out, n: 1, msl: [[i, out, 1000, 1]] });
+      prev = abs;
+    }
+    return { turns: turns, sids: ['sess_main'], snames: ['速度夹具会话'], pids: [['pid_demo', 'Demo 项目']],
+      mnames: mnames, mkeys: mkeys, sid: 'sess_main', source: 'host-fixture', truncated: false };
   }
 };
 function payload(fx) {
@@ -1169,7 +1181,10 @@ window.__zuDiag = function () {
  *   （≥0.5px 容差），首末柱标签完全在 plot 矩形内（钉边类防裁切验证）；
  * ⑮ 短历史整组居中（v391 §15.3）：cal/day-cards 挂载态周头+网格（或卡组）的
  *   上留白与下留白差 ≤16px（行高帽/卡高帽封顶后 justify-content:center 均分），
- *   行多填满时上下留白≈0 自然满足；非稀疏热力形态自动跳过。 */
+ *   行多填满时上下留白≈0 自然满足；非稀疏热力形态自动跳过。
+ * ⑯ 分布表恒展开（v394 用户裁定）：无 data-sv3-more/zu-sv3-more 折叠按钮；行
+ *   数=表头+全部模型；dwrap computed overflow-y=auto/max-height≤160px 且
+ *   内容超高时 scrollHeight>clientHeight（可滚）；非多模型形态自动跳过。 */
 window.__zuGeometryChecks = function () {
   var out = { checks: [], failures: [] };
   var tipBox = document.getElementById('zu-spd-replica');
@@ -1262,6 +1277,24 @@ window.__zuGeometryChecks = function () {
   if (dwrap) {
     f('dist-no-hscroll', dwrap.scrollWidth === dwrap.clientWidth,
       'scroll=' + dwrap.scrollWidth + ' client=' + dwrap.clientWidth);
+    /* ⑯ 分布表恒展开（v394）：折叠按钮整链退役，全量行+dwrap 内滚 */
+    var dRows = dwrap.querySelectorAll('.zu-sv3-drow');
+    var nModels = (function () {
+      var h = window.__zuDataMode === 'live' ? window.__zuLiveFixture : window.__zuFixture;
+      return h && h.mnames ? h.mnames.length : 0;
+    })();
+    f('dist-always-expanded', !root.querySelector('[data-sv3-more],.zu-sv3-more') && dRows.length > 1,
+      'rows=' + dRows.length + ' models=' + nModels +
+      ' more=' + !!root.querySelector('[data-sv3-more],.zu-sv3-more'));
+    if (nModels > 4) {
+      f('dist-all-rows', dRows.length === nModels + 1,
+        'rows=' + dRows.length + ' expected=' + (nModels + 1));
+      var dcs = getComputedStyle(dwrap);
+      var maxH = parseFloat(dcs.maxHeight) || 9999;
+      f('dist-scrollable', /auto|scroll/.test(dcs.overflowY) && maxH <= 160 && dwrap.scrollHeight > dwrap.clientHeight,
+        'overflowY=' + dcs.overflowY + ' maxH=' + dcs.maxHeight +
+        ' scrollH=' + dwrap.scrollHeight + ' clientH=' + dwrap.clientHeight);
+    }
   }
   /* ---------- ⑫ 分布条段等高（v390 第五轮专项）----------
    * .zu-sv3-dbar 每个可见段（width>0.5px，排除亚像素不可见段）与轨道的

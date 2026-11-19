@@ -509,7 +509,7 @@
     if (!el || !el.__zuT) return false;
     var t = el.__zuT, s3 = t.speedSel;
     var hit = e.target && e.target.closest ? e.target.closest(
-      ".zu-sv3-chip,.zu-sv3-chip-more,.zu-sv3-fopen,.zu-sv3-fpop-row,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-more],[data-sv3-act]") : null;   /* v390：fopen 入口 */
+      ".zu-sv3-chip,.zu-sv3-chip-more,.zu-sv3-fopen,.zu-sv3-fpop-row,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-act]") : null;   /* v390：fopen 入口；v391+：data-sv3-more 折叠链退役 */
     if (!hit || !s3 || typeof spd3FilterToggle !== "function") return false;
     if (!s3.filt) s3.filt = (typeof spd3FilterAuto === "function") ? spd3FilterAuto() : { mode: "auto", keys: null };
     if (!s3.pop) s3.pop = { open: false, query: "" };
@@ -539,8 +539,6 @@
       spd3FilterOnly(s3.filt, []);
     } else if (hit.hasAttribute("data-sv3-reset")) {
       spd3FilterAll(s3.filt);
-    } else if (hit.hasAttribute("data-sv3-more")) {
-      s3.expanded = !s3.expanded;
     } else return false;
     if (!s3.pop.open) s3.pop.query = "";
     t.speedHover = -1;

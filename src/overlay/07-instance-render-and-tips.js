@@ -629,7 +629,7 @@
           speedSel.range = "recent"; speedSel.period = "recent"; speedSel.dim = "time"; speedSel.focus = "";
           /* v384 V3：模型筛选/弹出层/展开态随会话切换一并复位，不串上一 pane */
           if (typeof spd3FilterAuto === "function") speedSel.filt = spd3FilterAuto();
-          speedSel.pop = { open: false, query: "" }; speedSel.expanded = false;
+          speedSel.pop = { open: false, query: "" };
         }
       }
       /* v218 修复：zuBarSpeedView 从不返回 latest 字段，右格恒缺（用户实测「缺少最近
@@ -904,7 +904,7 @@
           speedSel.range = "recent"; speedSel.period = "recent"; speedSel.dim = "time"; speedSel.focus = "";
           /* v384 V3：同上——筛选/弹出层/展开态随会话切换复位 */
           if (typeof spd3FilterAuto === "function") speedSel.filt = spd3FilterAuto();
-          speedSel.pop = { open: false, query: "" }; speedSel.expanded = false;
+          speedSel.pop = { open: false, query: "" };
         }
         }
         var fbBasis = sessAvg

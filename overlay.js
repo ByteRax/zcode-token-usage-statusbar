@@ -1499,7 +1499,7 @@
     if (!el || !el.__zuT) return false;
     var t = el.__zuT, s3 = t.speedSel;
     var hit = e.target && e.target.closest ? e.target.closest(
-      ".zu-sv3-chip,.zu-sv3-chip-more,.zu-sv3-fopen,.zu-sv3-fpop-row,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-more],[data-sv3-act]") : null;   /* v390：fopen 入口 */
+      ".zu-sv3-chip,.zu-sv3-chip-more,.zu-sv3-fopen,.zu-sv3-fpop-row,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-act]") : null;   /* v390：fopen 入口；v391+：data-sv3-more 折叠链退役 */
     if (!hit || !s3 || typeof spd3FilterToggle !== "function") return false;
     if (!s3.filt) s3.filt = (typeof spd3FilterAuto === "function") ? spd3FilterAuto() : { mode: "auto", keys: null };
     if (!s3.pop) s3.pop = { open: false, query: "" };
@@ -1529,8 +1529,6 @@
       spd3FilterOnly(s3.filt, []);
     } else if (hit.hasAttribute("data-sv3-reset")) {
       spd3FilterAll(s3.filt);
-    } else if (hit.hasAttribute("data-sv3-more")) {
-      s3.expanded = !s3.expanded;
     } else return false;
     if (!s3.pop.open) s3.pop.query = "";
     t.speedHover = -1;
@@ -9947,8 +9945,7 @@
    * 纪律（spec §7）：模型 key 不进 className（只进 data-k）；动态文本一律 spdEsc；全部
    * 文案走 SPD_L；颜色语义两套不混用——模型身份色 = spd3Color（SPD3_PALETTE），速度
    * 色阶 = TPS_BANDS 档位类（zu-ultra/ok/warm… 全局色规则继承）。
-   * 集成契约：spd3LeftHTML 第三参 expanded（多模型分布表展开态，调用方传布尔）、第四参
-   * poolSingle（chips 池恰一模型=「真单模型池」，驱动「当前模型」行去重；v390 用户
+   * 集成契约：spd3LeftHTML 第三参 poolSingle（chips 池恰一模型=「真单模型池」，驱动「当前模型」行去重；v390 用户
    * 裁定「唯一模型」徽标与供应商副标 .zu-sv3-msub/.zu-sv3-only 均去除）；
    * 筛选 chips 池缺省取 an.perModel+an.selMissing，
    * 筛选激活时集成方应传 ctx.pool=未筛选全量模型（否则 chips 收缩为已选集，无法点回）。
@@ -10143,8 +10140,8 @@
    * 单模型（perModel 恰 1，无数据模型不计）→ 主数字/档位/模型行/请求轮次/有效输出
    * （或当前模型）；多模型 → 主数字恒在（v387 §11.3：任何模型数不缺均速大数字）→
    * 档位胶囊 → 「本期有效 N 个模型 · M 轮」（selMissing 非空追加无有效记录提示）→ 分布
-   * （堆叠条 + div Grid 网格表默认 ≤4 行，data-sv3-more 查看全部；表容器 max-height
-   * 内滚，展开态不撑高主卡）→ 峰/低/新。分布行序按 share（请求数占比）降序；
+   * （堆叠条 + div Grid 网格表恒全量展开；表容器 max-height 150px 内滚不撑高主卡，
+   * v391 用户裁定「查看全部」折叠按钮退役）→ 峰/低/新。分布行序按 share（请求数占比）降序；
    * msAvail=false 降级：隐藏「均速」列（.zu-sv3-dtab-noms 两列变体），绝不出现 t/s 假值。
    * poolSingle = chips 池恰 1 个真模型——驱动「当前模型」行去重（v390 起「唯一模型」
    * 徽标已按用户裁定去除）；筛选缩到单模型不冒充。「本期统计」组标题与「覆盖范围」
@@ -10174,7 +10171,7 @@
     return '<div class="zu-sv3-main-num"><span class="' + (bd ? bd.cls : "dim") + '">' + spdEsc(spd3FmtV(v)) +
       '</span><span class="zu-sv3-unit">t/s</span></div>';
   }
-  function spd3LeftHTML(an, live, expanded, poolSingle, fmtTok) {
+  function spd3LeftHTML(an, live, poolSingle, fmtTok) {
     an = an || {};
     var overall = an.overall || null;
     var models = an.perModel || [];
@@ -10264,13 +10261,11 @@
     var thead = '<div class="zu-sv3-drow" role="row"><span class="zu-sv3-dcell" role="columnheader">' + spdEsc(SPD_L("模型", "Model")) + "</span>" +
       (msAvail ? '<span class="zu-sv3-dcell zu-sv3-dnum" role="columnheader">' + spdEsc(SPD_L("均速", "Avg speed")) + "</span>" : "") +
       '<span class="zu-sv3-dcell zu-sv3-dnum" role="columnheader">' + spdEsc(SPD_L("占比", "Share")) + "</span></div>";
-    /* DEF_ROWS=4（§11.3）：表=真实模型全量展开的折叠窗，「其他」聚合段不入明细表
-     * （仅 dbar 条聚合，spec §14.2）——表与条口径有意不同 */
-    var DEF_ROWS = 4;   /* 默认 ≤4 行，data-sv3-more 查看全部（展开态内滚不撑高） */
-    var shown = expanded ? shareSorted : shareSorted.slice(0, DEF_ROWS);
+    /* 表=真实模型全量展开（v391 用户裁定：折叠按钮退役，恒展开+容器内滚）；
+     * 「其他」聚合段不入明细表（仅 dbar 条聚合，spec §14.2）——表与条口径有意不同 */
     var rowsHtml = "";
-    for (var ri = 0; ri < shown.length; ri++) {
-      var rm = shown[ri];
+    for (var ri = 0; ri < shareSorted.length; ri++) {
+      var rm = shareSorted[ri];
       rowsHtml += '<div class="zu-sv3-drow" role="row"><span class="zu-sv3-dcell zu-sv3-dname" role="cell" title="' + spdEsc(spd3ModelTitle(rm)) + '">' +
         spd3ModelLabel(rm, shareSorted) + "</span>" +
         (msAvail ? '<span class="zu-sv3-dcell zu-sv3-dnum" role="cell">' + (rm.tps != null ? spdEsc(spd3FmtV(rm.tps) + SPD_L(" t/s", " t/s")) : "—") + "</span>" : "") +
@@ -10279,12 +10274,6 @@
     var top6Pct = 0;
     for (var t6 = 0; t6 < Math.min(6, shareSorted.length); t6++) top6Pct += (shareSorted[t6].share || 0) * 100;
     top6Pct = Math.round(top6Pct);
-    var more = "";
-    if (shareSorted.length > DEF_ROWS) {
-      more = '<button type="button" class="zu-sv3-more" data-sv3-more aria-expanded="' + (expanded ? "true" : "false") + '">' +
-        spdEsc(expanded ? SPD_L("收起", "Show less")
-          : SPD_L("查看全部 " + shareSorted.length + " 个模型", "Show all " + shareSorted.length + " models")) + "</button>";
-    }
     var missN = an.selMissing && an.selMissing.length ? an.selMissing.length : 0;
     return '<div class="zu-sv3-left">' + headRow +
       spd3MainNumHTML(overall.v) +
@@ -10299,7 +10288,7 @@
       spdEsc(SPD_L("模型分布：" + models.length + " 个模型，前 " + Math.min(6, models.length) + " 占 " + top6Pct + "%",
         "Distribution: " + models.length + " models, top " + Math.min(6, models.length) + " at " + top6Pct + "%")) + '">' + bar + "</div>" +
       '<div class="zu-sv3-dwrap"><div class="zu-sv3-dtab' + (msAvail ? "" : " zu-sv3-dtab-noms") +
-      '" role="table">' + thead + rowsHtml + "</div></div>" + more + stats + "</div>";
+      '" role="table">' + thead + rowsHtml + "</div></div>" + stats + "</div>";
   }
   /* ==================== ④b 图表区空态（v387 §11.4） ====================
    * an.real 空（或 !an.overall）时 spd3CardHTML 用本函数替换 <!--CHART--> 占位——占位
@@ -10525,14 +10514,9 @@
       ".zu-sv3-root .zu-sv3-dnum{text-align:right;white-space:nowrap}" +
       ".zu-sv3-root .zu-sv3-dname{display:flex;align-items:center;gap:6px}" +
       ".zu-sv3-root .zu-sv3-dname .zu-sv3-chip-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
-      /* §15.4（v391）：「查看全部 N 个模型」模型列表下方水平居中、轻量次级文本按钮 */
-      ".zu-sv3-root .zu-sv3-more{appearance:none;border:0;background:transparent;font-family:inherit;" +
-        "display:block;width:100%;text-align:center;color:var(--color-tooltip-tag-foreground,#a6a6a6);" +
-        "font-size:calc(var(--ui-font-size,14px) - 3px);padding:5px 8px;margin:2px 0 0;border-radius:7px;cursor:pointer}" +
-      ".zu-sv3-root .zu-sv3-more:hover{color:var(--color-foreground,#e9edf4);background:rgba(255,255,255,.05)}" +
-      ".zu-light .zu-sv3-root .zu-sv3-more:hover{background:rgba(0,0,0,.04)}" +
-      ".zu-sv3-root .zu-sv3-more:active{opacity:.7}" +
-      ".zu-sv3-root .zu-sv3-more:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
+      /* §15.4（v391→v394 用户裁定）：「查看全部」折叠按钮整链退役——分布表恒全量
+       * 展开，.zu-sv3-dwrap max-height:150px 内滚承载（charts 分片无作用域
+       * .zu-sv3-more 规则仍服务槽位卡「另有 N 个模型」行，勿删） */
       /* §13.5 stats 恢复 Footer 语义（推翻 v388 §12.2 的「禁 auto」：第三轮断层实为
        * 分布表缺失时的推底空腔，§12.2 分布表 Grid 化后左卡内容密度已足够）——内容少
        * 时 margin-top:auto 贴底成 Footer，多模型分布表长时 auto=0 自然紧贴上一节；
@@ -10684,7 +10668,7 @@
       spd3HeadHTML(an) +
       spd3FilterBarHTML(pool, filt, { selMissing: an.selMissing, pop: ctx.pop,
         active: an.perModel ? an.perModel.length : 0 }) +
-      '<div class="zu-sv3-main">' + spd3LeftHTML(an, ctx.live, !!ctx.expanded, poolSingle,
+      '<div class="zu-sv3-main">' + spd3LeftHTML(an, ctx.live, poolSingle,
         ctx.o && ctx.o.fmtTok) +
       '<div class="zu-speed-chart zu-sv3-chart" data-sv3-chart>' + chartSlot + "</div></div>" +
       (notice ? '<div class="zu-sv3-notice">' + spdEsc(notice) + "</div>" : "") +
@@ -10722,7 +10706,7 @@
     };
     /* 串级 memo（M4/S10，闭包局部）：V3 卡不含逐拍走字（live 只进 statusText 状态
      * 词），an 引用与呈现态全等的拍产物逐字节恒等——每拍重拼 259KB 级串纯浪费。
-     * 键=[an 引用, hover, expanded, pop.open, pop.query, live.statusText]：交互路径
+     * 键=[an 引用, hover, pop.open, pop.query, live.statusText]：交互路径
      * （柱 hover/chips/Tab/弹出层/会话相位变化→an 引用变）自然失效。缓存命中须同时
      * 保鲜 SPD_PORTAL 侧信道（消费即清后重挂同一悬停卡，否则悬停中下一拍 Portal
      * 被清空收起）。 */
@@ -10742,7 +10726,7 @@
           sid: core.sid, remote: core.remote, filt: dftFilt() }) || an;
       SPD3_POOL = (poolAn && poolAn.perModel) || [];
       var pop = (cur && cur.pop) || { open: false, query: "" };
-      var tail = [hi, cur && cur.expanded ? 1 : 0, pop.open ? 1 : 0, pop.query || "",
+      var tail = [hi, pop.open ? 1 : 0, pop.query || "",
         (live && live.statusText) || ""].join("\u0001");
       if (lastAn === an && lastTail === tail) {
         SPD_PORTAL = lastPortal;
@@ -10751,7 +10735,6 @@
       var chart = spd3ChartFor(an, sd, hi, o);
       var html = spd3CardHTML(an, {
           sel: core, hover: hi, live: live, o: o,
-          expanded: !!(cur && cur.expanded),
           pop: pop,
           pool: SPD3_POOL
         }).replace("<!--CHART-->", chart);
@@ -13213,7 +13196,7 @@
       speedSel = { range: "recent", period: "recent", dim: "time",
         /* v384 V3：模型筛选状态机/弹出层/分布展开（实例级，会话切换与 range/period 一同重置） */
         filt: (typeof spd3FilterAuto === "function" ? spd3FilterAuto() : { mode: "auto", keys: null }),
-        pop: { open: false, query: "" }, expanded: false },   // v254 双 Tab + 维度（实例级，会话切换重置）
+        pop: { open: false, query: "" } },   // v254 双 Tab + 维度（实例级，会话切换重置）
       speedInteractAt = 0,   // v254 最近一次 Tab/维度/柱 hover 交互时刻（updateLive 短冻结防打断）
       compactHid = false;   // v156：display:none 是否由精简模式设置（区分初载 none，避免切档前提前露条）
 
@@ -15536,7 +15519,7 @@
     function spd3Activate(e) {
       if (!speedSel || typeof spd3FilterToggle !== "function" || typeof speedRebuildNow !== "function") return false;
       var el = e.target && e.target.closest ? e.target.closest(
-        ".zu-sv3-chip,.zu-sv3-chip-more,.zu-sv3-fopen,.zu-sv3-fpop-row,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-more],[data-sv3-act]") : null;   /* v390：fsearch 退役，入口=+N/「模型筛选」标签（fopen） */
+        ".zu-sv3-chip,.zu-sv3-chip-more,.zu-sv3-fopen,.zu-sv3-fpop-row,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-act]") : null;   /* v390：fsearch 退役，入口=+N/「模型筛选」标签（fopen）；v391+：分布表恒展开，data-sv3-more 折叠链退役 */
       if (!el) return false;
       if (!speedSel.filt) speedSel.filt = (typeof spd3FilterAuto === "function") ? spd3FilterAuto() : { mode: "auto", keys: null };
       if (!speedSel.pop) speedSel.pop = { open: false, query: "" };
@@ -15569,8 +15552,6 @@
         spd3FilterOnly(speedSel.filt, []);
       } else if (el.hasAttribute("data-sv3-reset")) {
         spd3FilterAll(speedSel.filt);
-      } else if (el.hasAttribute("data-sv3-more")) {
-        speedSel.expanded = !speedSel.expanded;
       } else return false;
       if (!speedSel.pop.open) speedSel.pop.query = "";
       speedChartHover = -1; speedInteractAt = Date.now();
@@ -16554,7 +16535,7 @@
           speedSel.range = "recent"; speedSel.period = "recent"; speedSel.dim = "time"; speedSel.focus = "";
           /* v384 V3：模型筛选/弹出层/展开态随会话切换一并复位，不串上一 pane */
           if (typeof spd3FilterAuto === "function") speedSel.filt = spd3FilterAuto();
-          speedSel.pop = { open: false, query: "" }; speedSel.expanded = false;
+          speedSel.pop = { open: false, query: "" };
         }
       }
       /* v218 修复：zuBarSpeedView 从不返回 latest 字段，右格恒缺（用户实测「缺少最近
@@ -16829,7 +16810,7 @@
           speedSel.range = "recent"; speedSel.period = "recent"; speedSel.dim = "time"; speedSel.focus = "";
           /* v384 V3：同上——筛选/弹出层/展开态随会话切换复位 */
           if (typeof spd3FilterAuto === "function") speedSel.filt = spd3FilterAuto();
-          speedSel.pop = { open: false, query: "" }; speedSel.expanded = false;
+          speedSel.pop = { open: false, query: "" };
         }
         }
         var fbBasis = sessAvg
@@ -22629,7 +22610,7 @@
           (t && t.speedSel) ||
             { range: "recent", period: "recent", dim: "time",
               filt: (typeof spd3FilterAuto === "function" ? spd3FilterAuto() : { mode: "auto", keys: null }),
-              pop: { open: false, query: "" }, expanded: false },
+              pop: { open: false, query: "" } },
           (t && typeof t.speedHover === "number") ? t.speedHover : -1, t && t.speedLive,
           { fmtTok: fmt, fmtCnt: countFmt, fmtMoney: state.cost ? fmtMoney : null }, sess)
         : null);
@@ -22799,7 +22780,7 @@
            * ReferenceError），chip 面的会话归属与格面同源。 */
           { range: "recent", period: "recent", dim: "time",
             filt: (typeof spd3FilterAuto === "function" ? spd3FilterAuto() : { mode: "auto", keys: null }),
-            pop: { open: false, query: "" }, expanded: false },
+            pop: { open: false, query: "" } },
         sessId: (lastView && lastView.session && lastView.session.sid) || "",
         speedHover: prevT && typeof prevT.speedHover === "number" ? prevT.speedHover : -1,
         speedLive: v.kind === "live" ? v.sv : null };

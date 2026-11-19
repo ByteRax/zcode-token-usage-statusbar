@@ -694,6 +694,11 @@ app.whenReady().then(async () => {
     { reload: true, fixture: 'singleDay', theme: 'dark', sel: { range: 'all', period: 'all' }, shot: 'v4-single-day-cards.png' },
   ], log);
 
+  /* 链 M（v394 用户裁定）：20 模型默认全量展开 + 无折叠按钮 + dwrap 内滚（几何 ⑯） */
+  await runChain(wc, win, [
+    { reload: true, fixture: 'models20', theme: 'dark', sel: { range: 'all', period: 'all' }, shot: 'm0-models20-expanded.png' },
+  ], log);
+
   /* 链 D（v389 §13.2/§13.7）：折线 hit 合成 mouseover 出卡——projWeek 近 7 天 5 天有
    * 数据：槽 4（2 天前）有数据出综合日均槽位卡、槽 6（今天空槽）出「无有效速度记录」
    * 轻卡（-empty.png 第二拍）；几何断言含 ⑩ plot 弹性高 ∈[200,300]（§13.1）。 */

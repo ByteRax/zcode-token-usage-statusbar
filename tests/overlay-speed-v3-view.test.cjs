@@ -205,8 +205,8 @@ test('spd3CardHTML 结构锁: 根类/data-sv-key/双 Tab 组/chips/单多左卡�
   // 两链源码锁（§11.4）：06 全量链与 01 精简链的 closest 白名单、mousedown 名单、
   // 委托分支（clear-filter → spd3FilterAll；all-time → period="all"）
   const src = readOverlaySource();
-  assert.equal((src.match(/\[data-sv3-more\],\[data-sv3-act\]/g) || []).length, 2,
-    '06/01 两链 closest 白名单补 data-sv3-act');
+  assert.equal((src.match(/\[data-sv3-reset\],\[data-sv3-act\]"\)/g) || []).length, 2,
+    '06/01 两链 closest 白名单含 data-sv3-act（v391+ data-sv3-more 折叠链退役）');
   assert.equal((src.match(/closest\("\.zu-sv3-empty-wrap"\)/g) || []).length, 2,
     '06/01 两链 mousedown 名单补空态块');
   assert.equal((src.match(/act\d === "clear-filter"\) spd3FilterAll\(/g) || []).length, 2,
@@ -289,12 +289,13 @@ test('多模型分布: share 数据级和=1、显示占比和=100%、行序按 s
   let sum = 0;
   for (const e of an.perModel) sum += e.share;
   assert.ok(Math.abs(sum - 1) < 1e-9, '数据级 share 和恰为 1');
-  // 折叠态（§11.3）：默认 ≤4 行 + 「查看全部 8 个模型」；主数字恒在；chips 3 枚 + 「+5」（§12.4 预算 3）
+  // 恒全量展开（v391+ 用户裁定：「查看全部」折叠按钮退役，dwrap 150px 内滚不撑高）；
+  // 主数字恒在；chips 3 枚 + 「+5」（§12.4 预算 3）
   const dom = stripStyle(cardHTML(ctx, an, sel));
   const tab = tabSlice(dom);
-  assert.equal((tab.match(/zu-sv3-drow/g) || []).length, 5, 'Grid 表头 + 4 行（DEF_ROWS=4）');
-  assert.match(dom, /<button type="button" class="zu-sv3-more" data-sv3-more aria-expanded="false">查看全部 8 个模型</);
-  assert.match(dom, /zu-sv3-main-num"><span class="[a-z-]+">\d/, '多模型主数字恒在（§11.3 折叠态）');
+  assert.equal((tab.match(/zu-sv3-drow/g) || []).length, 9, 'Grid 表头 + 8 行（恒全量展开）');
+  assert.ok(!dom.includes('data-sv3-more') && !dom.includes('zu-sv3-more'), '折叠按钮整链退役');
+  assert.match(dom, /zu-sv3-main-num"><span class="[a-z-]+">\d/, '多模型主数字恒在（§11.3）');
   assert.match(dom, /本期有效 8 个模型 · 8 轮/, '本期有效计数行');
   // §14.1：+N 为弹出层入口真 button（data-sv3-fopen，关闭态 aria-expanded=false）
   assert.match(dom,
@@ -302,17 +303,12 @@ test('多模型分布: share 数据级和=1、显示占比和=100%、行序按 s
     'chips 常驻 3 枚超出收 +N button（§12.4/§14.1）');
   assert.ok(!dom.includes('zu-sv3-fsearch'), 'fsearch 放大镜按钮已退役（§14.1：入口=+N/模型筛选标签）');
   // 行序：share 降序；同 share 内保持 perModel（Σ输出降序）稳定序。
-  // 折叠窗只看前 4 行（3/15 档：Model-5 out600 → Model-2 out300；2/15 档前两枚）
+  // 全量展开首行（3/15 档：Model-5 out600 → Model-2 out300；2/15 档前两枚）
   assert.ok(tab.indexOf('Model-5') >= 0 && tab.indexOf('Model-5') < tab.indexOf('Model-2') &&
     tab.indexOf('Model-2') < tab.indexOf('Model-7') && tab.indexOf('Model-7') < tab.indexOf('Model-4'),
-    '折叠态前 4 行按请求数占比降序（同档稳定）');
-  // 展开态：8 行全显（dwrap 150px 内滚不撑高）+ 占比显示和 = 100%
-  const domX = stripStyle(cardHTML(ctx, an, sel, { expanded: true }));
-  const tabX = tabSlice(domX);
-  assert.equal((tabX.match(/zu-sv3-drow/g) || []).length, 9, 'Grid 表头 + 8 行');
-  assert.match(domX, /data-sv3-more/);
-  assert.match(domX, /aria-expanded="true"/);
-  assert.match(domX, /zu-sv3-more"[^>]*>收起</, '展开态按钮切「收起」');
+    '分布行按请求数占比降序（同档稳定）');
+  // 占比显示和 = 100%（全量行）
+  const tabX = tab;
   // 完整行序（8 行）：3/15 档 → 2/15 档 → 1/15 档，档内按 Σ输出降序稳定
   assert.ok(tabX.indexOf('Model-5') < tabX.indexOf('Model-2') &&
     tabX.indexOf('Model-2') < tabX.indexOf('Model-7') && tabX.indexOf('Model-7') < tabX.indexOf('Model-4') &&
@@ -447,8 +443,8 @@ test('a11y: Tab/chips/入口/展开全为 button+aria，弹出层 role=dialog �
   assert.equal((dom.match(/data-sv3-fopen/g) || []).length, 2, '入口恰两枚：标签 + +N');
   assert.match(dom, /<button type="button" class="zu-sv3-flabel" data-sv3-fopen aria-haspopup="dialog" aria-expanded="true">模型筛选</,
     '「模型筛选」标签为 fopen button（§14.1）');
-  // 展开按钮 aria-expanded
-  assert.match(dom, /class="zu-sv3-more" data-sv3-more aria-expanded="false"/);
+  // v391+：分布表折叠按钮退役（全 button+aria 面只剩 fopen 两入口）
+  assert.ok(!dom.includes('data-sv3-more'), 'data-sv3-more 折叠按钮已退役');
   // 弹出层：role=dialog + aria-label；输入框 aria-label；三个动作按钮
   assert.match(dom, /class="zu-sv3-fpop" role="dialog" aria-label="模型筛选"/);
   assert.match(dom, /<input type="text" class="zu-sv3-fpop-input" aria-label="搜索模型"/);
@@ -668,19 +664,19 @@ test('v391 §15.2/§15.4: 图表边框只挂外层 [data-sv3-chart]、内层盒�
   const sel = { range: 'session', period: 'all', sid: 'sess_main' };
   const an = analyze(ctx, fixture(), sel);
   const style = cardHTML(ctx, an, sel).match(/<style>[\s\S]*?<\/style>/)[0];
+  const dom = stripStyle(cardHTML(ctx, an, sel));
   // §15.2：边框/圆角/padding 收窄到外层卡 [data-sv3-chart]（charts 分片内层同名盒
   // 曾双重命中 → 绘图区外多一层边框+双层 padding）
   assert.match(style, /\.zu-sv3-root \.zu-sv3-chart\[data-sv3-chart\]\{border:1px solid/,
     '边框规则挂 [data-sv3-chart]（外层卡）');
   const flexRule = style.match(/\.zu-sv3-root \.zu-sv3-chart\{[^}]*\}/)[0];
   assert.ok(!flexRule.includes('border'), '无属性限定符的 .zu-sv3-chart 规则不再带边框');
-  // §15.4：「查看全部」块级全宽水平居中、次级文本色、hover/active/focus 反馈
-  const moreRule = style.match(/\.zu-sv3-root \.zu-sv3-more\{[^}]*\}/)[0];
-  assert.match(moreRule, /display:block;width:100%;text-align:center/, '块级全宽水平居中');
-  assert.match(moreRule, /var\(--color-tooltip-tag-foreground/, '次级文本色');
-  assert.match(style, /\.zu-sv3-root \.zu-sv3-more:active\{opacity:\.7\}/, 'active 反馈');
-  assert.match(style, /\.zu-sv3-root \.zu-sv3-more:hover\{color:var\(--color-foreground/, 'hover 提亮');
-  assert.match(style, /\.zu-sv3-root \.zu-sv3-more:focus-visible\{outline:2px solid/, 'focus-visible 焦点环');
+  // §15.4→v391+ 用户裁定：「查看全部」折叠按钮整链退役；分布表恒全量展开、
+  // .zu-sv3-dwrap max-height:150px 内滚承载（布局稳定）
+  assert.ok(!/\.zu-sv3-root \.zu-sv3-more/.test(style), 'view 作用域 .zu-sv3-more 规则已删');
+  assert.match(dom, /class="zu-sv3-dwrap"><div class="zu-sv3-dtab"/, '分布表恒渲染（无折叠窗）');
+  const dwrapRule = style.match(/\.zu-sv3-root \.zu-sv3-dwrap\{[^}]*\}/)[0];
+  assert.match(dwrapRule, /max-height:150px;overflow-y:auto/, 'dwrap 内滚帽（布局稳定承载）');
   // §11.3 主数字恒在 + §14.2 Top6+其他：19 模型 → 主数字在场、恰 7 段（6+其他）
   const an19 = analyze(ctx, multiFixture(19), sel);
   const dom19 = stripStyle(cardHTML(ctx, an19, sel));
@@ -693,7 +689,7 @@ test('v391 §15.2/§15.4: 图表边框只挂外层 [data-sv3-chart]、内层盒�
   const dom4 = stripStyle(cardHTML(ctx, an4, sel));
   const bar4 = dom4.slice(dom4.indexOf('zu-sv3-dbar'), dom4.indexOf('zu-sv3-dwrap'));
   assert.equal((bar4.match(/<i style=/g) || []).length, 4, '4 模型 → 4 段（无其他段）');
-  assert.ok(!dom4.includes('data-sv3-more'), '4 模型 ≤ DEF_ROWS 不出「查看全部」');
+  assert.ok(!dom4.includes('data-sv3-more'), '折叠按钮已退役（4 模型态同样无）');
   assert.equal((dom4.match(/role="row"/g) || []).length, 5, '表头+4 数据行全显');
   assert.match(dom4, /zu-sv3-main-num"><span class="[a-z-]+">\d/, '4 模型主数字恒在');
 });

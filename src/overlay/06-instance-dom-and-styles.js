@@ -311,7 +311,7 @@
       speedSel = { range: "recent", period: "recent", dim: "time",
         /* v384 V3：模型筛选状态机/弹出层/分布展开（实例级，会话切换与 range/period 一同重置） */
         filt: (typeof spd3FilterAuto === "function" ? spd3FilterAuto() : { mode: "auto", keys: null }),
-        pop: { open: false, query: "" }, expanded: false },   // v254 双 Tab + 维度（实例级，会话切换重置）
+        pop: { open: false, query: "" } },   // v254 双 Tab + 维度（实例级，会话切换重置）
       speedInteractAt = 0,   // v254 最近一次 Tab/维度/柱 hover 交互时刻（updateLive 短冻结防打断）
       compactHid = false;   // v156：display:none 是否由精简模式设置（区分初载 none，避免切档前提前露条）
 
@@ -2634,7 +2634,7 @@
     function spd3Activate(e) {
       if (!speedSel || typeof spd3FilterToggle !== "function" || typeof speedRebuildNow !== "function") return false;
       var el = e.target && e.target.closest ? e.target.closest(
-        ".zu-sv3-chip,.zu-sv3-chip-more,.zu-sv3-fopen,.zu-sv3-fpop-row,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-more],[data-sv3-act]") : null;   /* v390：fsearch 退役，入口=+N/「模型筛选」标签（fopen） */
+        ".zu-sv3-chip,.zu-sv3-chip-more,.zu-sv3-fopen,.zu-sv3-fpop-row,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-act]") : null;   /* v390：fsearch 退役，入口=+N/「模型筛选」标签（fopen）；v391+：分布表恒展开，data-sv3-more 折叠链退役 */
       if (!el) return false;
       if (!speedSel.filt) speedSel.filt = (typeof spd3FilterAuto === "function") ? spd3FilterAuto() : { mode: "auto", keys: null };
       if (!speedSel.pop) speedSel.pop = { open: false, query: "" };
@@ -2667,8 +2667,6 @@
         spd3FilterOnly(speedSel.filt, []);
       } else if (el.hasAttribute("data-sv3-reset")) {
         spd3FilterAll(speedSel.filt);
-      } else if (el.hasAttribute("data-sv3-more")) {
-        speedSel.expanded = !speedSel.expanded;
       } else return false;
       if (!speedSel.pop.open) speedSel.pop.query = "";
       speedChartHover = -1; speedInteractAt = Date.now();
