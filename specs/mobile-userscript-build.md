@@ -12,7 +12,7 @@
 | `src/mobile/30-ws-hook.js` | 透明 WebSocket 包装、已有 `__zmWSList` 补挂、连接诊断脱敏 |
 | `src/mobile/40-fallback-ui.js` | 仅调试面板、启动和 dispose；文件名保留，已无 fallback UI |
 | `scripts/build_mobile_userscript.py` | 拼接手机分片，将 `build_overlay.assemble_bytes` 的完整输出编码为 JS 字符串嵌入，生成正式/调试两份产物 |
-| `zusage-mobile.user.js` / `zusage-mobile.debug.user.js` | 项目根目录的正式/调试构建产物，随源码提交；不进插件 ZIP 或稳定运行目录 |
+| `zusage-mobile.user.js` / `zusage-mobile.debug.user.js` | 项目根目录的正式/调试构建产物，作为发布快照随发版提交；不进插件 ZIP 或稳定运行目录 |
 
 ## 安装与同步
 
