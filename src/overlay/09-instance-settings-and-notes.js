@@ -682,14 +682,14 @@
       node.textContent = pending ? (state.pluginUpdate && state.pluginUpdate.feedbackVersion >= 1 ? L("操作已发出，等待确认…", "Sent; awaiting confirmation…") : L("操作已发出；保存确认需重启后端", "Sent; restart the backend for save confirmation")) : error ? L("保存失败，请重试", "Save failed; try again") : L("已保存", "Saved");
       node.classList.toggle("zu-feedback-error", !!error);
     }
-    function showSourceFeedback(id, error, pending) {
-      sourceFeedback[id] = { error: !!error, pending: !!pending };
+    function showSourceFeedback(id, error, pending, text) {
+      sourceFeedback[id] = { error: !!error, pending: !!pending, text: text || "" };   // text：千问登录等自定义反馈（重建行时保留）
       var rows = panel.querySelectorAll(".zu-src-row[data-src]");
       for (var i = 0; i < rows.length; i++) {
         if (rows[i].getAttribute("data-src") !== String(id)) continue;
         var node = rows[i].querySelector(".zu-src-feedback");
         if (!node) return;
-        node.textContent = pending ? (state.pluginUpdate && state.pluginUpdate.feedbackVersion >= 1 ? L("操作已发出，等待确认…", "Sent; awaiting confirmation…") : L("操作已发出；保存确认需重启后端", "Sent; restart the backend for save confirmation")) : error ? L("操作失败，请重试", "Action failed; try again") : L("已保存", "Saved");
+        node.textContent = text || (pending ? (state.pluginUpdate && state.pluginUpdate.feedbackVersion >= 1 ? L("操作已发出，等待确认…", "Sent; awaiting confirmation…") : L("操作已发出；保存确认需重启后端", "Sent; restart the backend for save confirmation")) : error ? L("操作失败，请重试", "Action failed; try again") : L("已保存", "Saved"));
         node.classList.toggle("zu-feedback-error", !!error);
         return;
       }
@@ -1341,13 +1341,56 @@
           '<span>' + aEsc(sv.label) + (sv.unverified ? "*" : "") + '</span></label>' +
           '<span class="zu-src-status" role="status" aria-live="polite">' + srcStatusText(sv) + '</span>' +
           (sv.keyUrl ? '<button type="button" class="zu-src-keyurl" data-url="' + aEsc(sv.keyUrl) + '" aria-label="' + L("打开控制台获取 API Key", "Open the console to get an API key") + '" title="' + L("打开控制台获取 API Key", "Open the console to get an API key") + '">' + L("获取 Key ↗", "Get key ↗") + '</button>' : "") +
+          /* issue #399：千问套餐凭据是平台登录态而非 API Key，走官方设备码授权（面板起流 →
+           * 浏览器确认 → 主进程持久化）；旧主进程不识别该动作时按 unknown action 降级提示。 */
+          (sv.id === "qianwen" ? '<button type="button" class="zu-src-signin" data-src="qianwen" aria-label="' + L("登录千问平台授权额度查询", "Sign in to the Qianwen platform for quota access") + '" title="' + L("打开浏览器完成官方设备码授权后查询套餐额度", "Opens the browser for the official device-code sign-in") + '">' + L("登录 ↗", "Sign in ↗") + '</button>' : "") +
           '<button type="button" class="zu-src-refresh" data-src="' + aEsc(sv.id) + '" aria-label="' + L("立即刷新", "Refresh now") + '" title="' + L("跳过缓存，立即重新查询该源", "Re-query this source now, skipping the cache") + '"' + (sv.enabled && !sv.busy ? "" : " disabled") + ' aria-busy="' + (!!sv.busy) + '">↻</button>' +
           (chips ? '<span class="zu-src-presets">' + chips + '</span>' : "") +
           '<span class="zu-src-fields">' + credFields + '</span>' +
           '<span class="zu-src-feedback' + (sourceFeedback[sv.id] && sourceFeedback[sv.id].error ? ' zu-feedback-error' : '') + '" role="status" aria-live="polite">' +
-          (sourceFeedback[sv.id] ? sourceFeedback[sv.id].pending ? (state.pluginUpdate && state.pluginUpdate.feedbackVersion >= 1 ? L("操作已发出，等待确认…", "Sent; awaiting confirmation…") : L("操作已发出；保存确认需重启后端", "Sent; restart the backend for save confirmation")) : sourceFeedback[sv.id].error ? L("操作失败，请重试", "Action failed; try again") : L("已保存", "Saved") : "") + '</span></div>';
+          (sourceFeedback[sv.id] ? sourceFeedback[sv.id].text || (sourceFeedback[sv.id].pending ? (state.pluginUpdate && state.pluginUpdate.feedbackVersion >= 1 ? L("操作已发出，等待确认…", "Sent; awaiting confirmation…") : L("操作已发出；保存确认需重启后端", "Sent; restart the backend for save confirmation")) : sourceFeedback[sv.id].error ? L("操作失败，请重试", "Action failed; try again") : L("已保存", "Saved")) : "") + '</span></div>';
       }
       box.innerHTML = html;
+    }
+    /* ---------- issue #399 千问设备码登录（面板侧）：start → openExternal 授权页 →
+     * 每 2s 轮询 state 直至 done/failed；行节点失连（面板重建/实例销毁）即停。 ---------- */
+    var qianwenSignin = { timer: 0, waiting: false };
+    function stopQianwenPoll() {
+      if (qianwenSignin.timer) { clearTimeout(qianwenSignin.timer); qianwenSignin.timer = 0; }
+      qianwenSignin.waiting = false;
+    }
+    function pollQianwenState(btn) {
+      qianwenSignin.timer = setTimeout(function () {
+        qianwenSignin.timer = 0;
+        if (!btn || !btn.isConnected || !qianwenSignin.waiting) return;
+        pluginRequest("quota-qianwen-signin-state", {}, function (res) {
+          if (!btn.isConnected || !qianwenSignin.waiting) return;
+          if (!res || res.ok !== true) { stopQianwenPoll(); showSourceFeedback("qianwen", true, false, L("登录状态查询不可用", "Sign-in status unavailable")); return; }
+          if (res.state === "pending") { pollQianwenState(btn); return; }
+          stopQianwenPoll();
+          if (res.state === "done") showSourceFeedback("qianwen", false, false, res.account ? L("已登录 ", "Signed in: ") + res.account : L("已登录", "Signed in"));
+          else if (res.state === "failed") showSourceFeedback("qianwen", true, false, res.error || L("登录失败", "Sign-in failed"));
+          /* idle：流被取消或主进程刚重启，静默停止不给假错误 */
+        });
+      }, 2000);
+    }
+    function onQianwenSigninClick(btn) {
+      stopQianwenPoll();
+      showSourceFeedback("qianwen", false, true, L("等待浏览器授权…", "Waiting for approval in the browser…"));
+      pluginRequest("quota-qianwen-signin", {}, function (res) {
+        if (!btn.isConnected) return;
+        if (res && res.ok && res.url) {
+          var zu = window.zcode;   // 客户端 openExternal 桥优先（系统默认浏览器），window.open 被内置浏览器接管仅兜底
+          if (zu && typeof zu.openExternal === "function") zu.openExternal(res.url);
+          else window.open(res.url, "_blank", "noopener");
+          qianwenSignin.waiting = true;
+          pollQianwenState(btn);
+        } else {
+          var msg = (res && res.error) || L("登录不可用", "Sign-in unavailable");
+          if (/unknown action|restart required/.test(String(msg))) msg = L("需完全重启 ZCode 后可用", "Restart ZCode to enable");
+          showSourceFeedback("qianwen", true, false, msg);
+        }
+      });
     }
     /* 更新进度条（v89）。主进程 updater 在 downloading/updating 阶段推送
      * progress = { stage: download|verify|install|sync, loaded?, total? }：
@@ -2157,6 +2200,8 @@
         }
         return;
       }
+      var signinBtn = e.target.closest && e.target.closest(".zu-src-signin");
+      if (signinBtn) { onQianwenSigninClick(signinBtn); return; }   // issue #399：千问设备码登录
     });
     gear.addEventListener("click", function (e) {
       e.stopPropagation();

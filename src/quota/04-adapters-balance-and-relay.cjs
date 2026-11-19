@@ -730,5 +730,6 @@ const SOURCE_PRESETS = {
   anthropic: { keyUrl: "https://console.anthropic.com/settings/keys" },
   mimo: { keyUrl: "https://platform.xiaomimimo.com" },
   volcano: { keyUrl: "https://console.volcengine.com/ark" },
+  qianwen: { keyUrl: "https://platform.qianwenai.com" },
 };
 

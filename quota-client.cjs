@@ -1328,6 +1328,304 @@ ADAPTERS.push({
   },
 });
 
+/* --- 千问 AI 平台 Token Plan（issue #399；端点与字段转写自 magpie qianwen_plan.go /
+ * alibaba_usage.go（MIT），即官方 @qianwenai/qianwen-cli 1.11.0 的登录与用量读法） ---
+ * 推理网关 token-plan.maas.qianwenaiapi.com（sk-sp- key）是纯推理入口：用量百分比只对
+ * 平台登录态开放（sk-sp- key 查 cs-data 得 BailianGateway.Login.NotLogined）。链路：
+ * 设备码（t.qianwenai.com）→ 浏览器授权 → access token（无 refresh，过期整链重登）→
+ * 换控制台令牌（cli.qianwenai.com GenerateCLIAccessToken，按 access 指纹缓存 20 分钟）→
+ * cs-data 网关查 per<N><Unit>Percentage 窗口（个人套餐=周/月两窗）。凭据只发 qianwen
+ * 官方三域。阿里云百炼（token-plan.*.maas.aliyuncs.com）凭据是 AccessKey 签名链、
+ * 本版不认领（落 custom 中转保持现状）；团队 seat 版的绝对 Credits 字段不解析。 */
+const QIANWEN_UA = "qianwen-cli/1.11.0";
+const QIANWEN_REGION = "cn-beijing";
+const QIANWEN_USAGE_API = "zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage";
+const QIANWEN_CLI_TOKEN_TTL = 20 * 60 * 1000;   // magpie aliTokenTTL 同款
+const qianwenCliTokens = new Map();   // access 指纹 → { token, at }（控制台令牌缓存）
+const QIANWEN_WIN_RE = /^per(\d+)(Hour|Day|Week|Month)(Percentage|ResetTime)$/;
+function qianwenUuid() {
+  const b = crypto.randomBytes(16);
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = b.toString("hex");
+  return h.slice(0, 8) + "-" + h.slice(8, 12) + "-" + h.slice(12, 16) + "-" + h.slice(16, 20) + "-" + h.slice(20);
+}
+function qianwenPkce() {   // S256：verifier=32B base64url，challenge=sha256(verifier) base64url
+  const verifier = crypto.randomBytes(32).toString("base64url");
+  return { verifier, challenge: crypto.createHash("sha256").update(verifier).digest("base64url") };
+}
+function qianwenExpiryMs(v) {   // ExpireTime：秒/毫秒数、数字串、日期串自适应（magpie qianwenTime 子集）
+  if (typeof v === "number" && isFinite(v) && v > 0) return v < 1e12 ? v * 1000 : v;
+  if (typeof v === "string" && v) {
+    const n = Number(v);
+    if (isFinite(n) && n > 0) return n < 1e12 ? n * 1000 : n;
+    const t = Date.parse(v);
+    return isFinite(t) && t > 0 ? t : 0;
+  }
+  return 0;
+}
+/* device/token 轮询回复宽容解析（magpie readQianwenReply 同款两形状：Data.Credentials
+ * 大写形与 credentials 小写形；数字/空值字段按缺省走，不连累整回复）。 */
+function qianwenReadSigninReply(rep) {
+  if (!rep || typeof rep !== "object" || Array.isArray(rep)) return null;
+  const data = rep.Data && typeof rep.Data === "object" && !Array.isArray(rep.Data) ? rep.Data : null;
+  const creds = data && data.Credentials && typeof data.Credentials === "object" ? data.Credentials : null;
+  const alt = rep.credentials && typeof rep.credentials === "object" ? rep.credentials : null;
+  const status = String((data && data.Status != null ? data.Status : rep.status) || "authorization_pending").toLowerCase();
+  const access = String((creds && creds.AccessToken) || (alt && alt.access_token) || "");
+  const expires = creds && creds.ExpireTime != null ? creds.ExpireTime : (alt && alt.expire_time != null ? alt.expire_time : null);
+  const u = creds && creds.User && typeof creds.User === "object" ? creds.User
+    : (alt && alt.user && typeof alt.user === "object" ? alt.user : null);
+  const user = u ? String(u.Id != null ? u.Id : (u.id != null ? u.id : "")) : "";
+  const email = u ? String(u.Email || u.email || "") : "";
+  return { status, access, expires, account: email || user };
+}
+function qianwenStatusWordOf(rep) {   // HTTP ≥3xx 错误体里的状态词（magpie 只认这三个，正文不进错误文案）
+  let hay = "";
+  if (rep && typeof rep === "object") {
+    const data = rep.Data && typeof rep.Data === "object" ? rep.Data : null;
+    hay = String((data && data.Status) || rep.status || JSON.stringify(rep).slice(0, 500)).toLowerCase();
+  }
+  if (hay.indexOf("expired") >= 0) return "expired_token";
+  if (hay.indexOf("access_denied") >= 0) return "access_denied";
+  if (hay.indexOf("slow_down") >= 0) return "slow_down";
+  return "";
+}
+/* 设备端点原始 POST：绕过 j.http 的严格 JSON.parse（回复可能带 BOM 前缀，magpie 实测案例），
+ * 剥 BOM 后宽容解析；失败只抛状态错误，响应体绝不进错误文案（可能含 token）。 */
+async function qianwenPost(j, ctl, url) {
+  const res = await j.fetchImpl(url, {
+    method: "POST",
+    headers: { accept: "application/json", "user-agent": QIANWEN_UA },
+    signal: ctl ? ctl.signal : undefined, redirect: "manual",
+  });
+  const text = await res.text();
+  if (text.length > BODY_LIMIT) throw qErr("network_error", "qianwen reply too large");
+  let parsed = null;
+  try { parsed = JSON.parse(text.replace(/^\uFEFF/, "")); } catch (e) { parsed = null; }
+  if (res.status < 200 || res.status >= 300) {
+    const err = qErr("network_error", "qianwen HTTP " + res.status);
+    err.body = parsed;
+    throw err;
+  }
+  return parsed;
+}
+async function qianwenMintCliToken(j, access, fp, ctl) {
+  const hit = qianwenCliTokens.get(fp);
+  const t = j.now();
+  if (hit && t - hit.at < QIANWEN_CLI_TOKEN_TTL) return hit.token;
+  const body = JSON.stringify({ product: "ModelStudioRegional", action: "GenerateCLIAccessToken",
+    region: QIANWEN_REGION, params: {}, version: "2026-02-10" });
+  const r = await j.http.post("https://cli.qianwenai.com/data/v2/api.json", {
+    "content-type": "application/json", authorization: "Bearer " + access, "user-agent": QIANWEN_UA,
+  }, ctl, body);
+  const code = String((r && r.code) != null ? r.code : "");
+  const tok = r && r.data && typeof r.data === "object" ? String(r.data.cliAccessToken || "").trim() : "";
+  if (code === "200" && r.successResponse === true && tok && tok !== access) {
+    qianwenCliTokens.set(fp, { token: tok, at: t });
+    return tok;
+  }
+  qianwenCliTokens.delete(fp);
+  if (/NeedLogin|NotLogined|NotLogin/i.test(code)) throw qErr("auth_failed", "qianwen session expired");
+  if (code || (r && r.message)) throw qErr("network_error", ("qianwen mint " + (code || "error")).slice(0, 60));
+  throw qErr("parse_error", "qianwen mint shape");
+}
+async function qianwenAskUsage(j, cliToken, ctl) {
+  const url = "https://cs-data.qianwenai.com/cli/api.json?action=BroadScopeAspnGateway&product=sfm_bailian&api=" +
+    encodeURIComponent(QIANWEN_USAGE_API);
+  const params = JSON.stringify({ Api: QIANWEN_USAGE_API, V: "1.0", Data: { cornerstoneParam: {
+    protocol: "V2", console: "ONE_CONSOLE", productCode: "p_efm", switchUserType: 3, consoleSite: "QIANWENAI" } } });
+  const form = "params=" + encodeURIComponent(params) + "&region=" + QIANWEN_REGION;
+  const r = await j.http.post(url, {
+    "content-type": "application/x-www-form-urlencoded", authorization: "Bearer " + cliToken, "user-agent": QIANWEN_UA,
+  }, ctl, form);
+  const d = r && r.data && typeof r.data === "object" && !Array.isArray(r.data) ? r.data : null;
+  if (d && d.success === false) {
+    const code = String(d.errorCode != null ? d.errorCode : "");
+    if (/NotLogined|NeedLogin|NotLogin/i.test(code)) throw qErr("auth_failed", "qianwen session expired");
+    const msg = String(d.errorMsg != null ? d.errorMsg : "");
+    throw qErr("network_error", ("qianwen console " + (code || msg)).slice(0, 80));
+  }
+  let node = d && d.DataV2 != null ? d.DataV2 : null;   // 双层 {data:…} 剥壳（magpie 同款，缺层容忍）
+  for (let i = 0; i < 2; i++) {
+    if (node && typeof node === "object" && !Array.isArray(node) && node.data && typeof node.data === "object" && !Array.isArray(node.data)) node = node.data;
+    else break;
+  }
+  return node;
+}
+function qianwenReadWindows(node) {
+  const wins = {};
+  if (!node || typeof node !== "object" || Array.isArray(node)) return wins;
+  for (const k of Object.keys(node)) {
+    const m = QIANWEN_WIN_RE.exec(k);
+    if (!m) continue;
+    const key = m[1] + m[2];
+    const w = wins[key] || (wins[key] = { reset: null, used: null });
+    if (m[3] === "ResetTime") w.reset = num(node[k]);
+    else { const v = num(node[k]); if (v != null) w.used = v; }
+  }
+  const nameOf = { "5Hour": "fiveHour", "1Day": "daily", "1Week": "weekly", "1Month": "monthly" };
+  const out = {};
+  for (const key of Object.keys(wins)) {
+    const w = wins[key];
+    if (w.used == null || !isFinite(w.used) || w.used < 0) continue;
+    const name = nameOf[key];
+    if (!name || out[name]) continue;   // 未知窗长丢弃，绝不冒充已知窗口
+    out[name] = { percent: Math.round(clampPct(w.used * 100) * 10) / 10, resetsAt: resetOf(w.reset) };
+  }
+  return out;
+}
+ADAPTERS.push({
+  id: "qianwen", label: "千问 Token Plan", kind: "plan", defaultOn: true, unverified: true,
+  envKeys: ["ZCODE_QIANWEN_ACCESS_TOKEN"],
+  /* 官方域精确命中，或 qianwenaiapi.com 域内 + sk-sp- key 前缀（token-plan key 被用于
+   * 同族其它网关路径时仍认领）；不按 provider 名判定（模板名与实际套餐常不一致，issue
+   * 明示），qwencloud/aliyuncs 等同族异域不认领。sk-sp- 推理 key 不作额度凭据。 */
+  detect(j, providerId) {
+    if (providerId.indexOf("account:") === 0) return null;
+    const cp = j.customProviderOf(providerId);
+    if (!cp) return null;
+    let host = "";
+    try { host = new URL(cp.baseUrl).hostname.toLowerCase(); } catch (e) { host = ""; }
+    if (host === "token-plan.maas.qianwenaiapi.com") return { config: true, family: "qianwen" };
+    if (host.endsWith(".qianwenaiapi.com") && String(cp.apiKey || "").indexOf("sk-sp-") === 0) return { config: true, family: "qianwen" };
+    return null;
+  },
+  resolveCred(j, ctx) {
+    for (const k of this.envKeys) {
+      const v = j.env[k];
+      if (v) return { token: v, fingerprint: "env:" + sha16(v), source: "env" };
+    }
+    const sec = (j.secrets.sources || {}).qianwen || {};
+    const token = typeof sec.token === "string" ? sec.token.trim() : "";
+    if (!token) return null;
+    const exp = num(sec.tokenExpiresAt);   // 平台登录态已过：无 refresh token，归未配置引导重登
+    if (exp > 0 && j.now() > exp) return null;
+    return { token, fingerprint: "sec:" + sha16(token), source: "secrets" };
+  },
+  async fetchOne(j, ctx, cred, ctl) {
+    const fp = cred.fingerprint;
+    let cliToken = await qianwenMintCliToken(j, cred.token, fp, ctl);
+    let node;
+    try {
+      node = await qianwenAskUsage(j, cliToken, ctl);
+    } catch (e) {
+      /* 缓存的控制台令牌被网关拒（NotLogined）：重换一次新令牌；新令牌仍被拒=平台登录态
+       * 已失效，auth_failed 冻结到重新登录（凭据指纹变化），绝不循环重试。 */
+      if (e && e.code === "auth_failed" && qianwenCliTokens.has(fp)) {
+        qianwenCliTokens.delete(fp);
+        cliToken = await qianwenMintCliToken(j, cred.token, fp, ctl);
+        node = await qianwenAskUsage(j, cliToken, ctl);
+      } else throw e;
+    }
+    const windows = qianwenReadWindows(node);
+    if (!Object.keys(windows).length) throw qErr("parse_error", "qianwen: no personal plan windows");   // 团队 seat 账号/未购个人套餐：不显示 0%
+    return { label: "千问 Token Plan", kind: "plan", windows };
+  },
+});
+
+/* ---------- 千问设备码登录流（⚙ 面板「登录」按钮驱动；每个 client 实例一条） ----------
+ * 状态机 idle→pending→done/failed；gen 是唯一存活令牌（重开/取消/dispose 都 +1，在途
+ * 轮询按 gen 自弃）。完成经 saveSecrets（注入侧 writeQuotaSecrets）持久化 token/account/
+ * tokenExpiresAt → credentialsChanged → 解冻即查。错误文案绝不引用响应体（可能含 token，
+ * magpie 有真实泄露事故）。 */
+function installQianwenFlow(client, j, o) {
+  const flow = { state: "idle", error: "", url: "", account: "", gen: 0, timer: 0 };
+  const armTimer = (ms, fn) => {
+    flow.timer = setTimeout(() => { flow.timer = 0; fn(); }, ms);
+    if (flow.timer && typeof flow.timer.unref === "function") flow.timer.unref();
+  };
+  const armPoll = (ctl, url) => {   // 单次轮询 15s 超时兜底：挂死不至于冻结整流（重开即恢复）
+    const kill = setTimeout(() => { try { ctl.abort(); } catch (e) { } }, 15 * 1000);
+    if (kill && typeof kill.unref === "function") kill.unref();
+    return qianwenPost(j, ctl, url).finally(() => { clearTimeout(kill); });
+  };
+  function finish(state, error) {
+    flow.state = state;
+    flow.error = error || "";
+    if (state !== "done") flow.url = "";
+  }
+  function flowCancel() {
+    flow.gen += 1;
+    if (flow.timer) { clearTimeout(flow.timer); flow.timer = 0; }
+    flow.state = "idle"; flow.error = ""; flow.url = ""; flow.account = "";
+  }
+  client.qianwenSignInState = () => ({ ok: true, state: flow.state, error: flow.error, url: flow.url, account: flow.account });
+  client.qianwenSignInCancel = () => flowCancel();
+  client.disposeQianwenFlow = () => flowCancel();
+  client.qianwenSignInStart = async () => {
+    if (!o || typeof o.saveSecrets !== "function") return { ok: false, error: "sign-in unavailable" };
+    flowCancel();
+    const gen = flow.gen;
+    const clientID = qianwenUuid();
+    const pk = qianwenPkce();
+    let codeRep = null, codeErr = null;
+    const startCtl = new AbortController();
+    try {
+      codeRep = await armPoll(startCtl, "https://t.qianwenai.com/cli/device/code?client_id=" + encodeURIComponent(clientID) +
+        "&code_challenge=" + encodeURIComponent(pk.challenge) + "&code_challenge_method=S256");
+    } catch (e) { codeErr = e; }
+    if (gen !== flow.gen) return { ok: false, error: "cancelled" };
+    const d = codeRep && codeRep.Data && typeof codeRep.Data === "object" ? codeRep.Data : null;
+    const deviceToken = d && typeof d.Token === "string" ? d.Token : "";
+    const url = d && typeof d.VerificationUrl === "string" && /^https:\/\//.test(d.VerificationUrl) ? d.VerificationUrl : "";
+    if (codeErr && codeErr.body) {   // HTTP ≥3xx：只嗅状态词，正文不进文案
+      const word = qianwenStatusWordOf(codeErr.body);
+      if (word === "expired_token") { finish("failed", "设备码已过期，请重试"); return { ok: false, error: flow.error }; }
+    }
+    if (!codeRep || !d || !deviceToken || !url) {
+      finish("failed", "无法发起千问登录" + (codeErr ? "（" + String(codeErr.message || "network").slice(0, 40) + "）" : ""));
+      return { ok: false, error: flow.error };
+    }
+    const everyMs = Math.min(Math.max((num(d.Interval) > 0 ? num(d.Interval) : 2) * 1000, 100), 2000);
+    const deadline = j.now() + Math.min(Math.max((num(d.ExpiresIn) > 0 ? num(d.ExpiresIn) : 300) * 1000, 30 * 1000), 15 * 60 * 1000);
+    flow.state = "pending";
+    flow.url = url;
+    const poll = async () => {
+      if (gen !== flow.gen) return;
+      if (j.now() >= deadline) { finish("failed", "登录页已过期，请重新登录"); return; }
+      const ctl = new AbortController();
+      let rep = null, netErr = null;
+      try { rep = await armPoll(ctl, "https://t.qianwenai.com/cli/device/token?client_id=" + encodeURIComponent(clientID) +
+        "&token=" + encodeURIComponent(deviceToken) + "&code_verifier=" + encodeURIComponent(pk.verifier)); }
+      catch (e) { netErr = e; }
+      if (gen !== flow.gen) return;
+      let parsed = rep ? qianwenReadSigninReply(rep) : null;
+      if (netErr && netErr.body) {   // HTTP ≥3xx 错误体状态词（expired/access_denied/slow_down）
+        parsed = { status: qianwenStatusWordOf(netErr.body) || "http_error", access: "", expires: null, account: "" };
+      } else if (netErr) {
+        parsed = { status: "authorization_pending", access: "", expires: null, account: "" };   // 掉线轮询重问（magpie 同款）
+      } else if (rep && !parsed) {
+        finish("failed", "平台返回未知形态，请重试");
+        return;
+      }
+      const every = everyMs;   // slow_down 翻倍只作用于下一拍，不回写基准间隔
+      if (parsed.status === "authorization_pending") { armTimer(every, poll); return; }
+      if (parsed.status === "slow_down") { armTimer(every * 2, poll); return; }
+      if (parsed.status === "complete") {
+        if (!parsed.access) { finish("failed", "平台未返回令牌，请重试"); return; }
+        const expMs = qianwenExpiryMs(parsed.expires);
+        try {
+          o.saveSecrets((sec) => {
+            sec.qianwen = Object.assign({}, sec.qianwen || {}, { token: parsed.access, account: parsed.account });
+            if (expMs > 0) sec.qianwen.tokenExpiresAt = expMs; else delete sec.qianwen.tokenExpiresAt;
+          });
+        } catch (e) { finish("failed", "登录态保存失败"); return; }
+        if (gen !== flow.gen) return;   // 保存与取消竞窗：凭据已落盘无害（下次登录覆盖同字段）
+        flow.account = parsed.account;
+        finish("done", "");
+        return;
+      }
+      if (parsed.status === "expired_token") { finish("failed", "登录页已过期，请重新登录"); return; }
+      if (parsed.status === "access_denied") { finish("failed", "授权被拒绝"); return; }
+      if (parsed.status === "http_error") { armTimer(every, poll); return; }   // 未知 HTTP 错误：按瞬时重问
+      finish("failed", "平台结束登录：" + parsed.status.slice(0, 40));
+    };
+    armTimer(everyMs, poll);
+    return { ok: true, url, state: "pending" };
+  };
+}
+
 /* --- DeepSeek（官方域零配置；total/granted/topped_up 三分拆分） --- */
 ADAPTERS.push({
   id: "deepseek", label: "DeepSeek", kind: "balance", defaultOn: true,
@@ -2060,6 +2358,7 @@ const SOURCE_PRESETS = {
   anthropic: { keyUrl: "https://console.anthropic.com/settings/keys" },
   mimo: { keyUrl: "https://platform.xiaomimimo.com" },
   volcano: { keyUrl: "https://console.volcengine.com/ark" },
+  qianwen: { keyUrl: "https://platform.qianwenai.com" },
 };
 
 /* ---------- 多源调度器 ---------- */
@@ -2114,11 +2413,12 @@ function createQuotaClient(opts) {
     }
     return qErr("network_error", "HTTP " + status, { httpStatus: status });
   }
-  async function rawFetch(url, headers, ctl, method) {
+  async function rawFetch(url, headers, ctl, method, body) {
     const res = await fetchImpl(url, {
       method: method || "GET",
       headers: Object.assign({ accept: "application/json", "accept-encoding": "identity" }, headers),
       signal: ctl ? ctl.signal : undefined, redirect: "manual",
+      body: body == null ? undefined : body,
     });
     let text = "";
     if (res.body && typeof res.body.getReader === "function") {
@@ -2148,8 +2448,8 @@ function createQuotaClient(opts) {
     async maybeGetJson(url, headers, ctl) {
       try { return await http.getJson(url, headers, ctl); } catch (e) { return null; }
     },
-    async post(url, headers, ctl) {
-      const r = await rawFetch(url, headers, ctl, "POST");
+    async post(url, headers, ctl, body) {   // body：可选请求体字符串（JSON/form；火山调用不传维持原状）
+      const r = await rawFetch(url, headers, ctl, "POST", body);
       let json = null;
       try { json = JSON.parse(r.text); } catch (e) { json = null; }
       const meta = json && json.ResponseMetadata && json.ResponseMetadata.Error;   // 火山信封：HTTP 200 也可能带错
@@ -2682,6 +2982,11 @@ function createQuotaClient(opts) {
     tick,
     refresh() { v2KeyRetryNow(); return tick(true) > 0; },   // 用户显式刷新：越过 v2 密钥冷却/失配限频
     pokeReset,
+    /* 千问设备码登录（issue #399）：saveSecrets 由注入侧传入（writeQuotaSecrets），
+     * 登录完成持久化并触发 credentialsChanged 解冻；未传（旧装配/测试）时 start 报不可用。 */
+    qianwenSignInStart: () => Promise.resolve({ ok: false, error: "sign-in unavailable" }),
+    qianwenSignInState: () => ({ ok: false, error: "sign-in unavailable" }),
+    qianwenSignInCancel: () => { },
     refreshSource(id) {   // 厂商按钮刷新该厂商各账户；chip 的完整源 id 只刷新本账户
       const a = adapterOf(id);
       if (!a) return false;
@@ -2803,7 +3108,7 @@ function createQuotaClient(opts) {
         list.push({
           id: a.id, label: a.label, kind: a.kind, defaultOn: a.defaultOn, unverified: !!a.unverified,
           enabled: cfg.enabled !== false && (a.defaultOn || cfg.enabled === true),
-          credentialFields: a.id === "mimo" ? ["cookie"] : a.id === "volcano" ? ["accessKeyId", "secretAccessKey"] : a.id === "scnet" ? ["planCredits", "planStart"] : a.id === "anthropic" ? ["token"] : ["apiKey"],
+          credentialFields: a.id === "mimo" ? ["cookie"] : a.id === "volcano" ? ["accessKeyId", "secretAccessKey"] : a.id === "scnet" ? ["planCredits", "planStart"] : (a.id === "anthropic" || a.id === "qianwen") ? ["token"] : ["apiKey"],
           keyConfigured: !!(cfg.apiKey || cfg.cookie || cfg.token || cfg.accessKeyId ||
             accounts.some((entry) => !!entry.cred) || (a.id === "scnet" && num(cfg.planCredits) > 0)),
           keySource: st && st.cred ? st.cred.source : "",
@@ -2823,6 +3128,7 @@ function createQuotaClient(opts) {
     },
     secretsPath,
     dispose() {
+      client.disposeQianwenFlow();   // 千问登录流随实例销毁（在途轮询按 gen 自弃）
       for (const st of states.values()) {
         if (st.ctl) { try { st.ctl.abort(); } catch (e) { } }
         st.inFlight = null;
@@ -2837,6 +3143,7 @@ function createQuotaClient(opts) {
     _states: states,
     _adapters: ADAPTERS,
   };
+  installQianwenFlow(client, j, o);   // 覆写上面的 no-op 缺省：真登录流绑定本实例的 http 与 saveSecrets
   return client;
 }
 

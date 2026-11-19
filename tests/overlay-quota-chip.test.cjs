@@ -476,6 +476,34 @@ test('tooltip shows monthly window, balance parts split and other-source summari
   assert.match(html, /其他源<\/b><span>DeepSeek ¥110\.00 · SCNet 44%/);
 });
 
+test('issue #399: qianwen row renders the device-code sign-in button and starts the flow on click', () => {
+  /* 渲染契约：仅 qianwen 行有 .zu-src-signin；点击经面板 click 委托发 quota-qianwen-signin，
+   * 反馈先显示等待授权，start 成功经 openExternal 桥打开授权页。轮询链在 quota-client 测试覆盖。 */
+  assert.match(source, /sv\.id === "qianwen" \? '<button type="button" class="zu-src-signin"/);
+  assert.match(source, /pluginRequest\("quota-qianwen-signin", \{\}, function \(res\)/);
+  assert.match(source, /pluginRequest\("quota-qianwen-signin-state", \{\}, function \(res\)/);
+  assert.match(source, /zu \. openExternal|zu && typeof zu\.openExternal/);
+  assert.match(source, /unknown action\|restart required/, "旧主进程降级提示");
+  assert.match(source, /\.zu-src-signin\{background:none;border:0;color:var\(--color-brand/);
+
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ quota: QUOTA_OK }));
+  h.window.__zusagePluginUpdate({ quotaEnabled: true, quotaSources: [
+    { id: 'qianwen', label: '千问 Token Plan', kind: 'plan', enabled: true, unverified: true, credentialFields: ['token'], keyConfigured: false, status: 'not_configured', keyUrl: 'https://platform.qianwenai.com' },
+  ] });
+  const panel = h.body.children.find(e => e.classList.contains('zu-settings'));
+  const btn = new Element('button');
+  btn.classList.add('zu-src-signin'); btn.dataset.src = 'qianwen';
+  btn.isConnected = true;
+  btn.closest = (sel) => (sel === '.zu-src-signin' ? btn : null);
+  panel.listeners.get('click')[0]({ target: btn });
+  const reqs = h.window.__zusagePluginRequests.filter(r => r.action === 'quota-qianwen-signin');
+  assert.equal(reqs.length, 1);
+  assert.match(reqs[0].requestId, /^zusage-\d+-\d+$/);
+  void ui;
+});
+
 test('settings source list renders rows and emits quota-src / quota-src-key / quota-src-refresh requests', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
