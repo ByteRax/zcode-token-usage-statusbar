@@ -182,8 +182,8 @@ test('recent 柱色: 单模型行=模型色内联 background；混合行=.zu-sv3
   assert.match(html, /zu-sc-wrap"[^]*zu-sc-plot/);
 });
 
-// ---------- ③ recent 数值稀疏（§11.2 槽位满幅 + 估宽让位） ----------
-test('recent 数值稀疏: n=18 恒显集=峰值/最低/最新（估宽让位）、悬停柱强制显示、槽位 flex 满幅', () => {
+// ---------- ③ recent 数值显示（§11.2 槽位满幅 + v399 常规位估宽 +2） ----------
+test('recent 数值: n=18 常规柱值全显（估宽 +2）、悬停柱恒显、槽位 flex 满幅', () => {
   const ctx = makeCtx();
   const an = analyze(ctx, fixture18(), { range: 'session', period: 'recent', sid: 's' });
   assert.equal(an.items.length, 18);
@@ -196,20 +196,21 @@ test('recent 数值稀疏: n=18 恒显集=峰值/最低/最新（估宽让位）
   assert.match(html, /\.zu-sv3-bars \.zu-sc-col\{flex:1 1 0;min-width:0;height:100%;position:relative\}/,
     '槽 flex:1 1 0 满幅均摊');
   assert.doesNotMatch(html, /zu-sv3-spacer|justify-content:flex-start/, 'spacer/挤左路径已删除');
-  // 数值稀疏（§15.5）：n=18∈13–24 档全试显、估宽 5 字符×6+8=38px > 槽宽 620/18≈34.4px
-  // → 非关键位全部让位；恒显集=峰值(17)/最低(0)/最新(17) → 恰 2 柱带读数
+  // v399（§22）：n=18 常规位估宽 5 字符×6+2=32px ≤ 槽宽 620/18≈34.4px → 全部非空柱显值
+  // （旧 +8 得 38px>34.4 致非关键位整片让位，只剩峰/低/新 2 柱，用户截图裁定推翻）
   const shown = (html.match(/zu-sc-val[^>"]*">[0-9]/g) || []).length;
-  assert.equal(shown, 2, '恒显集=峰值/最低/最新（0 与 17）→ 2 柱，得到 ' + shown);
+  assert.equal(shown, 18, '18 柱常规值全显，得到 ' + shown);
   assert.match(colsOf(html)[0], /zu-sc-val[^>]*">100\.0</, '最低柱读数在场');
   assert.match(colsOf(html)[17], /zu-sc-val[^>]*">117\.0</, '最新=峰值柱读数在场');
-  // 悬停非采样位柱：读数强制显示（其自身让位 estW 38>34.4 → 左右邻非关键标签临时隐藏）
+  assert.match(colsOf(html)[8], /zu-sc-val[^>]*">108\.0</, '常规柱（idx8）读数在场');
+  // 悬停柱恒显；自身 fits（32≤34.4）故不触发邻抑制，18 柱仍全显
   const html2 = chart(ctx, an, 2);
   const shown2 = (html2.match(/zu-sc-val[^>"]*">[0-9]/g) || []).length;
-  assert.equal(shown2, 3);
+  assert.equal(shown2, 18, '悬停态 18 柱仍全显（自身 fits 不抑制邻位）');
   const cols2 = colsOf(html2);
   assert.match(cols2[2], /zu-sc-val">102\.0</, '悬停柱数值在场');
   assert.match(cols2[2], /class="zu-sc-col cur zu-sv3-slot"/, '悬停柱 cur 类');
-  assert.ok(!/zu-sc-val[^>"]*">1/.test(cols2[1]), '非采样位且未悬停不显');
+  assert.match(cols2[1], /zu-sc-val">101\.0</, '悬停邻位正常显（无让位）');
   // 一位小数纪律
   assert.ok(!/zu-sc-val[^>"]*">\d+\.\d{2,}/.test(html2));
 });
@@ -242,7 +243,7 @@ test('柱标三档确定性: n=12 全显 / n=24 让位仅关键位 / n=30 步长
     a.push({ v: 100 + i, empty: false, label: String(i), a: 0, b: 0, models: [] }); return a; };
   const barCols = (items, hover) => { ctx.__bi = items; ctx.__bh = hover === undefined ? -1 : hover;
     return vm.runInContext('spd3BarCols(__bi, __bh, 200)', ctx); };
-  // n=12（1–12 档）：estW "111.0"=38 ≤ 槽宽 620/12≈51.7 → 全部非空柱显值，无钉边类
+  // n=12（1–12 档）：estW "111.0"=32 ≤ 槽宽 620/12≈51.7 → 全部非空柱显值，无钉边类
   const cols12 = colsOf(barCols(mk(12)));
   assert.deepEqual(shownIdx(cols12), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], 'n=12 全显');
   assert.ok(!/zu-sv3-vpin-/.test(cols12.join('')), '估宽足够不出钉边类');
@@ -251,9 +252,16 @@ test('柱标三档确定性: n=12 全显 / n=24 让位仅关键位 / n=30 步长
     const got = shownIdx(colsOf(barCols(mk(k))));
     assert.deepEqual(got, Array.from({ length: k }, (_, i) => i), 'n=' + k + ' 全显');
   }
-  // n=24（13–24 档）：estW 38 > 槽宽 25.8 → 非关键位全部让位，恒显={min 0, peak/latest 23}
+  // n=24（13–24 档）：estW 32 > 槽宽 25.8 → 非关键位全部让位，恒显={min 0, peak/latest 23}
   const cols24 = colsOf(barCols(mk(24)));
   assert.deepEqual(shownIdx(cols24), [0, 23], 'n=24 让位仅关键位');
+  // v399 覆盖边界（spec §22）：18 柱 6 字符读数（≥1000 t/s，"1000.0" estW=38>34.4）
+  // 因标签实宽≈35px 超槽中心距必须碰撞让位，仅峰/低/新关键位显值——锁定高速档此为设计
+  // 预期（非缺陷），避免将来见「18 柱没全显」又盲改 fits。
+  const mk6 = n => { const a = []; for (let i = 0; i < n; i++)
+    a.push({ v: 1000 + i, empty: false, label: String(i), a: 0, b: 0, models: [] }); return a; };
+  assert.deepEqual(shownIdx(colsOf(barCols(mk6(18)))), [0, 17],
+    '18 柱 6 字符读数让位仅关键位（高速档碰撞避让，设计预期）');
   // n=30（>24 档）：slotW≈20.7、maxLblW=30 → step=ceil(38/20.7)=2 → 偶数位抽样显值
   // （不再叠加 fits 门槛），关键位 29（peak/latest）并入 → 显值=偶数位 ∪ {29}
   const cols30 = colsOf(barCols(mk(30)));
@@ -265,7 +273,7 @@ test('柱标三档确定性: n=12 全显 / n=24 让位仅关键位 / n=30 步长
   assert.match(cols30[0], /zu-sv3-vpin-l/, '首柱标签钉左');
   assert.match(cols30[29], /zu-sv3-vpin-r/, '末柱标签钉右');
   // 悬停位自身让位 → 左右邻非关键标签临时隐藏（关键位不受抑制）。hover=3：
-  // 非采样位（自身恒显、estW 38>20.7 让位）→ 偶数采样邻位 2/4 被抑制
+  // 非采样位（自身恒显、estW 32>20.7 让位）→ 偶数采样邻位 2/4 被抑制
   const got30h = shownIdx(colsOf(barCols(mk(30), 3)));
   assert.ok(!got30h.includes(2) && !got30h.includes(4), '悬停邻（2/4）非关键标签隐藏（真抑制）');
   assert.ok(got30h.includes(3), '悬停柱恒显');

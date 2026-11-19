@@ -278,8 +278,9 @@
      * → v396 单模型左卡同构分布块（spec §19，用户裁定）：单模型不再早返回 .zu-sv3-model 单行胶囊，落入多模型同构分布块（本期有效计数 + 分布标题 + dbar + dwrap 明细表），1 模型=1 段 100% + 表头 1 行；「请求轮次」由 count 行承载不再单列，保留「有效输出」kv（fmtTok 在场）；spd3DotAndName/.zu-sv3-model 死代码删除。
      * → v397 分布表滚动条外移与表格增宽（spec §20，用户裁定）：.zu-sv3-dwrap margin-right:-8px 右扩（滚动条右移、表格净宽+8px，距边框仍余4px）+滚动条细化（scrollbar-width:thin/scrollbar-color + webkit 6px 回退，旧 Windows 17px 经典条挤占表格）；内滚 max-height:150px/overflow-y:auto 契约不变。
      * → v398 无滚动条时恒定保留右侧边界间距（spec §21，用户裁定）：.zu-sv3-dwrap 加 scrollbar-gutter:stable——滚动条槽位恒定预留，无滚动条（模型少不滚）时仍留 6px 空白，表格右缘距卡片边框恒 4+6=10px，不随有无滚动条贴边/跳动；数据/固定高/其它布局不变。
+     * → v399 柱状图常规柱数值显示（spec §22，用户截图裁定）：spd3BarCols 估宽 fits 留白 +8→+2（字符数×6 已含 tabular 字体余量，旧 +8 双重留白致 18 柱常规位整片让位、只剩峰/低/新 2 读数）；18 柱常规值全显，24 柱/窄窗仍让位避免重叠；n>24 抽样步长 maxLbl+8 与速度口径不变。
      */
-    var VERSION = "v398";
+    var VERSION = "v399";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
