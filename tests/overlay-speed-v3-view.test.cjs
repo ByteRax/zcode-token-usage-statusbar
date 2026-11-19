@@ -476,11 +476,11 @@ test('CSS 锁: .zu-sv3-root 定宽变量、.zu-light 浅色覆写、focus-visibl
   // §11.1 根宽：920 基准 + 视口余量 60px，max-width:100% 窄窗不反向撑大 tip
   assert.match(style, /width:min\(920px,calc\(100vw - 60px\)\);max-width:100%/, '根定宽 920 基准（视口余量 60px）');
   assert.ok(!style.includes('--zu-sv3-w'), '根定宽变量已废除');
-  // §12.1 高度档位：CSS 恒定 480 基准高废除，改 root 内联 min-height + data-h-tier
+  // §12.1 + §17 高度档位：CSS 恒定 480 基准高废除，改 root 内联 height + data-h-tier
   assert.ok(!style.includes('min-height:min(480px'), '480 恒定基准高已废除（§12.1）');
   assert.ok(!style.includes('--zu-sv3-h'), '定高变量已废除');
-  assert.match(html, /class="zu-sv3-root" data-sv-key="[^"]+" data-h-tier="[^"]+" style="min-height:\d+px"/,
-    'root 携带 data-h-tier + 内联 min-height（§12.1）');
+  assert.match(html, /class="zu-sv3-root" data-sv-key="[^"]+" data-h-tier="[^"]+" style="height:\d+px"/,
+    'root 携带 data-h-tier + 内联 height（§12.1/§17）');
   assert.ok(!/\.zu-sv3-root\{[^}]*overflow/.test(style), '根容器无 overflow 裁切路径（§11.1）');
   // §12.4 筛选栏恒单行：fbar/chips 双层 nowrap，chips 区 overflow:hidden 视觉收纳
   assert.match(style, /\.zu-sv3-fbar\{display:flex;align-items:center;flex-wrap:nowrap/, 'fbar nowrap 恒单行（§12.4）');
@@ -513,7 +513,7 @@ test('CSS 锁: .zu-sv3-root 定宽变量、.zu-light 浅色覆写、focus-visibl
     '无常驻说明/图例类块');
 });
 
-// ---------- ⑦b 高度档位（§12.1 + §17）：root min-height 统一档 ----------
+// ---------- ⑦b 高度档位（§12.1 + §17）：root height 统一档 ----------
 test('spd3HeightTier: v393 起五形态统一 450（empty/recent/today/week/month/all 全部同高，§17 用户裁定）；root 内联下发', () => {
   const ctx = makeCtx();
   const tier = a => host(vm.runInContext('spd3HeightTier(' + JSON.stringify(a) + ')', ctx));
@@ -536,12 +536,12 @@ test('spd3HeightTier: v393 起五形态统一 450（empty/recent/today/week/mont
   const selAll = { range: 'session', period: 'all', sid: 'sess_main' };
   const anAll = analyze(ctx, fixture(), selAll);
   assert.match(cardHTML(ctx, anAll, selAll),
-    new RegExp('data-h-tier="' + tier(anAll).tier + '" style="min-height:' + tier(anAll).px + 'px"'),
+    new RegExp('data-h-tier="' + tier(anAll).tier + '" style="height:' + tier(anAll).px + 'px"'),
     '真 an 的档位经 data-h-tier + 内联 min-height 下发');
   // empty 视图（ghost 筛选）→ empty 档（同 450）
   const selGhost = { range: 'session', period: 'today', sid: 'sess_main', filt: { mode: 'sel', keys: ['ghost\x1fmodel'] } };
   const domG = cardHTML(ctx, analyze(ctx, fixture(), selGhost), selGhost);
-  assert.match(domG, /data-h-tier="empty" style="min-height:450px"/, '空态视图同高 450（§17）');
+  assert.match(domG, /data-h-tier="empty" style="height:450px"/, '空态视图同高 450（§17）');
 });
 
 // ---------- ⑧ 图表标题栏 ----------

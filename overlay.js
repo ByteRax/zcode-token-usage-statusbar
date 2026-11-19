@@ -10673,10 +10673,14 @@
      * 置空），此时有真实数据与柱，绝不能误报「无数据」+伪造 0 轮（审查 MAJOR-1）。 */
     var empty = !(an.real && an.real.length) || !an.overall;
     var chartSlot = empty ? spd3EmptyStateHTML(an, filt) : "<!--CHART-->";
-    /* §12.1：高度档位内联 min-height + data-h-tier（class/data-sv-key 相邻契约保持） */
+    /* §12.1 + §17：高度档位内联 height + data-h-tier（class/data-sv-key 相邻契约保持）。
+     * v393 起用 height 取代 min-height：root 是 auto 高 flex 列容器，min-height 只抬下限、
+     * 内容 flex-basis 计算仍会把 root 撑过档位（实测 all 日历式 6 行 492>450）；固定高后
+     * 内部 min-height:0 收缩链生效，恒等于档位。内容真超高（极端字号）为记录在案的
+     * 裁剪取舍（§17.1）——分布表展开由 dwrap 内滚吸收，主链不超高。 */
     var ht = spd3HeightTier(an);
     return '<div class="zu-sv3-root" data-sv-key="' + key + '" data-h-tier="' + ht.tier +
-      '" style="min-height:' + ht.px + 'px">' + spd3StylesHTML() +
+      '" style="height:' + ht.px + 'px">' + spd3StylesHTML() +
       spd3HeadHTML(an) +
       spd3FilterBarHTML(pool, filt, { selMissing: an.selMissing, pop: ctx.pop,
         active: an.perModel ? an.perModel.length : 0 }) +

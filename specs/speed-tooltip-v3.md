@@ -358,7 +358,8 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 
 - **五形态统一 450**（empty/recent/today/week/month/all 全部恒 450）：任意范围切换高度恒定，空态同高。450 取旧 month-r5 档——6 行月历经 v391 行高帽自适应（84px 帽、行数多时行内分配）在 450 内可读；all 周列式 R9-10 每行 ≥30px 可读（v391 判据）沿用。
 - **plot 300 上限同步废除**（v389 §13.1 的 max-height:300px）：统一 450 后柱/折线绘图区吃满卡内剩余（典型 ≈370..400），X 标签带恒贴底、plot-bottom-gap ≤28px 断言保留；min-height 200 保底不变。
-- `data-h-tier` 保留 period/empty 语义（诊断用）；root min-height 语义不变（内容可超出——多模型分布表展开等仍自然撑高）。
+- `data-h-tier` 保留 period/empty 语义（诊断用）。
+- **root 内联从 `min-height` 改 `height`**（§17 第二批，同轮实测定案）：root 是 auto 高 flex 列容器，`min-height` 只抬下限——内容 flex-basis 计算仍把 root 撑过档位（实测 all 日历式 6 行 492>450，撑高者=左卡/图表 stretch 假象；对照实验：隐去左卡 root 即回 450、压行数无效）。固定 `height` 后内部 `min-height:0` 收缩链生效恒等于档位。语义取舍（记录在案）：内容真超高（极端 `--ui-font-size`）时 root 内裁剪（主链自然高 ≤360 可容纳；分布表展开由 dwrap 内滚上限吸收；矮视口仍由 tip 基类 maxHeight 钳制+内滚），「内容可撑高」语义废除。
 
 ### 17.2 验收
 
