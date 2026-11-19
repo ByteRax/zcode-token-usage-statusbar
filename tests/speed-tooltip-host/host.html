@@ -1311,6 +1311,19 @@ window.__zuGeometryChecks = function () {
     f('dist-always-expanded', !root.querySelector('[data-sv3-more],.zu-sv3-more') && dRows.length > 1,
       'rows=' + dRows.length + ' models=' + nModels +
       ' more=' + !!root.querySelector('[data-sv3-more],.zu-sv3-more'));
+    /* ⑱ 单模型同构分布块（v396 §19）：fixture 单模型态应有 count+dist-h+dbar(1段)+表头1行，
+     * 不再有单行 .zu-sv3-model 胶囊；请求轮次不单列（count 行承载）。 */
+    if (isFixture && nModels === 1) {
+      var dbarEl = root.querySelector('.zu-sv3-left .zu-sv3-dbar');
+      var segs = dbarEl ? dbarEl.querySelectorAll('i') : [];
+      var cntEl = root.querySelector('.zu-sv3-left .zu-sv3-count');
+      var distH = root.querySelector('.zu-sv3-left .zu-sv3-dist-h');
+      f('single-isomorphic-dist', dRows.length === 2 && segs.length === 1 &&
+        !!cntEl && !!distH && !root.querySelector('.zu-sv3-model'),
+        'rows=' + dRows.length + ' segs=' + segs.length +
+        ' count=' + !!cntEl + ' distH=' + !!distH +
+        ' oldCapsule=' + !!root.querySelector('.zu-sv3-model'));
+    }
     /* 严格行数/可滚断言只在 fixture 模式（nModels 与实际池严格对应）；live 模式真实帧
      * mnames 是身份全集、受筛选/范围影响，行数无可靠期望值，只做内滚容量检查不误报。 */
     if (isFixture && nModels > 4) {

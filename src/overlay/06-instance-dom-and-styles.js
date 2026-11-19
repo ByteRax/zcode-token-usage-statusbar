@@ -275,8 +275,9 @@
      * → v386 生成速度 Tooltip V3 合入主线（内容同上方 v384 条目，specs/speed-tooltip-v3.md；v384 号已被本分支占用、v385 已被主线 OpenCode Go 换算占用，按合入顺序顺延 v386）：分片与行为即 v384 批次终态，叠加主线 v385 换算（11 分片两特性并存互不干涉）。
      * → v387 速度 Tooltip 实机 UI/UX 深审修复批（spec §11，根因真机 CDP 实测）：宽度链释放规则 box-sizing:border-box+952/根 min(920px,100vw-60)——border-box 内容区 892<根 920 曾致 Tab 组越出 tip 外缘 14px 被裁；柱图槽位满幅（密度三档 18/14/10px、峰值/最低/最新/悬停恒显+估宽让位）；折线 SVG width=100% 百分比 x 坐标（幻影溢出 636>606 根治）；多模型左卡主数字恒在+计数三语义「已选 X/Y · 本期有效 N」；空态接管（emptyReason 分类+清除筛选/查看全部时间按钮 data-sv3-act）；进行日桶 b 钳 now（hover「截至 HH:mm」不显未来区间）；live 徽标「实时估算中」；同名异供应商副标；标题 SVG 化；month 行高自适应+hist 列宽帽 64px+>26 周按日历月聚合（月卡不伪造每模型分量）；移除较低/较高双色图例。
      * → v395 生成速度 Tooltip V6「全部」Tab 自适应（spec §18）：统一布局选择 spd3SelectHistoryLayout 按未筛选 axis 自然日跨度 spanDays 分四档（≤7 日卡 / 8–21 紧凑日历 / 22–63 完整日历 / >63 贡献热力，activeDays 只做密度披露不裁轴）；两档日历共用 spd3CalHTML 靠 zu3-cal-dense 区隔；空日不再逐格重复「无记录」文字（只留日号+低对比底，aria 保留）；固定高 450 与 v394 分布表恒展开裁定不变。
+     * → v396 单模型左卡同构分布块（spec §19，用户裁定）：单模型不再早返回 .zu-sv3-model 单行胶囊，落入多模型同构分布块（本期有效计数 + 分布标题 + dbar + dwrap 明细表），1 模型=1 段 100% + 表头 1 行；「请求轮次」由 count 行承载不再单列，保留「有效输出」kv（fmtTok 在场）；spd3DotAndName/.zu-sv3-model 死代码删除。
      */
-    var VERSION = "v395";
+    var VERSION = "v396";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */

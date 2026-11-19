@@ -157,9 +157,12 @@ test('spd3CardHTML 结构锁: 根类/data-sv-key/双 Tab 组/chips/单多左卡�
   const domB = stripStyle(cardHTML(ctx, anB, selB));
   assert.doesNotMatch(domB, /唯一模型|zu-sv3-only/);
   assert.match(domB, /zu-sv3-main-num/);
-  assert.doesNotMatch(domB, /zu-sv3-dtab/, '单模型态无分布表（PRD 6.3）');
-  assert.doesNotMatch(domB, /zu-sv3-dbar/, '单模型态无分布条');
-  assert.doesNotMatch(domB, /已选 \d+ 个模型/, '单模型态无多模型计数行');
+  // v396 §19：单模型态同构分布块（count+dist-h+dbar+dwrap 1 行表），1 段 100%
+  assert.match(domB, /zu-sv3-dtab/, '单模型态同构分布表（v396 §19）');
+  assert.match(domB, /zu-sv3-dbar/, '单模型态分布条 1 段 100%');
+  assert.equal((domB.match(/zu-sv3-drow" role="row"/g) || []).length, 2, '表头+1 数据行');
+  assert.ok(!domB.includes('zu-sv3-model'), '单行 model 胶囊已退役');
+  assert.doesNotMatch(domB, /已选 \d+ 个模型/, '单模型态无旧「已选 N 个模型」计数行');
   // 通知行：远端降级提示只在有 notice 时出现
   const selR = { range: 'all', period: 'all', sid: 'sess_main', remote: true };
   const anR = analyze(ctx, h, selR);
@@ -216,7 +219,7 @@ test('spd3CardHTML 结构锁: 根类/data-sv-key/双 Tab 组/chips/单多左卡�
 });
 
 // ---------- ② 单模型五态标题 + 精简左卡（v391 §15.1：「本期统计」「覆盖范围」已删） ----------
-test('单模型左卡: 五 period 标题文案、主数字/档位/模型行/请求轮次、组标题与覆盖范围已删、日均标签切换', () => {
+test('单模型左卡: 五 period 标题文案、主数字/档位恒在、同构分布块（count+dist-h+dbar+dwrap 1 行）、组标题与覆盖范围已删、日均标签切换', () => {
   const ctx = makeCtx();
   const h = fixture();
   for (const period of ['recent', 'today', 'week', 'month', 'all']) {
@@ -230,29 +233,29 @@ test('单模型左卡: 五 period 标题文案、主数字/档位/模型行/请�
     // v391 §15.1：「本期统计」组标题与「覆盖范围」kv 删除（范围语义由标题行承载）
     assert.doesNotMatch(dom, /本期统计|zu-sv3-cov-h/, 'period=' + period + ' 组标题已删');
     assert.doesNotMatch(dom, /覆盖范围/, 'period=' + period + ' 覆盖范围已删');
-    assert.match(dom, /请求轮次/);
     assert.ok(!dom.includes('zu-sv3-cov-set'), 'period=' + period + ' 五值 set 已废除');
-    // §12.2「当前模型」行去重：真单模型池与模型行 Chip 恒完全同名；本层 ctx 无 fmtTok
-    // （cardHTML 默认 o={}）→ 整行省略，不虚构格式化值
-    assert.ok(!dom.includes('当前模型'), 'period=' + period + ' 无 fmtTok：当前模型行整行省略');
-    assert.ok(!dom.includes('有效输出'), 'period=' + period + ' 无 fmtTok：不出现有效输出行');
+    // v396 §19：单模型=多模型同构分布块，单行 .zu-sv3-model 胶囊退役
+    assert.match(dom, /zu-sv3-count">/, 'period=' + period + ' 本期有效计数在场');
+    assert.match(dom, /本期有效 1 个模型 · \d+ 轮/, 'period=' + period + ' count 含模型数+轮数');
+    assert.match(dom, /zu-sv3-dist-h">所选模型分布 · 按请求数/, 'period=' + period + ' 分布标题在场');
+    assert.match(dom, /zu-sv3-dbar" role="img"/, 'period=' + period + ' 分布条在场');
+    assert.match(dom, /zu-sv3-dwrap"/, 'period=' + period + ' 明细表容器在场');
+    assert.ok(!dom.includes('zu-sv3-model'), 'period=' + period + ' 单行 model 胶囊已退役');
+    assert.doesNotMatch(dom, /请求轮次/, 'period=' + period + ' 请求轮次由 count 行承载不再单列');
+    assert.ok(!dom.includes('当前模型'), 'period=' + period + ' 无「当前模型」冗余行');
   }
-  // §12.2 wire 夹具带 fmtTok（spd3CardHTML ctx.o 透传 spd3LeftHTML 第 5 参）：
-  // 「当前模型」行替换为「有效输出 Σ有效输出 token」（值=overall.out 经 fmtTok）
+  // v396 §19：有效输出 kv 在 fmtTok 在场时显示（不需要 poolSingle 去重）；缺席整行省略不虚构
   const selFmt = { range: 'session', period: 'all', sid: 'sess_main', filt: { mode: 'sel', keys: [KEYS.a] } };
   const anFmt = analyze(ctx, h, selFmt);
+  const domNoFmt = stripStyle(cardHTML(ctx, anFmt, selFmt));
+  assert.ok(!domNoFmt.includes('有效输出'), '无 fmtTok：不出现有效输出行（不虚构格式化值）');
   const domFmt = stripStyle(cardHTML(ctx, anFmt, selFmt, { o: { fmtTok: v => 'T' + v } }));
-  assert.ok(!domFmt.includes('当前模型'), '真单模型池+fmtTok：当前模型行被去重替换');
   assert.match(domFmt, /有效输出<\/i><b>T1700<\/b>/, '有效输出=overall.out（A 池 Σout=1700）经 fmtTok');
-  // 非真单模型池（筛选缩到单模型，ctx.pool 全量池）→ 保留「当前模型」原名不去重
-  const fullPool2 = [{ key: KEYS.a, name: 'GLM-A', n: 3 }, { key: KEYS.b, name: 'Claude-B', n: 1 }];
-  const domKeep = stripStyle(cardHTML(ctx, anFmt, selFmt, { pool: fullPool2, o: { fmtTok: v => 'T' + v } }));
-  assert.match(domKeep, /当前模型<\/i><b title="GLM-A">GLM-A<\/b>/, '筛选缩到单模型不冒充真单模型池，保留原名');
-  // 请求轮次 = overall.turns（session/all A 恰 3 轮；zh 文案无前导空格）
-  const selA = { range: 'session', period: 'all', sid: 'sess_main', filt: { mode: 'sel', keys: [KEYS.a] } };
-  const domTurns = stripStyle(cardHTML(ctx, analyze(ctx, h, selA), selA));
-  assert.match(domTurns, /请求轮次<\/i><b>3轮<\/b>/, '请求轮次=overall.turns');
+  // 单模型分布条 1 段 100%、表头+1 数据行（role=row 共 2）
+  assert.equal((domFmt.match(/zu-sv3-drow" role="row"/g) || []).length, 2, '表头+1 行');
+  assert.equal((domFmt.match(/<i style="background:/g) || []).length, 1, '分布条 1 段');
   // an.cov 契约废除：残留 cov 字段不被消费（不渲染任何数值）
+  const selA = { range: 'session', period: 'all', sid: 'sess_main', filt: { mode: 'sel', keys: [KEYS.a] } };
   const anCov = Object.assign({}, analyze(ctx, h, selA), { cov: { recent: 18, all: 42 } });
   const domCov = stripStyle(cardHTML(ctx, anCov, selA));
   assert.ok(!domCov.includes('zu-sv3-cov-set'), 'an.cov 不再消费（无 cov-set 结构）');
@@ -383,7 +386,8 @@ test('i18n: lang=en 关键文案切英文（SPD_L 桩实现真实 L 逻辑）', 
   assert.match(domB, /zu-sv3-stat"><i>Peak<\/i>/);
   assert.doesNotMatch(domB, /Coverage|This period/, 'v391 §15.1：组标题/覆盖范围英文态同样已删');
   assert.match(domB, /Last \d+ turns · average speed/, 'recent 英文标题');
-  assert.match(domB, /turns<\/b>/, '请求轮次英文');
+  assert.match(domB, /active models · \d+ turns/, 'count 行英文（v396：请求轮次并入 count）');
+  assert.doesNotMatch(domB, /Turns<\/i>/, '单模型态无独立「请求轮次」kv');
   // 弹出层英文
   ctx.__pool = [{ key: KEYS.a, name: 'GLM-A', n: 3 }, { key: KEYS.b, name: 'Claude-B', n: 1 }];
   ctx.__filt = { mode: 'sel', keys: [KEYS.a] };

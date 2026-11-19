@@ -264,31 +264,12 @@
         '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("有效模型", "Active models")) + "</i><b>0</b></div>" +
         stats + "</div>";
     }
-    if (models.length === 1) {
-      var m = models[0];
-      /* §15.1：「本期统计」组标题与「覆盖范围」kv 删除（v391）——范围语义由标题行
-       * （「最近 N 轮平均速度」等）承载，kv 组紧凑直达数据 */
-      /* §12.2 当前模型行去重：真单模型池（poolSingle）时本行与模型行 Chip 恒完全同名
-       * （同一 perModel 条目），替换为「有效输出」（overall.out 经 o.fmtTok 格式化）；
-       * fmtTok 缺席整行省略（不虚构格式化值），非真单模型池（筛选缩到单模型）保留原名 */
-      var modelKv = "";
-      if (poolSingle && typeof fmtTok === "function") {
-        modelKv = '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("有效输出", "Effective output")) + "</i><b>" +
-          spdEsc(String(fmtTok(overall.out))) + "</b></div>";
-      } else if (!poolSingle) {
-        modelKv = '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("当前模型", "Model")) + '</i><b title="' + spdEsc(m.name) + '">' +
-          spdEsc(m.name) + "</b></div>";
-      }
-      return '<div class="zu-sv3-left">' + headRow + spd3MainNumHTML(overall.v) +
-        (bd ? spd3BandHTML(bd) : "") +
-        '<div class="zu-sv3-model">' + spd3DotAndName(m.key, m.name) + "</div>" +
-        '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("请求轮次", "Turns")) + "</i><b>" +
-        spdEsc(spdNum(overall.turns) + SPD_L("轮", " turns")) + "</b></div>" +
-        modelKv +
-        stats + "</div>";
-    }
-    /* ---- 多模型态（§11.3）：标题 → 主数字 → 档位胶囊 → 本期有效计数 →
-     * 分布（堆叠条+网格表，默认 ≤4 行）→ 峰最低最新 ---- */
+    /* v396 §19：单模型不再早返回单行 .zu-sv3-model——落入下方分布块构建器，
+     * 与多模型同构（count + dist-h + dbar + dwrap 表），1 模型时天然 1 段 100%、
+     * 表头+1 行；「请求轮次」由 count 行承载不再单列，「有效输出」kv 在返回前单独追加。
+     * §15.1「本期统计」组标题与「覆盖范围」kv 删除（v391）保持不变。 */
+    /* ---- 分布块共用构建（§11.3 多模型 / v396 §19 单模型）：标题 → 主数字 → 档位
+     * 胶囊 → 本期有效计数 → 分布（堆叠条+网格表）→ 峰最低最新 ---- */
     /* §14.2 分布条（Top6+其他）：条=概况——shareSorted 前 6 段直出，其余模型聚合为
      * 单段中性灰「其他」（段数 ≤7 无碎片）；表=明细——真实模型全量展开（DEF_ROWS
      * 折叠，见下），两处口径有意不同。width 恒按真实 share（轨道契约见样式注释）。
@@ -344,6 +325,13 @@
     for (var t6 = 0; t6 < Math.min(6, shareSorted.length); t6++) top6Pct += (shareSorted[t6].share || 0) * 100;
     top6Pct = Math.round(top6Pct);
     var missN = an.selMissing && an.selMissing.length ? an.selMissing.length : 0;
+    /* v396 §19：单模型分布块后保留「有效输出」kv（fmtTok 在场才显示，绝不虚构）；
+     * 「请求轮次」已由 count 行承载不再单列；多模型态不追加本行。 */
+    var outKv = "";
+    if (models.length === 1 && typeof fmtTok === "function") {
+      outKv = '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("有效输出", "Effective output")) + "</i><b>" +
+        spdEsc(String(fmtTok(overall.out))) + "</b></div>";
+    }
     return '<div class="zu-sv3-left">' + headRow +
       spd3MainNumHTML(overall.v) +
       (bd ? spd3BandHTML(bd) : "") +
@@ -357,7 +345,7 @@
       spdEsc(SPD_L("模型分布：" + models.length + " 个模型，前 " + Math.min(6, models.length) + " 占 " + top6Pct + "%",
         "Distribution: " + models.length + " models, top " + Math.min(6, models.length) + " at " + top6Pct + "%")) + '">' + bar + "</div>" +
       '<div class="zu-sv3-dwrap"><div class="zu-sv3-dtab' + (msAvail ? "" : " zu-sv3-dtab-noms") +
-      '" role="table">' + thead + rowsHtml + "</div></div>" + stats + "</div>";
+      '" role="table">' + thead + rowsHtml + "</div></div>" + outKv + stats + "</div>";
   }
   /* ==================== ④b 图表区空态（v387 §11.4） ====================
    * an.real 空（或 !an.overall）时 spd3CardHTML 用本函数替换 <!--CHART--> 占位——占位
@@ -538,10 +526,7 @@
         "border:1px solid var(--color-popover-border,rgba(255,255,255,.16));border-radius:999px;padding:2px 10px;" +
         "white-space:nowrap;align-self:flex-start}" +
       ".zu-light .zu-sv3-root .zu-sv3-band{border-color:rgba(15,23,42,.16)}" +
-      ".zu-sv3-root .zu-sv3-model{display:inline-flex;align-items:center;gap:6px;max-width:100%;min-width:0;margin-top:8px;" +
-        "padding:2px 10px;border:1px solid var(--color-popover-border,rgba(255,255,255,.14));border-radius:999px;" +
-        "background:rgba(255,255,255,.03)}" +
-      ".zu-light .zu-sv3-root .zu-sv3-model{border-color:rgba(15,23,42,.14);background:rgba(0,0,0,.04)}" +
+      /* v396 §19：.zu-sv3-model 单行胶囊随单模型同构分布块退役（CSS 与 spd3DotAndName 一并删除） */
       ".zu-sv3-root .zu-sv3-count{display:flex;align-items:center;flex-wrap:wrap;gap:4px 6px;margin-top:8px;min-width:0;" +
         "font-size:calc(var(--ui-font-size,14px) - 1px);font-weight:600}" +
       ".zu-sv3-root .zu-sv3-count svg{flex:0 0 auto;opacity:.85}" +
