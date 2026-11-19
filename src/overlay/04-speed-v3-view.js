@@ -14,8 +14,8 @@
    * 纪律（spec §7）：模型 key 不进 className（只进 data-k）；动态文本一律 spdEsc；全部
    * 文案走 SPD_L；颜色语义两套不混用——模型身份色 = spd3Color（SPD3_PALETTE），速度
    * 色阶 = TPS_BANDS 档位类（zu-ultra/ok/warm… 全局色规则继承）。
-   * 集成契约：spd3LeftHTML 第三参 poolSingle（chips 池恰一模型=「真单模型池」，驱动「当前模型」行去重；v390 用户
-   * 裁定「唯一模型」徽标与供应商副标 .zu-sv3-msub/.zu-sv3-only 均去除）；
+   * 集成契约：spd3LeftHTML 第三参 poolSingle 为 v390 集成签名遗留（chips 池恰一模型；
+   * v396 起左卡单模型态改由 models.length===1 判定，本参不再被函数体消费）；
    * 筛选 chips 池缺省取 an.perModel+an.selMissing，
    * 筛选激活时集成方应传 ctx.pool=未筛选全量模型（否则 chips 收缩为已选集，无法点回）。
    * v387 实机修复批（spec §11）：宽度链 border-box 释放（§11.1）；多模型态主数字恒在
@@ -51,12 +51,6 @@
   function spd3PctTxt(share) {
     var p = Math.max(0, (share || 0) * 100);
     return p < 0.1 ? SPD_L("<0.1%", "<0.1%") : String(Math.round(p * 10) / 10) + "%";
-  }
-  /* 色点 + 名称（单模型态模型行专用；chips/弹层/分布行走 spd3ModelLabel——同名异
-   * 供应商需要副标）。超长 ellipsis，全文走 title */
-  function spd3DotAndName(key, name) {
-    return '<i class="zu-sv3-dot" style="background:' + spd3Color(key) + '" aria-hidden="true"></i>' +
-      '<span class="zu-sv3-chip-name">' + spdEsc(name) + "</span>";
   }
   /* 缺失 key 的显示名：身份键 = provider\x1fmodel（provider 缺失为空段），取 model 段；
    * 无 \x1f 整串即名（名称退化键 "n\x1fname" 同规则）；空段兜底「未知模型」。 */
@@ -121,7 +115,8 @@
    * pool = [{key,name,n?,missing?}]（spd3ChipPool 产出）；o = {selMissing?, pop?, active?}。
    * 选中态 = filt.mode==="sel" 且含该 key；无数据模型（missing / o.selMissing 命中，
    * 含 pool 外的 selMissing key 兜底补一枚）加 .zu-sv3-chip-empty + 「无数据」标记。
-   * ≤3 枚全显、超出收 +N（§12.4 常驻预算降为 3，fbar 恒单行）；pool 为空不渲染整条。
+   * ≤3 枚全显；超出按 v400 视口感知动态预算尽量多显（§23，可用宽逐枚估宽、下限仍 3）、
+   * 装不下的收 +N（fbar 恒单行；VM/无 window 回退 v387 常驻预算 3）；pool 为空不渲染整条。
    * §14.1 入口统一（方案 A）：旧右侧放大镜按钮（.zu-sv3-fsearch）整链退役；弹出层
    * 入口 = 「模型筛选」标签 button 与「+N」button（同挂 data-sv3-fopen，
    * aria-haspopup="dialog"、aria-expanded 随 o.pop.open），同一面板/同一状态/同一关闭行为。
@@ -139,7 +134,40 @@
     }
     if (!rows.length) return "";
     var isOn = function (k) { return !!(filt && filt.mode === "sel" && filt.keys && filt.keys.indexOf(k) >= 0); };
-    var chips = "", MAX = 3, onCount = 0;
+    var selX = filt && filt.mode === "sel" && filt.keys ? filt.keys.length : rows.length;
+    var act = typeof o.active === "number" ? o.active : 0;
+    var count = SPD_L("已选 " + selX + "/" + rows.length + " · 本期有效 " + act,
+      "Selected " + selX + "/" + rows.length + " · " + act + " active");
+    /* v400（spec §23）：常驻预算视口感知——v387 硬编码 3 是 VM 保守值，宽屏 chips 区
+     * flex:1 的空间被空置（用户截图裁定）。基数=根宽帽 min(vw−60, 920)（§11.1 宽度链，
+     * root 即 fbar 实际容器、无边框），扣 fbar padding+border 22、漏斗 14、三段 gap 18、
+     * +N 预留 36 与标签/计数估宽，逐枚累加 chip 估宽（visW：CJK≈11px、ASCII≈6px，贴近
+     * 11px 实字宽；chip 名帽 137=max-width 170 扣 dot/padding），装不下即止、下限仍 3。
+     * VM/无 window 回退 3（既有行为与 VM 断言不变）；估宽偏差由既有 CSS 兜底（chip
+     * max-width:170 省略、chips overflow:hidden、chip-name ellipsis、chip flex-shrink），
+     * +N 恒预留保证入口可见。常数按默认字号 11px（14−3）定标；用户调大 --ui-font-size
+     * 时低估由 shrink 吸收（已知限制，§23.2）。 */
+    var visW = function (s) {
+      var w = 0;
+      for (var ci = 0; ci < s.length; ci++) w += s.charCodeAt(ci) > 0x2e7f ? 11 : 6;
+      return w;
+    };
+    var chips = "", onCount = 0, MAX = 3;
+    var vw = 0;
+    try { vw = (typeof window !== "undefined" && window.innerWidth) || 0; } catch (eW) { vw = 0; }
+    if (vw > 0 && rows.length > 3) {
+      var avail = Math.min(vw - 60, 920) - 22 - 14 - 18 - 36 -
+        (visW(SPD_L("模型筛选", "Model filter")) + 6) - (visW(count) + 16);
+      var acc = 0;
+      for (var mi = 0; mi < rows.length; mi++) {
+        var cw = Math.min(visW(rows[mi].name), 137) + 33 + 4 +
+          ((rows[mi].missing || miss.indexOf(rows[mi].key) >= 0) ? 36 : 0);
+        if (acc + cw > avail) break;
+        acc += cw;
+        MAX = mi + 1;
+      }
+      if (MAX < 3) MAX = 3;
+    }
     for (i = 0; i < rows.length && i < MAX; i++) {
       var p = rows[i], on = isOn(p.key), empty = !!p.missing || miss.indexOf(p.key) >= 0;
       if (on) onCount++;
@@ -157,10 +185,6 @@
       spdEsc(SPD_L("其余 " + hidden + " 个模型，可搜索查看", hidden + " more models — use search")) +
       '" aria-label="' + spdEsc(SPD_L("还有 " + hidden + " 个未展示模型，点击查看和筛选",
         hidden + " more models not shown, click to view and filter")) + '">+' + hidden + "</button>";
-    var selX = filt && filt.mode === "sel" && filt.keys ? filt.keys.length : rows.length;
-    var act = typeof o.active === "number" ? o.active : 0;
-    var count = SPD_L("已选 " + selX + "/" + rows.length + " · 本期有效 " + act,
-      "Selected " + selX + "/" + rows.length + " · " + act + " active");
     return '<div class="zu-sv3-fbar"><span class="zu-sv3-fico">' + SPD3_SVG_FUNNEL + "</span>" +
       /* §14.1：「模型筛选」标签为真 button（弹出层入口之一，data-sv3-fopen） */
       '<button type="button" class="zu-sv3-flabel" data-sv3-fopen aria-haspopup="dialog" aria-expanded="' +
@@ -168,7 +192,7 @@
       '<div class="zu-sv3-chips">' + chips + "</div>" +
       '<span class="zu-sv3-fcount">' + spdEsc(count) + "</span></div>";
   }
-  /* ==================== ③ 筛选弹出层（spec §3 ≥9 模型）：搜索 + 列表 + 全选/清空/恢复默认 ====================
+  /* ==================== ③ 筛选弹出层（spec §3/§14.1：入口=「模型筛选」标签与 +N；搜索 + 列表 + 全选/清空/恢复默认） ====================
    * 行 button 带 data-k（选中态 aria-pressed）；query 按名称/身份键不区分大小写过滤，
    * >60 行只渲染前 60 并提示「输入以搜索更多」（轻量截断，不做虚拟化）。 */
   function spd3FilterPopHTML(pool, filt, query) {
@@ -206,15 +230,15 @@
   }
   /* ==================== ④ 左摘要卡（spec §6 + §11.3/§11.4/§11.5/§15.1） ====================
    * 三态：空（无 perModel 或无 overall）→ 主数字 — + 请求轮次 0/有效模型 0 + 峰最低新 —；
-   * 单模型（perModel 恰 1，无数据模型不计）→ 主数字/档位/模型行/请求轮次/有效输出
-   * （或当前模型）；多模型 → 主数字恒在（v387 §11.3：任何模型数不缺均速大数字）→
+   * 单模型（perModel 恰 1，无数据模型不计）→ 主数字/档位/分布块（v396 §19：与多模型
+   * 同构的 count+dist-h+dbar+dwrap，模型行胶囊退役）/有效输出 kv；多模型 → 主数字恒在
+   * （v387 §11.3：任何模型数不缺均速大数字）→
    * 档位胶囊 → 「本期有效 N 个模型 · M 轮」（selMissing 非空追加无有效记录提示）→ 分布
    * （堆叠条 + div Grid 网格表恒全量展开；表容器 max-height 150px 内滚不撑高主卡，
    * v391 用户裁定「查看全部」折叠按钮退役）→ 峰/低/新。分布行序按 share（请求数占比）降序；
    * msAvail=false 降级：隐藏「均速」列（.zu-sv3-dtab-noms 两列变体），绝不出现 t/s 假值。
-   * poolSingle = chips 池恰 1 个真模型——驱动「当前模型」行去重（v390 起「唯一模型」
-   * 徽标已按用户裁定去除）；筛选缩到单模型不冒充。「本期统计」组标题与「覆盖范围」
-   * kv 已随 v391 §15.1 删除（范围语义由标题行承载）。 */
+   * poolSingle 为集成签名遗留（见文件头），函数体自 v396 起不消费。「本期统计」组标题与
+   * 「覆盖范围」kv 已随 v391 §15.1 删除（范围语义由标题行承载）。 */
   function spd3LeftTitle(an) {
     var n = an && an.items ? an.items.length : 0;
     var t = an && an.period === "recent" ? SPD_L("最近 " + n + " 轮", "Last " + n + " turns")
@@ -714,7 +738,8 @@
      * CSS 默认 87px——字号缩放/紧凑链下 fbar 高度变化安全 */
     if (pop && ctx.pop && spdNum(ctx.pop.top) > 0)
       pop = pop.replace('class="zu-sv3-fpop"', 'class="zu-sv3-fpop" style="top:' + spdNum(ctx.pop.top) + 'px"');
-    /* 真单模型池（§11.5）：chips 池恰 1 个且非 missing——「唯一模型」徽标只在场 */
+    /* 真单模型池（§11.5→v396）：chips 池恰 1 个且非 missing——v396 起左卡单模型态改由
+     * models.length===1 判定，本值仅作 spd3LeftHTML 第三参签名兼容传递（不被消费） */
     var poolSingle = pool.length === 1 && !pool[0].missing;
     /* §11.4：real 空 / overall 缺 → 图表占位换居中空态（占位不在，wire replace 落空
      * 自然不注入 charts 产物）；有数据恒保留占位原样。触发判据=an.real（spec §11.4
