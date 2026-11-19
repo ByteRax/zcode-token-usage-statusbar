@@ -278,9 +278,11 @@
   /* ==================== ④ 柱状图槽位列构建（recent / 今天单模型共用） ====================
    * 槽位满幅（spec §11.2）：每槽 .zu-sv3-slot flex:1 1 0 均摊全宽，槽即命中区
    * （data-i/tabindex/role/aria/混合 title 契约全在槽上），柱按密度 18/14/10px 槽内
-   * 水平居中。数值标签三档（spec §15.5，PRD 六轮）：估宽 estW=字符数×6px+8、槽宽
-   * slotW=estPlotW/n；n≤12 全显（estW 超槽宽的非关键位让位=碰撞避让）；13–24 全试
-   * 显、让位时峰值/最低/最新恒显（其余确定性隐藏）；>24 按可用空间抽样 step=
+   * 水平居中。数值标签三档（spec §15.5，PRD 六轮；v399 常规位估宽 +8→+2）：估宽
+   * estW=字符数×6px+2（字符数×6 已含 tabular 字体余量，旧 +8 双重留白致 18 柱常规位
+   * 整片让位、只剩峰/低/新）、槽宽 slotW=estPlotW/n；n≤12 全显（estW 超槽宽的非关键
+   * 位让位=碰撞避让）；13–24 全试显、让位时峰值/最低/最新恒显（其余确定性隐藏）；
+   * >24 按可用空间抽样 step=
    * ceil((maxLblW+8)/slotW)（≥2，step×slotW≥maxLblW+8 保证采样位间距，不再叠加
    * fits 门槛——窄槽下叠加会全部让位、抽样失去意义），关键值恒显。
    * 悬停位恒显；其自身让位时临时隐藏左右邻已显的非关键标签（关键位恒显优先，
@@ -318,7 +320,7 @@
     /* 恒显关键位（峰/低/新）：不吃估宽让位（PRD：碰撞时优先保留） */
     var keep = {};
     keep[peakI] = true; keep[minI] = true; keep[n - 1] = true;
-    var fits = function (t) { return t.length * 6 + 8 <= slotW; };
+    var fits = function (t) { return t.length * 6 + 2 <= slotW; };
     /* n>24 抽样步长按可视宽算：step×slotW ≥ maxLblW+8 → 采样位间距保证不重叠
      * （fits 门槛只用于 step=1 的 n≤24 相邻让位；抽样位若再叠加 fits，窄槽下
      * 全部让位、抽样失去意义） */
