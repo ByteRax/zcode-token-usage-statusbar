@@ -561,9 +561,12 @@
       /* v397 §20：滚动条右移+表格增宽——margin-right:-8px 把容器向右扩 8px 吃掉左卡右
        * padding（余 4px 到边框），滚动条随之右移、表格净宽 +8px；细滚动条双写
        * scrollbar-width:thin（Chromium 121+）+ webkit 6px 回退（旧宿主 Windows 经典 17px
-       * 挤占表格）。内滚契约 max-height:150px/overflow-y:auto 不变，仍无 overflow-x。 */
+       * 挤占表格）。内滚契约 max-height:150px/overflow-y:auto 不变，仍无 overflow-x。
+       * v398 §21：scrollbar-gutter:stable 恒定预留滚动条槽位——无滚动条（模型少）时仍留
+       * 6px 空白，表格右缘距卡片边框恒 4+6=10px，不随有无滚动条贴边/跳动。 */
       ".zu-sv3-root .zu-sv3-dwrap{max-height:150px;overflow-y:auto;margin:6px -8px 0 0;min-height:0;" +
-        "scrollbar-width:thin;scrollbar-color:var(--color-border,rgba(128,128,128,.45)) transparent}" +
+        "scrollbar-width:thin;scrollbar-color:var(--color-border,rgba(128,128,128,.45)) transparent;" +
+        "scrollbar-gutter:stable}" +
       ".zu-sv3-root .zu-sv3-dwrap::-webkit-scrollbar{width:6px}" +
       ".zu-sv3-root .zu-sv3-dwrap::-webkit-scrollbar-thumb{background:var(--color-border,rgba(128,128,128,.45));border-radius:3px}" +
       ".zu-sv3-root .zu-sv3-dwrap::-webkit-scrollbar-track{background:transparent}" +

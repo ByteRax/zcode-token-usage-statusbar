@@ -430,3 +430,18 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 
 - 数据口径、模型色阶、筛选、固定高 450、四种历史布局、其它 Tooltip 全部不变；仅分布表容器盒模型与滚动条外观。
 - VM：dwrap CSS 串含 `margin-right:-8px` + `scrollbar-width:thin` + webkit 6px 回退；harness 全链零 GEOMETRY_FAILURE；真机多模型 12 行滚动截图确认表格变宽、无横向溢出。
+
+## 21. v398 无滚动条时恒定保留右侧边界间距（2026-11-19，用户裁定）
+
+用户实测：仅 2 个模型（表不滚动）时，分布表右缘紧贴卡片边界、占比列数字几乎贴边；要求「右侧没有滚动条时，还是要预留出距离边界的距离」。
+
+### 21.1 实现
+
+- `.zu-sv3-dwrap` 加 `scrollbar-gutter:stable`：滚动条槽位恒定预留——有滚动条时是 6px 细条，无滚动条时是等宽 6px 空白；表格内容右缘距卡片边框恒 = 4px（负 margin 余量）+ 6px（槽位）= 10px，两种状态一致、不随模型数跳动。
+- 保留 v397 的 `margin:6px -8px 0 0`（表格净宽 +8px）与细滚动条双写（scrollbar-width:thin + webkit 6px 回退）；`scrollbar-gutter:stable` 与 `-webkit-scrollbar{width:6px}` 在 Chromium 下预留宽度同为 6px，无冲突。
+- 内滚契约 `max-height:150px;overflow-y:auto` 不变；行/容器仍无 overflow-x。
+
+### 21.2 不变项与验收
+
+- 数据口径、模型色阶、筛选、固定高 450、四档历史布局、单模型同构分布块、其它 Tooltip 全部不变。
+- VM：dwrap CSS 串含 `scrollbar-gutter:stable`；harness 零 GEOMETRY_FAILURE（含 dist-no-hscroll）；真机 2 模型（不滚动）与 20 模型（滚动）两态截图对比——表格右缘距边界间距一致，无贴边、无横向溢出。

@@ -277,8 +277,9 @@
      * → v395 生成速度 Tooltip V6「全部」Tab 自适应（spec §18）：统一布局选择 spd3SelectHistoryLayout 按未筛选 axis 自然日跨度 spanDays 分四档（≤7 日卡 / 8–21 紧凑日历 / 22–63 完整日历 / >63 贡献热力，activeDays 只做密度披露不裁轴）；两档日历共用 spd3CalHTML 靠 zu3-cal-dense 区隔；空日不再逐格重复「无记录」文字（只留日号+低对比底，aria 保留）；固定高 450 与 v394 分布表恒展开裁定不变。
      * → v396 单模型左卡同构分布块（spec §19，用户裁定）：单模型不再早返回 .zu-sv3-model 单行胶囊，落入多模型同构分布块（本期有效计数 + 分布标题 + dbar + dwrap 明细表），1 模型=1 段 100% + 表头 1 行；「请求轮次」由 count 行承载不再单列，保留「有效输出」kv（fmtTok 在场）；spd3DotAndName/.zu-sv3-model 死代码删除。
      * → v397 分布表滚动条外移与表格增宽（spec §20，用户裁定）：.zu-sv3-dwrap margin-right:-8px 右扩（滚动条右移、表格净宽+8px，距边框仍余4px）+滚动条细化（scrollbar-width:thin/scrollbar-color + webkit 6px 回退，旧 Windows 17px 经典条挤占表格）；内滚 max-height:150px/overflow-y:auto 契约不变。
+     * → v398 无滚动条时恒定保留右侧边界间距（spec §21，用户裁定）：.zu-sv3-dwrap 加 scrollbar-gutter:stable——滚动条槽位恒定预留，无滚动条（模型少不滚）时仍留 6px 空白，表格右缘距卡片边框恒 4+6=10px，不随有无滚动条贴边/跳动；数据/固定高/其它布局不变。
      */
-    var VERSION = "v397";
+    var VERSION = "v398";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
