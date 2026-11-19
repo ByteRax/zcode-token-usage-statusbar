@@ -51,7 +51,7 @@ python install.py --dev
 
 代码修改后先检查并同步插件副本。`sync_plugin.py` 会先构建桌面 overlay、额度客户端和根目录的两份手机用户脚本，再复制既有共享清单；用户脚本不复制进插件包。
 
-根目录 `zusage-mobile.user.js` 与 `zusage-mobile.debug.user.js` 随源码提交，用户从上游 `main` 的 Raw HTTPS 链接安装。源码 `src/mobile/00-meta.js` 中的 `@version` 与安装/更新地址由维护者维护，正式版与调试版必须指向各自文件；修改桌面 overlay 后也需重建这两份内嵌产物。仅本地构建不能使上游链接更新，源码合入并推送后才对外可得，管理器更新策略见[用户指南](user-guide.md#web-远程控制页面)。
+根目录 `zusage-mobile.user.js` 与 `zusage-mobile.debug.user.js` 随源码提交，用户从上游 `main` 的 Raw HTTPS 链接安装。正式版与调试版的安装和更新地址必须指向各自文件；修改桌面 overlay 后也需重建这两份内嵌产物。日常开发保持脚本 `@version` 不变，常规升号放在[正式发版提交](#本地打包与校验)中。仅本地构建不能使上游链接更新，源码合入并推送后才对外可得，管理器更新策略见[用户指南](user-guide.md#web-远程控制页面)。
 
 ```bash
 python3 sync_plugin.py
@@ -107,7 +107,11 @@ python3 sync_plugin.py --check
 
 ### 本地打包与校验
 
-同步源码，保持两个插件 manifest 与市场版本一致。在仓库根目录执行，输出目录必须尚不存在：
+每次正式发布插件新版本时，在独立发布 worktree 内更新两份 `plugin.json` 和根 `marketplace.json` 的插件版本，并递增 `src/mobile/00-meta.js` 的 `@version`。新脚本版本必须高于上一正式插件 tag 中的脚本版本及当前公开分发的脚本版本；若上一 tag 无脚本，以当前公开分发版本为准。脚本版本独立编号，正式版与调试版必须一致。重建并检查两份脚本后，将三个 manifest、脚本版本源和两份脚本产物一并纳入专用 `release: vX.Y.Z` 提交，tag 指向该提交。脚本不加入插件 ZIP；现有流程在正式 Release 验收后合并源码 PR，届时上游 `main` 的 Raw 链接才提供新的 `@version`。
+
+若正式版已经发布但漏升脚本版本，从包含该发版提交的上游 `main` 创建独立 PR，递增脚本 `@version` 并重建两份产物，不改插件版本、不移动既有 tag，也不重发插件。
+
+在发布 worktree 根目录执行，输出目录必须尚不存在：
 
 ```bash
 python3 sync_plugin.py
