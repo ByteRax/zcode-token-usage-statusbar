@@ -539,6 +539,60 @@ test('settings source list renders rows and emits quota-src / quota-src-key / qu
   void list; void ui;
 });
 
+test('issue #399: source-row feedback text is HTML-escaped on row rebuild (server-controlled account)', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ quota: QUOTA_OK }));
+  h.window.__zusagePluginUpdate({ quotaEnabled: true, quotaSources: [
+    { id: 'qianwen', label: '千问 Token Plan', kind: 'plan', enabled: true, unverified: true, credentialFields: ['token'], keyConfigured: false, status: 'not_configured' },
+  ] });
+  const panel = h.body.children.find(e => e.classList.contains('zu-settings'));
+  h.window.zcode = { openExternal() { } };   // 授权页打开桥桩：沙箱无 window.open，缺桩会令 start 回调抛错（FATAL 吞掉）
+  const btn = new Element('button');
+  btn.classList.add('zu-src-signin'); btn.dataset.src = 'qianwen';
+  btn.isConnected = true;
+  btn.closest = (sel) => (sel === '.zu-src-signin' ? btn : null);
+  panel.listeners.get('click')[0]({ target: btn });
+  const startReq = h.window.__zusagePluginRequests.filter(r => r.action === 'quota-qianwen-signin')[0];
+  assert.ok(startReq, '起流请求已发');
+  h.window.__zusagePluginResult({ id: startReq.requestId, ok: true, url: 'https://account.qianwenai.com/sso/OIDCAuth?x=1' });
+  h.pumpTimers(2000);   // 状态轮询定时器到点
+  const stateReq = h.window.__zusagePluginRequests.filter(r => r.action === 'quota-qianwen-signin-state')[0];
+  assert.ok(stateReq, '轮询请求已发');
+  /* account 是服务端可控串：即时反馈走 textContent 安全，行重建走 innerHTML 必须转义 */
+  h.window.__zusagePluginResult({ id: stateReq.requestId, ok: true, state: 'done', account: '"><img src=x onerror=alert(1)>' });
+  h.window.__zusagePluginUpdate({ quotaEnabled: true, quotaSources: [
+    { id: 'qianwen', label: '千问 Token Plan', kind: 'plan', enabled: true, unverified: true, credentialFields: ['token'], keyConfigured: true, status: 'ok' },
+  ] });   // 签名变化强制 syncQuotaSources 重建 innerHTML（等值推送会被短路，不重建）
+  const box = panel.queries.get('.zu-src-list');
+  const html = box.innerHTML || '';
+  assert.ok(!html.includes('<img src=x'), '重建后的行不得包含未转义的服务端串');
+  assert.ok(html.includes('&quot;&gt;&lt;img'), '反馈文本经 aEsc 转义后进 innerHTML');
+  void ui;
+});
+
+test('issue #399: sign-in reply URL outside *.qianwenai.com is rejected by the main-process flow', async () => {
+  const Q = require(path.join(__dirname, '..', 'quota-client.cjs'));
+  for (const u of ['https://evil.com/sso', 'https://qianwenai.com.evil.com/sso', 'javascript://x']) {
+    const calls = [];
+    const client = Q.createQuotaClient({
+      env: {}, now: () => 1700000000000,
+      credsPath: '/virtual/credentials.json', secretsPath: '/virtual/quota-secrets.json',
+      readFile: () => { throw new Error('ENOENT'); },
+      customCfgPath: '/virtual/provider_config.json',
+      fetchImpl: (url) => { const d = { promise: null, resolve: null }; d.promise = new Promise((a) => { d.resolve = a; }); calls.push({ url: String(url), d }); return d.promise; },
+      saveSecrets: () => { },
+    });
+    const started = client.qianwenSignInStart();
+    await new Promise((r) => setTimeout(r, 20));
+    calls[0].d.resolve({ status: 200, headers: { get: () => null }, text: async () => JSON.stringify({ Data: { Token: 'devtok', ExpiresIn: 300, VerificationUrl: u, Interval: 0.001 }, Success: true }) });
+    const r = await started;
+    assert.equal(r.ok, false, u + ' 不得交 openExternal');
+    assert.equal(client.qianwenSignInState().state, 'failed');
+    client.dispose();
+  }
+});
+
 test('issue #68: apiKey-mode BigModel/Z.ai provider shows its composite source with the built-in family title', () => {
   for (const [provider, source, title] of [['bigmodel-api-2', 'bigmodel:bigmodel-api-2', 'BigModel'], ['zai-api', 'zai:zai-api', 'Z.ai']]) {
     const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');

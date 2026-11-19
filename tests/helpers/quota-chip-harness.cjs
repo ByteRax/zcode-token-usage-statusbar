@@ -104,6 +104,9 @@ function harness({ quotaOn = true, prefs = {} } = {}) {
   function inject() { window.__zusageOverlay = false; vm.runInContext(executable, sandbox); }
   function tick() { for (const t of [...timers.values()]) if (t.interval && (t.ms === 600 || t.ms === 500)) t.fn(); }
   function boot() { for (const [n, t] of [...timers]) if (!t.interval && t.ms === 0) { timers.delete(n); t.fn(); } }
+  function pumpTimers(upToMs) {   // 触发 ms <= upToMs 的一次性定时器（如 2s 登录状态轮询）；interval 不在此驱动
+    for (const [n, t] of [...timers]) if (!t.interval && t.ms <= upToMs) { timers.delete(n); t.fn(); }
+  }
   function buildComposer(pid, sid, { live = false, provider = '', model = '' } = {}) {
     const pane = live ? body.appendChild(new Element()) : null;
     if (pane) {
@@ -145,6 +148,6 @@ function harness({ quotaOn = true, prefs = {} } = {}) {
   function mutate(pane) {
     for (const o of [...observers]) if (o.connected && o.target === pane) o.fn([]);
   }
-  return { window, body, inject, tick, boot, buildComposer, payload, chipOf, liveOf, tipEl, mutate, observers, lsStore };
+  return { window, body, inject, tick, boot, pumpTimers, buildComposer, payload, chipOf, liveOf, tipEl, mutate, observers, lsStore };
 }
 module.exports = { harness, Element, source };

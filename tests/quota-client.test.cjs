@@ -2965,7 +2965,7 @@ test("qianwen sign-in: complete reply tolerated in lowercase, numeric and BOM fo
 test("qianwen sign-in: failures end failed and never quote tokens from unreadable replies", async () => {
   const secret = "RACvIlWJhWxaUYewyXHz_SgmSyiLPM_L0ONnalpn1ACWdmhz0Qq";
   const cases = [
-    { body: JSON.stringify({ Data: { Status: "weird", Credentials: { AccessToken: secret, RefreshToken: secret + "x" } } }), why: "平台结束登录" },
+    { body: JSON.stringify({ Data: { Status: "weird", Credentials: { AccessToken: secret, RefreshToken: secret + "x" } } }), why: "平台返回未知状态" },
     { body: JSON.stringify([{ Data: { Status: "complete", Credentials: { AccessToken: secret } } }]), why: "平台返回未知形态" },
     { body: JSON.stringify({ Data: { Status: "complete" }, Success: true }), why: "平台未返回令牌" },
     { body: JSON.stringify({ Data: { Status: "access_denied" }, Success: true }), why: "授权被拒绝" },

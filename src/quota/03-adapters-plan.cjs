@@ -632,7 +632,7 @@ async function qianwenAskUsage(j, cliToken, ctl) {
   if (d && d.success === false) {
     const code = String(d.errorCode != null ? d.errorCode : "");
     if (/NotLogined|NeedLogin|NotLogin/i.test(code)) throw qErr("auth_failed", "qianwen session expired");
-    throw qErr("network_error", ("qianwen console " + code).slice(0, 80));   // 只回 code：errorMsg 是服务端文本，不进错误链
+    throw qErr("network_error", ("qianwen console " + (code || "error")).slice(0, 80));   // 只回 code：errorMsg 是服务端文本，不进错误链
   }
   let node = d && d.DataV2 != null ? d.DataV2 : null;   // 双层 {data:…} 剥壳（magpie 同款，缺层容忍）
   for (let i = 0; i < 2; i++) {
@@ -812,7 +812,7 @@ function installQianwenFlow(client, j, o) {
       if (parsed.status === "expired_token") { finish("failed", "登录页已过期，请重新登录"); return; }
       if (parsed.status === "access_denied") { finish("failed", "授权被拒绝"); return; }
       if (parsed.status === "http_error") { armTimer(every, poll); return; }   // 未知 HTTP 错误：按瞬时重问
-      finish("failed", "平台结束登录：" + parsed.status.slice(0, 40));
+      finish("failed", "平台返回未知状态，请重试");   // 服务端 Status 串不进错误链（与 usage 错误同口径）
     };
     armTimer(everyMs, poll);
     return { ok: true, url, state: "pending" };
