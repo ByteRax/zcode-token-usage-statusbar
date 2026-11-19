@@ -336,11 +336,11 @@ token 数量单位默认跟随 **⚙ → 通用 →「中文单位（万/亿）�
 
 先按[手机远控页面](#手机远控页面)在桌面独立分区显式开启插件推送，再在实际打开远控页的浏览器中安装 Tampermonkey 等脚本管理器，然后打开上游仓库 Raw 安装链接：[安装正式版](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js)；排障时可改装 [调试版](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.debug.user.js)。两版选一版启用，由管理器确认安装后刷新远控页。脚本仅匹配 `https://zcode.z.ai/remote/*`，登录仍使用远控页正常授权流程。
 
-这两个地址指向上游 `main` 根目录，会随源码更新，可能领先正式插件 Release；请使用支持该中继协议的桌面插件。只有对应源码合入并推送至上游 `main` 后，地址才提供该版本；本地构建或提交不等于发布。脚本管理器可按各自的 `@updateURL`/`@downloadURL` 检查更新，是否自动检查及确认方式由管理器设置决定，桌面插件不会静默安装或替浏览器更新。
+这两个地址指向上游 `main` 根目录的最近一次脚本发布快照，不随每次桌面源码提交更新；请使用支持该中继协议的桌面插件。只有新的脚本产物合入上游 `main` 后，地址才提供新脚本；本地构建或提交不等于发布。脚本管理器可按各自的 `@updateURL`/`@downloadURL` 检查更新，是否自动检查及确认方式由管理器设置决定，桌面插件不会静默安装或替浏览器更新。
 
-开发时运行 `python3 sync_plugin.py` 会同时生成根目录的 `zusage-mobile.user.js` 和 `zusage-mobile.debug.user.js`；也可单独运行 `python3 scripts/build_mobile_userscript.py`。调试可通过 DevTools 在页面主线程、远控 WebSocket 创建前注入。
+常规桌面开发不重新打包油猴脚本。明确需要打包时，运行 `python3 scripts/build_mobile_userscript.py` 并用同一命令加 `--check` 校验。调试可通过 DevTools 在页面主线程、远控 WebSocket 创建前注入。
 
-接收脚本在构建时内嵌桌面同一份 `overlay.js`，本地、WSL 和 SSH 会话复用状态条、tooltip、⚙ 设置及样式偏好。接收端不再提供独立 chips 回退条，也不从 CDN main 临时加载另一版本的 UI；桌面代码更新后需重新构建并更新接收脚本。只有旧格式数据时提示更新桌面插件；目标切换或查询不可用时保留同一 UI 空态，不用本地今日量代替远端。
+接收脚本在构建时内嵌当次构建的完整桌面 `overlay.js`，本地、WSL 和 SSH 会话复用状态条、tooltip、⚙ 设置及样式偏好。接收端不再提供独立 chips 回退条，也不从 CDN main 临时加载另一版本的 UI；桌面界面改动会随下次脚本更新进入接收端。只有旧格式数据时提示更新桌面插件；目标切换或查询不可用时保留同一 UI 空态，不用本地今日量代替远端。
 
 此通道复用宿主官方中继，插件载荷无端到端加密，服务器可见下行统计；发送当前目标的会话标识、随机匿名绑定和数值投影，以及所属主机今日、项目等聚合（可能包含其他会话贡献），不包含真实工作区身份、路径、会话标题、正文或凭据。仅运行配置 `mobile_relay.enabled` 显式布尔 `true` 开启；关闭只停止本项目通信，不影响官方远控，且无需另行关闭手机上行。远端仍需满足下节的脚本与免交互查询条件。以上描述当前检出实现，不代表已安装的正式渠道版本已具备这些改动。
 

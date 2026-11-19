@@ -333,7 +333,7 @@ class AntiReworkContractTests(unittest.TestCase):
         self.assertTrue(self._find_bare_tempfile_violations("from tempfile import mkdtemp as md\n", "mut2"))
         self.assertTrue(self._find_bare_tempfile_violations("NamedTemporaryFile()\n", "mut3"))
 
-    def test_sync_plugin_wires_all_modular_shard_builders(self):
+    def test_sync_plugin_wires_desktop_shard_builders_only(self):
         # 根因：分片化后若 sync_plugin._maybe_build_bundles 漏接任一构建器，分片改动不会进入根产物与插件副本。
         from unittest import mock
         sync_spec = importlib.util.spec_from_file_location("sync_plugin_builder_wire_test", ROOT / "sync_plugin.py")
@@ -354,7 +354,6 @@ class AntiReworkContractTests(unittest.TestCase):
                 ("build_overlay.py", ["--check"]),
                 ("build_quota.py", ["--check"]),
                 ("build_puller.py", ["--check"]),
-                ("build_mobile_userscript.py", ["--check"]),
             ],
         )
 

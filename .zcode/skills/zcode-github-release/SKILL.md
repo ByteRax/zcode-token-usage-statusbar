@@ -54,13 +54,13 @@ git worktree add -b release/vX.Y.Z .worktrees/release-vX.Y.Z fork/main     # 常
 git worktree add --detach .worktrees/release-vX.Y.Z <目标提交>              # 仅当目标提交已在默认分支上且已含正确版本号
 ```
 
-- 常规路径在 worktree 里改两份 `plugin.json`（内容须一致）与 `marketplace.json` 的版本号，并递增 `src/mobile/00-meta.js` 的 `@version`。新脚本版本必须高于上一正式插件 tag 中的脚本版本及当前公开分发的脚本版本；若上一 tag 无脚本，以当前公开分发版本为准。脚本版本独立于插件，日常功能提交不升脚本版本。运行 `python3 sync_plugin.py` 重建正式版与调试版，改动留到阶段 B 一并提交。分离路径仅用于默认分支上的目标提交已满足上述版本与产物要求时；它没有本地分支，推送时只推 tag，源码 PR 阶段验收后跳过。
+- 常规路径在 worktree 里改两份 `plugin.json`（内容须一致）与 `marketplace.json` 的版本号，并递增 `src/mobile/00-meta.js` 的 `@version`。新脚本版本必须高于上一正式插件 tag 中的脚本版本及当前公开分发的脚本版本；若上一 tag 无脚本，以当前公开分发版本为准。脚本版本独立于插件，日常功能提交不构建、不提交两份脚本产物，也不升号。运行 `python3 sync_plugin.py` 同步桌面插件，再用 `python3 scripts/build_mobile_userscript.py` 单独重建正式版与调试版；改动留到阶段 B 一并提交。分离路径仅用于默认分支上的目标提交已满足上述版本与产物要求时；它没有本地分支，推送时只推 tag，源码 PR 阶段验收后跳过。
 - 遇到 `line endings differ from HEAD`：不要照 `docs/maintaining.md` 旧段落执行 `git rm --cached -r -q . && git reset --hard`（`AGENTS.md` §8 明令不要），换一个全新 worktree 检出后重做。
 
 ## 检查与打包（阶段 A，支持多 Subagent 并行）
 
 - **打包前**读取 [更新日志交付](references/update-log-delivery.md)，核对目标提交的日志消费者与来源合同；若已支持随包日志，先完成日志内容、版本关联和副本同步再 build。仅外置 Release 正文可在验证结果齐备后定稿，不能据此在 build 后再补包内文件。
-- 核对两份插件 manifest 与市场条目版本/name 一致。正式版与调试版 `@version` 都必须与脚本版本源一致，并满足上面的升号规则；`sync_plugin.py --check` 确认产物同步，但不代替版本比较。
+- 核对两份插件 manifest 与市场条目版本/name 一致。正式版与调试版 `@version` 都必须与脚本版本源一致，并满足上面的升号规则；`python3 scripts/build_mobile_userscript.py --check` 核对两份产物与发布源码一致，不能用桌面 `sync_plugin.py --check` 或脚本升号检查代替。若此后改了 overlay（含重排 `VERSION` 台账）或手机分片，必须重新构建并校验两份脚本。
 - 直接使用仓库根 `release_tool.py` 与同目录可信 `release_unpack.py`，本技能不保存脚本副本。`build` 只读工作区文件，版本改动不必先提交：
 
 ```bash
@@ -75,6 +75,7 @@ python3 -B release_tool.py verify --zip /new/artifact-directory/zcode-token-usag
 
 ```bash
 python3 -B sync_plugin.py --check
+python3 -B scripts/build_mobile_userscript.py --check
 node --check overlay.js && node --check inject-main.cjs
 node --check zusage-mobile.user.js && node --check zusage-mobile.debug.user.js
 node --test tests/*.test.cjs
@@ -97,6 +98,7 @@ python3 -B -m unittest discover -s tests -p 'test_*.py'
 
    ```bash
    git status --porcelain --untracked-files=all          # 必须为空
+   python3 -B scripts/build_mobile_userscript.py --check  # 必须通过，否则不打 tag
    R=$(mktemp -d)
    python3 -B release_tool.py build --root /abs/.worktrees/release-vX.Y.Z --repo OWNER/REPO --out "$R/recheck"
    cmp /new/artifact-directory/zcode-token-usage-statusbar-vX.Y.Z.zip "$R/recheck/zcode-token-usage-statusbar-vX.Y.Z.zip" && echo "ZIP 与重新构建的一致"   # build 是确定性的
