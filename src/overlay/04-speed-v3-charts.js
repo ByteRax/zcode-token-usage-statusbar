@@ -1,6 +1,7 @@
   /* ---------- v384 生成速度 Tooltip V3：图表分片（近/今/近7天三形态 + 悬停卡，纯字符串） ----------
    * spec §5 三图表形态 + §2 模型色 + §7 悬停卡契约 + §11.2 槽位满幅（v387 实机修复批）。
-   * v389（spec §13）：plot 弹性高（flex:1、200..300px，X 标签带独立 16px 贴 plot 底）、
+   * v389（spec §13）：plot 弹性高（flex:1、X 标签带独立 16px 贴 plot 底；原 200..300 钳制，
+   * v393 §17 五形态统一 450 起废除 300 上限，plot 吃满卡内剩余）、
    * 折线 y 坐标全百分比化（yPct(v)=2+(1−v/yMax)×98）、空槽轻卡「无有效速度记录」、
    * today/week 槽位增强卡统一走 spd3SlotCardHTML、折线两级 hover（列级卡=06/01 委托
    * 既有 + 线级视觉=纯 CSS .zu-sv3-lineg）。
@@ -29,7 +30,7 @@
    * 拉伸）、横向满幅自适应（flex 槽位 / 百分比 x/y），不再有固定柱距与横滚撑宽。
    * 值区（绘图区）恒 = plot 高 − X 轴带 16px：柱图 X 带在槽位列内（.zu-sc-x）、折线
    * X 带是 plot 内独立 xsvg，两条链的网格横线与数据 y 共用同一值区百分比坐标系。 */
-  var SPD3_PLOT_H = 200;   /* plot 弹性高下限（px）；上限 300 固定（v389 §13.1，spec §12.5 紧凑档校准值） */
+  var SPD3_PLOT_H = 200;   /* plot 弹性高下限（px）；v393 §17 起无上限——max-height:300（v389 §13.1）随五形态统一 450 档废除，plot flex 吃满卡内剩余 */
   var SPD3_X_H = 16;       /* X 轴标签带高（px；柱图=槽位 .zu-sc-x，折线=plot 内 xsvg） */
   var SPD3_GUT_W = 30;     /* Y 轴刻度列宽（px，= 柱图 plot 左缩进，刻度走 HTML gutter） */
   /* 绘图区估宽（spec §11.2 / PRD 3.2）：V3 卡 920 − 左卡 250 − gap/padding。
@@ -69,7 +70,7 @@
     /* plot：width:auto（块级+margin-left 自动填剩余，§12.3 幻影溢出根除，不隐藏滚动条
      * 掩盖）；高弹性（v389 §13.1：flex:1、min PLOT_H 200、max 300，吸收左卡/档位拉伸）
      * ——CSS 内不再有固定 216/200px 高度，svg/hit/网格/柱高全部随值区百分比自适应 */
-    ".zu-sv3-chart .zu-sc-plot{flex:1 1 auto;min-height:" + SPD3_PLOT_H + "px;max-height:300px;margin-left:" + SPD3_GUT_W + "px;min-width:0;width:auto;box-sizing:border-box}" +
+    ".zu-sv3-chart .zu-sc-plot{flex:1 1 auto;min-height:" + SPD3_PLOT_H + "px;margin-left:" + SPD3_GUT_W + "px;min-width:0;width:auto;box-sizing:border-box}" +
     /* 网格/沟槽 = 值区高：值区恒 = plot − X 轴带 16px（柱图 X 带在槽位列内、折线 X 带
      * 是 plot 内独立 xsvg），横线 bottom:% 与数据 y% 同一坐标系对齐 */
     ".zu-sv3-chart .zu-sc-grid,.zu-sv3-chart .zu-sc-gutter{height:calc(100% - " + SPD3_X_H + "px)}" +

@@ -705,53 +705,19 @@
    * Footer 化（§13.5，推翻 §12.2 的「禁 auto」）。 */
   function spd3HeightTier(an) {
     an = an || {};
-    /* empty 判据与 spd3CardHTML 同源（real 空 / overall 缺） */
-    if (!(an.real && an.real.length) || !an.overall) return { tier: "empty", px: 320 };
-    var p = an.period;
-    /* v392（spec §16，用户裁定 2026-11-18）：recent 与 today/week 统一 400——三常用
-     * 范围切换高度恒定（旧 340/360/390 三档致切换跳变 60px）；plot 弹性（v389 §13.1）
-     * 吸收增量，柱图槽位 height:100% 自适应。单档命名 recent（data-h-tier 仅诊断用） */
-    if (p === "recent") return { tier: "recent", px: 400 };
-    if (p === "today") return { tier: "today", px: 400 };
-    if (p === "week") return { tier: "week", px: 400 };
-    if (p === "month") {
-      /* 月历行数从 daysGrid 推：首格补位（首日本地 getDay()）+ 当月日数，ceil÷7；
-       * daysGrid 缺席（构造的 an）按 6 行兜底取最高档 */
-      var rows = 6;
-      if (an.daysGrid && an.daysGrid.length) {
-        var dow = new Date(an.daysGrid[0].t0).getDay();
-        rows = Math.ceil((dow + an.daysGrid.length) / 7);
-      }
-      return rows <= 4 ? { tier: "month-r4", px: 430 }
-        : rows === 5 ? { tier: "month-r5", px: 450 }
-        : { tier: "month-r6", px: 470 };
-    }
-    /* all：日历式（.zu3-cal，覆盖 ≤60 天，v391 §15.3 阈值对齐 PRD）按**覆盖自然周行数
-     * R** 分档（R≤5→380、R6-7→420、R≥8→460；行高帽 84px 下 R9-10 在 460 档每行
-     * ≥30px 可读）；周列式（>60 天）按日桶数映射。R 只决定日历档内 px（v391 起
-     * heat 分派以 cover 天数为唯一轴，R 公式=ceil((轴首星期偏移+coverDays)/7)）。 */
-    var dA = (typeof an.axisA === "number" && isFinite(an.axisA) && an.axisA > 0) ? an.axisA
-      : (typeof an.spanA === "number" ? an.spanA : 0);
-    var dB = (typeof an.axisB === "number" && isFinite(an.axisB) && an.axisB > 0) ? an.axisB
-      : (typeof an.spanB === "number" ? an.spanB : 0);
-    if (dA > 0 && dB > 0) {
-      /* 轴口径与 heat 分派一致（v391 审查 MINOR-2）：两端归一本地日零点、轴末钳今天
-       * （原始时间戳在傍晚/上午轮时 cover 可差 1 天，60/61 边界形态错档） */
-      var dA0 = spdDate(dA);
-      dA = new Date(dA0.getFullYear(), dA0.getMonth(), dA0.getDate()).getTime();
-      var dB0 = spdDate(dB);
-      dB = Math.min(new Date(dB0.getFullYear(), dB0.getMonth(), dB0.getDate()).getTime(),
-        new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()).getTime());
-      var d0 = new Date(dA), cover = Math.round((dB - dA) / 864e5) + 1;
-      var R = Math.ceil((d0.getDay() + cover) / 7);
-      if (cover <= 60)
-        return R <= 5 ? { tier: "all-s", px: 380 }
-          : R <= 7 ? { tier: "all-m", px: 420 }
-          : { tier: "all-l", px: 460 };
-    }
-    var days = an.items ? an.items.length : 0;
-    return days <= 112 ? { tier: "all-m", px: 420 }
-      : { tier: "all-l", px: 460 };
+    /* v393（spec §17，用户裁定 2026-11-19）：五形态统一 450——最近/今天/近7天/本月/全部
+     * 任意切换高度恒定（真机五截图对账：旧表 320..470 五档在范围间跳变）；empty（无数据
+     * 空态）同高。450 取旧 month-r5 档：6 行月历经 v391 行高帽自适应（84px 帽、行数多时
+     * 行内分配）在 450 内可读；柱/折线视图 plot 弹性吃满（max-height 上限同批废除）。
+     * tier 名保留 period/empty 语义（data-h-tier 仅诊断用）；min-height 语义不变（内容
+     * 可超出——多模型分布表展开等仍自然撑高）。 */
+    var p = (an && an.period) || "";
+    if (!(an.real && an.real.length) || !an.overall) return { tier: "empty", px: 450 };
+    if (p === "recent") return { tier: "recent", px: 450 };
+    if (p === "today") return { tier: "today", px: 450 };
+    if (p === "week") return { tier: "week", px: 450 };
+    if (p === "month") return { tier: "month", px: 450 };
+    return { tier: "all", px: 450 };
   }
   function spd3CardHTML(an, ctx) {
     if (!an) return "";

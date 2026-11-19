@@ -170,8 +170,8 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 
 ### 12.1 高度自适应档位（P0）
 
-- `min-height:480px` 废除，改**离散档位**（渲染端纯函数按 an 计算，写入 root 内联 min-height + `data-h-tier`）：
-  empty→320 / recent→400（v392 起**恒 400**，旧 n≤3→340、n≤8→360、n≤18→390 三档废除——用户裁定：三常用范围切换高度恒定，plot 弹性吸收增量）/ today→400 / week→400 / month rows≤4→430、5→450、6→470 / all 按**有数据日桶数** ≤56→380、≤112→420、else→460（px，实现允许 ±10 按盒模型校准）。矮视口（窗口高 < 档位+16px）下 CSS min-height 胜过 maxHeight 钳制，root 保持档位高、内容经 tip 基类内滚可达——与 v387 的 min(480,100vh-16) 自钳不同，为记录在案的有意取舍。
+- `min-height:480px` 废除，改**离散档位**（渲染端纯函数按 an 计算，写入 root 内联 min-height + `data-h-tier`）。
+  **v393（§17）起五形态统一 450**：empty / recent / today / week / month / all 全部恒 450（历史档位 empty 320、recent 340/360/390→400、month 430/450/470、all 380/420/460 全部废除）。矮视口（窗口高 < 档位+16px）下 CSS min-height 胜过 maxHeight 钳制，root 保持档位高、内容经 tip 基类内滚可达——与 v387 的 min(480,100vh-16) 自钳不同，为记录在案的有意取舍。
 - 档位离散保证稳定：hover/快照刷新不改变 tier；时间 Tab 切换允许跳档（v392 后 recent/today/week 三档同高不跳）；模型展开不撑高（分布表内滚上限不变）。
 - root 高度语义=`min-height`（内容可超出）；左卡与图表卡等高由 flex stretch 承担，但**内部内容自然流、禁止 margin-top:auto 推底**（§12.2）；图表绘图区独立固定高（charts 自身参数），不随卡拉伸。
 
@@ -349,3 +349,18 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 
 - VM/单测：week 单模型柱状断言（7 槽列+单柱+空槽透明+覆盖提示），多模型折线断言原样保留；recent 档位断言改恒 400（三旧档删除）。
 - 真机：近 7 天单模型视图出柱（空日空位）、三范围切换高度目测恒定。
+
+## 17. v393 五形态统一高（2026-11-19，第八轮，真机反馈）
+
+用户五张真机截图对账（最近/今天/近 7 天/本月/全部）：高度 320..470 五档在范围间跳变（§16 只统一了三柱状视图，空态/月历/历史仍是离散档）。
+
+### 17.1 裁定
+
+- **五形态统一 450**（empty/recent/today/week/month/all 全部恒 450）：任意范围切换高度恒定，空态同高。450 取旧 month-r5 档——6 行月历经 v391 行高帽自适应（84px 帽、行数多时行内分配）在 450 内可读；all 周列式 R9-10 每行 ≥30px 可读（v391 判据）沿用。
+- **plot 300 上限同步废除**（v389 §13.1 的 max-height:300px）：统一 450 后柱/折线绘图区吃满卡内剩余（典型 ≈370..400），X 标签带恒贴底、plot-bottom-gap ≤28px 断言保留；min-height 200 保底不变。
+- `data-h-tier` 保留 period/empty 语义（诊断用）；root min-height 语义不变（内容可超出——多模型分布表展开等仍自然撑高）。
+
+### 17.2 验收
+
+- VM/单测：spd3HeightTier 单档断言（五形态+empty 全 450，旧行数/日桶档断言删除）；charts plot CSS 串断言（无 max-height）；harness ⑧ min-height 恒 450±10、⑩ plot ≥200 无上限。
+- 真机：五 Tab 切换高度目测恒定（用户验收）。

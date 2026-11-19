@@ -487,13 +487,14 @@ function fixtureN(n) {
 test('v388 §12.3 + v389 §13.1: plot width:auto + 弹性高 flex 三值、柱组密度分档（n≤3→120/n≤8→140/n>8 无内联）、week 满 7 天无覆盖提示', () => {
   const ctx = makeCtx();
   // plot 串锁：width:auto（块级 + margin-left:30 自动填满剩余，§12.3 幻影溢出根除）；
-  // v389 §13.1 高弹性 flex 三值：flex:1 吸收左卡/档位拉伸、min-height 200 保底、
-  // max-height 300 封顶——CSS 内不再有固定 216/200px plot 高
+  // v389 §13.1 高弹性 flex：flex:1 吸收左卡/档位拉伸、min-height 200 保底——
+  // v393 §17 起 max-height:300 随五形态统一 450 废除，plot 吃满卡内剩余
   const an2 = analyze(ctx, fixtureN(2), { range: 'session', period: 'recent', sid: 's' });
   const html2 = chart(ctx, an2, -1);
   assert.match(html2,
-    /\.zu-sv3-chart \.zu-sc-plot\{flex:1 1 auto;min-height:200px;max-height:300px;margin-left:30px;min-width:0;width:auto;box-sizing:border-box\}/,
-    'plot width:auto + 弹性高 200..300（§12.3/§13.1）');
+    /\.zu-sv3-chart \.zu-sc-plot\{flex:1 1 auto;min-height:200px;margin-left:30px;min-width:0;width:auto;box-sizing:border-box\}/,
+    'plot width:auto + 弹性高无上限（§12.3/§13.1/§17）');
+  assert.doesNotMatch(html2, /\.zu-sv3-chart \.zu-sc-plot\{[^}]*max-height/, 'plot 300 上限已废除（§17）');
   assert.doesNotMatch(html2, /\.zu-sv3-chart \.zu-sc-plot\{[^}]*width:100%/, 'plot 100% 宽幻影溢出路径已除名');
   assert.doesNotMatch(html2, /\.zu-sv3-chart \.zu-sc-plot\{[^}]*[^-]height:\d+px/, 'plot 固定 px 高已退役（min/max-height 之外无 height 键，§13.1）');
   // 值区链同步弹性：网格/沟槽=plot−16px X 带；svg 高 calc(100%−16)（§13.1 折线）

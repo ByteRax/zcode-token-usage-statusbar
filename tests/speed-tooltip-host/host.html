@@ -1154,10 +1154,11 @@ window.__zuDiag = function () {
  * ⑤ 筛选弹出层 .zu-sv3-fpop 完全在视口内；
  * ⑥ V3 图表 .zu-sc-wrap scrollWidth==clientWidth（§12.7 全形态挂载态，幻影溢出根除）；
  * ⑦ .zu-sv3-fbar 高度 ≤ 44px（§12.7 恒单行）；
- * ⑧ root data-h-tier 在场且内联 min-height ∈ [300,480]（§12.1 档位表覆盖）；
+ * ⑧ root data-h-tier 在场且内联 min-height 恒 450（§17 五形态统一高，±10 盒模型校准）；
  * ⑨ 分布表 .zu-sv3-dwrap scrollWidth==clientWidth（§12.7 多模型态 Grid 无溢出）；
- * ⑩ plot 弹性高 ∈ [200,300] 且 plot 底距图表卡内容底 ≤28px（§13.1/§13.7：flex 吸收
- *   拉伸、X 标签带恒贴底——recent/today/week 三形态有 .zu-sc-plot，热力自动跳过）；
+ * ⑩ plot 弹性高 ≥200（§17 起 300 上限废除，吃满卡内剩余）且 plot 底距图表卡内容底
+ *   ≤28px（§13.1/§13.7：flex 吸收拉伸、X 标签带恒贴底——recent/today/week 三形态
+ *   有 .zu-sc-plot，热力自动跳过）；
  * ⑪ 筛选弹出层锚定（v390 §14.1）：fpop 打开时 top ≥ fbar 底（锚定筛选栏正下方、
  *   贴近触发器，间距 ≤24px——默认 top:87px/动态 pop.top 两路径均应落在带内）且
  *   完全在视口内；fpop 未打开自动跳过。
@@ -1254,7 +1255,8 @@ window.__zuGeometryChecks = function () {
   }
   var tierAttr = root.getAttribute('data-h-tier');
   var mhPx = parseFloat(root.style.minHeight);
-  f('h-tier-inline', !!tierAttr && mhPx >= 300 && mhPx <= 480,
+  /* §17：五形态统一 450（±10 盒模型校准）——任意范围/空态 root min-height 恒同 */
+  f('h-tier-inline', !!tierAttr && mhPx >= 440 && mhPx <= 460,
     'tier=' + tierAttr + ' min-height=' + root.style.minHeight);
   var dwrap = root.querySelector('.zu-sv3-dwrap');
   if (dwrap) {
@@ -1294,14 +1296,15 @@ window.__zuGeometryChecks = function () {
         badStyle.length ? 'bad=' + badStyle.length : 'all-segments-clean');
     }
   }
-  /* ---------- §13.1/§13.7（v389 弹性高批验收）----------
-   * ⑩ plot 弹性高：flex:1 吸收左卡/档位拉伸——高度钳在 [200,300]（min/max-height）；
+  /* ---------- §13.1/§13.7 + §17（v393 统一高批验收）----------
+   * ⑩ plot 弹性高：flex:1 吸收左卡/档位拉伸——min-height 200 保底；v393 起 300 上限
+   *   随五形态统一 450 废除，plot 吃满卡内剩余（450 卡下典型 ≈370..400）。
    *   X 标签带贴底：plot 底距图表卡内容底 ≤28px（wrap 5px + 卡 padding 10px 正常
    *   ≈15px；>28px 即 plot 未贴底/卡底出现推底空腔的形态回归）。
    *   recent/today/week 三形态有 .zu-sc-plot；month/hist 热力无 plot 自动跳过。 */
   if (plot && chart) {
     var pb10 = plot.getBoundingClientRect();
-    f('plot-flex-height', pb10.height >= 199 && pb10.height <= 301,
+    f('plot-flex-height', pb10.height >= 199,
       'plotH=' + Math.round(pb10.height));
     var cb10 = chart.getBoundingClientRect();
     var ccs10 = getComputedStyle(chart);

@@ -513,66 +513,35 @@ test('CSS 锁: .zu-sv3-root 定宽变量、.zu-light 浅色覆写、focus-visibl
     '无常驻说明/图例类块');
 });
 
-// ---------- ⑦b 高度档位（§12.1 + §16.2）：root min-height 离散档 ----------
-test('spd3HeightTier: empty 320 / recent 恒 400（§16.2 三档废除）/ today/week 400 / month 行数档 / all 日桶档；root 内联下发', () => {
+// ---------- ⑦b 高度档位（§12.1 + §17）：root min-height 统一档 ----------
+test('spd3HeightTier: v393 起五形态统一 450（empty/recent/today/week/month/all 全部同高，§17 用户裁定）；root 内联下发', () => {
   const ctx = makeCtx();
   const tier = a => host(vm.runInContext('spd3HeightTier(' + JSON.stringify(a) + ')', ctx));
-  // empty 判据与 spd3CardHTML 同源：real 空 / overall 缺
-  assert.deepEqual(tier({}), { tier: 'empty', px: 320 });
-  assert.deepEqual(tier({ real: [], overall: { v: 1 } }), { tier: 'empty', px: 320 });
-  assert.deepEqual(tier({ real: [1], overall: null, period: 'today' }), { tier: 'empty', px: 320 });
-  // recent：恒 400（§16.2 用户裁定——三常用范围切换高度恒定，旧 340/360/390 废除）
-  assert.deepEqual(tier({ real: [1, 2], overall: {}, period: 'recent' }), { tier: 'recent', px: 400 });
-  assert.deepEqual(tier({ real: [1, 2, 3, 4, 5, 6, 7, 8], overall: {}, period: 'recent' }), { tier: 'recent', px: 400 });
-  assert.deepEqual(tier({ real: new Array(10).fill(1), overall: {}, period: 'recent' }), { tier: 'recent', px: 400 });
-  // today/week 恒 400
-  assert.deepEqual(tier({ real: [1], overall: {}, period: 'today' }), { tier: 'today', px: 400 });
-  assert.deepEqual(tier({ real: new Array(9).fill(1), overall: {}, period: 'week' }), { tier: 'week', px: 400 });
-  // month：行数从 daysGrid 推（首日 getDay() 前导 + 当月日数 ceil÷7）；
-  // 2026-11（01=周日）：0 前导 + 30 天 = 5 行 → 450；2026-02（01=周日，28 天）= 4 行 → 430；
-  // 2026-08（01=周六）：1 前导 + 31 天 = 6 行 → 470；daysGrid 缺席按 6 行兜底 470
-  const dgrid = (y, m) => [...Array(new Date(y, m + 1, 0).getDate()).keys()]
-    .map(i => ({ t0: new Date(y, m, i + 1).getTime() }));
-  assert.deepEqual(tier({ real: [1], overall: {}, period: 'month', daysGrid: dgrid(2026, 10) }),
-    { tier: 'month-r5', px: 450 }, '2026-11：0 前导 + 30 天 = 5 行 → 450');
-  assert.deepEqual(tier({ real: [1], overall: {}, period: 'month', daysGrid: dgrid(2026, 1) }),
-    { tier: 'month-r4', px: 430 }, '2026-02：0 前导 + 28 天 = 4 行 → 430');
-  assert.deepEqual(tier({ real: [1], overall: {}, period: 'month', daysGrid: dgrid(2026, 7) }),
-    { tier: 'month-r6', px: 470 }, '2026-08：1 前导 + 31 天 = 6 行 → 470');
-  assert.deepEqual(tier({ real: [1], overall: {}, period: 'month' }), { tier: 'month-r6', px: 470 }, 'daysGrid 缺席兜底 6 行');
-  // all：日历式（覆盖 ≤60 天，v391 §15.3）按覆盖自然周行数 R 分档（R≤5→380、
-  // R6-7→420、R≥8→460）；周列式（>60 天）按日桶数 420/460。轴口径与 heat 分派同轴：
-  // 两端日零点归一 + 轴末钳今天（夹具 axisB 一律 ≤ 冻结今天 2026-11-05）。
-  // 30 天夹具无 axisA/spanA → 走周列式旧映射（days≤112→420）。
-  assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(30).fill(1) }), { tier: 'all-m', px: 420 });
-  // 日历式：37 天覆盖（轴首 2026-09-30 周三、轴末=今天 11-05）→ R=ceil((3+37)/7)=6 → 420
-  const a37 = new Date(2026, 8, 30).getTime(), t05 = new Date(2026, 10, 5).getTime();
-  assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(37).fill(1),
-    axisA: a37, axisB: t05 }), { tier: 'all-m', px: 420 }, '37 天 R6→420');
-  // 14 天覆盖（轴首 2026-10-25 周日、轴末今天）→ R=ceil((0+12)/7)=2 → 380
-  const sun0 = new Date(2026, 9, 25).getTime();              // 2026-10-25 周日
-  assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(14).fill(1),
-    axisA: sun0, axisB: t05 }), { tier: 'all-s', px: 380 }, '14 天 R2→380');
-  // R8（50 天：轴首 2026-09-17 周四）→ 460
-  assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(50).fill(1),
-    axisA: new Date(2026, 8, 17).getTime(), axisB: t05 }), { tier: 'all-l', px: 460 }, '50 天 R8→460');
-  // v391 §15.3：57–60 天 R9-10 → 460（行高帽下每行 ≥30px 可读；60 天轴首 09-07 周一 R9）
-  assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(60).fill(1),
-    axisA: new Date(2026, 8, 7).getTime(), axisB: t05 }), { tier: 'all-l', px: 460 }, '60 天 R9→460（v391 档）');
-  // 周列式（>56 天）：days 112→420、200→460
-  assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(112).fill(1) }), { tier: 'all-m', px: 420 });
-  assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(200).fill(1) }), { tier: 'all-l', px: 460 });
-  assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(200).fill(1) }), { tier: 'all-l', px: 460 });
+  // empty 判据与 spd3CardHTML 同源：real 空 / overall 缺——空态也 450（§17）
+  assert.deepEqual(tier({}), { tier: 'empty', px: 450 });
+  assert.deepEqual(tier({ real: [], overall: { v: 1 } }), { tier: 'empty', px: 450 });
+  assert.deepEqual(tier({ real: [1], overall: null, period: 'today' }), { tier: 'empty', px: 450 });
+  // 五形态恒 450（§17：任意范围切换高度恒定；tier 名保留 period 语义仅诊断用）
+  assert.deepEqual(tier({ real: [1, 2], overall: {}, period: 'recent' }), { tier: 'recent', px: 450 });
+  assert.deepEqual(tier({ real: new Array(10).fill(1), overall: {}, period: 'recent' }), { tier: 'recent', px: 450 });
+  assert.deepEqual(tier({ real: [1], overall: {}, period: 'today' }), { tier: 'today', px: 450 });
+  assert.deepEqual(tier({ real: new Array(9).fill(1), overall: {}, period: 'week' }), { tier: 'week', px: 450 });
+  // month/all：旧行数档（430/450/470）与日桶档（380/420/460）废除——行高帽自适应承压
+  assert.deepEqual(tier({ real: [1], overall: {}, period: 'month' }), { tier: 'month', px: 450 });
+  assert.deepEqual(tier({ real: [1], overall: {}, period: 'month', daysGrid: [1, 2, 3] }), { tier: 'month', px: 450 });
+  assert.deepEqual(tier({ real: [1], overall: {}, period: 'all', items: new Array(200).fill(1) }), { tier: 'all', px: 450 });
+  assert.deepEqual(tier({ real: [1], overall: {}, period: 'all',
+    axisA: new Date(2026, 8, 7).getTime(), axisB: new Date(2026, 10, 5).getTime() }), { tier: 'all', px: 450 });
   // 真 an 产物 root 内联下发：data-h-tier 与 min-height 与纯函数一致
   const selAll = { range: 'session', period: 'all', sid: 'sess_main' };
   const anAll = analyze(ctx, fixture(), selAll);
   assert.match(cardHTML(ctx, anAll, selAll),
     new RegExp('data-h-tier="' + tier(anAll).tier + '" style="min-height:' + tier(anAll).px + 'px"'),
     '真 an 的档位经 data-h-tier + 内联 min-height 下发');
-  // empty 视图（ghost 筛选）→ empty 档
+  // empty 视图（ghost 筛选）→ empty 档（同 450）
   const selGhost = { range: 'session', period: 'today', sid: 'sess_main', filt: { mode: 'sel', keys: ['ghost\x1fmodel'] } };
   const domG = cardHTML(ctx, analyze(ctx, fixture(), selGhost), selGhost);
-  assert.match(domG, /data-h-tier="empty" style="min-height:320px"/, '空态视图 empty 档 320');
+  assert.match(domG, /data-h-tier="empty" style="min-height:450px"/, '空态视图同高 450（§17）');
 });
 
 // ---------- ⑧ 图表标题栏 ----------
