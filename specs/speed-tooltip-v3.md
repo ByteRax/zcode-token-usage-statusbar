@@ -415,3 +415,18 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 
 - 速度口径、模型色阶（单模型分布条=该模型哈希色）、模型筛选、双 Tab、固定高 450、日期热力四档（§18）全部不变；仅左卡单模型分支呈现。
 - VM：单模型五 period 标题、主数字恒在、含 count+dist-h+dbar+1 行表、无 `.zu-sv3-model`/「请求轮次」、有「有效输出」（fmtTok 在场）；多模型用例原样保持。
+
+## 20. v397 分布表滚动条外移与表格增宽（2026-11-19，用户裁定）
+
+用户实测：模型分布表 12 行滚动时，滚动条挤占表格内容宽度，数字列偏窄；要求「滚动条再往右侧偏移点，增大表格宽度」。
+
+### 20.1 实现
+
+- `.zu-sv3-dwrap` 加 `margin-right:-8px`：容器向右扩 8px（吃掉左卡右 padding 12px 中的 8px，距卡片边框仍余 4px），滚动条随之右移、表格内容区净增 8px。
+- 滚动条改细：`scrollbar-width:thin` + `scrollbar-color:var(--color-border,rgba(128,128,128,.45)) transparent`（Chromium 121+），并双写 `::-webkit-scrollbar{width:6px}`/thumb/track 回退（旧宿主 Windows 经典滚动条约 17px 挤占表格，细条再省约 9px）。
+- 内滚契约不变：`max-height:150px;overflow-y:auto` 保留，行/容器仍不写 overflow-x（Grid 保证无横向溢出）；`dist-no-hscroll` 与 ⑯ 几何断言口径不变。
+
+### 20.2 不变项与验收
+
+- 数据口径、模型色阶、筛选、固定高 450、四种历史布局、其它 Tooltip 全部不变；仅分布表容器盒模型与滚动条外观。
+- VM：dwrap CSS 串含 `margin-right:-8px` + `scrollbar-width:thin` + webkit 6px 回退；harness 全链零 GEOMETRY_FAILURE；真机多模型 12 行滚动截图确认表格变宽、无横向溢出。
