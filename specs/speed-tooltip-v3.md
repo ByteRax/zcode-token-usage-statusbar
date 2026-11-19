@@ -371,3 +371,31 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 
 - VM/单测：spd3HeightTier 单档断言（五形态+empty 全 450，旧行数/日桶档断言删除）；charts plot CSS 串断言（无 max-height）；harness ⑧ min-height 恒 450±10、⑩ plot ≥200 无上限。
 - 真机：五 Tab 切换高度目测恒定（用户验收）。
+
+## 18. v395 V6 全部 Tab 自适应可视化（2026-11-19，第九轮）
+
+真机两场景（12 天/单模型/稀疏、39 天/20 模型/高密度）深审。核心：**同一个「全部」Tab 按真实历史跨度自动选布局，不机械按有效天数判跨度、不删无记录日、不重复「无记录」文字**。
+
+### 18.1 统一布局选择（复用既有组件，不复制统计系统）
+
+- `spd3SelectHistoryLayout(input)`（heat 分片）：输入 `{spanDays, activeDays, modelCount, start, end, todayStart, truncTxt}`，输出 `{mode, dense, sub}`，`mode ∈ daycards|cal|hh`。四档按**自然日跨度 spanDays**（非 activeDays）：**1–7 日卡** / **8–21 紧凑日历** / **22–63 完整日历** / **>63 贡献热力**（>26 周月聚合既有不变）。
+- `spanDays = round((axis末日零点 − axis首日零点)/864e5)+1`，轴取未筛选原始池 `an.axisA/axisB`（旧帧退化 spanA/spanB、再退化 items 首日），末日恒钳今天——与 v389/v391 同口径，**跨布局不跳轴、筛选不改形态**。`activeDays = byDay 有值日数`（仅用于 `dense` 元信息与 sub 文案披露，绝不用来缩短时间轴）。
+- 两档日历共用 `spd3CalHTML`，`dense` 参数只影响 CSS 类（`zu3-cal-dense`）与副题；贡献热力/月聚合/日卡构建器零改动。
+- 禁止项守门：无数据日照画低对比灰格（保留日期语义，禁止项 2/3），只是不再重复文字（§18.2）；日卡 ≤6→1–7 边界扩展但单卡聚焦不变。
+
+### 18.2 无数据日文字噪声消除（场景 A/B 共同痛点）
+
+- `spd3CalHTML`：空日格从 `zu3-cnone`"无记录" 改为空值占位（`.zu3-v` 不渲染文字），只保留日号 + 低对比底（`.zu-hm-void` 既有）+ 今天描边；`aria-label` 仍由 `spd3CellAria(ds,null)` 表达「无记录」（无障碍不丢语义），Hover 无数据日仍不出卡（既有约定）——避免整日历重复文字。
+- `spd3DayCardsHTML`：空日卡 `zu3-dcnone`"无记录" 同步去除，只保留日期/星期 + 低对比底；单卡聚焦无数据走独立空态（`first===Infinity` 既有分支），不画一排灰卡冒充统计。
+- 场景 A：8–21 天紧凑日历完整铺 12 个自然日，有数据日色阶+高对比，无数据日低调，一眼分辨活跃日；场景 B：22–63 天完整日历 7 列跨月，模型点 ≤3+`+N`（spd3DotsHTML 既有），多模型汇总与颜色口径不变。
+
+### 18.3 边界与不变项
+
+- 阈值以 spanDays 为准（axis 未筛选池），activeDays 只做密度披露：`activeDays/spanDays` 低时副题标「活跃 X/共 Y 天」，不伪造也不删日。
+- **固定高 450 不变**（§17 用户裁定）：本批只调形态选择与空日呈现，不改 root 高度、不恢复「查看全部」按钮（v394 裁定）、不动速度口径/模型色阶/筛选/双 Tab 语义/其它 Tab。
+- 色阶、模型点、Hover 卡、a11y、方向键委托、截断披露全部复用既有契约零改动。
+
+### 18.4 验收
+
+- VM：四档阈值 1/7/8/21/22/39/63/64/90 形态断言（阈值边界更新，7 天→daycards、61/63→cal、64→hh），spanDays 用 axis 不用 activeDays（稀疏 39 天只有 2 天有数据仍 cal），空日格无「无记录」文字但 aria 保留；两档日历共用构建器断言。
+- harness：新增/调整几何断言覆盖空日无文字噪声、短历史居中、跨月 39 天 7 列；真机截图对照两场景（稀疏 12 天单模型、39 天 20 模型）。

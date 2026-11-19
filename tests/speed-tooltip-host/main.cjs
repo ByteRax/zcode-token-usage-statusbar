@@ -111,8 +111,9 @@ if (process.argv.includes('--selftest')) {
     'function spd3HeightTier(', 'function spd3BarDensityStyle(',
     /* v389 §13.4/§13.2：未筛选时间轴字段 + 日卡形态 + 槽位卡构建器锚 */
     'axisA: axisA, axisB: axisB', 'function spd3DayCardsHTML(', 'function spd3SlotCardHTML(',
-    /* v390 §14：占比 <0.1% 文案 + hist 日历式构建器 + 密度选择器阈值常量 */
-    'function spd3PctTxt(', 'function spd3CalHTML(', 'var SPD3_HIST_CAL_MAX_DAYS = 60;', 'function spd3PlotEstW(', 'zu-sv3-vpin-l'];
+    /* v395 §18：统一布局选择函数 + 四档阈值常量（日卡 7 / 日历上沿 63） */
+    'function spd3PctTxt(', 'function spd3CalHTML(', 'var SPD3_HIST_CAL_MAX_DAYS = 63;',
+    'function spd3SelectHistoryLayout(', 'var SPD3_HIST_DC_MAX_DAYS = 7;', 'function spd3PlotEstW(', 'zu-sv3-vpin-l'];
   const missing = need.filter(s => !slice.includes(s));
   if (missing.length) { console.error('SELFTEST_FAIL missing: ' + missing.join(' | ')); process.exit(1); }
   try { new Function('L', '"' + 'use strict' + '";\n' + slice); }   /* 只编译不执行 */
@@ -684,12 +685,14 @@ app.whenReady().then(async () => {
     { reload: true, fixture: 'hist400', theme: 'dark', lang: 'en', sel: { range: 'all', period: 'all' }, shot: 'h15-hist-en.png' },
   ], log);
 
-  /* 链 V（v391 §15.3/§15.5）：密度阈值真机形态——hist7=日历式下沿（⑬⑮ 断言），
-   * hist30=日历式、hist90=周列式贡献热力、singleDay=紧凑日卡（dc 卡组居中）；
-   * 几何断言含 ⑬ 单层边框 / ⑭ 柱标不重叠（柱图形态自动落）/ ⑮ 短历史整组居中。 */
+  /* 链 V（v395 §18.1/§18.2）：四档真机形态 + 空日文字噪声消除（⑬⑮⑰）
+   * hist7=日卡上沿、hist12sparse=场景 A 稀疏紧凑日历、hist39x20=场景 B 完整跨月日历、
+   * hist30=紧凑日历、hist90=周列贡献热力、singleDay=单卡聚焦。 */
   await runChain(wc, win, [
-    { reload: true, fixture: 'hist7', theme: 'dark', sel: { range: 'all', period: 'all' }, shot: 'v1-hist7-cal.png' },
-    { fixture: 'hist30', theme: 'dark', sel: { range: 'all', period: 'all' }, shot: 'v2-hist30-cal.png' },
+    { reload: true, fixture: 'hist7', theme: 'dark', sel: { range: 'all', period: 'all' }, shot: 'v1-hist7-daycards.png' },
+    { reload: true, fixture: 'hist12sparse', theme: 'dark', sel: { range: 'all', period: 'all' }, shot: 'v1b-hist12-sparse.png' },
+    { reload: true, fixture: 'hist39x20', theme: 'dark', sel: { range: 'all', period: 'all' }, shot: 'v1c-hist39-20models.png' },
+    { reload: true, fixture: 'hist30', theme: 'dark', sel: { range: 'all', period: 'all' }, shot: 'v2-hist30-cal.png' },
     { reload: true, fixture: 'hist90', theme: 'dark', sel: { range: 'all', period: 'all' }, shot: 'v3-hist90-weeks.png' },
     { reload: true, fixture: 'singleDay', theme: 'dark', sel: { range: 'all', period: 'all' }, shot: 'v4-single-day-cards.png' },
   ], log);
