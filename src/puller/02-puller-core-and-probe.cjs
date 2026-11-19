@@ -140,7 +140,7 @@ function createModelPuller(opts) {
       if (typeof quota.hostCredDecrypt === "function") {
         const hit = quota.hostCredDecrypt(raw, src.fam, src.credKey, credEnv, decryptValue);
         let token = hit && typeof hit.token === "string" ? hit.token : null;
-        if (token.startsWith("enc:")) token = null;
+        if (token && token.startsWith("enc:")) token = null;
         return token && token.trim() ? token.trim() : null;
       }
       const enc = raw && typeof raw === "object" ? raw[src.credKey] : null;

@@ -48,7 +48,8 @@ const PROBE_SNIPPET_MAX = 200;    // 错误摘录回渲染端的长度上限（�
 var PLAN_SOURCES = {
   /* fam 对齐 quota-client 的 HOST_ALT_CRED_KEYS（issue #393）：宿主 3.18+ 新式登录态下
    * credKey 旧平铺键整键缺席时按家族回退新式键（bigmodel→oauth:linked_bigmodel、
-   * zai→oauth:zai_cn:access_token），取值统一走 planTokenOf。 */
+   * zai→oauth:zai_cn:access_token），取值统一走 planTokenOf。目录不变量：同 fam 条目
+   * 共用同一 credKey（planListable 家族去重按 credKey，两划分当前恒重合）。 */
   "account:bigmodel-individual-coding-plan": {
     name: "BigModel Coding Plan",
     endpoint: "https://open.bigmodel.cn/api/anthropic/v1/models",
@@ -884,7 +885,7 @@ function createModelPuller(opts) {
       if (typeof quota.hostCredDecrypt === "function") {
         const hit = quota.hostCredDecrypt(raw, src.fam, src.credKey, credEnv, decryptValue);
         let token = hit && typeof hit.token === "string" ? hit.token : null;
-        if (token.startsWith("enc:")) token = null;
+        if (token && token.startsWith("enc:")) token = null;
         return token && token.trim() ? token.trim() : null;
       }
       const enc = raw && typeof raw === "object" ? raw[src.credKey] : null;

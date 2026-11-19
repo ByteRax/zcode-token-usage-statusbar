@@ -297,6 +297,9 @@ test("plan source: 热换竞窗旧 quota-client 无 hostCredDecrypt 导出——
   const alt = planPullerWithCreds(t, { "oauth:linked_bigmodel": LINKED_JSON }, () => LINKED_JSON);
   assert.equal((await alt.mp.listProviders()).providers.length, 0, "新式键取不到（旧代行为，等联动热换自愈）");
   assert.deepEqual(alt.requests, []);
+  require.cache[qPath] = realEntry;   // 模拟联动热换：真模块归位（planTokenOf 每次调用现取 require）
+  const healed = planPullerWithCreds(t, { "oauth:linked_bigmodel": LINKED_JSON }, () => LINKED_JSON);
+  assert.equal((await healed.mp.listProviders()).providers.length, 1, "联动热换后同一实现生效（自愈半边）");
 });
 
 test("plan source: fetches anthropic models endpoint with oauth bearer and normalizes case", async () => {
