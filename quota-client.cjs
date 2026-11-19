@@ -1443,8 +1443,7 @@ async function qianwenAskUsage(j, cliToken, ctl) {
   if (d && d.success === false) {
     const code = String(d.errorCode != null ? d.errorCode : "");
     if (/NotLogined|NeedLogin|NotLogin/i.test(code)) throw qErr("auth_failed", "qianwen session expired");
-    const msg = String(d.errorMsg != null ? d.errorMsg : "");
-    throw qErr("network_error", ("qianwen console " + (code || msg)).slice(0, 80));
+    throw qErr("network_error", ("qianwen console " + code).slice(0, 80));   // 只回 code：errorMsg 是服务端文本，不进错误链
   }
   let node = d && d.DataV2 != null ? d.DataV2 : null;   // 双层 {data:…} 剥壳（magpie 同款，缺层容忍）
   for (let i = 0; i < 2; i++) {
@@ -1568,7 +1567,12 @@ function installQianwenFlow(client, j, o) {
     if (gen !== flow.gen) return { ok: false, error: "cancelled" };
     const d = codeRep && codeRep.Data && typeof codeRep.Data === "object" ? codeRep.Data : null;
     const deviceToken = d && typeof d.Token === "string" ? d.Token : "";
-    const url = d && typeof d.VerificationUrl === "string" && /^https:\/\//.test(d.VerificationUrl) ? d.VerificationUrl : "";
+    /* 授权页 URL 域白名单（官方=account.qianwenai.com）：服务端可控串不经白名单不交 openExternal */
+    let url = "";
+    if (d && typeof d.VerificationUrl === "string") {
+      try { url = new URL(d.VerificationUrl).hostname.toLowerCase().endsWith(".qianwenai.com") && /^https:$/.test(new URL(d.VerificationUrl).protocol) ? d.VerificationUrl : ""; }
+      catch (e) { url = ""; }
+    }
     if (codeErr && codeErr.body) {   // HTTP ≥3xx：只嗅状态词，正文不进文案
       const word = qianwenStatusWordOf(codeErr.body);
       if (word === "expired_token") { finish("failed", "设备码已过期，请重试"); return { ok: false, error: flow.error }; }

@@ -48,8 +48,9 @@ key 前缀 `sk-sp-`）是纯推理入口：任意非推理路径统一 400 `Inva
 
 - `id: "qianwen"`、`kind: "plan"`、`defaultOn: true`、`unverified: true`、
   envKeys `["ZCODE_QIANWEN_ACCESS_TOKEN"]`。
-- detect：baseUrl host 精确 `token-plan.maas.qianwenaiapi.com`（含任意路径），或 apiKey 前缀
-  `sk-sp-`；不按 provider 名判定（模板名与实际套餐常不一致，issue 明示）。**不认领**
+- detect：baseUrl host 精确 `token-plan.maas.qianwenaiapi.com`（含任意路径），或
+  qianwenaiapi.com 域内 + apiKey 前缀 `sk-sp-`；不按 provider 名判定（模板名与实际套餐常
+  不一致，issue 明示）。**不认领**
   `token-plan.<region>.maas.aliyuncs.com`（阿里云百炼）——该域凭据是 AccessKey ID/Secret +
   ACS3-HMAC-SHA256 签名链（magpie 另一套实现），本版未实现，落 custom 中转探测保持现状。
 - 复合源 `qianwen:<providerId>` 与 volcano 同形（rememberProvider 自动派生）；secrets 显式
@@ -80,5 +81,6 @@ key 前缀 `sk-sp-`）是纯推理入口：任意非推理路径统一 400 `Inva
 detect 认领/不认领域名矩阵、sk-sp- key 认领、mint→usage 双跳断言（URL/UA/form 参数/双层
 Bearer）、NotLogined 分层（usage 层 auth_failed、mint 层 auth_failed、缓存令牌重换一次）、
 无窗 parse_error、设备码流完成/拒绝/过期/取消、complete 回复双信封形状宽容解析、错误文案
-不含 token、tokenExpiresAt 过期归未配置。面板：qianwen 行渲染登录按钮、点击发
-quota-qianwen-signin、done/failed 反馈（tests/overlay-quota-chip.test.cjs）。
+不含 token、tokenExpiresAt 过期归未配置、授权页 URL 域白名单。面板（tests/overlay-quota-chip.test.cjs）：
+qianwen 行渲染登录按钮、点击发 quota-qianwen-signin；done/failed 状态机在 quota-client
+测试覆盖，overlay 测试只锁按钮渲染与起流委托。

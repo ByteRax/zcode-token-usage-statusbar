@@ -1348,7 +1348,8 @@
           (chips ? '<span class="zu-src-presets">' + chips + '</span>' : "") +
           '<span class="zu-src-fields">' + credFields + '</span>' +
           '<span class="zu-src-feedback' + (sourceFeedback[sv.id] && sourceFeedback[sv.id].error ? ' zu-feedback-error' : '') + '" role="status" aria-live="polite">' +
-          (sourceFeedback[sv.id] ? sourceFeedback[sv.id].text || (sourceFeedback[sv.id].pending ? (state.pluginUpdate && state.pluginUpdate.feedbackVersion >= 1 ? L("操作已发出，等待确认…", "Sent; awaiting confirmation…") : L("操作已发出；保存确认需重启后端", "Sent; restart the backend for save confirmation")) : sourceFeedback[sv.id].error ? L("操作失败，请重试", "Action failed; try again") : L("已保存", "Saved")) : "") + '</span></div>';
+          /* text 可能含服务端响应串（千问 account/status）：重建行走 innerHTML 必须转义（即时反馈走 textContent 无此问题） */
+          (sourceFeedback[sv.id] ? aEsc(sourceFeedback[sv.id].text) || (sourceFeedback[sv.id].pending ? (state.pluginUpdate && state.pluginUpdate.feedbackVersion >= 1 ? L("操作已发出，等待确认…", "Sent; awaiting confirmation…") : L("操作已发出；保存确认需重启后端", "Sent; restart the backend for save confirmation")) : sourceFeedback[sv.id].error ? L("操作失败，请重试", "Action failed; try again") : L("已保存", "Saved")) : "") + '</span></div>';
       }
       box.innerHTML = html;
     }
@@ -1386,8 +1387,13 @@
           qianwenSignin.waiting = true;
           pollQianwenState(btn);
         } else {
-          var msg = (res && res.error) || L("登录不可用", "Sign-in unavailable");
-          if (/unknown action|restart required/.test(String(msg))) msg = L("需完全重启 ZCode 后可用", "Restart ZCode to enable");
+          /* 主进程回执是英文固定串：已知串映射本地化，未知串脱敏兜底（错误正文可能来自桥层） */
+          var msg = String((res && res.error) || "");
+          if (/unknown action|restart required/i.test(msg)) msg = L("需完全重启 ZCode 后可用", "Restart ZCode to enable");
+          else if (/quota disabled/i.test(msg)) msg = L("额度查询已关闭", "Quota queries are off");
+          else if (/sign-in unavailable|unavailable/i.test(msg)) msg = L("登录功能暂不可用，请重试", "Sign-in unavailable; try again");
+          else if (msg) msg = L("登录不可用", "Sign-in unavailable");   // 未知回执不原样上屏
+          else msg = L("登录不可用", "Sign-in unavailable");
           showSourceFeedback("qianwen", true, false, msg);
         }
       });

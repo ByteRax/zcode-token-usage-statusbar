@@ -2728,10 +2728,10 @@ async function waitFor(fn, ms) {
   while (Date.now() < end) { if (fn()) return; await waitMs(10); }
   assert.ok(fn(), "waitFor timeout");
 }
-function qnClient({ cfgEntries, secrets, fetchImpl, saveSecrets } = {}) {
+function qnClient({ cfgEntries, secrets, fetchImpl, saveSecrets, clock, env } = {}) {
   return Q.createQuotaClient({
-    env: Object.assign({}, ENV),
-    now: () => T0,
+    env: Object.assign({}, ENV, env || {}),
+    now: () => (clock ? clock.t : T0),
     credsPath: "/virtual/credentials.json",
     secretsPath: "/virtual/quota-secrets.json",
     readFile: (p) => {
@@ -2827,7 +2827,7 @@ test("qianwen: mint ConsoleNeedLogin freezes auth_failed; usage NotLogined re-mi
   assert.equal(calls.length, 1, "换令牌即被拒：不再打 usage");
   client.tick(true);
   await flush();
-  assert.equal(calls.length, 2, "auth 冻结须凭据指纹变化才解冻；手动刷新同样短路");
+  assert.equal(calls.length, 2, "显式刷新越过软冻结是既有语义（force 跳过 auth 短路）；指纹未变不解冻的是自动轮询");
   client.dispose();
 
   const calls2 = [];
@@ -2939,7 +2939,7 @@ test("qianwen sign-in: cancel drops state and stops the poll chain", async () =>
 test("qianwen sign-in: complete reply tolerated in lowercase, numeric and BOM forms", async () => {
   const forms = [
     { body: JSON.stringify({ status: "COMPLETE", credentials: { access_token: "a4", expire_time: "2026-11-16T10:33:07Z", user: { id: "u4", email: "f@x.com" } } }), token: "a4", account: "f@x.com" },
-    { body: JSON.stringify({ Data: { Status: "complete", Credentials: { User: { Id: 1355664028184579 }, ExpireTime: 1794825187, AccessToken: "a2" } }, Success: true }), token: "a2", account: "1355664028184579" },
+    { body: JSON.stringify({ Data: { Status: "complete", Credentials: { User: { Id: 1355664028184579 }, ExpireTime: 1794825187, AccessToken: "a2" } }, Success: true }), token: "a2", account: "1355664028184579", expiresAt: 1794825187000 },
     { body: "\uFEFF" + JSON.stringify({ Data: { Status: "complete", Credentials: { AccessToken: "a3", ExpireTime: "2026-11-16T10:33:07Z" } }, Success: true }), token: "a3", account: "" },
   ];
   for (const f of forms) {
@@ -2957,6 +2957,7 @@ test("qianwen sign-in: complete reply tolerated in lowercase, numeric and BOM fo
     await waitFor(() => saves.length >= 1, 3000);
     assert.equal(saves[0].qianwen.token, f.token);
     assert.equal(saves[0].qianwen.account, f.account);
+    if (f.expiresAt != null) assert.equal(saves[0].qianwen.tokenExpiresAt, f.expiresAt, "数字秒 ExpireTime 须换算毫秒（resolveCred 按毫秒比较）");
     client.dispose();
   }
 });
@@ -2993,5 +2994,149 @@ test("qianwen sign-in: start without saveSecrets (old assembly) reports unavaila
   const r = await client.qianwenSignInStart();
   assert.equal(r.ok, false);
   assert.equal(r.error, "sign-in unavailable");
+  client.dispose();
+});
+
+/* ---------- review 补强（B/D 路变异猎杀用例） ---------- */
+
+test("qianwen: sourcesConfig maps qianwen to the token field (manual paste lands where resolveCred reads)", () => {
+  const client = qnClient({});
+  const row = client.sourcesConfig().find((x) => x.id === "qianwen");
+  assert.ok(row, "qianwen 源在 ⚙ 列表");
+  assert.deepEqual(row.credentialFields, ["token"], "手填通道必须是 token 字段——apiKey 字段的值 resolveCred 不读");
+  client.dispose();
+});
+
+test("qianwen: token-plan host claims even without an sk-sp- key (payg-style key on plan host)", () => {
+  const c = adapterClient({ cfgEntries: [["qn-x", QN_BASE, "sk-payg"]] });
+  c.client.noteProvider("qn-x");
+  c.client.tick();
+  assert.ok(c.client.view().sources["qianwen:qn-x"], "官方 plan 域精确命中即认领，key 前缀只是第二信号");
+  assert.ok(!c.calls.length);
+});
+
+test("qianwen: console token cache expires after the 20min TTL", async () => {
+  const clock = { t: T0 };
+  const calls = [];
+  const client = qnClient({
+    cfgEntries: [["p1", QN_BASE, "sk-sp-k"]],
+    secrets: { sources: { qianwen: { token: "acc-ttl" } } },
+    clock,
+    fetchImpl: (url, init) => { const d = deferred(); calls.push({ url: String(url), init, d }); return d.promise; },
+  });
+  client.noteProvider("p1");
+  client.tick();
+  calls[0].d.resolve(fakeRes(200, JSON.stringify({ code: "200", successResponse: true, data: { cliAccessToken: "cli-1" } })));
+  await flush();
+  calls[1].d.resolve(fakeRes(200, JSON.stringify({ code: "200", successResponse: true, data: { success: true, DataV2: { data: { data: { per1WeekPercentage: 0.1 } } } } })));
+  await flush();
+  clock.t += 20 * 60 * 1000 + 1000;   // 过 TTL：强制刷新须重换控制台令牌
+  client.tick(true);
+  await flush();
+  assert.equal(JSON.parse(calls[2].init.body).action, "GenerateCLIAccessToken", "TTL 过期后重新 mint");
+  client.dispose();
+});
+
+test("qianwen: mint refuses an echoed cliAccessToken and a missing successResponse", async () => {
+  for (const [name, reply] of [
+    ["echoed token", JSON.stringify({ code: "200", successResponse: true, data: { cliAccessToken: "acc-x" } })],
+    ["missing successResponse", JSON.stringify({ code: "200", data: { cliAccessToken: "cli-9" } })],
+  ]) {
+    const calls = [];
+    const client = qnClient({
+      cfgEntries: [["p1", QN_BASE, "sk-sp-k"]],
+      secrets: { sources: { qianwen: { token: "acc-x" } } },
+      fetchImpl: (url, init) => { const d = deferred(); calls.push({ url: String(url), init, d }); return d.promise; },
+    });
+    client.noteProvider("p1");
+    client.tick();
+    calls[0].d.resolve(fakeRes(200, reply));
+    await flush();
+    assert.equal(client.view().sources["qianwen:p1"].status, "network_error", name + ": mint 守卫拒收，不发 usage");
+    assert.equal(calls.length, 1, name);
+    client.dispose();
+  }
+});
+
+test("qianwen: unknown window lengths are dropped, never masked as a known window", async () => {
+  const calls = [];
+  const client = qnClient({
+    cfgEntries: [["p1", QN_BASE, "sk-sp-k"]],
+    secrets: { sources: { qianwen: { token: "acc-u" } } },
+    fetchImpl: (url, init) => { const d = deferred(); calls.push({ url: String(url), init, d }); return d.promise; },
+  });
+  client.noteProvider("p1");
+  client.tick();
+  calls[0].d.resolve(fakeRes(200, JSON.stringify({ code: "200", successResponse: true, data: { cliAccessToken: "cli-u" } })));
+  await flush();
+  calls[1].d.resolve(fakeRes(200, JSON.stringify({ code: "200", successResponse: true, data: { success: true, DataV2: { data: { data: { per2WeekPercentage: 0.5, per2WeekResetTime: 1780000000000 } } } } })));
+  await flush();
+  assert.equal(client.view().sources["qianwen:p1"].status, "parse_error", "未知窗长丢弃后无可显示窗：parse_error 不冒名 fiveHour");
+  client.dispose();
+});
+
+test("qianwen: env access token reaches the mint endpoint as Bearer", async () => {
+  const calls = [];
+  const client = qnClient({
+    cfgEntries: [["p1", QN_BASE, "sk-sp-k"]],
+    env: { ZCODE_QIANWEN_ACCESS_TOKEN: "env-tok-1" },
+    fetchImpl: (url, init) => { const d = deferred(); calls.push({ url: String(url), init, d }); return d.promise; },
+  });
+  client.noteProvider("p1");
+  client.tick();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].init.headers.authorization, "Bearer env-tok-1", "env 凭据优先且发 mint 端点");
+  client.dispose();
+});
+
+test("qianwen sign-in: dispose during an in-flight poll stops the chain for good", async () => {
+  const calls = [];
+  const client = qnClient({
+    fetchImpl: (url) => { const d = deferred(); calls.push({ url: String(url), d }); return d.promise; },
+  });
+  client.qianwenSignInStart();
+  await waitFor(() => calls.length >= 1);
+  calls[0].d.resolve(fakeRes(200, QN_CODE_REPLY));
+  await waitFor(() => calls.length >= 2, 3000);   // 首拍轮询在途
+  client.dispose();   // 首拍未放行时销毁：旧流必须停在 idle，放行后不得继续
+  calls[1].d.resolve(fakeRes(200, JSON.stringify({ Data: { Status: "authorization_pending" }, Success: true })));
+  const n = calls.length;
+  await waitMs(400);
+  assert.equal(calls.length, n, "dispose 后放行的在途轮询不得再排下一拍");
+  assert.equal(client.qianwenSignInState().state, "idle", "销毁流状态归 idle，不卡 pending");
+});
+
+test("qianwen sign-in: poll past the page deadline ends failed without further requests", async () => {
+  const clock = { t: T0 };
+  const calls = [];
+  const client = qnClient({
+    clock,
+    fetchImpl: (url) => { const d = deferred(); calls.push({ url: String(url), d }); return d.promise; },
+  });
+  client.qianwenSignInStart();
+  await waitFor(() => calls.length >= 1);
+  calls[0].d.resolve(fakeRes(200, QN_CODE_REPLY));   // ExpiresIn 300s → deadline = T0+300s
+  await waitFor(() => calls.length >= 2, 3000);   // 首拍 device/token 在途
+  calls[1].d.resolve(fakeRes(200, JSON.stringify({ Data: { Status: "authorization_pending" }, Success: true })));
+  clock.t = T0 + 301 * 1000;   // 推时钟跨过 deadline：下一拍 poll 在 fetch 前检查即失败
+  await waitFor(() => client.qianwenSignInState().state === "failed", 3000);
+  assert.equal(calls.length, 2, "deadline 检查先于发请求：结束后不再轮询");
+  assert.ok(client.qianwenSignInState().error.indexOf("过期") >= 0);
+  client.dispose();
+});
+
+test("qianwen sign-in: saveSecrets failure ends failed instead of reporting done", async () => {
+  const calls = [];
+  const client = qnClient({
+    fetchImpl: (url) => { const d = deferred(); calls.push({ url: String(url), d }); return d.promise; },
+    saveSecrets: () => { throw new Error("disk full"); },
+  });
+  client.qianwenSignInStart();
+  await waitFor(() => calls.length >= 1);
+  calls[0].d.resolve(fakeRes(200, QN_CODE_REPLY));
+  await waitFor(() => calls.length >= 2, 3000);
+  calls[1].d.resolve(fakeRes(200, JSON.stringify({ Data: { Status: "complete", Credentials: { AccessToken: "acc-s" } }, Success: true })));
+  await waitFor(() => client.qianwenSignInState().state === "failed", 3000);
+  assert.ok(client.qianwenSignInState().error.indexOf("保存失败") >= 0);
   client.dispose();
 });
