@@ -139,13 +139,13 @@ function v2Credential(plain, key, source) {
 function v2EnvCredential(plain, secret) {
   return v2Credential(plain, require("crypto").createHash("sha256").update(secret).digest(), "env");
 }
-function planPullerWithCredential(t, credential, decryptValue, env) {
+function planPullerWithCreds(t, creds, decryptValue, env, cfg) {
   const file = tmpCfgPath();
-  writeCfg(file, PLAN_CFG);
+  writeCfg(file, cfg || PLAN_CFG);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-mp-v2-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const credentialsPath = path.join(dir, "credentials.json");
-  fs.writeFileSync(credentialsPath, JSON.stringify({ "oauth:bigmodel:access_token": credential }));
+  fs.writeFileSync(credentialsPath, JSON.stringify(creds));
   const requests = [];
   const mp = M.createModelPuller({
     customCfgPath: file, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath, decryptValue, env,   // 档位目录与本用例无关
@@ -157,6 +157,9 @@ function planPullerWithCredential(t, credential, decryptValue, env) {
   });
   t.after(() => mp.dispose());
   return { mp, requests, credentialsPath };
+}
+function planPullerWithCredential(t, credential, decryptValue, env) {
+  return planPullerWithCreds(t, { "oauth:bigmodel:access_token": credential }, decryptValue, env);
 }
 const Q_FOR_PULLER = require(path.join(__dirname, "..", "quota-client.cjs"));
 /* 上游分发器架构：注入闭包=quota-client 的 decryptValue（v2 经模块级 defaultDec 解，用例须先绑定）；
@@ -224,6 +227,76 @@ test("plan source: enc:v2:os credential — the first list starts the keyring re
   assert.equal((await mp.listProviders()).providers.length, 1);
   assert.equal((await mp.fetchModels(PLAN_ID)).ok, true);
   assert.deepEqual(requests, [{ url: "https://open.bigmodel.cn/api/anthropic/v1/models", auth: "Bearer plan.os.token" }]);
+});
+
+/* ---------- 新式登录态键回退（issue #393）：planTokenOf 与额度链同走 hostCredDecrypt 单一实现 ---------- */
+const LINKED_JSON = JSON.stringify({ userId: "u1", customerId: "c1", accessToken: "plan.alt.token" });
+const BIGMODEL_MODELS_REQ = { url: "https://open.bigmodel.cn/api/anthropic/v1/models", auth: "Bearer plan.alt.token" };
+
+test("plan source: 新式登录态（仅 linked_bigmodel）回退解 JSON 取 accessToken", async (t) => {
+  /* stub 按信封区分结果：证明取的确实是回退信封，且 token 来自 JSON 字段而非信封本体 */
+  const { mp, requests } = planPullerWithCreds(t, { "oauth:linked_bigmodel": LINKED_JSON },
+    (enc) => (enc === LINKED_JSON ? LINKED_JSON : "WRONG-ENVELOPE"));
+  assert.equal((await mp.listProviders()).providers.length, 1);
+  assert.equal((await mp.fetchModels(PLAN_ID)).ok, true);
+  assert.deepEqual(requests, [BIGMODEL_MODELS_REQ]);
+});
+
+test("plan source: linked_bigmodel 走 enc:v2:env（真实分发器）解 JSON 取 accessToken", async (t) => {
+  const secret = "model-puller-secret-0123456789abcdef";
+  t.after(() => bindDecryptCtx({ env: process.env }));
+  const { mp, requests, credentialsPath } = planPullerWithCreds(t,
+    { "oauth:linked_bigmodel": v2EnvCredential(LINKED_JSON, secret) },
+    INJECTED_DECRYPT_GENERATIONS["dispatcher (quota-client decryptValue)"], { ZCODE_CREDENTIAL_SECRET: secret });
+  bindDecryptCtx({ env: { ZCODE_CREDENTIAL_SECRET: secret }, credsPath: credentialsPath, credsDir: path.dirname(credentialsPath) });
+  await Q_FOR_PULLER.ensureDefaultV2Key();
+  assert.equal((await mp.listProviders()).providers.length, 1);
+  assert.equal((await mp.fetchModels(PLAN_ID)).ok, true);
+  assert.deepEqual(requests, [BIGMODEL_MODELS_REQ]);
+});
+
+test("plan source: 新旧键并存时旧键优先，行为不变", async (t) => {
+  const { mp, requests } = planPullerWithCreds(t,
+    { "oauth:bigmodel:access_token": "enc:flat", "oauth:linked_bigmodel": LINKED_JSON },
+    (enc) => (enc === "enc:flat" ? "plan.old.token" : "SHOULD-NOT-BE-USED"));
+  assert.equal((await mp.listProviders()).providers.length, 1);
+  assert.equal((await mp.fetchModels(PLAN_ID)).ok, true);
+  assert.deepEqual(requests, [{ url: "https://open.bigmodel.cn/api/anthropic/v1/models", auth: "Bearer plan.old.token" }]);
+});
+
+test("plan source: 回退信封取不出可用 token 按未配置降级，零请求不外发密文", async (t) => {
+  const cases = [
+    ["payload 缺 accessToken 字段", { "oauth:linked_bigmodel": '{"userId":"u1","customerId":"c1"}' }, (enc) => enc],
+    ["解密结果非 JSON", { "oauth:linked_bigmodel": "enc:v9:whatever" }, () => "garbage-not-json"],
+    ["未知代际经真实分发器解密失败", { "oauth:linked_bigmodel": "enc:v9:whatever" }, INJECTED_DECRYPT_GENERATIONS["dispatcher (quota-client decryptValue)"]],
+  ];
+  for (const [what, creds, dv] of cases) {
+    const { mp, requests } = planPullerWithCreds(t, creds, dv);
+    assert.equal((await mp.listProviders()).providers.length, 0, what);
+    assert.equal((await mp.fetchModels(PLAN_ID)).error, "provider not found", what);
+    assert.deepEqual(requests, [], what);
+  }
+});
+
+test("plan source: zai 家族 oauth:zai_cn:access_token 回退同构", async (t) => {
+  const zaiId = "account:zai-individual-coding-plan";
+  const zaiCfg = { config: { providerConfigRules: { providerRules: [{ providerId: zaiId, config: { personalModelIds: ["GLM-5.3"], modelOrder: ["GLM-5.3"] } }] } } };
+  const { mp, requests } = planPullerWithCreds(t, { "oauth:zai_cn:access_token": "zai.cn.alt.tok" }, (enc) => enc, {}, zaiCfg);
+  assert.equal((await mp.listProviders()).providers.length, 1);
+  assert.equal((await mp.fetchModels(zaiId)).ok, true);
+  assert.deepEqual(requests, [{ url: "https://api.z.ai/api/anthropic/v1/models", auth: "Bearer zai.cn.alt.tok" }]);
+});
+
+test("plan source: 热换竞窗旧 quota-client 无 hostCredDecrypt 导出——回退旧平铺键直读，联动热换后自愈", async (t) => {
+  const qPath = require.resolve(path.join(__dirname, "..", "quota-client.cjs"));
+  const realEntry = require.cache[qPath];
+  require.cache[qPath] = { id: qPath, filename: qPath, loaded: true, exports: {} };   // 旧代生：hostCredDecrypt/v2KeyRetryNow 均缺席
+  t.after(() => { require.cache[qPath] = realEntry; });
+  const flat = planPullerWithCreds(t, { "oauth:bigmodel:access_token": "enc:flat" }, () => "plan.old.token");
+  assert.equal((await flat.mp.listProviders()).providers.length, 1, "旧平铺键路径不受影响");
+  const alt = planPullerWithCreds(t, { "oauth:linked_bigmodel": LINKED_JSON }, () => LINKED_JSON);
+  assert.equal((await alt.mp.listProviders()).providers.length, 0, "新式键取不到（旧代行为，等联动热换自愈）");
+  assert.deepEqual(alt.requests, []);
 });
 
 test("plan source: fetches anthropic models endpoint with oauth bearer and normalizes case", async () => {

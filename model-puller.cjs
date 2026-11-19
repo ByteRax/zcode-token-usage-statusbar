@@ -46,10 +46,14 @@ const PROBE_SNIPPET_MAX = 200;    // 错误摘录回渲染端的长度上限（�
  * personalModelIds/modelOrder（宿主自身也写这两键，实测）；全新环境宿主尚未创建该规则时
  * （首次官方保存才隐式创建）按同构骨架自建（issue #226），id 按宿主官方规范大小写归一。 */
 var PLAN_SOURCES = {
+  /* fam 对齐 quota-client 的 HOST_ALT_CRED_KEYS（issue #393）：宿主 3.18+ 新式登录态下
+   * credKey 旧平铺键整键缺席时按家族回退新式键（bigmodel→oauth:linked_bigmodel、
+   * zai→oauth:zai_cn:access_token），取值统一走 planTokenOf。 */
   "account:bigmodel-individual-coding-plan": {
     name: "BigModel Coding Plan",
     endpoint: "https://open.bigmodel.cn/api/anthropic/v1/models",
     baseUrl: "https://open.bigmodel.cn/api/anthropic",
+    fam: "bigmodel",
     credKey: "oauth:bigmodel:access_token",
     /* 增强链鉴权（v344）：宿主对话走 v2/config.json 的 builtin provider options.apiKey
      * （明文 key + anthropic 协议 + /api/anthropic，实测正常）；credentials.json 的
@@ -66,6 +70,7 @@ var PLAN_SOURCES = {
     name: "Z.ai Coding Plan",
     endpoint: "https://api.z.ai/api/anthropic/v1/models",
     baseUrl: "https://api.z.ai/api/anthropic",
+    fam: "zai",
     credKey: "oauth:zai:access_token",
     v2ConfigKey: "builtin:zai-coding-plan",
   },
@@ -73,6 +78,7 @@ var PLAN_SOURCES = {
     name: "Z.ai Coding Plan (team)",
     endpoint: "https://api.z.ai/api/anthropic/v1/models",
     baseUrl: "https://api.z.ai/api/anthropic",
+    fam: "zai",
     credKey: "oauth:zai:access_token",
     v2ConfigKey: "builtin:zai-coding-plan",
   },
@@ -80,6 +86,7 @@ var PLAN_SOURCES = {
     name: "Z.ai Start Plan",
     endpoint: "https://api.z.ai/api/anthropic/v1/models",
     baseUrl: "https://api.z.ai/api/anthropic",
+    fam: "zai",
     credKey: "oauth:zai:access_token",
     /* zai 家族 start-plan：凭据走 planKeyOf 统一口径（v2 key 优先、OAuth 兜底），
      * api.z.ai anthropic 端点未实测（无 zai 测试账号）——诚实尝试，失败按上游错误展示。 */
@@ -89,6 +96,7 @@ var PLAN_SOURCES = {
     name: "BigModel Coding Plan (team)",
     endpoint: "https://open.bigmodel.cn/api/anthropic/v1/models",
     baseUrl: "https://open.bigmodel.cn/api/anthropic",
+    fam: "bigmodel",
     credKey: "oauth:bigmodel:access_token",
     v2ConfigKey: "builtin:bigmodel-coding-plan",
   },
@@ -96,6 +104,7 @@ var PLAN_SOURCES = {
     name: "BigModel Start Plan",
     endpoint: "https://open.bigmodel.cn/api/anthropic/v1/models",
     baseUrl: "https://open.bigmodel.cn/api/anthropic",
+    fam: "bigmodel",
     credKey: "oauth:bigmodel:access_token",
     /* issue #336 终案（2026-11-14 实测 200 ×3 头形）：start-plan 推理与 coding plan 同走
      * open.bigmodel.cn/api/anthropic，凭据=宿主在 bigmodel 账号下发放的**项目 API key**
@@ -753,6 +762,7 @@ function createModelPuller(opts) {
   const cachePath = String(o.cachePath || "");   // 档位索引落盘路径（运行目录，inject-main 传入）；空=仅内存（测试）
   const credentialsPath = String(o.credentialsPath || "");   // 宿主 OAuth 凭据（套餐源）
   const decryptValue = typeof o.decryptValue === "function" ? o.decryptValue : null;   // 注入解密（主进程内存解密）
+  const credEnv = o.env && typeof o.env === "object" ? o.env : process.env;   // v1 信封派生钥环境（生产缺省 process.env，同注入闭包口径）
   let disposed = false;
   let applyBusy = false;   // 读-改-写竞态闸：UI 正常路径不会并发，这里防异常路径双写互相覆盖
   let catalogCache = null;   // {at, entries}：目录全量约数百 KB，成功后进程内复用
@@ -860,7 +870,10 @@ function createModelPuller(opts) {
    * 注入的 decryptValue 是 quota-client 的分发器（上游 #289）：v1/v2 双信封都能解，v2 密钥
    * 经 defaultDec 绑定的真实路径上下文取。本入口只被用户动作触达：先越过 v2 密钥的失败冷却
    * 与失配限频（钥匙串刚解锁时点一下就能拉到，不必等 60 秒）；密钥异步未热时本次为空、下次
-   * 即可。仍带 enc: 前缀的结果一律作废——热换竞窗里旧模块闭包可能透传密文，绝不外发。 */
+   * 即可。取键与额度链同走 quota-client 的 hostCredDecrypt 单一实现（issue #393：宿主 3.18+
+   * 新式登录态下旧平铺键整键缺席，业务 token 改存 linked_bigmodel/zai_cn 信封——旧键优先、
+   * 缺失才回退；热换竞窗里旧 quota-client 无该导出时回退旧平铺键直读，联动热换后自愈）。
+   * 仍带 enc: 前缀的结果一律作废——热换竞窗里旧模块闭包可能透传密文，绝不外发。 */
   function planTokenOf(providerId) {
     const src = PLAN_SOURCES[String(providerId || "")];
     if (!src || !credentialsPath || !decryptValue) return null;
@@ -868,6 +881,12 @@ function createModelPuller(opts) {
       const quota = require("./quota-client.cjs");
       if (typeof quota.v2KeyRetryNow === "function") quota.v2KeyRetryNow();
       const raw = JSON.parse(fs.readFileSync(credentialsPath, "utf8"));
+      if (typeof quota.hostCredDecrypt === "function") {
+        const hit = quota.hostCredDecrypt(raw, src.fam, src.credKey, credEnv, decryptValue);
+        let token = hit && typeof hit.token === "string" ? hit.token : null;
+        if (token.startsWith("enc:")) token = null;
+        return token && token.trim() ? token.trim() : null;
+      }
       const enc = raw && typeof raw === "object" ? raw[src.credKey] : null;
       if (typeof enc !== "string" || !enc) return null;
       let token = decryptValue(enc);

@@ -46,10 +46,14 @@ const PROBE_SNIPPET_MAX = 200;    // 错误摘录回渲染端的长度上限（�
  * personalModelIds/modelOrder（宿主自身也写这两键，实测）；全新环境宿主尚未创建该规则时
  * （首次官方保存才隐式创建）按同构骨架自建（issue #226），id 按宿主官方规范大小写归一。 */
 var PLAN_SOURCES = {
+  /* fam 对齐 quota-client 的 HOST_ALT_CRED_KEYS（issue #393）：宿主 3.18+ 新式登录态下
+   * credKey 旧平铺键整键缺席时按家族回退新式键（bigmodel→oauth:linked_bigmodel、
+   * zai→oauth:zai_cn:access_token），取值统一走 planTokenOf。 */
   "account:bigmodel-individual-coding-plan": {
     name: "BigModel Coding Plan",
     endpoint: "https://open.bigmodel.cn/api/anthropic/v1/models",
     baseUrl: "https://open.bigmodel.cn/api/anthropic",
+    fam: "bigmodel",
     credKey: "oauth:bigmodel:access_token",
     /* 增强链鉴权（v344）：宿主对话走 v2/config.json 的 builtin provider options.apiKey
      * （明文 key + anthropic 协议 + /api/anthropic，实测正常）；credentials.json 的
@@ -66,6 +70,7 @@ var PLAN_SOURCES = {
     name: "Z.ai Coding Plan",
     endpoint: "https://api.z.ai/api/anthropic/v1/models",
     baseUrl: "https://api.z.ai/api/anthropic",
+    fam: "zai",
     credKey: "oauth:zai:access_token",
     v2ConfigKey: "builtin:zai-coding-plan",
   },
@@ -73,6 +78,7 @@ var PLAN_SOURCES = {
     name: "Z.ai Coding Plan (team)",
     endpoint: "https://api.z.ai/api/anthropic/v1/models",
     baseUrl: "https://api.z.ai/api/anthropic",
+    fam: "zai",
     credKey: "oauth:zai:access_token",
     v2ConfigKey: "builtin:zai-coding-plan",
   },
@@ -80,6 +86,7 @@ var PLAN_SOURCES = {
     name: "Z.ai Start Plan",
     endpoint: "https://api.z.ai/api/anthropic/v1/models",
     baseUrl: "https://api.z.ai/api/anthropic",
+    fam: "zai",
     credKey: "oauth:zai:access_token",
     /* zai 家族 start-plan：凭据走 planKeyOf 统一口径（v2 key 优先、OAuth 兜底），
      * api.z.ai anthropic 端点未实测（无 zai 测试账号）——诚实尝试，失败按上游错误展示。 */
@@ -89,6 +96,7 @@ var PLAN_SOURCES = {
     name: "BigModel Coding Plan (team)",
     endpoint: "https://open.bigmodel.cn/api/anthropic/v1/models",
     baseUrl: "https://open.bigmodel.cn/api/anthropic",
+    fam: "bigmodel",
     credKey: "oauth:bigmodel:access_token",
     v2ConfigKey: "builtin:bigmodel-coding-plan",
   },
@@ -96,6 +104,7 @@ var PLAN_SOURCES = {
     name: "BigModel Start Plan",
     endpoint: "https://open.bigmodel.cn/api/anthropic/v1/models",
     baseUrl: "https://open.bigmodel.cn/api/anthropic",
+    fam: "bigmodel",
     credKey: "oauth:bigmodel:access_token",
     /* issue #336 终案（2026-11-14 实测 200 ×3 头形）：start-plan 推理与 coding plan 同走
      * open.bigmodel.cn/api/anthropic，凭据=宿主在 bigmodel 账号下发放的**项目 API key**
