@@ -45,7 +45,7 @@
 
 SSH/WSL 远端会话需要在每台远端手工部署同版本 `zusage.py`；远端、额度源与多窗口的完整说明见[用户指南](https://github.com/ByteRax/zcode-token-usage-statusbar/blob/main/docs/user-guide.md)。
 
-Web 远控状态条需在打开远控页的浏览器中，通过脚本管理器[安装接收脚本](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js)；排障使用[调试版](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.debug.user.js)，两版只启用其中一版。链接跟随源码 `main`，可能领先正式插件 Release，请使用支持相同手机中继协议的桌面插件。脚本管理器负责检查更新，桌面插件升级不会替浏览器安装脚本。接收脚本内嵌同一桌面 overlay，本地与 WSL/SSH 共用状态条、tooltip 和设置，不再提供独立 chips 回退 UI。插件推送默认关闭，须在上述桌面独立分区显式开启；中继数据范围见上表。详见[远控页指南](https://github.com/ByteRax/zcode-token-usage-statusbar/blob/main/docs/user-guide.md#web-远程控制页面)。
+Web 远控状态条需在打开远控页的浏览器中，通过脚本管理器[安装接收脚本](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js)；排障使用[调试版](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.debug.user.js)，两版只启用其中一版。链接提供最近一次脚本发布快照，随正式插件发版更新而非每次源码提交，请使用支持相同手机中继协议的桌面插件。脚本管理器负责检查更新，桌面插件升级不会替浏览器安装脚本。接收脚本内嵌同一桌面 overlay，本地与 WSL/SSH 共用状态条、tooltip 和设置，不再提供独立 chips 回退 UI。插件推送默认关闭，须在上述桌面独立分区显式开启；中继数据范围见上表。详见[远控页指南](https://github.com/ByteRax/zcode-token-usage-statusbar/blob/main/docs/user-guide.md#web-远程控制页面)。
 
 ## 关闭或移除
 

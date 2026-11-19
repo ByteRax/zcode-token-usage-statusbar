@@ -37,7 +37,7 @@ reviewer 是新开的 subagent，看不到本对话，简报必须自包含。**
 
 **B. 变异式测试审查**（最有效的一路）。不问「测试过不过」，而问「把实现改坏哪里它不会红」。对每个新增或修改的断言，在另克隆的私有副本里（`T=$(mktemp -d)` + `git clone --no-hardlinks`，不要 `cp -R` worktree，避免与同轮其它 reviewer 冲突）真去改坏实现来验证，列出漏网断言并给出能杀死该变异的用例。克隆只含已提交内容：变异前先在克隆里跑一次未变异基线，确认新用例出现且绿；被测用例依赖本机（`skipUnless` 真机）时，在「真机不可用」条件下也跑一遍。主 agent 已在被审 SHA 上跑过全套且绿时，不要重复整套回归，只跑与本路相关的定向测试。警惕死测试与脆弱夹具：源码字符串匹配冒充行为验证、夹具喂旧形状也能过、用例落在 `if __name__ == "__main__":` 之后没被收集、Python 测试文件间写 `from test_xxx import ...` 裸同级导入导致单文件独立运行失败、超时兜底定时器未在 `.finally()` 清理或未 `.unref()` 挂起事件循环。新增测试较多时可按测试文件拆成多路 B 子代理同轮并行变异。
 
-**C. 文档与副本一致性。** 跑 `python3 sync_plugin.py --check`（同时验证 `src/overlay/*.js` → `overlay.js`、`src/quota/*.cjs` → `quota-client.cjs`、`src/mobile/*.js` + 完整桌面 overlay → 根目录两份 `.user.js` 的构建一致性、插件副本同步及 6 处分发文件清单一致）；README 三语、`docs/user-guide.md`、`config.example.json`、`.zcode/rules/*.md`、插件 README 里的行为与数字声明与实测对账；`src/overlay/06-instance-dom-and-styles.js` 及 `overlay.js` 的 `VERSION` 代际号是否撞号或乱序。
+**C. 文档与副本一致性。** 跑 `python3 sync_plugin.py --check`（验证桌面、额度和模型拉取产物、插件副本及分发清单）。普通功能 PR 不应夹带两份 `.user.js`；明确更新脚本产物的 PR 另跑 `python3 scripts/build_mobile_userscript.py --check` 并核对两份版本一致且已递增。README 三语、`docs/user-guide.md`、`config.example.json`、`.zcode/rules/*.md`、插件 README 里的行为与数字声明与实测对账；`src/overlay/06-instance-dom-and-styles.js` 及 `overlay.js` 的 `VERSION` 代际号是否撞号或乱序。
 
 **D. 安全审查**（外部 PR 必加）。先扫隐藏字符，再读 diff，读的就是扫过的那份字节：先落盘、检查上游退出状态，再 scan（直接 `… 2>&1 | scan` 会把 git 的报错文本当成输入，在 `pr-N` 写错时输出「没有发现」并退出 0）。在项目根执行，`<triage.py 的绝对路径>` 填 SKILL.md 里 `scripts/triage.py` 展开后的绝对路径：
 

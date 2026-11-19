@@ -17,6 +17,7 @@
 ## 2. 提交与分支
 
 - `overlay.js` 的 `VERSION` 与多行台账正本位于 `src/overlay/06-instance-dom-and-styles.js`（`quota-client.cjs` 正本位于 `src/quota/*.cjs`）：修改代码或顺延/重排 `VERSION` 时必须先改 `src/overlay/`（或 `src/quota/`）下的分片源码，再运行 `python3 sync_plugin.py` 自动拼接生成根级单文件并同步插件副本（直接改根 `overlay.js` 或 `quota-client.cjs` 会在下次 `sync_plugin.py` 时被分片覆盖）。撞号时按合入顺序顺延改号并 rebase 后再提交；顺延/重排不只改 VERSION 行：`var VERSION` 声明常量、末位台账条目、断言代际号的版本锁测试要一起改（曾重排台账漏改声明，main 上「末位≠声明」卡到发版预检）；注释/docstring/规则文件里的行内 vNNN 标注必漏，收口前全量 grep 旧号核对语境。
+- 普通 overlay 功能提交核对暂存区，不带入 `src/mobile/00-meta.js` 的版本改动或根目录两份 `.user.js`。手机预览产物不提交；正式插件发版或明确授权的脚本更新才一并暂存脚本版本与两份产物，见 [手机构建规格](../../specs/mobile-userscript-build.md)。
 - `--theirs` 前核对删除行归属；从共享工作树导出补丁后先过一遍全部变更行再 apply。
 - `.gitignore` 对 `.zcode/` 是**白名单制**（`.zcode/*` + 逐目录 `!` 例外）：`.zcode/skills/` 下新建技能目录若不加 `!.zcode/skills/<名>/` 会被静默忽略、永远进不了提交（git status 看不见、新会话也不报错），新建项目技能后先补例外再写内容。
 - 并行活跃期跑 `sync_plugin.py` 会把他人未提交的根文件改动扫进插件副本与运行目录（详见 [install-release.md](install-release.md)）；且它只构建并同步**所在工作树**的 `src/` 分片→根文件→插件副本（同时执行 `--verify-manifests` 校验 6 处分发清单）：共享文件改在哪个 worktree，就要在那个 worktree 内跑它的 `sync_plugin.py`——在主工作区跑既同步不到你的改动，还会把主工作区他人的未提交改动扫进副本。

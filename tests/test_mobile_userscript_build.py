@@ -79,29 +79,34 @@ class MobileUserscriptBuildTests(unittest.TestCase):
                 self.assertEqual(len(lines), 1)
                 self.assertEqual(lines[0].split()[-1], expected)
 
-    def test_sync_builds_root_products_and_check_is_read_only(self):
+    def test_desktop_sync_preserves_mobile_release_snapshots(self):
         sync = load_module("mobile_test_sync_plugin", ROOT / "sync_plugin.py")
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             self.fixture(root)
-            # 构建器按自身目录定位伙伴脚本，夹具要保留实际 scripts 布局。
-            (root / "scripts").mkdir(exist_ok=True)
+            (root / "scripts").mkdir()
             for name in ("build_overlay.py", "build_mobile_userscript.py"):
                 shutil.copyfile(ROOT / "scripts" / name, root / "scripts" / name)
+            self.assertEqual(self.run_main(root)[0], 0)
+            products = [root / name for name in (self.mod.TARGET.name, self.mod.TARGET_DEBUG.name)]
+
+            def snapshot():
+                return [(p.read_bytes(), p.stat().st_mtime_ns) for p in products]
+
+            before = snapshot()
+            write(root, "src/overlay/00-boot.js", "(() => { window.exact = 'updated'; })();\n")
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 self.assertTrue(sync._maybe_build_bundles(root))
+                self.assertTrue(sync._maybe_build_bundles(root, check_only=True))
             overlay = (root / "overlay.js").read_bytes()
-            release = root / "zusage-mobile.user.js"
-            debug = root / "zusage-mobile.debug.user.js"
-            self.assertEqual(embedded(release.read_text(encoding="utf-8")), overlay)
-            self.assertEqual(embedded(debug.read_text(encoding="utf-8")), overlay)
-            self.assertFalse((root / "docs").exists())
-            self.assertFalse((root / "plugins").exists())
-            release.write_bytes(release.read_bytes() + b"\n// changed\n")
-            before = release.read_bytes()
-            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                self.assertFalse(sync._maybe_build_bundles(root, check_only=True))
-            self.assertEqual(release.read_bytes(), before)
+            self.assertIn(b"'updated'", overlay)
+            self.assertEqual(snapshot(), before)
+            self.assertEqual(self.run_main(root, ["--check"])[0], 1)
+            self.assertEqual(snapshot(), before)
+            self.assertEqual(self.run_main(root)[0], 0)
+            self.assertEqual(self.run_main(root, ["--check"])[0], 0)
+            for product in products:
+                self.assertEqual(embedded(product.read_text(encoding="utf-8")), overlay)
 
     def test_source_order_and_version_ledger_use_same_desktop_builder(self):
         with tempfile.TemporaryDirectory() as td:
