@@ -558,7 +558,15 @@
        * 每行同款三列模板 minmax(0,1fr) 64px 44px（名称列可收缩至 0 + ellipsis → 行恒
        * 不溢出，根除旧 table 23px 横向溢出；行/容器不写 overflow-x，由 grid 保证）；
        * 数字列右对齐 tabular-nums；行高紧凑 24px；msAvail=false 两列变体（去均速列） */
-      ".zu-sv3-root .zu-sv3-dwrap{max-height:150px;overflow-y:auto;margin-top:6px;min-height:0}" +
+      /* v397 §20：滚动条右移+表格增宽——margin-right:-8px 把容器向右扩 8px 吃掉左卡右
+       * padding（余 4px 到边框），滚动条随之右移、表格净宽 +8px；细滚动条双写
+       * scrollbar-width:thin（Chromium 121+）+ webkit 6px 回退（旧宿主 Windows 经典 17px
+       * 挤占表格）。内滚契约 max-height:150px/overflow-y:auto 不变，仍无 overflow-x。 */
+      ".zu-sv3-root .zu-sv3-dwrap{max-height:150px;overflow-y:auto;margin:6px -8px 0 0;min-height:0;" +
+        "scrollbar-width:thin;scrollbar-color:var(--color-border,rgba(128,128,128,.45)) transparent}" +
+      ".zu-sv3-root .zu-sv3-dwrap::-webkit-scrollbar{width:6px}" +
+      ".zu-sv3-root .zu-sv3-dwrap::-webkit-scrollbar-thumb{background:var(--color-border,rgba(128,128,128,.45));border-radius:3px}" +
+      ".zu-sv3-root .zu-sv3-dwrap::-webkit-scrollbar-track{background:transparent}" +
       ".zu-sv3-root .zu-sv3-dtab{font-size:calc(var(--ui-font-size,14px) - 3px);font-variant-numeric:tabular-nums}" +
       ".zu-sv3-root .zu-sv3-drow{display:grid;grid-template-columns:minmax(0,1fr) 64px 44px;" +
         "align-items:center;min-height:24px}" +
