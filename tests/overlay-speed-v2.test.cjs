@@ -132,7 +132,7 @@ test('weighted average is Σout/Σms, never the arithmetic mean of per-turn spee
     { h: singlePool, sess: { sid: 's' } }));
   assert.ok(!singleHtml.includes('唯一模型') && !singleHtml.includes('zu-sv3-only'),
     'v390: single-model pool no longer shows the removed "only model" badge');
-  assert.ok(!singleHtml.includes('zu-sv3-dtab'), 'single-model pool shows no distribution table');
+  assert.ok(singleHtml.includes('zu-sv3-dtab'), 'v396: single-model pool now shows the isomorphic distribution table (1 row)');
 });
 
 // ---------- 范围隔离（无串数据） ----------
