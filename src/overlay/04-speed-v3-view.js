@@ -14,8 +14,8 @@
    * 纪律（spec §7）：模型 key 不进 className（只进 data-k）；动态文本一律 spdEsc；全部
    * 文案走 SPD_L；颜色语义两套不混用——模型身份色 = spd3Color（SPD3_PALETTE），速度
    * 色阶 = TPS_BANDS 档位类（zu-ultra/ok/warm… 全局色规则继承）。
-   * 集成契约：spd3LeftHTML 第三参 poolSingle（chips 池恰一模型=「真单模型池」，驱动「当前模型」行去重；v390 用户
-   * 裁定「唯一模型」徽标与供应商副标 .zu-sv3-msub/.zu-sv3-only 均去除）；
+   * 集成契约：spd3LeftHTML 第三参 poolSingle 为 v390 集成签名遗留（chips 池恰一模型；
+   * v396 起左卡单模型态改由 models.length===1 判定，本参不再被函数体消费）；
    * 筛选 chips 池缺省取 an.perModel+an.selMissing，
    * 筛选激活时集成方应传 ctx.pool=未筛选全量模型（否则 chips 收缩为已选集，无法点回）。
    * v387 实机修复批（spec §11）：宽度链 border-box 释放（§11.1）；多模型态主数字恒在
@@ -51,12 +51,6 @@
   function spd3PctTxt(share) {
     var p = Math.max(0, (share || 0) * 100);
     return p < 0.1 ? SPD_L("<0.1%", "<0.1%") : String(Math.round(p * 10) / 10) + "%";
-  }
-  /* 色点 + 名称（单模型态模型行专用；chips/弹层/分布行走 spd3ModelLabel——同名异
-   * 供应商需要副标）。超长 ellipsis，全文走 title */
-  function spd3DotAndName(key, name) {
-    return '<i class="zu-sv3-dot" style="background:' + spd3Color(key) + '" aria-hidden="true"></i>' +
-      '<span class="zu-sv3-chip-name">' + spdEsc(name) + "</span>";
   }
   /* 缺失 key 的显示名：身份键 = provider\x1fmodel（provider 缺失为空段），取 model 段；
    * 无 \x1f 整串即名（名称退化键 "n\x1fname" 同规则）；空段兜底「未知模型」。 */
@@ -166,7 +160,8 @@
         (visW(SPD_L("模型筛选", "Model filter")) + 6) - (visW(count) + 16);
       var acc = 0;
       for (var mi = 0; mi < rows.length; mi++) {
-        var cw = Math.min(visW(rows[mi].name), 137) + 33 + 4 + (rows[mi].missing ? 36 : 0);
+        var cw = Math.min(visW(rows[mi].name), 137) + 33 + 4 +
+          ((rows[mi].missing || miss.indexOf(rows[mi].key) >= 0) ? 36 : 0);
         if (acc + cw > avail) break;
         acc += cw;
         MAX = mi + 1;
@@ -235,15 +230,15 @@
   }
   /* ==================== ④ 左摘要卡（spec §6 + §11.3/§11.4/§11.5/§15.1） ====================
    * 三态：空（无 perModel 或无 overall）→ 主数字 — + 请求轮次 0/有效模型 0 + 峰最低新 —；
-   * 单模型（perModel 恰 1，无数据模型不计）→ 主数字/档位/模型行/请求轮次/有效输出
-   * （或当前模型）；多模型 → 主数字恒在（v387 §11.3：任何模型数不缺均速大数字）→
+   * 单模型（perModel 恰 1，无数据模型不计）→ 主数字/档位/分布块（v396 §19：与多模型
+   * 同构的 count+dist-h+dbar+dwrap，模型行胶囊退役）/有效输出 kv；多模型 → 主数字恒在
+   * （v387 §11.3：任何模型数不缺均速大数字）→
    * 档位胶囊 → 「本期有效 N 个模型 · M 轮」（selMissing 非空追加无有效记录提示）→ 分布
    * （堆叠条 + div Grid 网格表恒全量展开；表容器 max-height 150px 内滚不撑高主卡，
    * v391 用户裁定「查看全部」折叠按钮退役）→ 峰/低/新。分布行序按 share（请求数占比）降序；
    * msAvail=false 降级：隐藏「均速」列（.zu-sv3-dtab-noms 两列变体），绝不出现 t/s 假值。
-   * poolSingle = chips 池恰 1 个真模型——驱动「当前模型」行去重（v390 起「唯一模型」
-   * 徽标已按用户裁定去除）；筛选缩到单模型不冒充。「本期统计」组标题与「覆盖范围」
-   * kv 已随 v391 §15.1 删除（范围语义由标题行承载）。 */
+   * poolSingle 为集成签名遗留（见文件头），函数体自 v396 起不消费。「本期统计」组标题与
+   * 「覆盖范围」kv 已随 v391 §15.1 删除（范围语义由标题行承载）。 */
   function spd3LeftTitle(an) {
     var n = an && an.items ? an.items.length : 0;
     var t = an && an.period === "recent" ? SPD_L("最近 " + n + " 轮", "Last " + n + " turns")
@@ -743,7 +738,8 @@
      * CSS 默认 87px——字号缩放/紧凑链下 fbar 高度变化安全 */
     if (pop && ctx.pop && spdNum(ctx.pop.top) > 0)
       pop = pop.replace('class="zu-sv3-fpop"', 'class="zu-sv3-fpop" style="top:' + spdNum(ctx.pop.top) + 'px"');
-    /* 真单模型池（§11.5）：chips 池恰 1 个且非 missing——「唯一模型」徽标只在场 */
+    /* 真单模型池（§11.5→v396）：chips 池恰 1 个且非 missing——v396 起左卡单模型态改由
+     * models.length===1 判定，本值仅作 spd3LeftHTML 第三参签名兼容传递（不被消费） */
     var poolSingle = pool.length === 1 && !pool[0].missing;
     /* §11.4：real 空 / overall 缺 → 图表占位换居中空态（占位不在，wire replace 落空
      * 自然不注入 charts 产物）；有数据恒保留占位原样。触发判据=an.real（spec §11.4

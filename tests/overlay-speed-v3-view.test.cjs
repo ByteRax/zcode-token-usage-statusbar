@@ -499,6 +499,23 @@ test('chips 动态预算: 1200 宽屏多显（14 模型→8 枚+「+6」）/ 560
   assert.equal((domVm.match(/<button type="button" class="zu-sv3-chip[ "]/g) || []).length, 3,
     '无 window 回退 3 枚（v387 常驻预算）');
   assert.match(domVm, /其余 11 个模型，可搜索查看/, '无 window 仍「+11」');
+  // visW CJK 阈值锚定（review MAJOR-1）：假名/扩展 A（U+2E80–U+4DFF）必须走 11px 通道——
+  // 同长假名模型名估宽 ≈ ASCII 的 11/6 倍，宽屏预算下可显枚数显著更少；
+  // 阈值若漂移到 0x4e00（假名落 6px），本断言红
+  const jpNames = Array.from({ length: 14 }, (_, i) => 'あ' + 'あ'.repeat(6) + i);   // 8 假名+1 ASCII ≈ 8×11+6
+  const hJp = { sid: 'sess_main', source: 'local', truncated: false, sids: ['sess_main'], snames: ['S'],
+    pids: [['p', 'P']], mnames: jpNames, mkeys: jpNames.map((n, i) => 'p\x1fj' + i),
+    turns: (() => { const t0 = new Date(2026, 10, 5, 9).getTime(); let prev = 0; const ts = [];
+      for (let i = 0; i < 14; i++) { const abs = t0 + i * 60000;
+        ts.push({ s: 0, t: abs - prev, b: abs - 30000, out: 100 * (i + 1), ms: 1000,
+          i: 80, o: 100 * (i + 1), n: 1, msl: [[i, 100 * (i + 1), 1000, 1]] }); prev = abs; }
+      return ts; })() };
+  vm.runInContext('window = { innerWidth: 1200 }', ctx);
+  const anJp = analyze(ctx, hJp, sel);
+  const jpChips = (stripStyle(cardHTML(ctx, anJp, sel)).match(/<button type="button" class="zu-sv3-chip[ "]/g) || []).length;
+  vm.runInContext('window = undefined', ctx);
+  assert.ok(jpChips < wideChips,
+    `假名模型名估宽走 11px 通道（可显 ${jpChips} 枚 < ASCII 对照 ${wideChips} 枚；阈值漂移到 0x4e00 时会变多而红）`);
 });
 
 // ---------- ⑦ CSS 锁 ----------

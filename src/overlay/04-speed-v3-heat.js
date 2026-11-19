@@ -46,15 +46,17 @@
    * 旧 v391 的 ≤6 / 7–60 / >60 三档被本四档取代（SPD3_HIST_CAL_MAX_DAYS=63）。
    * activeDays 仅用于密度披露，绝不用于缩短时间轴（禁止项 2/3）。 */
   var SPD3_HIST_DC_MAX_DAYS = 7;
+  var SPD3_HIST_DENSE_MAX_DAYS = 21;
   var SPD3_HIST_CAL_MAX_DAYS = 63;
   /* v395 §18.1 统一历史布局选择：单一决策点，产出 mode/dense/sub，供 spd3HistHTML
    * 分派；两档日历共用 spd3CalHTML，靠 dense 切换 CSS 类（不复制统计系统）。
-   * input={spanDays 自然日跨度, activeDays 有数据日数, truncTxt 截断披露}。 */
+   * input={spanDays 自然日跨度, activeDays 有数据日数}（构建方另经 axis3 携带
+   * single/meta/start/end/todayStart/truncTxt，不进本函数）。 */
   function spd3SelectHistoryLayout(input) {
     var span = input.spanDays, act = input.activeDays;
     var mode, dense;
     if (span <= SPD3_HIST_DC_MAX_DAYS) { mode = "daycards"; dense = true; }
-    else if (span <= 21) { mode = "cal"; dense = true; }
+    else if (span <= SPD3_HIST_DENSE_MAX_DAYS) { mode = "cal"; dense = true; }
     else if (span <= SPD3_HIST_CAL_MAX_DAYS) { mode = "cal"; dense = false; }
     else { mode = "hh"; dense = false; }
     /* 活跃天数披露只在日历/贡献档（日卡天数少且不改副题，护既有精确断言）；

@@ -53,7 +53,7 @@
 
 - 实例状态 `spd3Sel.filt = {mode:"auto"|"sel", keys:[...]|null}`：auto=跟随数据池全部模型；sel=显式集合（可为空=明确空态，不假装全选）；三个动作 `toggle/only/all/reset`（reset→auto）。原地改属性，不整体换对象引用。
 - 作用域=实例；会话切换与 speedSel 一同重置（07 分片 626-631 同点）。时间 Tab 切换保留筛选；新范围中无数据的选中模型保留选中并在 chips 标「无数据」。
-- chips 条：默认最多显 6 枚 + 「+N」；≥9 模型出现搜索按钮，弹出层含搜索框/全选/清空/恢复默认，列表 >60 行只渲染搜索命中（轻量截断，不做完整虚拟化）。超长名 ellipsis + 悬停全文。
+- chips 条：常驻枚数 v387 定 3、v400 起按视口宽动态预算（§23，下限 3），装不下的收「+N」；弹出层（入口=「模型筛选」标签与 +N，§14.1）含搜索框/全选/清空/恢复默认，列表 >60 行只渲染搜索命中（轻量截断，不做完整虚拟化）。超长名 ellipsis + 悬停全文。
 - 可达性：chips 是 button（aria-pressed），弹出层 Esc 关闭并归还焦点（打开时焦点移入搜索框），方向键在弹出层列表内移动；热力格/命中列 roving tabindex（每网格首格 0 其余 -1）+ 方向键移动（month 行主序 7 列、hist 列主序 7 行、命中列仅左右）。
 
 ## 4. 聚合管线（spd3Analyze，20 组合唯一入口）
@@ -230,7 +230,7 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 
 ### 13.4 hist ≤7 天紧凑日卡（P1）
 
-- 日历覆盖跨度 ≤7 自然日（按首末数据日+自然日覆盖算，非有数据日数）→ **day-cards 形态**：横排日期卡（日期+周几+日均速度+模型点 ≤3+`+N`，速度色阶底、今天描边、空日「无记录」态），flex 居中分布；hover 日卡=spd3DayCardHTML 既有。
+- 日历覆盖跨度 ≤7 自然日（按首末数据日+自然日覆盖算，非有数据日数）→ **day-cards 形态**：横排日期卡（日期+周几+日均速度+模型点 ≤3+`+N`，速度色阶底、今天描边），flex 居中分布；hover 日卡=spd3DayCardHTML 既有。**v395 起（§18.2）空日不再渲染「无记录」文字**（只留日号低对比底，aria 保留「无有效速度记录」）；阈值口径以 §18 四档为准（本节 7 天边界与 §18 一致，8-35 天周列描述已被 §18 取代）。
 - 8-35 天=既有周列×星期行（≤14 列已居中）；>35 天不变（月聚合阈值 26 周既有）。
 - 覆盖跨度判定用 an.items 首末日日历差，**不受筛选影响跳变**（覆盖=池时间轴，着色=筛选）。
 
@@ -300,7 +300,7 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 
 ### 15.3 hist 密度阈值对齐 + 日历行高帽（P0）
 
-- 阈值按 PRD 档位表（布局判断依据=axis 日历跨度，不按有效数据天数裁剪）：**≤6 天** day-cards（.zu3-dc）；**7–60 天** 七列日历式（.zu3-cal，连续日历热力图）；**>60 天** 周列贡献式（.zu3-hh；周列 >26 既有月聚合）。`SPD3_HIST_CAL_MAX_DAYS=60`、`SPD3_HIST_CAL_WEEKS` 分支删除（行高帽落地后 9–10 行日历不再纵挤）。
+- 阈值按 PRD 档位表（布局判断依据=axis 日历跨度，不按有效数据天数裁剪）：**≤6 天** day-cards（.zu3-dc）；**7–60 天** 七列日历式（.zu3-cal，连续日历热力图）；**>60 天** 周列贡献式（.zu3-hh；周列 >26 既有月聚合）。`SPD3_HIST_CAL_MAX_DAYS=60`、`SPD3_HIST_CAL_WEEKS` 分支删除（行高帽落地后 9–10 行日历不再纵挤）。**v395 起阈值经 §18 四档重构：DC=7 / 紧凑日历≤21 / CAL=63 / >63 贡献热力，本节 6/60 阈值由 §18 取代**（行高帽 CSS 与本节一致继续生效，紧凑档 56px 行高帽见 §18.2）。
 - 日历/月历行高帽：`.zu3-hm-grid` 加 `max-height:calc(var(--zu-hm-rows,5)*84px)`（flex:1 增长封顶 → 行高 ≤84px），wrap 加 `justify-content:center`（周头+网格作为整组垂直居中，列对齐保持）——2–3 行短跨度不再拉成巨格、剩余空间上下均分；大跨度（行多）仍填满可用高。
 - day-card 加 `max-height:150px`：≤6 天历史卡片成组居中、不再整卡拉高成巨卡。
 - 高度档连带：all 档 cover≤60 判定与 heat 分派同轴口径（两端日零点归一+今天钳制）；R9-10 的 57–60 天从 420 档升 460 档（行高帽下每行 ≥30px 可读）。
@@ -378,7 +378,7 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 
 ### 18.1 统一布局选择（复用既有组件，不复制统计系统）
 
-- `spd3SelectHistoryLayout(input)`（heat 分片）：输入 `{spanDays, activeDays, modelCount, start, end, todayStart, truncTxt}`，输出 `{mode, dense, sub}`，`mode ∈ daycards|cal|hh`。四档按**自然日跨度 spanDays**（非 activeDays）：**1–7 日卡** / **8–21 紧凑日历** / **22–63 完整日历** / **>63 贡献热力**（>26 周月聚合既有不变）。
+- `spd3SelectHistoryLayout(input)`（heat 分片）：输入 `{spanDays, activeDays}`（实现只消费这两字段；single/meta/start/end/todayStart/truncTxt 由构建方经 axis3 直接携带给各布局构建器，不进本函数），输出 `{mode, dense, sub}`，`mode ∈ daycards|cal|hh`。四档按**自然日跨度 spanDays**（非 activeDays）：**1–7 日卡** / **8–21 紧凑日历** / **22–63 完整日历** / **>63 贡献热力**（>26 周月聚合既有不变）；常量 `SPD3_HIST_DC_MAX_DAYS=7`、`SPD3_HIST_DENSE_MAX_DAYS=21`、`SPD3_HIST_CAL_MAX_DAYS=63`。
 - `spanDays = round((axis末日零点 − axis首日零点)/864e5)+1`，轴取未筛选原始池 `an.axisA/axisB`（旧帧退化 spanA/spanB、再退化 items 首日），末日恒钳今天——与 v389/v391 同口径，**跨布局不跳轴、筛选不改形态**。`activeDays = byDay 有值日数`（仅用于 `dense` 元信息与 sub 文案披露，绝不用来缩短时间轴）。
 - 两档日历共用 `spd3CalHTML`，`dense` 参数只影响 CSS 类（`zu3-cal-dense`）与副题；贡献热力/月聚合/日卡构建器零改动。
 - 禁止项守门：无数据日照画低对比灰格（保留日期语义，禁止项 2/3），只是不再重复文字（§18.2）；日卡 ≤6→1–7 边界扩展但单卡聚焦不变。
@@ -472,7 +472,7 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 - 根因：v387 §12.4 把常驻 chips 预算硬编码为 3 枚（VM 时代保守值）；而 chips 区 CSS 本就是 `flex:1 1 auto + overflow:hidden`，宽屏下空间被白白空置。
 - 实现：`spd3FilterBarHTML` 内 MAX 动态化——视口感知估宽（与 §15.5 `spd3PlotEstW` 同哲学）。基数=根宽帽 `min(vw−60, 920)`（§11.1 宽度链，root 即 fbar 实际容器、自身无边框）；`avail = min(vw−60, 920) − 22（fbar padding 20+border 2） − 14（漏斗） − 18（三段 gap） − 36（+N 预留） − (visW(「模型筛选」标签)+6) − (visW(count)+16)`，其中 `visW(s)=逐字符 (charCodeAt>0x2E7F ? 11 : 6)`（CJK≈11px、ASCII≈6px，贴近 fbar 全线 11px=14−3 实字宽；en 文案全 ASCII 估宽偏保守）。逐枚累加 `chipW = min(visW(名), 137) + 33（padding 18+border 2+dot 8+dot gap 5）+ 4（gap）`（missing chip 额外 +36「无数据」标记；137=chip max-width 170 扣 dot/padding/border），装不下即止；MAX=装得下的枚数，clamp [3, 池大小]。
 - 回退：VM/无 `window` → MAX=3，v387 行为与全部既有测试保持不变；估宽偏差由既有 CSS 兜底（chip `max-width:170px` 省略、chips overflow:hidden、flex shrink + chip-name ellipsis），+N `flex:0 0 auto` 且恒预留，不参与收缩、不被裁。
-- 已知限制：visW 常数按默认字号 11px 定标；用户调大 `--ui-font-size` 时文字实宽变大、估宽系统性低估，溢出由 chip flex-shrink 吸收（同上兜底链），不裁 +N、不换行。
+- 已知限制：visW 常数按默认字号 11px 定标；用户调大 `--ui-font-size` 时文字实宽变大、估宽系统性低估，溢出由 chip flex-shrink 吸收（同上兜底链），不裁 +N、不换行。基数按**全窗** `min(vw−60, 920)` 估——tooltip 所在容器被分栏压窄（root `max-width:100%` 生效、容器窄于视口帽）时系统性高估，溢出同样由收缩链吸收；收缩容量耗尽的极端窄容器下尾部 +N 可被 `overflow:hidden` 裁切，但「模型筛选」标签恒在场（同为 data-sv3-fopen 入口），弹出层可达、无数据错误。预算在构建时读一次视口宽，tooltip 打开期间调窗宽不重算（与高度档位/plot 估宽同款构建时模式，下一次整卡重编按新宽生效）。
 - 恒单行契约不变（§12.4 双层 nowrap，v400 起该节「常驻 3」由本节动态化取代）；chips 池排序（out 降序）、弹出层、fcount「已选 X/Y · 本期有效 N」语义零改动。
 
 ### 23.2 不变项与验收
