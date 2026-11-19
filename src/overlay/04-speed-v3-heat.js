@@ -9,14 +9,13 @@
    * （列头=周起始 MM/DD，跨月首列加亮；>14 列时隔列显标签防挤、首列恒显），列宽帽
    * minmax(34px,64px)（v387 §11.6 去无限 1fr 拉伸，短跨度不再超宽格；v388 §12.6
    * 列数分档对齐：≤14 列根挂 zu3-hh-c 整块水平居中、>14 列 flex-start 左对齐贴满
-   * 容器）；池时间轴覆盖跨度 ≤6 自然日切紧凑日卡（v389 §13.4，.zu3-dc 横排日期卡，
-   * 判定读 an.axisA/axisB、缺失退化 spanA/spanB 再回退 items 首日→今天）；v391
-   * §15.3 密度选择器：7–60 天切七列日历式 .zu3-cal（month 同构、7 列
-   * minmax(0,1fr) 满幅——消除周列式列帽下 37 天两侧大空白），>60 天周列式；周列数
-   * >SPD3_HIST_MONTH_COLS(26) 切月
-   * 粒度（v387 §11.6/PRD 7.2：
-   * 每列=日历月竖条格，月 v=Σout÷Σms 加权、列头 YYYY/MM、550 日 ≤19 月列无横滚，
-   * 原 spec §5「110 列硬帽」被月聚合取代）。格状态五态可区分（spec §5）：补位更暗
+   * 容器）；v395 §18 V6 四档按 unfiltered axis 自然日跨度 spanDays 分派（activeDays
+   * 只做密度披露不裁轴）：≤7 天紧凑日卡 .zu3-dc；8–21 天紧凑日历 .zu3-cal-dense、
+   * 22–63 天完整日历 .zu3-cal（7 列 minmax(0,1fr) 满幅消除周列式短跨度两侧大空白，
+   * 两档共用 spd3CalHTML 靠 dense 类区分）；>63 天周列贡献式，周列数 >26 切月粒度
+   * （v387 §11.6/PRD 7.2：每列=日历月竖条格，月 v=Σout÷Σms 加权、列头 YYYY/MM、
+   * 550 日 ≤19 月列无横滚，原 spec §5「110 列硬帽」被月聚合取代）。空日只留日号+
+   * 低对比底，不再逐格重复「无记录」（§18.2）。格状态五态可区分（spec §5）：补位更暗
    * 不可交互 / 未来遮罩 / 无记录灰 / 有记录档位混底 / 今天描边；绝不伪造 0 t/s。
    * 纯字符串零 DOM：悬停日/月卡经模块外 SPD_PORTAL 侧信道（charts 纪律：构建前清空、
    * 有悬停整体覆写 <div class="zu-sv-card …" data-i="N">、未悬停/无数据日=空串，
@@ -38,12 +37,33 @@
    * 粒度周格（34px 下限）可读上限，更长跨度按月聚合后 550 日 ≤19 月列，天然无横滚，
    * 不再横滚兜底也不丢数据。 */
   var SPD3_HIST_MONTH_COLS = 26;
-  /* v391 §15.3 hist 密度选择器阈值（PRD 六轮档位表）：覆盖跨度 ≤6 自然日切紧凑日卡
-   * （.zu3-dc）；7–60 天切七列日历式 .zu3-cal（连续日历热力图，7 列满幅消除周列式
-   * 短跨度两侧大空白；行高帽 84px 下 9–10 行日历每行仍 ≥30px 可读，不再需要 v390
-   * 的 43–90 行数分支防纵挤）；>60 天周列贡献式（周列 >26 既有月聚合）。布局判断
-   * 依据=axis 日历跨度（不按有效数据天数裁剪历史）。 */
-  var SPD3_HIST_CAL_MAX_DAYS = 60;
+  /* v395 §18 V6 密度选择器阈值：按**自然日跨度 spanDays**（未筛选 axis 池时间轴，
+   * 不按 activeDays 裁历史）分四档：
+   *   ≤7  紧凑日期卡 .zu3-dc（单卡聚焦/水平排列，日期与速度清晰）；
+   *   8–21 紧凑日历 .zu3-cal.zu3-cal-dense（7 列、弱化空日、副题披露活跃天数）；
+   *   22–63 完整日历 .zu3-cal（7 列跨月、多模型颜色点、完整自然日）；
+   *   >63 贡献热力 .zu3-hh（周列式，周列 >26 既有月聚合 .zu3-hh-mo）。
+   * 旧 v391 的 ≤6 / 7–60 / >60 三档被本四档取代（SPD3_HIST_CAL_MAX_DAYS=63）。
+   * activeDays 仅用于密度披露，绝不用于缩短时间轴（禁止项 2/3）。 */
+  var SPD3_HIST_DC_MAX_DAYS = 7;
+  var SPD3_HIST_CAL_MAX_DAYS = 63;
+  /* v395 §18.1 统一历史布局选择：单一决策点，产出 mode/dense/sub，供 spd3HistHTML
+   * 分派；两档日历共用 spd3CalHTML，靠 dense 切换 CSS 类（不复制统计系统）。
+   * input={spanDays 自然日跨度, activeDays 有数据日数, truncTxt 截断披露}。 */
+  function spd3SelectHistoryLayout(input) {
+    var span = input.spanDays, act = input.activeDays;
+    var mode, dense;
+    if (span <= SPD3_HIST_DC_MAX_DAYS) { mode = "daycards"; dense = true; }
+    else if (span <= 21) { mode = "cal"; dense = true; }
+    else if (span <= SPD3_HIST_CAL_MAX_DAYS) { mode = "cal"; dense = false; }
+    else { mode = "hh"; dense = false; }
+    /* 活跃天数披露只在日历/贡献档（日卡天数少且不改副题，护既有精确断言）；
+     * 只是密度信息，绝不用来裁时间轴或删无记录日（禁止项 2/3/5） */
+    var sub = "";
+    if (mode !== "daycards" && span > 1 && act < span)
+      sub = SPD_L(" · 活跃 " + act + "/" + span + " 天", " · active " + act + "/" + span + " days");
+    return { mode: mode, dense: dense, sub: sub };
+  }
   /* 格 aria（spec §7）：完整日期 + 均速档位 + 模型数；无记录日显式说明，绝不 0 t/s */
   function spd3CellAria(t, agg) {
     var d = spdDate(t), wd = d.getDay();
@@ -239,7 +259,7 @@
       ".zu-sv3-root .zu3-dcw{font-size:9px;line-height:1.2;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-sv3-root .zu3-dcv{font-size:18px;line-height:1.1;font-weight:600;font-variant-numeric:tabular-nums;" +
         "white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
-      ".zu-sv3-root .zu3-dcv.zu3-dcnone{font-size:11px;font-weight:500}" +
+      /* v395 §18.2：.zu3-dcnone「无记录」轻字退役——空日只留日期/星期+低对比底 */
       /* ---------- v391 §15.3 hist 7–60 天七列日历式（.zu3-cal）----------
        * 与 month 组件同构复用（spec §14.3：span 代替当月）：周头 .zu3-hm-week、网格
        * .zu3-hm-grid、格基座 .zu-hm-cell* 与档位混底/今天描边/模型点各规则全挂
@@ -249,12 +269,17 @@
        * 两侧各 ~100px 空白的 P0 截图根因）；行高=--zu-hm-rows 同款变量（2–6 行
        * flex 填满，v387 §11.6 month 结论沿用）。速度值 .zu3-cv 不设 color（把
        * .zu3-v 的前景白覆写为 inherit）——继承格上档位类 currentColor，档位色大字
-       * 与混底同源一色（day-card .zu3-dcv v389 对比度结论沿用）；空日「无记录」
-       * 轻字 .zu3-cnone 同法继承 .zu-hm-void 灰。 */
+       * 与混底同源一色（day-card .zu3-dcv v389 对比度结论沿用）；v395 §18.2 起空日
+       * 不再渲染「无记录」轻字（只留日号+低对比底），.zu3-cnone 类退役。 */
       ".zu-sv3-root .zu3-cal{flex:1;min-height:0;min-width:0;display:flex;flex-direction:column}" +
       /* (.zu3-cal .zu-sc-wrap 的 flex 列链已并入 §15.3 居中合并规则，旧重复行删除) */
       ".zu-sv3-root .zu3-cal .zu3-cv{font-size:12px;color:inherit}" +
-      ".zu-sv3-root .zu3-cal .zu3-cnone{font-size:10px;font-weight:500;color:inherit}" +
+      /* v395 §18.1 紧凑日历（8–21 天）：行高帽 56px（完整日历 84px）+更紧 gap+小格内距
+       * ——真正压缩短历史高度（场景 A 12 天 2–3 行不再留大空白），与 22–63 完整日历
+       * 形成可测的视觉档位差异，不只是空类名。 */
+      ".zu-sv3-root .zu3-cal-dense .zu3-hm-grid{max-height:calc(var(--zu-hm-rows,5)*56px);gap:4px}" +
+      ".zu-sv3-root .zu3-cal-dense .zu3-hm-week{gap:4px;margin-bottom:2px}" +
+      ".zu-sv3-root .zu3-cal-dense .zu-hm-cell{padding:2px 3px}" +
       /* ---------- 共用：模型色点 / 空态（图例行样式已随 v388 §12.6 删除） ---------- */
       ".zu-sv3-root .zu3-mdots,.zu-sv-portal .zu3-mdots{display:inline-flex;align-items:center;gap:2px;flex:0 0 auto}" +
       ".zu-sv3-root .zu3-mdot,.zu-sv-portal .zu3-mdot{width:6px;height:6px;border-radius:50%;display:inline-block;flex:0 0 auto}" +
@@ -387,18 +412,18 @@
      * 钳卫异常未来值（周网格对 ds>todayStart 一律补位不铺格）。 */
     spanB0 = Math.min(Math.max(spanB0, todayStart), todayStart);
     var coverDays = Math.round((spanB0 - spanA0) / 864e5) + 1;
+    /* v395 §18.1 活跃天数只做密度披露，绝不裁时间轴（axis 未筛选池已定跨度） */
+    var activeDays = 0;
+    for (var ad in byDay) if (byDay.hasOwnProperty(ad) && byDay[ad] && byDay[ad].v > 0) activeDays++;
+    var layout = spd3SelectHistoryLayout({ spanDays: coverDays, activeDays: activeDays });
     var axis3 = { byDay: byDay, single: single, meta: meta,
-      start: spanA0, end: spanB0, todayStart: todayStart, truncTxt: truncTxt };
-    if (coverDays <= 6)
+      start: spanA0, end: spanB0, todayStart: todayStart, truncTxt: truncTxt + layout.sub,
+      dense: layout.dense };
+    if (layout.mode === "daycards")
       return spd3DayCardsHTML(an, hoverIdx, o, axis3);
-    /* ---- v391 §15.3 密度选择器（对齐 PRD 档位表）：7–60 天 → 七列日历式 ----
-     * 37 天在周列式下只有 6 列（列帽 64px+居中）两侧大空白（用户截图 P0）；日历式
-     * 7 列 minmax(0,1fr) 满幅天然消除。>60 天周列贡献式（行高帽 84px 落地后日历
-     * 不再纵挤，v390 的 43–90 行数分支删除）。落到周列式后，周列
-     * >SPD3_HIST_MONTH_COLS 切月聚合的既有阈值照常生效（下方分支零改动）；判定轴
-     * 与日卡同为未筛选池时间轴 axisA/spanA（形态不随筛选跳变）。 */
-    if (coverDays <= SPD3_HIST_CAL_MAX_DAYS)
+    if (layout.mode === "cal")
       return spd3CalHTML(an, hoverIdx, o, axis3);
+    /* 落到 hh：下方周列/月聚合既有分支零改动（判定轴同 axisA/spanA，形态不随筛选跳变） */
     var fd0 = spdDate(first);
     var fy = fd0.getFullYear(), fmo = fd0.getMonth(), fd = fd0.getDate();
     var totalDays = Math.round((todayStart - first) / 864e5) + 1;
@@ -454,14 +479,14 @@
        * >14 列维持 flex-start（月聚合长史铺满容器） */
       return '<div class="zu-speed-chart zu-sv-chart zu3-hh zu3-hh-mo' + (moCols <= 14 ? " zu3-hh-c" : "") +
         '">' + spd3HeatStyle() +
-        spd3ChartHeadHTML(an, SPD_L("按月聚合", "aggregated by month") + truncTxt) +
+        spd3ChartHeadHTML(an, SPD_L("按月聚合", "aggregated by month") + axis3.truncTxt) +
         '<div class="zu3-hh-body">' +
         '<div class="zu-sc-wrap" data-sv-end="1"><div class="zu3-hh-scroll">' +
         '<div class="zu3-hh-cols" style="--zu3-cols:' + moCols + '">' + moLabels + "</div>" +
         '<div class="zu3-hh-grid" role="grid" style="--zu3-cols:' + moCols + '">' + moRows + "</div>" +
         "</div></div></div></div>";
     }
-    var sub = SPD_L("按日聚合", "aggregated by day") + truncTxt;
+    var sub = SPD_L("按日聚合", "aggregated by day") + axis3.truncTxt;
     var labelEvery = cols > 14 ? 2 : 1;
     var flat = [], days = [], labels = "", lastMo = -1, tabSet3 = false;   /* v384 M1：roving tabindex */
     for (var w = 0; w < cols; w++) {
@@ -542,9 +567,9 @@
       var head = '<span class="zu3-dchd"><span class="zu3-dcd">' + (d3.getMonth() + 1) + "/" + d3.getDate() +
         "</span>" + spd3DotsHTML(it, single) + "</span>" +
         '<span class="zu3-dcw">' + spdEsc(spd3Wd(d3.getDay())) + "</span>";
-      var inner = it
-        ? head + '<span class="zu3-dcv">' + spdEsc(spd3Fmt1(it.v)) + "</span>"
-        : head + '<span class="zu3-dcv zu3-dcnone">' + SPD_L("无记录", "no data") + "</span>";
+      /* v395 §18.2：空日卡只保留日期/星期+低对比底，不再重复「无记录」（禁止项 5）；
+       * aria-label 仍表达无记录语义。完全无数据在 spd3HistHTML first===Infinity 分支走独立空态。 */
+      var inner = it ? head + '<span class="zu3-dcv">' + spdEsc(spd3Fmt1(it.v)) + "</span>" : head;
       cards.push('<div role="row" style="display:contents"><div class="' + cls +
         '" role="gridcell" tabindex="' + (i === 0 ? "0" : "-1") + '" data-i="' + di +
         '" aria-label="' + spdEsc(spd3CellAria(ds, it)) + '">' + inner + "</div></div>");
@@ -568,7 +593,8 @@
    * 首日带月标记 M/D、跨年首日带年 YYYY/M/D——日历无月列头，靠格内标记消歧）+
    * 日均速度（.zu3-cv 档位色大字，继承格上档位类 currentColor）+模型点 ≤3+「+N」
    * （spd3DotsHTML 复用）+档位 color-mix 混底（.zu-hm-data 既有规则）+今天描边
-   * （.zu-hm-today）；span 内无数据日灰格「无记录」轻字（.zu-hm-void+.zu3-cnone）。
+   * （.zu-hm-today）；span 内无数据日灰格只留日号（.zu-hm-void，v395 §18.2 不再写
+   * 「无记录」轻字，.zu3-cnone 退役）。
    * 交互/a11y 全沿既有契约零宿主改动：容器 role=grid、行 display:contents（month
    * 同款）、格 role=gridcell+data-i=日序（平铺序，补位不占号，周网格同口径）、
    * roving tabindex 首个有值格 0 其余 -1（方向键由 06/01 keydown 委托承担）、
@@ -604,16 +630,16 @@
       var cls = "zu-hm-cell " + (it ? "zu-hm-data" + (bd ? " " + bd.cls : "") : "zu-hm-void") +
         (ds === todayStart ? " zu-hm-today" : "");
       var head = '<span class="zu3-hd"><span class="zu3-d">' + dn + "</span>" + spd3DotsHTML(it, single) + "</span>";
-      var val = it
-        ? '<span class="zu3-v zu3-cv">' + spdEsc(spd3Fmt1(it.v)) + "</span>"
-        : '<span class="zu3-v zu3-cv zu3-cnone">' + SPD_L("无记录", "no data") + "</span>";
+      /* v395 §18.2：空日只保留日号+低对比底，不再逐格重复「无记录」文字（禁止项 5）；
+       * aria-label 仍由 spd3CellAria(ds,null) 表达无记录语义，无障碍不丢。 */
+      var val = it ? '<span class="zu3-v zu3-cv">' + spdEsc(spd3Fmt1(it.v)) + "</span>" : "";
       if (it) {
         flat.push('<div class="' + cls + '" role="gridcell" tabindex="' + (tabSet3 ? "-1" : "0") + '" data-i="' + di +
           '" aria-label="' + spdEsc(spd3CellAria(ds, it)) + '">' + head + val + "</div>");
         tabSet3 = true;
       } else {
         flat.push('<div class="' + cls + '" role="gridcell" data-i="' + di +
-          '" aria-label="' + spdEsc(spd3CellAria(ds, null)) + '">' + head + val + "</div>");
+          '" aria-label="' + spdEsc(spd3CellAria(ds, null)) + '">' + head + "</div>");
       }
     }
     /* 悬停日卡经 SPD_PORTAL 侧信道（与 month/周网格同款；无数据日/越界序号=空串） */
@@ -624,7 +650,7 @@
     var body = "";
     for (var r2 = 0; r2 < rows; r2++)
       body += '<div role="row" style="display:contents">' + flat.slice(r2 * 7, r2 * 7 + 7).join("") + "</div>";
-    return '<div class="zu-speed-chart zu-sv-chart zu3-cal">' + spd3HeatStyle() +
+    return '<div class="zu-speed-chart zu-sv-chart zu3-cal' + (axis.dense ? " zu3-cal-dense" : "") + '">' + spd3HeatStyle() +
       spd3ChartHeadHTML(an, SPD_L("按日 · 日历视图", "daily · calendar") + axis.truncTxt) +
       '<div class="zu-sc-wrap"><div class="zu3-hm-week">' + spd3WeekRow() + "</div>" +
       '<div class="zu3-hm-grid" role="grid" style="--zu-hm-rows:' + rows + '">' + body + "</div></div></div>";

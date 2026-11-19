@@ -543,6 +543,30 @@ var FIXTURES = {
       sps: 60 + ((i * 83) % 220), gen: 6000 });
     return hist(buildTurns(list));
   },
+  hist12sparse: function () {  /* v395 §18 场景 A：12 自然日、单模型、仅 6 天有数据（稀疏） */
+    var active = [11, 10, 8, 6, 3, 0], list = [];
+    for (var k = 0; k < active.length; k++)
+      list.push({ at: daysAgo(active[k], 12 + (k % 6), 20), sps: 95 + ((k * 47) % 110), gen: 6000 });
+    return hist(buildTurns(list));
+  },
+  hist39x20: function () {    /* v395 §18 场景 B：39 自然日跨月、20 模型、高密度 */
+    var mnames = [], mkeys = [], turns = [], prev = 0;
+    for (var m = 0; m < 20; m++) { mnames.push('Model-' + m); mkeys.push('p\x1fm' + m); }
+    /* 相对今天往前 38 天起，Date 构造器逐日推进（DST 安全，不落未来被裁） */
+    var d0 = new Date(); d0.setDate(d0.getDate() - 38); d0.setHours(19, 59, 0, 0);
+    for (var d = 0; d < 39; d++) {
+      for (var j = 0; j < 8; j++) {
+        var mi = (d * 8 + j) % 20, out = 300 + ((d * 13 + j * 7) % 500);
+        var day = new Date(d0.getFullYear(), d0.getMonth(), d0.getDate() + d, 19, 59 + j, 0, 0);
+        var abs = day.getTime();
+        turns.push({ s: 0, t: abs - prev, b: abs - 3000, out: out, ms: 6000,
+          i: Math.round(out * 2), o: out, n: 1, msl: [[mi, out, 6000, 1]] });
+        prev = abs;
+      }
+    }
+    return { turns: turns, sids: ['sess_main'], snames: ['速度夹具会话'], pids: [['pid_demo', 'Demo 项目']],
+      mnames: mnames, mkeys: mkeys, sid: 'sess_main', source: 'host-fixture', truncated: false };
+  },
   hist400: function () {   /* v291：约 400 天逐日 1 轮（历史热力图密集 + 内部横滚 + 首开滚到最右） */
     var list = [];
     for (var i = 0; i < 400; i++) list.push({ at: daysAgo(399 - i, 9 + (i % 10), 10 + (i % 50)),
@@ -1279,19 +1303,28 @@ window.__zuGeometryChecks = function () {
       'scroll=' + dwrap.scrollWidth + ' client=' + dwrap.clientWidth);
     /* ⑯ 分布表恒展开（v394）：折叠按钮整链退役，全量行+dwrap 内滚 */
     var dRows = dwrap.querySelectorAll('.zu-sv3-drow');
+    var isFixture = window.__zuDataMode !== 'live';
     var nModels = (function () {
-      var h = window.__zuDataMode === 'live' ? window.__zuLiveFixture : window.__zuFixture;
+      var h = isFixture ? window.__zuFixture : null;
       return h && h.mnames ? h.mnames.length : 0;
     })();
     f('dist-always-expanded', !root.querySelector('[data-sv3-more],.zu-sv3-more') && dRows.length > 1,
       'rows=' + dRows.length + ' models=' + nModels +
       ' more=' + !!root.querySelector('[data-sv3-more],.zu-sv3-more'));
-    if (nModels > 4) {
+    /* 严格行数/可滚断言只在 fixture 模式（nModels 与实际池严格对应）；live 模式真实帧
+     * mnames 是身份全集、受筛选/范围影响，行数无可靠期望值，只做内滚容量检查不误报。 */
+    if (isFixture && nModels > 4) {
       f('dist-all-rows', dRows.length === nModels + 1,
         'rows=' + dRows.length + ' expected=' + (nModels + 1));
+    }
+    if (dRows.length > 4) {
       var dcs = getComputedStyle(dwrap);
       var maxH = parseFloat(dcs.maxHeight) || 9999;
-      f('dist-scrollable', /auto|scroll/.test(dcs.overflowY) && maxH <= 160 && dwrap.scrollHeight > dwrap.clientHeight,
+      /* fixture 模式行数已知且>4 → 内容必然超高，要求 scrollHeight>clientHeight（真内滚）；
+       * live 模式行数受筛选影响不确定，只验 overflow+帽（⑯ 假阳性修复） */
+      var needOverflow = isFixture && dRows.length === nModels + 1;
+      f('dist-scrollable', /auto|scroll/.test(dcs.overflowY) && maxH <= 160 &&
+        (!needOverflow || dwrap.scrollHeight > dwrap.clientHeight),
         'overflowY=' + dcs.overflowY + ' maxH=' + dcs.maxHeight +
         ' scrollH=' + dwrap.scrollHeight + ' clientH=' + dwrap.clientHeight);
     }
@@ -1437,6 +1470,22 @@ window.__zuGeometryChecks = function () {
       var dGapT = cTop - dgr.top, dGapB = dgr.bottom - cBot;
       f('sparse-centered', Math.abs(dGapT - dGapB) <= 16,
         'gapTop=' + Math.round(dGapT) + ' gapBot=' + Math.round(dGapB));
+    }
+  }
+  /* ---------- ⑰ 空日无文字噪声（v395 §18.2）----------
+   * 日历/日卡形态下：空日格只保留日号，不得出现可见的「无记录 / no data」文本节点；
+   * aria-label 仍保留无记录语义（无障碍不丢）。柱/折线/无空日自动跳过。 */
+  var heatRoot = root.querySelector('.zu3-cal,.zu3-dc');
+  if (heatRoot) {
+    var voidCells = heatRoot.querySelectorAll('.zu-hm-void');
+    var visibleNoData = 0;
+    for (var vc = 0; vc < voidCells.length; vc++) {
+      if ((voidCells[vc].textContent || '').indexOf('无记录') >= 0 ||
+          (voidCells[vc].textContent || '').indexOf('no data') >= 0) visibleNoData++;
+    }
+    if (voidCells.length) {
+      f('void-no-text-noise', visibleNoData === 0,
+        'void=' + voidCells.length + ' withText=' + visibleNoData);
     }
   }
   return out;
