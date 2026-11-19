@@ -468,7 +468,7 @@ test('a11y: Tab/chips/入口/展开全为 button+aria，弹出层 role=dialog �
 });
 
 // ---------- ⑥b v400 视口感知 chips 动态预算（spec §23） ----------
-test('chips 动态预算: 1200 宽屏多显（14 模型→8 枚+「+6」）/ 560 窄窗回退 3 枚 / VM 无 window 回退 3', () => {
+test('chips 动态预算: 1200 宽屏多显（14 模型 7 枚+「+7」，不钉枚数钉关系）/ 560 窄窗回退 3 枚 / VM 无 window 回退 3', () => {
   const ctx = makeCtx();
   const h14 = multiFixture(14);
   const sel = { range: 'session', period: 'all', sid: 'sess_main' };
@@ -502,7 +502,7 @@ test('chips 动态预算: 1200 宽屏多显（14 模型→8 枚+「+6」）/ 560
   // visW CJK 阈值锚定（review MAJOR-1）：假名/扩展 A（U+2E80–U+4DFF）必须走 11px 通道——
   // 同长假名模型名估宽 ≈ ASCII 的 11/6 倍，宽屏预算下可显枚数显著更少；
   // 阈值若漂移到 0x4e00（假名落 6px），本断言红
-  const jpNames = Array.from({ length: 14 }, (_, i) => 'あ' + 'あ'.repeat(6) + i);   // 8 假名+1 ASCII ≈ 8×11+6
+  const jpNames = Array.from({ length: 14 }, (_, i) => 'あ' + 'あ'.repeat(6) + i);   // 7 假名+1 ASCII ≈ 7×11+6
   const hJp = { sid: 'sess_main', source: 'local', truncated: false, sids: ['sess_main'], snames: ['S'],
     pids: [['p', 'P']], mnames: jpNames, mkeys: jpNames.map((n, i) => 'p\x1fj' + i),
     turns: (() => { const t0 = new Date(2026, 10, 5, 9).getTime(); let prev = 0; const ts = [];

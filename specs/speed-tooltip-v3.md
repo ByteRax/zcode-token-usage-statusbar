@@ -472,7 +472,7 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 - 根因：v387 §12.4 把常驻 chips 预算硬编码为 3 枚（VM 时代保守值）；而 chips 区 CSS 本就是 `flex:1 1 auto + overflow:hidden`，宽屏下空间被白白空置。
 - 实现：`spd3FilterBarHTML` 内 MAX 动态化——视口感知估宽（与 §15.5 `spd3PlotEstW` 同哲学）。基数=根宽帽 `min(vw−60, 920)`（§11.1 宽度链，root 即 fbar 实际容器、自身无边框）；`avail = min(vw−60, 920) − 22（fbar padding 20+border 2） − 14（漏斗） − 18（三段 gap） − 36（+N 预留） − (visW(「模型筛选」标签)+6) − (visW(count)+16)`，其中 `visW(s)=逐字符 (charCodeAt>0x2E7F ? 11 : 6)`（CJK≈11px、ASCII≈6px，贴近 fbar 全线 11px=14−3 实字宽；en 文案全 ASCII 估宽偏保守）。逐枚累加 `chipW = min(visW(名), 137) + 33（padding 18+border 2+dot 8+dot gap 5）+ 4（gap）`（missing chip 额外 +36「无数据」标记；137=chip max-width 170 扣 dot/padding/border），装不下即止；MAX=装得下的枚数，clamp [3, 池大小]。
 - 回退：VM/无 `window` → MAX=3，v387 行为与全部既有测试保持不变；估宽偏差由既有 CSS 兜底（chip `max-width:170px` 省略、chips overflow:hidden、flex shrink + chip-name ellipsis），+N `flex:0 0 auto` 且恒预留，不参与收缩、不被裁。
-- 已知限制：visW 常数按默认字号 11px 定标；用户调大 `--ui-font-size` 时文字实宽变大、估宽系统性低估，溢出由 chip flex-shrink 吸收（同上兜底链），不裁 +N、不换行。基数按**全窗** `min(vw−60, 920)` 估——tooltip 所在容器被分栏压窄（root `max-width:100%` 生效、容器窄于视口帽）时系统性高估，溢出同样由收缩链吸收；收缩容量耗尽的极端窄容器下尾部 +N 可被 `overflow:hidden` 裁切，但「模型筛选」标签恒在场（同为 data-sv3-fopen 入口），弹出层可达、无数据错误。预算在构建时读一次视口宽，tooltip 打开期间调窗宽不重算（与高度档位/plot 估宽同款构建时模式，下一次整卡重编按新宽生效）。
+- 已知限制：visW 常数按默认字号 11px 定标；用户调大 `--ui-font-size` 时文字实宽变大、估宽系统性低估，溢出由 chip flex-shrink 吸收（同上兜底链），不裁 +N、不换行。基数按**全窗** `min(vw−60, 920)` 估——tooltip 所在容器被分栏压窄（root `max-width:100%` 生效、容器窄于视口帽）时系统性高估，溢出同样由收缩链吸收；收缩容量耗尽的极端窄容器下尾部 +N 可被 `overflow:hidden` 裁切，但「模型筛选」标签恒在场（同为 data-sv3-fopen 入口），弹出层可达、不会产生数据错误。预算在构建时读一次视口宽，tooltip 打开期间调窗宽不重算（与高度档位/plot 估宽同款构建时模式，下一次整卡重编按新宽生效）。
 - 恒单行契约不变（§12.4 双层 nowrap，v400 起该节「常驻 3」由本节动态化取代）；chips 池排序（out 降序）、弹出层、fcount「已选 X/Y · 本期有效 N」语义零改动。
 
 ### 23.2 不变项与验收

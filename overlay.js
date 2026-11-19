@@ -10153,7 +10153,7 @@
       '<div class="zu-sv3-chips">' + chips + "</div>" +
       '<span class="zu-sv3-fcount">' + spdEsc(count) + "</span></div>";
   }
-  /* ==================== ③ 筛选弹出层（spec §3 ≥9 模型）：搜索 + 列表 + 全选/清空/恢复默认 ====================
+  /* ==================== ③ 筛选弹出层（spec §3/§14.1：入口=「模型筛选」标签与 +N；搜索 + 列表 + 全选/清空/恢复默认） ====================
    * 行 button 带 data-k（选中态 aria-pressed）；query 按名称/身份键不区分大小写过滤，
    * >60 行只渲染前 60 并提示「输入以搜索更多」（轻量截断，不做虚拟化）。 */
   function spd3FilterPopHTML(pool, filt, query) {
