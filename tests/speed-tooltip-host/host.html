@@ -505,11 +505,16 @@ function hist(turns) {
 var FIXTURES = {
   recent16: function () {
     var list = [];
-    for (var i = 0; i < 16; i++) list.push({ at: atHour(14, 5) + i * 12 * 60000, sps: SPD_SPEEDS16[i], gen: 6000 });
+    /* 基准钳到过去（v387 空态语义：自然时间窗过滤 r.t <= now，未来轮=空池空态接管，
+     * 下午 14:05 前跑链会全空）；基准早于当前时刻至少一个全跨度，落点仍在今天 */
+    var base = Math.min(atHour(14, 5), Date.now() - 16 * 12 * 60000 - 120000);
+    for (var i = 0; i < 16; i++) list.push({ at: base + i * 12 * 60000, sps: SPD_SPEEDS16[i], gen: 6000 });
     return hist(buildTurns(list));
   },
-  sparse2: function () {   /* 今天仅两个有效小时桶（聚焦模式） */
-    return hist(buildTurns([{ at: atHour(16, 10), sps: 152, gen: 6000 }, { at: atHour(17, 5), sps: 133, gen: 6000 }]));
+  sparse2: function () {   /* 今天仅两个有效小时桶（聚焦模式）；基准=两小时前的整点后 10 分（跨整点分属两桶） */
+    var d = new Date();
+    var base = new Date(d.getFullYear(), d.getMonth(), d.getDate(), Math.max(1, d.getHours() - 2), 10).getTime();
+    return hist(buildTurns([{ at: base, sps: 152, gen: 6000 }, { at: base + 55 * 60000, sps: 133, gen: 6000 }]));
   },
   projWeek: function () {  /* 近 7 天中 5 天各 1 轮 */
     var sps = [128, 143, 111, 156, 138], list = [];
@@ -527,11 +532,34 @@ var FIXTURES = {
     for (var i = 0; i < 20; i++) list.push({ at: daysAgo(19 - i, 11 + (i % 6), 15), sps: 100 + ((i * 37) % 90), gen: 6000 });
     return hist(buildTurns(list));
   },
+  hist7: function () {     /* v391 §15.3：7 天（日历式下沿，PRD「7–14 紧凑日历」） */
+    var list = [];
+    for (var i = 0; i < 7; i++) list.push({ at: daysAgo(6 - i, 12 + (i % 8), 10), sps: 95 + ((i * 53) % 110), gen: 6000 });
+    return hist(buildTurns(list));
+  },
+  hist90: function () {    /* v391 §15.3：90 天（>60 周列式贡献热力图档） */
+    var list = [];
+    for (var i = 0; i < 90; i++) list.push({ at: daysAgo(89 - i, 9 + (i % 10), 10 + (i % 50)),
+      sps: 60 + ((i * 83) % 220), gen: 6000 });
+    return hist(buildTurns(list));
+  },
   hist400: function () {   /* v291：约 400 天逐日 1 轮（历史热力图密集 + 内部横滚 + 首开滚到最右） */
     var list = [];
     for (var i = 0; i < 400; i++) list.push({ at: daysAgo(399 - i, 9 + (i % 10), 10 + (i % 50)),
       sps: 60 + ((i * 83) % 220), gen: 6000 });
     return hist(buildTurns(list));
+  },
+  models20: function () {   /* v394：20 模型各 1 轮（默认全量展开+dwrap 内滚验收） */
+    var mnames = [], mkeys = [], turns = [], prev = 0, t0 = new Date(2026, 10, 8, 20).getTime();
+    for (var i = 0; i < 20; i++) {
+      mnames.push('Model-' + i); mkeys.push('p\x1fm' + i);
+      var out = 100 * (i + 1), abs = t0 + i * 60000;
+      turns.push({ s: 0, t: abs - prev, b: abs - 30000, out: out, ms: 1000,
+        i: 80, o: out, n: 1, msl: [[i, out, 1000, 1]] });
+      prev = abs;
+    }
+    return { turns: turns, sids: ['sess_main'], snames: ['速度夹具会话'], pids: [['pid_demo', 'Demo 项目']],
+      mnames: mnames, mkeys: mkeys, sid: 'sess_main', source: 'host-fixture', truncated: false };
   }
 };
 function payload(fx) {
@@ -766,6 +794,8 @@ window.__zuMount = function (sel, hover) {
     function rebuildKeepScroll() {
       var ow = tip.querySelector('.zu-sc-wrap'), oldRoot = tip.querySelector('.zu-sv3-root');
       var ox = ow ? ow.scrollLeft : null, oldKey = oldRoot && oldRoot.getAttribute('data-sv-key');
+      /* v387 审查纠偏（MINOR-3）：主链同款 .tbody 包装（真实生产形态，60vh 帽必须
+       * 被几何断言覆盖；v387 早版直塞的注释与生产事实相反） */
       tip.innerHTML = '<div class="tbody"></div>';
       tip.firstChild.innerHTML = buildCard();
       window.__SPD.spdFitTip(tip, false);
@@ -794,8 +824,9 @@ window.__zuMount = function (sel, hover) {
     tip.addEventListener('mouseover', function (e) {
       var lb = e.target && e.target.closest && e.target.closest('.zu-sv-legend-btn');
       if (lb) { window.__legend.show(lb); return; }   /* 生产同款：问号 hover 即显 */
-      /* v291 生产同款：热力图格子（.zu-hm-cell）与柱体共用 data-i 悬停契约 */
-      var col = e.target && e.target.closest && e.target.closest('.zu-sc-col,.zu-hm-cell');
+      /* v291 生产同款：热力图格子（.zu-hm-cell）与柱体共用 data-i 悬停契约；
+       * v389 §13.2：折线命中列 .zu-sv3-hit 同款并入（生产委托链 closest 三选择器对齐） */
+      var col = e.target && e.target.closest && e.target.closest('.zu-sc-col,.zu-hm-cell,.zu-sv3-hit');
       if (!col) return;
       var idx = parseInt(col.getAttribute('data-i'), 10) || 0;
       if (idx !== window.__zuHover) {
@@ -815,9 +846,11 @@ window.__zuMount = function (sel, hover) {
   tip.classList.toggle('zu-light', !document.documentElement.classList.contains('dark'));
   tip.style.left = window.__zuTipRight ? 'auto' : '48px';
   if (window.__zuTipRight) tip.style.right = '12px'; else tip.style.right = 'auto';
-  /* v384 S6：V3 卡直塞 innerHTML 对齐生产 tpsTip 链（01 showTpsTip 无 .tbody 包装；
-   * 复刻页多包一层会引入生产不存在的 max-height:60vh 截痕——V2 全量链才有 tbody） */
-  tip.innerHTML = buildCard();
+  /* v387 审查纠偏（MINOR-3）：本挂载模拟生产主链 drawTip 形态——恒 .tbody 包装
+   * （08:1203，max-height:60vh 是真实形态，几何断言按此覆盖）；仅 01 tpsTip
+   * compact 链才直塞 */
+  tip.innerHTML = '<div class="tbody"></div>';
+  tip.firstChild.innerHTML = buildCard();
   if (document.querySelector('.zusage-root style')) window.__SPD.spdFitTip(tip, true);
   else setTimeout(function () { if (tip.isConnected && tip.querySelector('.zu-sv3-root')) window.__SPD.spdFitTip(tip, true); }, 100);
   if (tip.getBoundingClientRect().top < 8) { tip.style.bottom = 'auto'; tip.style.top = '8px'; }
@@ -935,6 +968,28 @@ window.__zuCellRect = function (idx) {
   if (!cells[0]) return null;
   var r = cells[0].getBoundingClientRect();
   return { x: r.x, y: r.y, w: r.width, h: r.height };
+};
+/* v389 §13.2/§13.7：折线命中列合成 mouseover（冒泡 MouseEvent 走生产同款 tip 委托：
+ * hover 序号入重建 ⇒ SPD_PORTAL 槽位卡经 __setSPDPortal+portal.sync 出卡）。
+ * 返回 Portal 可见性与卡文案摘要：有数据日=综合日均/模型明细卡，无数据日=
+ * 「无有效速度记录」轻卡。idx=槽位序（today 小时桶 / week 日桶 data-i）。 */
+window.__zuHitHover = function (idx) {
+  var tip = document.getElementById('zu-spd-replica');
+  /* v392 §16.1：week 单模型改柱状（无折线 hit 列）——回退柱槽列 .zu-sc-col
+   * （生产委托 closest 三选择器已统一，合成 mouseover 同链出卡） */
+  var hit = tip && (tip.querySelector('.zu-sv3-hit[data-i="' + idx + '"]') ||
+    tip.querySelector('.zu-sc-col[data-i="' + idx + '"]'));
+  if (!hit) return { ok: false, err: 'no hit ' + idx };
+  var r = hit.getBoundingClientRect();
+  hit.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true,
+    clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 }));
+  var p = window.__portalEl;
+  var shown = !!(p && p.style.display === 'block' && p.offsetWidth > 0);
+  var txt = shown ? (p.textContent || '') : '';
+  return { ok: true, idx: idx, shown: shown,
+    noRecord: txt.indexOf('无有效速度记录') >= 0 || txt.indexOf('no rated speed records') >= 0,
+    dayCard: txt.indexOf('综合日均') >= 0 || txt.indexOf('Daily avg') >= 0,
+    txt: shown ? txt.slice(0, 120) : null };
 };
 window.__zuScrollEnd = function () {
   var wrap = document.querySelector('#zu-spd-replica .zu-sc-wrap');
@@ -1097,6 +1152,294 @@ window.__zuDiag = function () {
       return Math.abs(le.getBoundingClientRect().left - anchor.getBoundingClientRect().left) <= 1; })()
   };
   function head(t) { return t.querySelector('.zu-sv-head'); }
+};
+/* ---------- §11.7 + §12.7 + §13.7 布局断言（v387 实机修复批 + v388 自适应批 +
+ * v389 弹性高批验收，PRD 14.2） ----------
+ * 十项几何不变量按当前挂载卡形态计算，不适用项自动跳过；调用方只看 failures。
+ * 全部读真实 getBoundingClientRect/scroll 几何——修复纪律禁止 overflow 掩盖，
+ * 断言因此可以在任何视口宽度下抓越界形态：
+ * ① tip root 存在时 scrollWidth==clientWidth（无横向溢出，含根节点自身）；
+ * ② .zu-sv-filter 右缘 ≤ tip 内容右缘（§11.1 P0-01 实测越界 14px 的形态回归）；
+ * ③ .zu-sv3-chart 绘图区（.zu-sc-plot）宽 ≥ 容器 85%（recent/today 柱图与 week 折线；
+ *   gutter 30px 缩进下正常 ≈95%；month/hist 热力无 .zu-sc-plot 自动跳过）；
+ * ④ 月历底边空白 ≤ 1 行格高（minmax(0,1fr) 行自适应填满，4/5/6 周均无底部大空白）；
+ * ⑤ 筛选弹出层 .zu-sv3-fpop 完全在视口内；
+ * ⑥ V3 图表 .zu-sc-wrap scrollWidth==clientWidth（§12.7 全形态挂载态，幻影溢出根除）；
+ * ⑦ .zu-sv3-fbar 高度 ≤ 44px（§12.7 恒单行）；
+ * ⑧ root data-h-tier 在场且内联 height 恒 450（§17 五形态统一高，±10 盒模型校准）；
+ * ⑨ 分布表 .zu-sv3-dwrap scrollWidth==clientWidth（§12.7 多模型态 Grid 无溢出）；
+ * ⑩ plot 弹性高 ≥200（§17 起 300 上限废除，吃满卡内剩余）且 plot 底距图表卡内容底
+ *   ≤28px（§13.1/§13.7：flex 吸收拉伸、X 标签带恒贴底——recent/today/week 三形态
+ *   有 .zu-sc-plot，热力自动跳过）；
+ * ⑪ 筛选弹出层锚定（v390 §14.1）：fpop 打开时 top ≥ fbar 底（锚定筛选栏正下方、
+ *   贴近触发器，间距 ≤24px——默认 top:87px/动态 pop.top 两路径均应落在带内）且
+ *   完全在视口内；fpop 未打开自动跳过。
+ * ⑫ 分布条段等高（v390 第五轮专项，详见下方块注释）；
+ * ⑬ 图表单层边框（v391 §15.2）：外层卡 [data-sv3-chart] computed border 恒 1px，
+ *   charts 注入的内层 .zu-speed-chart 同名盒 border/padding 恒 0（曾双重命中）；
+ * ⑭ 柱图数值标签不重叠不裁切（v391 §15.5）：可见 .zu-sc-val 两两矩形不相交
+ *   （≥0.5px 容差），首末柱标签完全在 plot 矩形内（钉边类防裁切验证）；
+ * ⑮ 短历史整组居中（v391 §15.3）：cal/day-cards 挂载态周头+网格（或卡组）的
+ *   上留白与下留白差 ≤16px（行高帽/卡高帽封顶后 justify-content:center 均分），
+ *   行多填满时上下留白≈0 自然满足；非稀疏热力形态自动跳过。
+ * ⑯ 分布表恒展开（v394 用户裁定）：无 data-sv3-more/zu-sv3-more 折叠按钮；行
+ *   数=表头+全部模型；dwrap computed overflow-y=auto/max-height≤160px 且
+ *   内容超高时 scrollHeight>clientHeight（可滚）；非多模型形态自动跳过。 */
+window.__zuGeometryChecks = function () {
+  var out = { checks: [], failures: [] };
+  var tipBox = document.getElementById('zu-spd-replica');
+  var root = tipBox && tipBox.querySelector('.zu-sv3-root');
+  if (!tipBox || !root) { out.failures.push('no mounted V3 card'); return out; }
+  var f = function (name, ok, detail) {
+    out.checks.push({ name: name, ok: ok, detail: detail });
+    if (!ok) out.failures.push(name + ' (' + detail + ')');
+  };
+  var tb = tipBox.getBoundingClientRect(), tcs = getComputedStyle(tipBox);
+  var padR = parseFloat(tcs.paddingRight) || 0, borR = parseFloat(tcs.borderRightWidth) || 0;
+  /* ① 无横向溢出（tip 容器 + 根节点双层；920 根在 952 释放内容区内应恰好放下） */
+  f('tip-no-hscroll', tipBox.scrollWidth === tipBox.clientWidth,
+    'scroll=' + tipBox.scrollWidth + ' client=' + tipBox.clientWidth);
+  f('root-no-hscroll', root.scrollWidth === root.clientWidth,
+    'scroll=' + root.scrollWidth + ' client=' + root.clientWidth);
+  /* ② 筛选行右缘 ≤ tip 内容右缘（border-box 内容区 = 外缘 − padding − border） */
+  var filt = root.querySelector('.zu-sv-filter');
+  if (filt) {
+    var fr = filt.getBoundingClientRect();
+    var contentRight = tb.right - padR - borR;
+    f('filter-within-tip', fr.right <= contentRight + 0.5,
+      'filtRight=' + Math.round(fr.right) + ' contentRight=' + Math.round(contentRight));
+  }
+  /* ③ 绘图区满幅（charts 分支专属）：plot 与容器**内容盒**同坐标系比较（clientWidth
+   * 扣水平 padding；border 不在 plot 可用区内）。窄窗下 gutter 30px 固定缩进占比升高，
+   * 以 border-box 全宽为分母会把正常形态压到 85% 线下（620 窗实测 84.7%）。 */
+  var chart = root.querySelector('.zu-sv3-chart');
+  var plot = root.querySelector('.zu-sc-plot');
+  if (chart && plot) {
+    var pb = plot.getBoundingClientRect();
+    var ccs = getComputedStyle(chart);
+    var padH = (parseFloat(ccs.paddingLeft) || 0) + (parseFloat(ccs.paddingRight) || 0);
+    var denom = chart.clientWidth - padH;
+    var ratio = denom > 0 ? pb.width / denom : 0;
+    /* v388 档位校准：85% 按 920 标准宽标定；窄视口（内容盒 <420px）Y gutter 30px
+     * 与内距占比天然升高，阈值降 75%（宽度链本身另由 wrap-no-hscroll 门控） */
+    var fillMin = denom < 420 ? 0.75 : 0.85;
+    f('plot-fill-85pct', ratio >= fillMin,
+      'plot=' + Math.round(pb.width) + ' contentBox=' + Math.round(denom) +
+      ' ratio=' + (ratio * 100).toFixed(1) + '%');
+  }
+  /* ④ 月历底边空白 ≤ 1 行格高（最后一枚日格底 vs 网格底） */
+  var grid = root.querySelector('.zu3-hm-grid');
+  if (grid) {
+    var cells = grid.querySelectorAll('.zu-hm-cell');
+    var last = cells[cells.length - 1];
+    if (last) {
+      var gb = grid.getBoundingClientRect(), lb = last.getBoundingClientRect();
+      var gap = gb.bottom - lb.bottom;
+      f('month-bottom-gap', gap <= lb.height + 1,
+        'gap=' + Math.round(gap) + ' cellH=' + Math.round(lb.height));
+    }
+  }
+  /* ⑤ 筛选弹出层在视口内 */
+  var fpop = root.querySelector('.zu-sv3-fpop');
+  if (fpop) {
+    var fb = fpop.getBoundingClientRect();
+    var vw = window.innerWidth, vh = window.innerHeight;
+    f('fpop-in-viewport', fb.x >= 0 && fb.y >= 0 && fb.right <= vw && fb.bottom <= vh,
+      'rect=' + [Math.round(fb.x), Math.round(fb.y), Math.round(fb.right), Math.round(fb.bottom)].join(',') +
+      ' vp=' + vw + 'x' + vh);
+  }
+  /* ---------- §12.7（v388 自适应批验收）----------
+   * ⑥ V3 图表横滚容器无幻影溢出：.zu-sc-wrap scrollWidth==clientWidth（柱/折线/
+   *   热力全形态挂载态；plot width:auto 根除 30px 幻影后恒等）；
+   * ⑦ 筛选栏恒单行：.zu-sv3-fbar 高度 ≤ 44px（chips 预算 3 + 双层 nowrap 收纳）；
+   * ⑧ 高度档位内联下发：root data-h-tier 在场且内联 min-height ∈ [300,480]
+   *   （档位表 320..470 全覆盖，±10 盒模型校准余量在内）；
+   * ⑨ 分布表无横向溢出：.zu-sv3-dwrap scrollWidth==clientWidth（§12.2 div Grid
+   *   三列 minmax(0,1fr) 64px 44px 根除旧 table 23px 溢出；仅多模型态在场）。 */
+  var wraps = root.querySelectorAll('.zu-sc-wrap');
+  for (var wi = 0; wi < wraps.length; wi++) {
+    var wEl = wraps[wi];
+    /* tolerance ≤2px：flex 分数槽位的亚像素取整（PRD 15.1；>2px 仍是真溢出） */
+    f('wrap-no-hscroll[' + wi + ']', wEl.scrollWidth <= wEl.clientWidth + 2,
+      'scroll=' + wEl.scrollWidth + ' client=' + wEl.clientWidth);
+  }
+  var fbar = root.querySelector('.zu-sv3-fbar');
+  if (fbar) {
+    var fh = fbar.getBoundingClientRect().height;
+    f('fbar-single-row', fh <= 44, 'fbarH=' + Math.round(fh));
+  }
+  var tierAttr = root.getAttribute('data-h-tier');
+  var mhPx = parseFloat(root.style.height);
+  /* §17：五形态统一 450（±10 盒模型校准）——任意范围/空态 root 固定高恒同（height 语义） */
+  f('h-tier-inline', !!tierAttr && mhPx >= 440 && mhPx <= 460,
+    'tier=' + tierAttr + ' height=' + root.style.height);
+  var dwrap = root.querySelector('.zu-sv3-dwrap');
+  if (dwrap) {
+    f('dist-no-hscroll', dwrap.scrollWidth === dwrap.clientWidth,
+      'scroll=' + dwrap.scrollWidth + ' client=' + dwrap.clientWidth);
+    /* ⑯ 分布表恒展开（v394）：折叠按钮整链退役，全量行+dwrap 内滚 */
+    var dRows = dwrap.querySelectorAll('.zu-sv3-drow');
+    var nModels = (function () {
+      var h = window.__zuDataMode === 'live' ? window.__zuLiveFixture : window.__zuFixture;
+      return h && h.mnames ? h.mnames.length : 0;
+    })();
+    f('dist-always-expanded', !root.querySelector('[data-sv3-more],.zu-sv3-more') && dRows.length > 1,
+      'rows=' + dRows.length + ' models=' + nModels +
+      ' more=' + !!root.querySelector('[data-sv3-more],.zu-sv3-more'));
+    if (nModels > 4) {
+      f('dist-all-rows', dRows.length === nModels + 1,
+        'rows=' + dRows.length + ' expected=' + (nModels + 1));
+      var dcs = getComputedStyle(dwrap);
+      var maxH = parseFloat(dcs.maxHeight) || 9999;
+      f('dist-scrollable', /auto|scroll/.test(dcs.overflowY) && maxH <= 160 && dwrap.scrollHeight > dwrap.clientHeight,
+        'overflowY=' + dcs.overflowY + ' maxH=' + dcs.maxHeight +
+        ' scrollH=' + dwrap.scrollHeight + ' clientH=' + dwrap.clientHeight);
+    }
+  }
+  /* ---------- ⑫ 分布条段等高（v390 第五轮专项）----------
+   * .zu-sv3-dbar 每个可见段（width>0.5px，排除亚像素不可见段）与轨道的
+   * top/bottom 误差 ≤0.5px、段间高度差 ≤0.5px；无独立圆角/边框/阴影/垂直
+   * 位移（computed 核对）。真因甄别用：若几何全等仍观感参差，即颜色亮度/
+   * 抗锯齿错觉，不是布局错位。 */
+  var dbar = root.querySelector('.zu-sv3-dbar');
+  if (dbar) {
+    var brail = dbar.getBoundingClientRect();
+    var vis = [];
+    for (var dc = dbar.firstElementChild; dc; dc = dc.nextElementSibling) {
+      var dr = dc.getBoundingClientRect();
+      if (dr.width > 0.5) vis.push({ el: dc, r: dr });
+    }
+    if (vis.length) {
+      var tops = vis.map(function (v) { return +(v.r.top - brail.top).toFixed(2); });
+      var bots = vis.map(function (v) { return +(v.r.bottom - brail.bottom).toFixed(2); });
+      var hs2 = vis.map(function (v) { return +v.r.height.toFixed(2); });
+      var dTop = Math.max.apply(null, tops) - Math.min.apply(null, tops);
+      var dBot = Math.max.apply(null, bots) - Math.min.apply(null, bots);
+      var dH = Math.max.apply(null, hs2) - Math.min.apply(null, hs2);
+      f('dbar-segs-equal', dTop <= 0.5 && dBot <= 0.5 && dH <= 0.5,
+        'segs=' + vis.length + ' dTop=' + dTop + ' dBot=' + dBot + ' dH=' + dH +
+        ' railH=' + Math.round(brail.height));
+      var badStyle = vis.filter(function (v) {
+        var s = getComputedStyle(v.el);
+        return s.display !== 'block' || s.borderRadius !== '0px' ||
+          parseFloat(s.borderTopWidth) > 0 || s.boxShadow !== 'none' ||
+          (s.transform && s.transform !== 'none');
+      });
+      f('dbar-segs-style', badStyle.length === 0,
+        badStyle.length ? 'bad=' + badStyle.length : 'all-segments-clean');
+    }
+  }
+  /* ---------- §13.1/§13.7 + §17（v393 统一高批验收）----------
+   * ⑩ plot 弹性高：flex:1 吸收左卡/档位拉伸——min-height 200 保底；v393 起 300 上限
+   *   随五形态统一 450 废除，plot 吃满卡内剩余（450 卡下典型 ≈370..400）。
+   *   X 标签带贴底：plot 底距图表卡内容底 ≤28px（wrap 5px + 卡 padding 10px 正常
+   *   ≈15px；>28px 即 plot 未贴底/卡底出现推底空腔的形态回归）。
+   *   recent/today/week 三形态有 .zu-sc-plot；month/hist 热力无 plot 自动跳过。 */
+  if (plot && chart) {
+    var pb10 = plot.getBoundingClientRect();
+    f('plot-flex-height', pb10.height >= 199,
+      'plotH=' + Math.round(pb10.height));
+    var cb10 = chart.getBoundingClientRect();
+    var ccs10 = getComputedStyle(chart);
+    var gap10 = cb10.bottom - (parseFloat(ccs10.paddingBottom) || 0) - pb10.bottom;
+    f('plot-bottom-gap-28', gap10 <= 28.5,
+      'gap=' + Math.round(gap10) + ' (plotBottom=' + Math.round(pb10.bottom) +
+      ' contentBottom=' + Math.round(cb10.bottom - (parseFloat(ccs10.paddingBottom) || 0)) + ')');
+  }
+  /* ---------- §14.1（v390 入口统一批验收）----------
+   * ⑪ fpop 锚定筛选栏正下方：top ≥ fbar 底（gap ≥ −1 容差亚像素）、贴近触发器
+   *   （gap ≤ 24px，默认 top:87px 与 fopen 动态 pop.top 两路径都应落在带内）；
+   *   且完全在视口内（与 ⑤ 同判据——⑤ 沿用旧名保兼容，⑪ 语义=锚定+视口合一）。
+   *   fpop 未挂载（关闭态）自动跳过。 */
+  var fpop11 = root.querySelector('.zu-sv3-fpop');
+  if (fpop11) {
+    var fp11 = fpop11.getBoundingClientRect();
+    var bar11 = root.querySelector('.zu-sv3-fbar');
+    if (bar11) {
+      var bb11 = bar11.getBoundingClientRect();
+      var gap11 = fp11.top - bb11.bottom;
+      f('fpop-below-fbar', gap11 >= -1 && gap11 <= 24,
+        'gap=' + Math.round(gap11) + 'px (fbarBottom=' + Math.round(bb11.bottom) +
+        ' fpopTop=' + Math.round(fp11.top) + ')');
+    }
+    var vw11 = window.innerWidth, vh11 = window.innerHeight;
+    f('fpop-in-viewport-anchored', fp11.x >= 0 && fp11.y >= 0 && fp11.right <= vw11 && fp11.bottom <= vh11,
+      'rect=' + [Math.round(fp11.x), Math.round(fp11.y), Math.round(fp11.right), Math.round(fp11.bottom)].join(',') +
+      ' vp=' + vw11 + 'x' + vh11);
+  }
+  /* ---------- §15.2（v391 单层边框）----------
+   * ⑬ 外层卡 [data-sv3-chart] computed border 恒 1px（外层卡边界保留）；charts 注入
+   *   的内层 .zu-speed-chart 同名盒 border/padding 恒 0（曾双重命中同一规则）。
+   *   内层盒仅柱/折线视图存在（热力内层类 zu-sv-chart 不带 zu-sv3-chart），
+   *   缺席自动跳过。 */
+  if (chart) {
+    var bcs13 = getComputedStyle(chart);
+    var bw13 = parseFloat(bcs13.borderRightWidth) || 0;
+    f('chart-card-border-1px', Math.abs(bw13 - 1) < 0.3, 'outerBorder=' + bcs13.borderRightWidth);
+    var inner13 = chart.querySelector('.zu-speed-chart');
+    if (inner13) {
+      var ics13 = getComputedStyle(inner13);
+      var ibw = parseFloat(ics13.borderRightWidth) || 0, ipad = (parseFloat(ics13.paddingLeft) || 0) +
+        (parseFloat(ics13.paddingRight) || 0);
+      f('chart-inner-no-border', ibw === 0 && ipad === 0,
+        'innerBorder=' + ics13.borderRightWidth + ' innerPadH=' + ipad);
+    }
+  }
+  /* ---------- §15.5（v391 柱标统一）----------
+   * ⑭ 可见 .zu-sc-val（有文本读数）两两矩形不相交（横向交叠且纵向交叠均 >0.5px 才
+   *   算重叠——同列上下关系不存在，标签只在柱顶）；首末柱标签完全在 plot 矩形内
+   *   （estW>slotW 时 vpin-l/r 钉边防裁切）。折线/热力无 .zu-sc-val 自动跳过。 */
+  var plot14 = root.querySelector('.zu-sc-plot');
+  if (plot14) {
+    var labs = [];
+    for (var lv = root.querySelectorAll('.zu-sc-val'), li = 0; li < lv.length; li++) {
+      if ((lv[li].textContent || '').length && lv[li].offsetParent) labs.push(lv[li].getBoundingClientRect());
+    }
+    var overlap = 0;
+    for (var la = 0; la < labs.length; la++) for (var lb2 = la + 1; lb2 < labs.length; lb2++) {
+      var ox = Math.min(labs[la].right, labs[lb2].right) - Math.max(labs[la].left, labs[lb2].left);
+      var oy = Math.min(labs[la].bottom, labs[lb2].bottom) - Math.max(labs[la].top, labs[lb2].top);
+      if (ox > 0.5 && oy > 0.5) overlap++;
+    }
+    f('bar-labels-no-overlap', overlap === 0,
+      'labels=' + labs.length + ' overlaps=' + overlap);
+    var pr14 = plot14.getBoundingClientRect();
+    var edge = 0;
+    for (var le = 0; le < labs.length; le++) {
+      if (labs[le].left < pr14.left - 0.5 || labs[le].right > pr14.right + 0.5) edge++;
+    }
+    f('bar-labels-in-plot', edge === 0, 'out-of-plot=' + edge + ' of ' + labs.length);
+  }
+  /* ---------- §15.3（v391 短历史居中）----------
+   * ⑮ cal 形态：行高帽封顶后周头+网格作为整组在 wrap 内垂直居中——组上留白与组下
+   *   留白差 ≤16px（行多填满时两侧留白≈0 自然满足）。dc 形态：卡高帽下卡组在网格
+   *   内垂直居中（首卡上留白 vs 末卡下留白差 ≤16px）。柱/折线形态自动跳过。 */
+  var cal15 = root.querySelector('.zu3-cal');
+  var dc15 = root.querySelector('.zu3-dc');
+  if (cal15) {
+    var w15 = cal15.querySelector('.zu-sc-wrap');
+    var grid15 = cal15.querySelector('.zu3-hm-grid');
+    if (w15 && grid15) {
+      var wr15 = w15.getBoundingClientRect(), gr15 = grid15.getBoundingClientRect();
+      var wk15 = cal15.querySelector('.zu3-hm-week');
+      var gTop = wk15 ? wk15.getBoundingClientRect().top : gr15.top;
+      var gapTop = gTop - wr15.top, gapBot = wr15.bottom - gr15.bottom;
+      f('sparse-centered', Math.abs(gapTop - gapBot) <= 16,
+        'gapTop=' + Math.round(gapTop) + ' gapBot=' + Math.round(gapBot));
+    }
+  } else if (dc15) {
+    var dg15 = dc15.querySelector('.zu3-dc-grid');
+    var cells15 = dg15 ? dg15.querySelectorAll('.zu-hm-cell') : [];
+    if (dg15 && cells15.length) {
+      var dgr = dg15.getBoundingClientRect();
+      var cTop = cells15[0].getBoundingClientRect().top;
+      var cBot = cells15[cells15.length - 1].getBoundingClientRect().bottom;
+      var dGapT = cTop - dgr.top, dGapB = dgr.bottom - cBot;
+      f('sparse-centered', Math.abs(dGapT - dGapB) <= 16,
+        'gapTop=' + Math.round(dGapT) + ' gapBot=' + Math.round(dGapB));
+    }
+  }
+  return out;
 };
 </script>
 </body>

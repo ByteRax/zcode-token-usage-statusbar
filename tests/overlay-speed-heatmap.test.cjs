@@ -125,10 +125,10 @@ test('month 经 wire: 2026-11 无补位 5 行、今天=档位混底+描边、未
   assert.match(fut, /aria-hidden="true"/);
   assert.equal(count(html, 'zu-hm-fut'), 25, '11-06..30 共 25 个未来日');
   assert.ok(!/均速 0 t\/s|>0<\/span>/.test(html), '绝不伪造 0 t/s');
-  // 头部与图例经 wire 同卡输出
+  // 头部经 wire 同卡输出；v388 §12.6 底部图例整行删除（身份说明并入悬停卡构成行）
   assert.match(html, /zu-sc-head/, '共享图表标题栏');
   assert.match(html, /本月 · 日均生成速度/, 'V3 month 标题');
-  assert.match(html, /颜色标记代表模型/, '多模型图例');
+  assert.doesNotMatch(html, /zu3-lg|颜色标记代表模型/, '多模型产物无图例行（§12.6 整行删除）');
 });
 
 test('month 经 wire: 补位/闰月数学（2026-06 首格 1 pad；2024-02 闰月前补 4 空 29 格）', () => {
@@ -162,24 +162,26 @@ test('month 模型色点经 wire: 四模型日 ≤3 点 + 「+1」、单模型�
   ]);
   const htmlS = dom(card(ctxS, { h: single, sel: { range: 'all', period: 'month' } }));
   assert.ok(!htmlS.includes('zu3-mdot'), '单模型视图不渲染重复色点');
-  assert.match(htmlS, /GLM-A · 单模型/, '单模型图例文案');
+  assert.ok(!htmlS.includes('zu3-lg') && !htmlS.includes('· 单模型'),
+    '单模型产物无图例行（§12.6 整行删除）');
 });
 
-// ---------- ② all 经 wire：截断披露 + 通知行 ----------
-test('all 经 wire: speed_days.truncated → 「已截断」notice 行 + 图表 sub 双披露；未截断无提示', () => {
+// ---------- ② all 经 wire：截断披露 + 通知行（§11.6 月聚合） ----------
+test('all 经 wire: 550 天 → 19 月列月聚合，speed_days.truncated → 「已截断」notice 行 + 图表 sub 双披露', () => {
   const ctx = makeCtx();
   // wire 守卫要求轮表在场（h 缺失回退 V1）；sd 与 h 同帧供给（生产门控同源）
   const h = frameFrom([{ t: tOf(5, 9), out: 100, ms: 1000, msl: [[0, 100, 1000, 1, 1]] }]);
   const html = dom(card(ctx, { h, sd: days550(1), sel: { range: 'all', period: 'all' } }));
-  assert.match(html, /zu3-hh-grid/, 'all → 历史热力（经 wire 分发）');
+  assert.match(html, /zu3-hh-mo/, 'all → 历史热力月聚合分支（经 wire 分发）');
   assert.match(html, /zu-sv3-notice">已截断 · 仅显示最近 550 天/,
     '截断经 an.notice 进通知行（spd3NoticeHTML 透传）');
-  assert.match(html, /已截断 · 仅显示最近 550 天/, 'head sub 同步披露');
+  assert.match(html, /zu-sc-sub zu-hm-sub">按月聚合 · 已截断 · 仅显示最近 550 天</,
+    'head sub 同步披露（按月聚合副题，真实图表头）');
   assert.match(html, /data-sv-end="1"/, '首开滚到最新');
-  assert.equal(count(html, 'zu-hm-cell'), 550, '每天一格（覆盖期内轮行并入日行桶不重叠）');
-  const today = cellOf(html, 549);
-  assert.match(today, /zu-hm-today/, '今天（末格）描边');
-  assert.match(today, /zu3-v">154\.9</, '今天日均一位小数');
+  assert.equal(count(html, 'zu-hm-cell'), 19, '月聚合：每月一列（≤19 列无横滚）');
+  const lastMo = cellOf(html, 18);
+  assert.match(lastMo, /zu-hm-data/, '今天所在月列有数据混底');
+  assert.match(lastMo, /zu3-v">154\.7</, '今天月加权均速（Σout÷Σms）一位小数');
 
   const htmlN = dom(card(ctx, { h, sd: days550(0), sel: { range: 'all', period: 'all' } }));
   assert.ok(!htmlN.includes('已截断'), '未截断无披露');
@@ -231,9 +233,15 @@ test('经 wire 悬停: month/all 数据日出日卡（模型明细+轮次+capped
   const pCap = portal(ctx);
   assert.match(pCap, /11\/4（周三） · 模型明细/, 'capped 日多模型标题');
   assert.match(pCap, /另有更多模型未列入/, 'capped 日尾注');
-  card(ctx, { h: frame, sd: days550(0), sel: selAll, hover: 549 });
-  assert.match(portal(ctx), /data-i="549"/, 'hist 悬停出卡');
-  assert.match(portal(ctx), /154\.9 t\/s/);
+  // 550 天月聚合分支：悬停末月列（data-i=18 → 2026-11）出月卡（不带日序 data-i）
+  card(ctx, { h: frame, sd: days550(0), sel: selAll, hover: 18 });
+  const pMo = portal(ctx);
+  assert.match(pMo, /2026年11月 · 月度统计/, '月聚合悬停出月卡');
+  assert.match(pMo, /月均速度/);
+  assert.match(pMo, /154\.7 t\/s/);
+  assert.match(pMo, /5 天有记录 \/ 10 次请求/);
+  card(ctx, { h: frame, sd: days550(0), sel: selAll, hover: 99 });
+  assert.equal(portal(ctx), '', '月分支越界序号不出卡');
   card(ctx, { h: frame, sd: days550(0), sel: selAll, hover: -1 });
   assert.equal(portal(ctx), '', 'hist 未悬停回空串');
 });

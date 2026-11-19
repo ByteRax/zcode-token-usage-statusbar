@@ -280,7 +280,7 @@
           (t && t.speedSel) ||
             { range: "recent", period: "recent", dim: "time",
               filt: (typeof spd3FilterAuto === "function" ? spd3FilterAuto() : { mode: "auto", keys: null }),
-              pop: { open: false, query: "" }, expanded: false },
+              pop: { open: false, query: "" } },
           (t && typeof t.speedHover === "number") ? t.speedHover : -1, t && t.speedLive,
           { fmtTok: fmt, fmtCnt: countFmt, fmtMoney: state.cost ? fmtMoney : null }, sess)
         : null);
@@ -450,7 +450,7 @@
            * ReferenceError），chip 面的会话归属与格面同源。 */
           { range: "recent", period: "recent", dim: "time",
             filt: (typeof spd3FilterAuto === "function" ? spd3FilterAuto() : { mode: "auto", keys: null }),
-            pop: { open: false, query: "" }, expanded: false },
+            pop: { open: false, query: "" } },
         sessId: (lastView && lastView.session && lastView.session.sid) || "",
         speedHover: prevT && typeof prevT.speedHover === "number" ? prevT.speedHover : -1,
         speedLive: v.kind === "live" ? v.sv : null };

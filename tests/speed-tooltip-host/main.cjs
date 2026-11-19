@@ -107,7 +107,12 @@ if (process.argv.includes('--selftest')) {
     'function spd3ChartHeadHTML(', 'function spd3ChartHTML(', 'function spd3MonthHTML(',
     'function spd3HistHTML(', 'function spd3DayCardHTML(', 'function spd3ChartFor(',
     'function spd3RebuildOr(', 'var SPD3_POOL = [];', 'function spdFitTip(',
-    'function spdHoverPortalSync(', 'function spdLegendTipShow('];
+    'function spdHoverPortalSync(', 'function spdLegendTipShow(',
+    'function spd3HeightTier(', 'function spd3BarDensityStyle(',
+    /* v389 §13.4/§13.2：未筛选时间轴字段 + 日卡形态 + 槽位卡构建器锚 */
+    'axisA: axisA, axisB: axisB', 'function spd3DayCardsHTML(', 'function spd3SlotCardHTML(',
+    /* v390 §14：占比 <0.1% 文案 + hist 日历式构建器 + 密度选择器阈值常量 */
+    'function spd3PctTxt(', 'function spd3CalHTML(', 'var SPD3_HIST_CAL_MAX_DAYS = 60;', 'function spd3PlotEstW(', 'zu-sv3-vpin-l'];
   const missing = need.filter(s => !slice.includes(s));
   if (missing.length) { console.error('SELFTEST_FAIL missing: ' + missing.join(' | ')); process.exit(1); }
   try { new Function('L', '"' + 'use strict' + '";\n' + slice); }   /* 只编译不执行 */
@@ -205,6 +210,14 @@ async function center(wc, expr) {
   const r = await wc.executeJavaScript(expr, true);
   return r ? { x: r.x + r.w / 2, y: r.y + r.h / 2 } : null;
 }
+/* 统一收尾（§11.7）：任一步骤记录了 geoFail 即 GEOMETRY_FAILURE 非零退出，
+ * 否则输出 DONE（调用方以 DONE 行判定链完整跑完） */
+function finishChain(log, pretty) {
+  const bad = log.filter(e => e.geoFail);
+  if (bad.length) { console.error('GEOMETRY_FAILURE ' + JSON.stringify(bad)); app.exit(1); return; }
+  console.log('DONE ' + (pretty ? JSON.stringify(log, null, 1) : JSON.stringify(log)));
+  app.exit(0);
+}
 
 async function runChain(wc, win, steps, log) {
   const preShots = {};   /* v299：turnTip 在开卡瞬间即拍（共享捕获窗口有收起竞态） */
@@ -295,6 +308,24 @@ async function runChain(wc, win, steps, log) {
       const b = await center(wc, `window.__zuCellRect(${st.hoverCell})`);
       if (!b) { log.push({ shot: st.shot, error: 'no cell ' + st.hoverCell }); continue; }
       await send(wc, 'mouseMove', b.x, b.y); await sleep(600);
+    }
+    if (st.hitProbe) {   /* v389 §13.2/§13.7：折线 hit 合成 mouseover 出卡（有数据日 +
+      * 无数据日「无有效速度记录」轻卡；__zuHitHover 页面侧 dispatchEvent 生产同款委托） */
+      const hd = await wc.executeJavaScript(`window.__zuHitHover(${st.hitProbe.dataDay})`, true);
+      if (!hd || !hd.ok || !hd.shown || !hd.dayCard || hd.noRecord)
+        log.push({ shot: st.shot, hitErr: 'dataDay', hitProbe: hd });
+      await sleep(350);
+      try { preShots[st.shot] = await wc.capturePage(); } catch (e) { }
+      const he = await wc.executeJavaScript(`window.__zuHitHover(${st.hitProbe.emptyDay})`, true);
+      if (!he || !he.ok || !he.shown || !he.noRecord)
+        log.push({ shot: st.shot, hitErr: 'emptyDay', hitProbe: he });
+      await sleep(350);
+      try {
+        const img2 = await wc.capturePage();
+        if (img2) fs.writeFileSync(path.join(OUT, 'shots',
+          st.hitProbe.shot2 || st.shot.replace(/\.png$/, '-empty.png')), img2.toPNG());
+      } catch (e) { }
+      log.push({ shot: st.shot, hitProbe: { dataDay: hd, emptyDay: he } });
     }
     if (st.padProbe) {
       const probe = await wc.executeJavaScript(`(function(){
@@ -393,6 +424,13 @@ async function runChain(wc, win, steps, log) {
     await sleep(300);
     if (st.turnTip != null) log.push({ shot: st.shot, afterCapture: await wc.executeJavaScript('window.__zuAfterTurn()', true) });
     const diag = await wc.executeJavaScript('window.__zuDiag()', true);
+    /* §11.7 布局断言（v387）：V3 卡挂载时跑五项几何不变量；失败入 log，
+     * finishChain 汇总非零退出（无 V3 卡的步骤/链自动跳过） */
+    if (diag && diag.tipOpen) {
+      const geo = await wc.executeJavaScript('window.__zuGeometryChecks()', true);
+      if (geo && geo.failures && geo.failures.length) log.push({ shot: st.shot, geoFail: geo.failures });
+      diag.geoOk = geo ? geo.failures.length === 0 : null;
+    }
     let img = preShots[st.shot] || null;
     for (let a = 0; a < 3 && !img; a++) {   /* Viz 合成器瞬态失败重试（实测偶发 UnknownVizError） */
       try { img = await wc.capturePage(); } catch (e) { await sleep(400); }
@@ -434,11 +472,40 @@ app.whenReady().then(async () => {
         if (cb.left + 1 < lb.right) failures.push('left card overlaps chart at ' + font);
         if (root.style.zoom) failures.push('V3 root must not be zoomed at ' + font);
         if (!root.style.maxWidth || !root.style.maxHeight) failures.push('V3 viewport clamp missing at ' + font);
+        /* §11.7 ①②③：recent 卡（无横向溢出 / 筛选行右缘 / 绘图区 ≥85%） */
+        let g = window.__zuGeometryChecks();
+        for (const s of g.failures) failures.push('§11.7 recent ' + font + 'px: ' + s);
         const old = root;
         tip.querySelector('[data-sv-group="period"][data-sv-val="month"]').dispatchEvent(new PointerEvent('pointerdown', { bubbles:true }));
         const next = tip.querySelector('.zu-sv3-root');
         if (!next || !tip.querySelector('.zu3-hm-grid')) failures.push('tab rebuild lost V3 month grid at ' + font);
         if (next && next.style.zoom) failures.push('tab rebuild re-introduced zoom at ' + font);
+        /* §11.7 ④：月历底边空白 ≤ 1 行格高 */
+        g = window.__zuGeometryChecks();
+        for (const s of g.failures) failures.push('§11.7 month ' + font + 'px: ' + s);
+        /* §11.7 ⑤ + v390 §14.1 ⑪：筛选弹出层锚定——先挂无 pop 卡读 fbar 实测底缘
+         * （生产 06/01 fopen 分支同款算法），再带 pop.top 重挂（复刻页无 06 委托，
+         * 动态锚定按生产算法模拟）；断言内联覆写渲染 + fpop 完全在视口内 + 贴近 fbar */
+        window.__zuMount({}, -1);
+        const root0 = document.querySelector('#zu-spd-replica .zu-sv3-root');
+        const fb0 = root0 && root0.querySelector('.zu-sv3-fbar');
+        if (!fb0) {
+          failures.push('no fbar at ' + font);
+        } else {
+          const rt0 = root0.getBoundingClientRect(), fb0r = fb0.getBoundingClientRect();
+          const topDyn = Math.round(fb0r.bottom - rt0.top + 8);
+          window.__zuMount({ pop: { open: true, query: '', top: topDyn } }, -1);
+          const fpopEl = document.querySelector('#zu-spd-replica .zu-sv3-fpop');
+          if (!fpopEl) {
+            failures.push('fpop not rendered at ' + font);
+          } else {
+            if (fpopEl.style.top !== topDyn + 'px')
+              failures.push('fpop inline top missing at ' + font + ': got "' + fpopEl.style.top + '" want ' + topDyn + 'px');
+            g = window.__zuGeometryChecks();
+            for (const s of g.failures) failures.push('§11.7 fpop ' + font + 'px: ' + s);
+          }
+        }
+        window.__zuMount({}, -1);   /* 还原无弹出层卡（下一字号 scenario 重挂，防串态） */
       }
       return failures;
     })()`, true);
@@ -483,8 +550,7 @@ app.whenReady().then(async () => {
       { pre: 'window.__zuSysPreset()', reload: true, theme: 'light', sysFrame: 'normal', shot: 'sys-11-light.png', open: false },
       { pre: 'window.__zuSysPreset()', reload: true, theme: 'dark', shot: 'sys-12-unavailable.png', open: false },
     ], log);
-    console.log('DONE ' + JSON.stringify(log));
-    app.exit(0);
+    finishChain(log);
     return;
   }
 
@@ -516,8 +582,7 @@ app.whenReady().then(async () => {
     { live: true, turnTip: 'zu-stat-tip--tools', shot: 't2-tools-open.png' },
   ], log);
   if (process.env.ZU_T_ONLY) {   /* 只测今日合计 tooltip：跑完 T 链即退出（泵保持开启供真实今日数据） */
-    console.log('DONE ' + JSON.stringify(log));
-    app.exit(0);
+    finishChain(log);
   }
 
   /* 链 P（v303）：项目累计 450 自适应（四行 KPI + 11 图标，live 泵真实项目聚合） */
@@ -525,8 +590,7 @@ app.whenReady().then(async () => {
     { live: true, turnTip: 'zu-project-tip', shot: 'p1-project-open.png' },
   ], log);
   if (process.env.ZU_P_ONLY) {   /* 只测项目累计 tooltip：跑完 P 链即退出（泵保持开启） */
-    console.log('DONE ' + JSON.stringify(log));
-    app.exit(0);
+    finishChain(log);
   }
 
   /* 链 SPD-PAD（临时诊断）：量速度卡各层 padding 与横向溢出 */
@@ -539,8 +603,7 @@ app.whenReady().then(async () => {
   ], log);
   await win.setSize(1240, 820);
   if (process.env.ZU_SPDPROBE) {
-    console.log('DONE ' + JSON.stringify(log));
-    app.exit(0);
+    finishChain(log);
   }
 
   /* 链 SUB（v304）：子代理统一浮层 680 自适应（夹具子代理数据：汇总+单任务两拍） */
@@ -549,8 +612,7 @@ app.whenReady().then(async () => {
     { fixture: 'recent16', subPop: true, subTask: 0, shot: 'sub2-task.png' },
   ], log);
   if (process.env.ZU_SUB_ONLY) {   /* 只测子代理面板：跑完 SUB 链即退出 */
-    console.log('DONE ' + JSON.stringify(log));
-    app.exit(0);
+    finishChain(log);
   }
 
   /* 链 U（v299）：本轮 tooltip 500×350 紧凑布局（单模型设计图形态 / 10 模型区内滚） */
@@ -567,8 +629,7 @@ app.whenReady().then(async () => {
     { turnTip: 'zu-stat-tip--session', shot: 's1-session-open.png' },
   ], log);
   if (process.env.ZU_U_ONLY) {   /* 只测本轮 tooltip：跑完 U 链即退出，不跑其它链 */
-    console.log('DONE ' + JSON.stringify(log));
-    app.exit(0);
+    finishChain(log);
   }
 
   /* 链 A：基础视觉（默认/柱 hover/窄窗/浅色/英文） */
@@ -623,6 +684,29 @@ app.whenReady().then(async () => {
     { reload: true, fixture: 'hist400', theme: 'dark', lang: 'en', sel: { range: 'all', period: 'all' }, shot: 'h15-hist-en.png' },
   ], log);
 
+  /* 链 V（v391 §15.3/§15.5）：密度阈值真机形态——hist7=日历式下沿（⑬⑮ 断言），
+   * hist30=日历式、hist90=周列式贡献热力、singleDay=紧凑日卡（dc 卡组居中）；
+   * 几何断言含 ⑬ 单层边框 / ⑭ 柱标不重叠（柱图形态自动落）/ ⑮ 短历史整组居中。 */
+  await runChain(wc, win, [
+    { reload: true, fixture: 'hist7', theme: 'dark', sel: { range: 'all', period: 'all' }, shot: 'v1-hist7-cal.png' },
+    { fixture: 'hist30', theme: 'dark', sel: { range: 'all', period: 'all' }, shot: 'v2-hist30-cal.png' },
+    { reload: true, fixture: 'hist90', theme: 'dark', sel: { range: 'all', period: 'all' }, shot: 'v3-hist90-weeks.png' },
+    { reload: true, fixture: 'singleDay', theme: 'dark', sel: { range: 'all', period: 'all' }, shot: 'v4-single-day-cards.png' },
+  ], log);
+
+  /* 链 M（v394 用户裁定）：20 模型默认全量展开 + 无折叠按钮 + dwrap 内滚（几何 ⑯） */
+  await runChain(wc, win, [
+    { reload: true, fixture: 'models20', theme: 'dark', sel: { range: 'all', period: 'all' }, shot: 'm0-models20-expanded.png' },
+  ], log);
+
+  /* 链 D（v389 §13.2/§13.7）：折线 hit 合成 mouseover 出卡——projWeek 近 7 天 5 天有
+   * 数据：槽 4（2 天前）有数据出综合日均槽位卡、槽 6（今天空槽）出「无有效速度记录」
+   * 轻卡（-empty.png 第二拍）；几何断言含 ⑩ plot 弹性高 ∈[200,300]（§13.1）。 */
+  await runChain(wc, win, [
+    { reload: true, fixture: 'projWeek', theme: 'dark', sel: { period: 'week' },
+      hitProbe: { dataDay: 4, emptyDay: 6 }, shot: 'd1-week-hit-cards.png' },
+  ], log);
+
   /* 链 G：Tab 切换宽度稳定性 + hover 边界（首柱/末柱/滚后末柱） */
   await runChain(wc, win, [
     { reload: true, fixture: 'recent16', theme: 'dark', sel: { period: 'recent' }, shot: 'g1-recent.png' },
@@ -657,6 +741,5 @@ app.whenReady().then(async () => {
   ], log);
   await win.setSize(1240, 820);
 
-  console.log('DONE ' + JSON.stringify(log, null, 1));
-  app.exit(0);
+  finishChain(log, true);
 }).catch(e => { console.error('FATAL', e && e.stack || e); app.exit(1); });

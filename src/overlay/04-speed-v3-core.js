@@ -360,7 +360,9 @@
     if (range === "recent") pool = pool.slice(-SPD_BARS_MAX);
     if (period === "recent") pool = pool.slice(-SPD_BARS_MAX);
     /* 降级提示的池规模判据（M1/S8）：取筛选前的原始池模型数——筛选只删分量，
-     * 池里「有没有第二个模型可比」不该随筛选翻转。 */
+     * 池里「有没有第二个模型可比」不该随筛选翻转。rawPool 引用=v389 §13.4
+     * axisA/axisB（未筛选时间轴）复用。 */
+    var rawPool = pool;
     var rawPoolModelCount = 0, rawPoolKeys = {};
     for (var rk = 0; rk < pool.length; rk++) {
       var rkm = pool[rk].models;
@@ -427,9 +429,12 @@
         }
         for (var bi = 0; bi < bkeys.length; bi++) {
           var bk2 = bkeys[bi], rows2 = buckets[bk2] || [], bg = spd3Aggregate(rows2);
-          var nb = spdNextBucket(bk2, unit);
+          /* v387：进行中桶（今天最后一格/跨今天的日桶）b 钳到 now——hover 区间
+           * 「截至 HH:mm」语义由渲染层按 b 与桶末的距离区分（spec §11.5），
+           * 绝不把未发生的时间展示成已统计区间。 */
+          var nb = Math.min(spdNextBucket(bk2, unit), now);
           items.push(bg ? Object.assign(bg, { label: spdLabel(bk2, unit, true),
-              full: spdFull(bk2) + " – " + spdFull(Math.min(nb, now)), a: bk2, b: nb })
+              full: spdFull(bk2) + " – " + spdFull(nb), a: bk2, b: nb })
             : { v: null, label: spdLabel(bk2, unit, true), full: spdFull(bk2) + " – " + spdFull(nb),
                 a: bk2, b: nb, empty: true, models: [] });
         }
@@ -458,6 +463,16 @@
      * 比较不受顺序影响；spanA/spanB 取自筛选后池（沿用 V2 取法：时间窗优先）。 */
     var real = items.filter(function (x) { return !x.empty; });
     var overall = spd3Aggregate(pool, true);
+    /* v389 §13.4：未筛选原始池时间轴（axisA/axisB）——heat 短历史形态判定读它，
+     * 保证「覆盖跨度=池时间轴、着色=筛选」（PRD 5.5 时间轴稳定：极端筛选不使
+     * 形态在日卡/周网格间跳变）；spanA/spanB 仍是筛选后展示轴（图表头区间）。 */
+    var axisA = spanA0v(), axisB = 0;
+    function spanA0v() {
+      var lo = Infinity;
+      for (var ai = 0; ai < rawPool.length; ai++) if (rawPool[ai].b < lo) lo = rawPool[ai].b;
+      return isFinite(lo) ? lo : 0;
+    }
+    for (var abi = 0; abi < rawPool.length; abi++) if (rawPool[abi].t > axisB) axisB = rawPool[abi].t;
     var spanA = a || (pool.length ? pool[0].b : 0);
     var spanB = b || (pool.length ? pool[pool.length - 1].t : 0);
     if (period === "all" && pool.length) { spanA = pool[0].b; spanB = pool[pool.length - 1].t; }
@@ -499,7 +514,20 @@
       peak: peak, low: low, latest: latest, unit: unit2, title: title,
       range: range, period: period, spanA: spanA, spanB: spanB,
       notice: notices.join(SPD_L(" · ", " · ")), truncated: !!(u && u.truncated),
-      msAvail: msAvail, pool: pool, selMissing: selMissing };
+      msAvail: msAvail, pool: pool, selMissing: selMissing,
+      axisA: axisA, axisB: axisB };   /* v389 §13.4：未筛选时间轴（heat 形态判定） */
+    /* v387 §11.4：空态原因分类（view 空态页据此给针对性提示与恢复动作，
+     * 不再千篇一律「尝试更长时间范围」）。按池构成与筛选态判定，顺序即优先级。 */
+    if (!real.length) {
+      if (remote) an.emptyReason = SPD_L("远端会话仅显示本会话历史", "Remote pane shows this session only");
+      else if (!u) an.emptyReason = SPD_L("速度数据尚未加载", "Speed history not loaded yet");
+      else if (filtering && !filt.keys.length) an.emptyReason = SPD_L("未选择任何模型", "No model selected");
+      else if (filtering) an.emptyReason = SPD_L("已选模型在当前范围暂无有效速度记录", "Selected models have no rated turns in this range");
+      else if (range === "session" || range === "recent") an.emptyReason = SPD_L("当前会话暂无已完成请求", "No completed turns in this session yet");
+      else if (range === "project") an.emptyReason = SPD_L("当前项目暂无有效速度数据", "No rated data in this project yet");
+      else if (a && b) an.emptyReason = SPD_L("当前时间范围内暂无请求", "No turns in this time range");
+      else an.emptyReason = SPD_L("暂无有效生成速度记录", "No rated turns yet");
+    }
     if (daysGrid) an.daysGrid = daysGrid;
     return an;
   }

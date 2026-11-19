@@ -114,11 +114,25 @@ test('weighted average is Σout/Σms, never the arithmetic mean of per-turn spee
   const html = dom(card(ctx, sel, { curSel: sel }));
   assert.ok(html.includes('130.8'), 'main number = weighted 1700t/13s');
   assert.ok(!html.includes('166.7'), 'arithmetic mean of per-turn speeds must not appear');
-  assert.ok(html.includes('唯一模型'), 'filtered to a single model');
-  // 多模型态（无筛选）无主大数字：分布表每模型 tps 仍是 Σout/Σms 口径（B=1000t/11s…）
+  // §11.5 真单模型池语义：wire 传入未筛选全量池（A+B）→ 筛选缩到单模型不冒充「唯一模型」
+  assert.ok(!html.includes('唯一模型'), 'filtered to a single model is not a single-model pool');
+  // 多模型态（无筛选）：主数字恒在（§11.3）+ 本期有效计数行；分布表每模型 tps 仍是
+  // Σout/Σms 口径（A=1700t/13s=130.8…）
   const multi = dom(card(ctx, { range: 'session', period: 'all' }));
-  assert.match(multi, /2 个模型/, 'multi-model count row');
+  assert.match(multi, /本期有效 2 个模型 · 3 轮/, 'multi-model count row (active semantics)');
+  assert.match(multi, /zu-sv3-main-num"><span class="[a-z-]+">\d/, 'multi-model main number always present');
   assert.match(multi, /zu-sv3-dtab/, 'distribution table present');
+  // v390 用户裁定：「唯一模型」徽标全局去除（.zu-sv3-only）——真单模型池也不再显
+  const t0s = new Date(2026, 10, 5, 9).getTime();
+  const singlePool = { sid: 's', source: 'local', truncated: false, sids: ['s'], snames: ['S'],
+    pids: [['p', 'P']], mnames: ['GLM-5.3-FlashX'], mkeys: ['prov_a\x1fglm-a'],
+    turns: [{ s: 0, t: t0s, b: t0s - 60000, out: 500, ms: 5000, i: 400, o: 500, n: 2,
+      msl: [[0, 500, 5000, 2]], c: 0.03, cf: 1 }] };
+  const singleHtml = dom(card(ctx, { range: 'session', period: 'all' },
+    { h: singlePool, sess: { sid: 's' } }));
+  assert.ok(!singleHtml.includes('唯一模型') && !singleHtml.includes('zu-sv3-only'),
+    'v390: single-model pool no longer shows the removed "only model" badge');
+  assert.ok(!singleHtml.includes('zu-sv3-dtab'), 'single-model pool shows no distribution table');
 });
 
 // ---------- 范围隔离（无串数据） ----------
@@ -243,23 +257,36 @@ test('bilingual labels follow the instance language', () => {
   assert.match(html, /Generation speed/);
   assert.match(html, /Scope|Time/, 'scope/time labels');
   assert.match(html, /View speed bands/, 'en bands entry label');
-  assert.match(html, /All \d/, 'en filter count (auto)');
+  // 计数行三语义统一（§11.5）：auto → 已选=池全量；本期有效=active models
+  assert.match(html, /zu-sv3-fcount">Selected 2\/2 · 2 active</, 'en filter count (selected/pool · active)');
+  assert.match(html, /2 active models · 4 turns</, 'en multi-model count row');
 });
 
-// ---------- 空态（有效轮表 + 筛选/时间窗内无数据） ----------
+// ---------- 空态（有效轮表 + 筛选/时间窗内无数据；§11.4 view 空态接管） ----------
 test('empty selection yields the V3 empty state, never a crash or a 0 t/s chart', () => {
   const ctx = makeCtx();
   const h = fixture();
-  // 显式筛选只含池外模型：池清空 → 图表空态 + 提示 + 无数据通知
+  // 显式筛选只含池外模型：池清空 → view 居中空态（emptyReason 分类）+ 恢复动作
   const sel = { range: 'session', period: 'today', sid: 'sess_main',
     filt: { mode: 'sel', keys: ['ghost\x1fmodel'] } };
   const html = dom(card(ctx, sel, { h, curSel: sel }));
-  assert.match(html, /当前筛选无有效速度数据/, 'empty chart state');
-  assert.match(html, /尝试选择更长时间范围/, 'empty state suggests a longer range');
+  assert.match(html, /class="zu-sv3-empty" role="status"/, 'V3 view empty state takes over');
+  assert.match(html, /zu-sv3-empty-t">暂无生成速度数据/, 'empty state headline');
+  assert.match(html, /zu-sv3-empty-r">已选模型在当前范围暂无有效速度记录/, 'emptyReason is pool-aware, not generic');
+  assert.ok(!html.includes('当前筛选无有效速度数据'), 'charts-layer empty copy is gone with the takeover');
+  // data-sv3-act 恢复动作（§11.4 门控）：显式筛选 → clear-filter；period≠all → all-time
+  assert.match(html, /data-sv3-act="clear-filter">清除模型筛选</, 'clear-filter action gated on explicit filter');
+  assert.match(html, /data-sv3-act="all-time">查看全部时间</, 'all-time action gated on period≠all');
   assert.ok(!/class="zu-sc-bar/.test(html), 'no bars without data');
   assert.match(html, /无数据/, 'selMissing notice rides the notice row');
   // 左卡显 em dash（绝不造 0 t/s 主读数）
   assert.match(html, /class="dim">—</, 'left card shows an em dash, not 0');
+  // 门控反例：period=all → 只 clear-filter，无 all-time
+  const selAll = { range: 'session', period: 'all', sid: 'sess_main',
+    filt: { mode: 'sel', keys: ['ghost\x1fmodel'] } };
+  const htmlAll = dom(card(ctx, selAll, { h, curSel: selAll }));
+  assert.match(htmlAll, /data-sv3-act="clear-filter"/);
+  assert.doesNotMatch(htmlAll, /data-sv3-act="all-time"/, 'period=all hides the all-time action');
   // 真空轮表走 null 回退 V1（wire 契约，不属于空态卡）
   assert.equal(build(ctx, { source: 'local', sids: ['x'], snames: ['x'], pids: [['p', 'p']],
     mnames: ['m'], mkeys: ['k\x1fm'], sid: 'x', truncated: false, turns: [] },

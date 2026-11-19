@@ -71,7 +71,7 @@
 |---|---|---|
 | recent | 柱状图，柱色=模型色 | 一轮一柱；单模型轮=模型色，多模型轮=中性灰「混合」，悬停给真实组成（禁止用主导模型色填满混合轮） |
 | today | 小时柱状图（00:00–当前小时，空小时=空位不显 0） | 每模型一条小时折线（仅该模型该小时有有效分量处有点，缺口不插值）+ 悬停十字卡 |
-| week | 每日折线+面积+端点标签，缺失日断线 | 每模型折线 + 中性虚线「总体」（有真实数据才画）+ 端点数值标签 |
+| week | 每日平均柱状图（7 日槽位，空日=空位不显 0，v392 起——恒折线在单有效日退化为孤立点） | 每模型折线 + 中性虚线「总体」（有真实数据才画）+ 缺失日断线（多模型专属形态保留，端点数值标签默认不画 §12.5） |
 | month | 7 列日历热力（周日首列，4–6 行）速度色阶 | 同左 + 每格右上模型色点（≤3 + 「+N」），悬停日卡带每模型 轮次/均速 |
 | all | 星期×周列日格热力（数据来自 speed_days） | 同左 + 模型色点 |
 
@@ -115,3 +115,259 @@
 - VERSION → v384（06 分片台账 + substat 版本锁测试同步）。AGENTS §2 代码地图、build_overlay.py 头注释、本 spec 与 speed-tooltip-adaptive-layout.md（标注 V2 尺寸段落被 V3 取代）同步。
 - 热文件：`overlay.js` + `zusage.py`（运行目录原子替换 + mtime 触发热重载/常驻重启）；`inject-main.cjs` 不动（零冷文件）。
 - 真机验收：CDP 截图 10 场景（5 时间 × 单/多模型）+ 深浅主题 + 键盘路径；headless 仅作回归不替代。
+
+## 11. v387 实机修复批（UI/UX 深审，2026-11-18；VERSION → v387）
+
+依据真机 CDP 实测（默认主题主链、视口 1527×957）+ 用户 7 张截图。根因均已实测钉死，禁止凭 padding/margin/overflow 掩盖。
+
+### 11.1 宽度链（P0-01/P0-02 外层）
+
+实测：tip 计算样式 border-box、宽 920、padding 10px 13px + border 1px → 内容区 892px < 根节点 920px → 根节点右缘越出 tip 外缘 14px，头部 Tab 组被裁（filtRight 1453 > tipRight 1439）；compact 链（cssText border-box + padding 10px 14px）同病 30px。
+
+修复（唯一权威方案）：
+- 释放规则改 `box-sizing:border-box!important;width:min(952px,calc(100vw - 24px))!important;max-width:calc(100vw - 24px)!important` → 两链内容区 ≥922 ≥ 根 920。
+- 根宽改 `min(920px,calc(100vw - 60px))` + `max-width:100%`（窄窗时根 ≤ tip 内容区，不反向撑大）。
+- 根容器禁止 overflow:hidden 掩盖；验收=任一视口下 tip.scrollWidth==clientWidth 且筛选行右缘 ≤ tip 内容右缘。
+
+### 11.2 图表满幅（P0-04/3.1/5.2）
+
+实测：`.zu-sc-wrap` scrollWidth 636 > clientWidth 606（幻影溢出 30px）；柱组 flex-start 固定 pitch（24px）致 8 柱挤左半幅；折线 SVG 固定宽 n*PITCH+12（min 240）致 7 日线压缩左侧。
+
+修复：
+- 柱图（recent/today 单模型）改**槽位满幅**：柱组 flex 容器 width:100%，每槽 flex:1 1 0 + min-width:0，柱宽按密度 18/14/10px 居中；spacer 机制删除。X 标签每槽显示，槽宽不足时隔槽（首末恒显）。
+- 折线（today 多模型/week）SVG 改 `width:100%` + **百分比 x 坐标**（y 用 px；无 viewBox 缩放，线宽/圆点 px 不失真）；hit 列与网格线同步 %。空槽保留位置（无数据日不插值不造假点）。
+- 数值标签策略：n≤8 全显；>8 时 峰值/最低/最新/悬停优先 + 密度抽稀，标签估宽（字符数×~6px）超槽宽让位；折线仅端标签+避让 ≥12px（保留现机制）。
+
+### 11.3 多模型主数字（P0-03）
+
+实测截图：多模型左卡「已选 N 个模型 · M 轮」直接接档位胶囊，均速大数字消失。修复：多模型分支结构 = 标题行 → **主数字（overall.v）+ t/s** → 档位胶囊 → 「本期有效 N 个模型 · M 轮」（+ 无数据已选提示）→ 分布（堆叠条 + div Grid 网格表恒全量展开、容器内滚；v394 起「查看全部」折叠按钮退役，见 §15.4）→ 峰/低/新。任何模型数（1/2/7/20/部分无数据/全部无数据）主数字恒在；无数据显示 `—` 不隐藏区块。
+
+### 11.4 空状态（四）
+
+`an.real` 为空时 view 接管渲染居中空态：主布局不变（左卡 —/0/—，图表区居中提示），**原因行按 `an.emptyReason` 区分**（session 无历史 / 筛选空集 / 时间窗无请求 / 已选模型无数据 / 数据未加载 / 旧快照无模型级统计 / 查询失败——按池构成判定，不千篇一律「尝试更长时间范围」），动作按钮真实生效：`[清除模型筛选]`（仅显式筛选时出现）`[查看全部时间]`（period≠all 时）→ `data-sv3-act="clear-filter"|"all-time"`，两链（06/01）委托接入：clear-filter=spd3FilterAll+重建；all-time=speedSel.period="all"+重建。
+
+### 11.5 语义与文案
+
+- 模型数量三语义：可选 Y（池全部）/ 已选 X（filt）/ **本期有效 N**（perModel.length）；计数行与 chips 计数统一「已选 X/Y · 本期有效 N」；「唯一模型」只用于真单模型池。
+- live 徽标：估算态措辞改「实时估算中」（历史均速含义不被污染），非估算实时态（思考/工具）透传不变。
+- 同名不同供应商（同 name 异 key）：分布表/chips 名称右侧加供应商副标（pid 尾段），hover title=全 provider/model；不合并身份。
+- 标题 📈 换自包含 SVG 折线图标（currentColor，随主题）。
+- 今天/进行中日桶 hover 区间：「YYYY/M/D · 00:00 – 截至 HH:mm」；已结束日「YYYY/M/D · 全天」——core 对 today 及跨今天的桶 item.b 钳到 now。
+- 热力底部「较低/较高」双色图例移除（PRD 6.3 禁止替代档位体系；完整档位说明已有标题旁 ⓘ hover 承载）。
+
+### 11.6 月历/历史热力（6.2/7.2）
+
+- month：`grid-template-rows:repeat(var(--zu-hm-rows),minmax(0,1fr))` 行高自适应填满可用高（4/5/6 周均无底部大空白）。
+- hist：列宽帽 `minmax(34px,64px)`（去 1fr 拉伸，短跨度不再异常宽格）；cols>26 时**按日历月聚合**（月格=当月加权 tps，列头 YYYY/MM，hover 月卡给「N 天有记录/综合均速/请求数」），550 日 ≤19 列无横滚；副题标「按月聚合」。
+
+### 11.7 验收断言（新增，PRD 14.2）
+
+harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-filter` 右缘 ≤ tip 内容右缘、图表绘图区宽 ≥ 容器 85%、柱顶标签无碰撞（估宽判定）、Popover 在视口内、月历底边空白 ≤ 1 行格高。真机截图七场景前后对比存档。
+
+## 12. v388 自适应高度与密度分档批（2026-11-18，第三轮）
+
+依据真机 DOM 逐层量测（PRD §2.2 诊断法）。四大根因实测：①wrap 幻影溢出 30px=`.zu-sv3-chart .zu-sc-plot` 同时 `margin-left:30px`（Y gutter 预留）+`width:100%`（相对 wrap 内容宽）→ plot 右缘 636>606；②多模型分布表溢出 23px（tableSW 232>CW 209）；③筛选栏 ≥10 模型换行两行（fbarH 65px）；④root min-height 恒 480px 与内容脱钩（rootH 543 视图间不变）。
+
+### 12.1 高度自适应档位（P0）
+
+- `min-height:480px` 废除，改**离散档位**（渲染端纯函数按 an 计算，写入 root 内联 min-height + `data-h-tier`）。
+  **v393（§17）起五形态统一 450**：empty / recent / today / week / month / all 全部恒 450（历史档位 empty 320、recent 340/360/390→400、month 430/450/470、all 380/420/460 全部废除）。矮视口（窗口高 < 档位+16px）下 CSS min-height 胜过 maxHeight 钳制，root 保持档位高、内容经 tip 基类内滚可达——与 v387 的 min(480,100vh-16) 自钳不同，为记录在案的有意取舍。
+- 档位离散保证稳定：hover/快照刷新不改变 tier；时间 Tab 切换允许跳档（v392 后 recent/today/week 三档同高不跳）；模型展开不撑高（分布表内滚上限不变）。
+- root 高度语义=`min-height`（内容可超出）；左卡与图表卡等高由 flex stretch 承担，但**内部内容自然流、禁止 margin-top:auto 推底**（§12.2）；图表绘图区独立固定高（charts 自身参数），不随卡拉伸。
+
+### 12.2 左卡自然内容流（P0）
+
+单/多模型统一顺序：标题→主数字→档位→模型行/计数行→本期统计→**分隔线（固定间距）**→峰/低/新。各段固定 margin（8/10px 节奏），消除大弹性空白；「当前模型」行与模型 Chip 完全同名时去重（替换为 有效输出 Token 或省略）；多模型分布表改 CSS Grid 三列 `minmax(0,1fr) 固定 固定`（数字列右对齐、名称 ellipsis+hover 全名、供应商副标保留），**根除横向滚动**（实测 23px）。
+
+### 12.3 柱图密度分档（P0）
+
+- `bars` 容器 `max-width:min(100%, calc(槽数×最大柱心距))` + `margin:0 auto`：n=1→视觉居中；n≤3 maxPitch≈120px（居中分组，禁止两柱顶到两端）；4≤n≤8→多数视口满幅均衡（140px 上限在窄 plot 下对 n=4 触发居中，无害）；n>8→紧凑满幅。柱宽密度三档（18/14/10）保留。
+- wrap 幻影：`.zu-sv3-chart .zu-sc-plot` 的 `width:100%` 改 `width:auto`（block+margin-left:30 自动填剩余），溢出 30px 根除；**禁止仅隐藏滚动条**。
+
+### 12.4 筛选栏单行（P1）
+
+`.zu-sv3-fbar{flex-wrap:nowrap}`：chips 区 `flex:1 1 auto;min-width:0;overflow:hidden`（视觉收纳），常驻 chips 预算降为 3（+N 收纳），计数与搜索 `flex:0 0 auto;white-space:nowrap`；长名 Chip ellipsis+hover 全名（已有）。任何模型数下 fbar 高度恒一行。
+
+### 12.5 折线与覆盖提示（P1）
+
+- today/week 绘图区高度降为紧凑档（≈200px 实测校准），卡高随档位自适应后不再有大空白。
+- today/week **多模型端数值标签默认不画**（多线右缘堆叠实测重叠；today 同批适用）；单模型保留端标签。全模型数值经悬停十字卡。
+- week 覆盖提示：有效 X/7 天（head sub 轻量文案，数据来自 an.real.length）。
+
+### 12.6 热力密度（P1）
+
+- hist 短历史（列数≤14）：网格整体水平居中（数据左→右语义保留在列序内）；列宽帽 64px 不变；卡高档位下格高自然收敛。
+- month：行高随 --zu-hm-rows 分配（1fr 既有）× 卡高档位；进行中日格与空日强度差已存在，复核不回归。
+
+### 12.7 验收断言
+
+- harness 追加：**柱/折线图表作用域内** wrap scrollWidth==clientWidth（heat 长历史设计内横滚不在此列）；分布表无横向溢出；fbar 高度 ≤44px（单行）；root 带 data-h-tier 且 min-height∈[300,480]；柱组居中分组由 charts VM 断言覆盖（n≤3 max-width 档位内联在产物）。
+- 真机：2 轮/18 轮/多模型 10+/月/全部短历史 截图前后对比。
+
+## 13. v389 图表弹性高与折线交互批（2026-11-18，第四轮）
+
+真机诊断定案：折线 hover 委托链完好（合成 mouseover 逐 hit 验证 portal shown、无数据日不吸附、tier 生效 rootH 493≥400）——「无提示」观感真因=无数据日零反馈 + 信息卡字段不足；图表底部空白真因=plot 固定 216 不随左卡拉伸（today gap 49 / all gap 127px）。
+
+### 13.1 plot 弹性高（P0）
+
+- `.zu-sv3-chart .zu-sc-plot{height:216px}` 改 `flex:1;min-height:200px;max-height:300px`（吸收左卡/档位拉伸；卡内容少时 200 保底，主体高时最多 300）。
+- 折线 SVG 全部 **y 坐标百分比化**（svg `height="100%"`、y=百分比、圆点/线宽 px；hit rect height 100%）；面积 path、grid 线、X 轴带同步。柱图 DOM 槽天然 height:100% 已自适应。
+- X 轴标签行高度独立固定（16px），最后一行标签距卡内边界 ≤28px（PRD §2.4）。
+
+### 13.2 折线 hover 完整化（P0）
+
+- **真因（真机 ：hover 链实证，2026-11-18）**：`.zu-sc-grid`/`.zu-sc-gutter`（Y 网格/沟槽，position:absolute）按 CSS 绘制顺序压在**非定位的折线 svg** 之上——真实鼠标 hit-testing 恒命中 grid，`.zu-sv3-hit` 收不到 mouseover（合成 dispatchEvent 绕过 hit-testing，历轮真机/harness hover 验证全被它骗过）。修复=grid/gutter `pointer-events:none`（纯装饰）+ `.zu-sv3-svg{position:relative}`（回到定位层）。
+
+- **无数据日出卡**：空槽 hover → 「M/D（周X）· 无有效速度记录」轻卡（不再静默）；进行日/已结束日区间文案沿 §11.5。
+- 有数据日卡字段增强：综合日均（档位色大字）→ 模型明细（色点+名+供应商副标+均速+请求数，>6 行截断+「另有 N 个模型」）→ 有效轮次/有效输出 → 预估费用（o.fmtMoney，缺失「暂无估价」）。
+- 两级 hover：列级（既有）+ **线级**——line path `pointer-events:stroke`，mouseover 给该模型线加高亮类（自身加粗/其余降透明），mouseout 还原；模型身份=颜色+卡内名称双识别。
+- 键盘：hit 列已有 tabindex+方向键（v387）；aria-label 补「无数据」明示。
+
+### 13.3 多模型折线视觉层级（P0）
+
+- 三层：综合虚线（中性灰、dasharray 既有）< 模型实线（1.8px、模型色）< hover 高亮；模型 >4 时第 3 条起透明度 .6（排序按 out 降序，前 2 全不透明）。
+- 稀疏规则不变：缺失日断线（分段 path）、单点不连线、无假点。
+
+### 13.4 hist ≤7 天紧凑日卡（P1）
+
+- 日历覆盖跨度 ≤7 自然日（按首末数据日+自然日覆盖算，非有数据日数）→ **day-cards 形态**：横排日期卡（日期+周几+日均速度+模型点 ≤3+`+N`，速度色阶底、今天描边、空日「无记录」态），flex 居中分布；hover 日卡=spd3DayCardHTML 既有。
+- 8-35 天=既有周列×星期行（≤14 列已居中）；>35 天不变（月聚合阈值 26 周既有）。
+- 覆盖跨度判定用 an.items 首末日日历差，**不受筛选影响跳变**（覆盖=池时间轴，着色=筛选）。
+
+### 13.5 左卡 Footer 与分布条对齐（P1）
+
+- `.zu-sv3-stats` 恢复 `margin-top:auto`（Footer 语义：内容少时贴底、多模型内容多时自然紧贴，卡 padding-bottom ≥12 保证呼吸）——推翻 v388 §12.2 的"禁 auto"（第三轮断层实为分布表缺失时的推底空腔，Grid 化后左卡内容密度已足够）。
+- 分布条对齐：dbar 与标题/表格同左右缘（统一容器 padding，误差 ≤2px）；dbar 加 role="img"+aria-label（各模型名:占比）；段 hover title=名+请求数+占比。
+
+### 13.6 today 提示（P1）
+
+- today 单模型柱图 head sub「有效 X 个小时」（X=非空桶数，X<轴长时）。
+
+### 13.7 验收
+
+- harness：today/week 的 plot 高度∈[200,300] 且 plot 底距卡底 ≤28px；折线 hit hover 出卡（合成 mouseover）含无数据日「无记录」卡；day-cards 形态（≤7 天夹具）与周网格（8+ 天）分发断言；dbar 左右缘与标题/表对齐 ≤2px。
+- 真机：week 有数据日/无数据日 hover 各一实测。
+
+## 14. v390 筛选入口统一与 hist 日历式批（2026-11-18，第五轮）
+
+真机/源码诊断：①fpop `position:absolute;right:10px;bottom:10px` 锚定**卡右下角**（搜索按钮在顶部栏——距离远实锤）；②`+N`（.zu-sv3-chip-more）是纯 span 不可点；③dbar 19 段碎片化 + `min-width:2px` 下限使 Σ宽>100% 触发 flex 收缩、比例失真；④hist 37 天=周列式 6 列（64px 帽+居中）两侧大空白。
+
+### 14.1 筛选入口统一（P0）
+
+- **方案 A**：删除右侧放大镜按钮（.zu-sv3-fsearch 整链退役——含 01/06 委托、CSS、测试）；入口=`+N` button 与「模型筛选」标签 button（.zu-sv3-fopen，data-sv3-fopen），同一面板/同一状态/同一关闭行为。
+- `+N` 与 fopen 均为真 button：aria-expanded（随 pop.open）、aria-haspopup、pointer/键盘（既有 pointerdown 委托白名单扩展）、Hover 反馈。
+- fpop 定位改**锚定筛选栏正下方**：`top` 对齐 fbar 底 +8px（fbar 单行高稳定）、右缘对齐 `right:10px`、宽度 340px；卡内空间恒够（卡高 ≥320）无需翻转；`bottom:10px` 废除。
+- 打开时焦点入搜索框（既有）；Esc/外点关闭（既有）；关闭焦点归还「模型筛选」标签（DOM 首个 fopen 入口；+N 打开时亦归还该合法入口）。
+
+### 14.2 dbar 轨道契约 + Top6+其他（P0/P1）
+
+- 轨道：`display:flex;align-items:stretch;height:8px;overflow:hidden;border-radius:4px;gap:0`；子段 `display:block;height:100%;align-self:stretch;flex-shrink:0;min-width:0;margin:0;padding:0;border:0;border-radius:0`——**废除 min-width:2px**（19 段碎片化与比例失真根源）。
+- **Top6+其他**：shareSorted 前 6 段 + 「其他模型」中性灰段（占其余请求合计，严格按原始计数差）；段数 ≤7 无碎片。
+- 极小占比显示 `<0.1%`（表格与 title 同步），不显 0%。
+- dbar aria 简化为概况（「模型分布：N 个模型，前 6 占 X%」），完整数据由下方表格承载；段 title 保留（名+请求数+占比）。
+- 分布表同步：默认 4 行含其他段行？——其他段不入明细表（表仍列真实模型全量）；仅条聚合。
+
+### 14.3 hist 密度选择器（P0）
+
+按覆盖跨度（an.axisA/axisB 日历差，不受筛选影响）分四档：
+- **≤7 天**：day-cards（v389 既有 .zu3-dc）。
+- **8–42 天**：**七列日历式**（新 .zu3-cal）：横向 7 列周日首、纵向自然周、完整覆盖跨度（含跨月/补位），格=日号+日均速度+模型点 ≤3+`+N`，速度色阶底/今天描边/空日灰/未来不渲染；月首列带月标记；hover 走既有日卡。与 month 组件同构复用（span 代替当月）。
+- **43–90 天**：周列贡献式（既有 .zu3-hh，列帽 64px）与日历式按行数自动选择（自然周数 ≤8 用日历式防纵挤，否则周列式）。
+- **>90 天**：周列式；周列 >26 既有月聚合（粒度文案同步）。
+- 色阶/模型点/今天描边/空日语义全形态一致（tpsBand 唯一来源不变）。
+- 日历式行数驱动卡高档位（已接线：R≤5→380、R6-7→420、R8→460；周列式 >56 天按日桶数 420/460）。
+
+### 14.4 验收
+
+- harness/VM：跨度 37 天→zu3-cal（7 列、行数=ceil、两侧无大空白=网格宽≥容器 85%）；8/42 边界；43-90 按周数选档；>90 周列式/月聚合不变；fpop top 锚定串断言；+N button 化（aria-expanded/键盘）；dbar 无 min-width、Top6+其他占比和=100%、`<0.1%` 显示。
+- 真机：37 天场景截图（消除两侧空白）、+N 点击开面板、fpop 紧贴筛选栏。
+
+## 15. v391 左卡精简、图表边框与柱标统一批（2026-11-18，第六轮）
+
+源码/真机根因：①charts 分片 4 处内层 `<div class="zu-speed-chart zu-sv3-chart">` 注入在外层同名卡（`[data-sv3-chart]`）内，`.zu-sv3-root .zu-sv3-chart` 的边框+padding 规则对两层都命中——绘图区外多一层边框+双重 10/12px padding（柱/折线视图；热力视图内层类 zu-sv-chart 不命中故无此问题）；②左卡「本期统计」组标题与「覆盖范围」kv 冗余（标题行已含范围语义「最近 N 轮平均速度」）；③柱标显隐 `valEvery=ceil(n/8)`：9–12 根隔 2 显 1（违背 1–12 全显），>24 抽样步长与可视宽无关；④hist 日历/月历行 `minmax(0,1fr)` 无高帽——2–3 行短跨度格被拉成巨高（巨大空白网格）、day-card 垂直无帽；⑤「查看全部」左对齐。
+
+### 15.1 左卡精简（P0）
+
+- 删除空态与单模型态的「本期统计」组标题（`.zu-sv3-cov-h` 整链退役，含 CSS 规则）；删除单模型态「覆盖范围」kv 及其 covLbl 死代码（范围语义由标题行承载）。
+- 保留：主数字/档位胶囊/模型摘要/请求轮次/有效输出（真单池）或当前模型（非真单池）/峰值/最低/最新；空态保留请求轮次 0/有效模型 0。
+- 主数字恒在不随模型数变化（§11.3 契约保持）；删后无效空白由 stats `margin-top:auto` Footer 既有机制吸收。
+
+### 15.2 图表重复边框（P0）
+
+- 边框+圆角+padding 规则收窄到外层卡：`.zu-sv3-root .zu-sv3-chart[data-sv3-chart]{…}`（charts 分片内层内容盒不带该属性，不再命中）。
+- **热力内层双框（审查 M1）**：热力/月历内层根类 `zu-sv-chart` 命中 06 分片 V2 基础规则（无 `.zu-sv-root` 作用域全文档生效）→ 外层 V3 边框内再镶一圈 1px+24px 水平内距；heat 分片补作用域中和 `.zu-sv3-root .zu-sv-chart{border:0;padding:0;border-radius:0}`（flex 列链仍由 V2 规则承担）。
+- 验收：柱/折线/热力全形态绘图区外只有一层边框、一层 padding；无内容裁剪/新滚动条（tip.scrollWidth==clientWidth 不变）。
+
+### 15.3 hist 密度阈值对齐 + 日历行高帽（P0）
+
+- 阈值按 PRD 档位表（布局判断依据=axis 日历跨度，不按有效数据天数裁剪）：**≤6 天** day-cards（.zu3-dc）；**7–60 天** 七列日历式（.zu3-cal，连续日历热力图）；**>60 天** 周列贡献式（.zu3-hh；周列 >26 既有月聚合）。`SPD3_HIST_CAL_MAX_DAYS=60`、`SPD3_HIST_CAL_WEEKS` 分支删除（行高帽落地后 9–10 行日历不再纵挤）。
+- 日历/月历行高帽：`.zu3-hm-grid` 加 `max-height:calc(var(--zu-hm-rows,5)*84px)`（flex:1 增长封顶 → 行高 ≤84px），wrap 加 `justify-content:center`（周头+网格作为整组垂直居中，列对齐保持）——2–3 行短跨度不再拉成巨格、剩余空间上下均分；大跨度（行多）仍填满可用高。
+- day-card 加 `max-height:150px`：≤6 天历史卡片成组居中、不再整卡拉高成巨卡。
+- 高度档连带：all 档 cover≤60 判定与 heat 分派同轴口径（两端日零点归一+今天钳制）；R9-10 的 57–60 天从 420 档升 460 档（行高帽下每行 ≥30px 可读）。
+- 本月完整自然月日历/空日灰格/未来遮罩/axis 时间轴判定全部不变。
+
+### 15.4 「查看全部」按钮退役、分布表恒展开（P1，v394 用户裁定）
+
+用户实测指令：去除 `<button class="zu-sv3-more" data-sv3-more>查看全部 N 个模型</button>`——默认即展开态，模型列表可滚动。
+
+- 分布表（`.zu-sv3-dwrap > .zu-sv3-dtab`）恒渲染 `shareSorted` 全量行（不再 `slice(0,4)`），表容器既有 `max-height:150px;overflow-y:auto` 承担大量模型行的滚动；主 Tooltip 高度不被撑高。
+- `spd3LeftHTML` 第三参 `expanded` 删除（签名 `(an, live, poolSingle, fmtTok)`），`DEF_ROWS`/`shown`/`more` 变量与返回串中的 `more` 一并删除；wire memo tail 移除 expanded 项，ctx 不再传 `expanded`。
+- 两链（06 `spd3Activate`/01 `tpsSpd3Activate`）`closest` 白名单移除 `[data-sv3-more]`，`else if` 展开切换分支删除；`mousedown` 阻断名单中的 `.zu-sv3-more` 属**槽位卡「另有 N 个模型」行**（charts 分片无作用域规则），与本按钮无关，保留。
+- `speedSel` 初始化与会话切换复位删除 `expanded:false`；view 分片 `.zu-sv3-more` 作用域 CSS 整段删除。
+- 验收：VM 断言两链白名单不含 `data-sv3-more`；多模型分布行数=表头+全部模型行、DOM 无 `data-sv3-more`/`zu-sv3-more`；a11y 不再有展开态按钮；dwrap 恒 `max-height:150px;overflow-y:auto`；真机 20 模型默认全量行渲染且容器可滚。
+
+### 15.5 柱状图数值标签统一（P0）
+
+估宽 `estW=字符数×6+8`；槽宽 `slotW=estPlotW/n`；estPlotW 视口感知（`window.innerWidth` 可用时 clamp(180, 620)，VM/无 window 回退 620），窄窗下抽样步长随真实可视宽收缩。三档确定性规则：
+
+- **n ≤ 12**：全部非空柱显值；`estW > slotW` 的非关键柱让位（碰撞避让）。
+- **13 ≤ n ≤ 24**：全部尝试显值，让位规则同上；**峰值/最低/最新恒显**（碰撞时优先保留），其余确定性隐藏。
+- **n > 24**：按可用空间自动抽样 `step=ceil((maxLblW+8)/slotW)`（≥2，`step×slotW ≥ maxLblW+8` 保证采样位间距不重叠），`c%step===0` 显值（抽样位不再叠加 fits 门槛——窄槽下叠加会全部让位、抽样失去意义）；关键值恒显；Hover 查看完整值。
+- **0 值柱（非空 vv=0）不显「0.0」**（v391 起，无意义读数；v390 曾显）。
+- 悬停柱恒显值（空槽/0 值槽悬停不触发抑制）；若其自身让位（estW>slotW）则临时隐藏左右邻已显的非关键标签（峰值/最低/最新恒显优先，不被抑制；确定性、收起即恢复）——悬停态常规位不重叠。
+- 首末柱防裁切：仅当 `estW > slotW` 时首柱标签 `align-self:flex-start`、末柱 `flex-end` 钉在槽内（不越出 plot 触发横滚）。
+- 统一样式：同字号/同色/顶部间距（.zu-sc-val 既有类共享，cur 加粗保留）。
+- Hover 卡补「生成耗时」行（`item.ms>0` 显示；ms<100 显「<0.1秒」绝不显 0.0；降级帧 ms=0 整行省略，绝不造 0）——时间/模型/速度/Token/耗时/费用六要素齐（柱悬停卡与 today 槽位卡两处同款）。
+- 柱高、数据、Hover 定位链零改动；X 轴时间标签稀疏规则（xThin）不动。
+
+### 15.6 验收
+
+- VM/单测：柱标 n=1/2/7/12/18/24/30/90 显隐集合断言（关键值在场、采样确定性、悬停邻让位、首末钉边类）；左卡三态不含「本期统计/覆盖范围」；边框单层（源码串断言 + harness computed 核对）；cal 阈值 7/60 边界与行高帽 CSS；>60 周列/月聚合不变；dc 1–2 天帽；hover 耗时行（有 ms 显、无 ms 省）。
+- 真机：五视图截图对账（边框单层、柱标不重叠不裁切、短历史居中、分布表全量展开+容器内滚、无「查看全部」按钮）。
+
+## 16. v392 用户反馈批（2026-11-18，第七轮）
+
+真机截图反馈两项，均裁定为缺陷而非设计：
+
+### 16.1 近 7 天单有效日无柱状图（P1）
+
+- 真因：`spd3WeekHTML` 恒走折线（v384 spec §5 原设计「week=每日折线」），单有效日时折线退化为孤立点+端标签——无柱可看；而 today 单模型恒柱状，形态不对称。
+- 裁定：week **单模型**改每日平均柱状（7 日槽位、空日=空位不显 0、覆盖提示「有效 X/7 天」与折线共用），与 today 单模型对称；**多模型保留折线+面积+总体虚线**（spec §5 多模型专属设计不动——总体线/分段面积只在多模型折线有意义）。单模型判定与 today 同源（`perModel.length===1`）。
+- 实现落点：`spd3WeekHTML` 加单模型分支（复用 today 单模型的 `spd3BarsFrame+spd3BarCols+spd3PortalFor` 组合，slots 直接作 items——空槽轻卡/悬停链复用既有委托）。
+
+### 16.2 范围切换 tooltip 高度跳变（P1）
+
+- 真因：`spd3HeightTier` recent 三档 340/360/390 vs today/week 恒 400——「最近↔今天↔近 7 天」切换高度跳 60px。
+- 裁定：recent **恒 400**（三档废除），三常用范围同高；month/all 热力/日历形态档位不动（内容结构不同）。plot 弹性（§13.1 200..300）吸收增量，柱图槽位 `height:100%` 自适应。
+- §12.1 档位表已同步；`data-h-tier` recent 单档命名 `recent`。
+
+### 16.3 验收
+
+- VM/单测：week 单模型柱状断言（7 槽列+单柱+空槽透明+覆盖提示），多模型折线断言原样保留；recent 档位断言改恒 400（三旧档删除）。
+- 真机：近 7 天单模型视图出柱（空日空位）、三范围切换高度目测恒定。
+
+## 17. v393 五形态统一高（2026-11-19，第八轮，真机反馈）
+
+用户五张真机截图对账（最近/今天/近 7 天/本月/全部）：高度 320..470 五档在范围间跳变（§16 只统一了三柱状视图，空态/月历/历史仍是离散档）。
+
+### 17.1 裁定
+
+- **五形态统一 450**（empty/recent/today/week/month/all 全部恒 450）：任意范围切换高度恒定，空态同高。450 取旧 month-r5 档——6 行月历经 v391 行高帽自适应（84px 帽、行数多时行内分配）在 450 内可读；all 周列式 R9-10 每行 ≥30px 可读（v391 判据）沿用。
+- **plot 300 上限同步废除**（v389 §13.1 的 max-height:300px）：统一 450 后柱/折线绘图区吃满卡内剩余（典型 ≈370..400），X 标签带恒贴底、plot-bottom-gap ≤28px 断言保留；min-height 200 保底不变。
+- `data-h-tier` 保留 period/empty 语义（诊断用）。
+- **root 内联从 `min-height` 改 `height`**（§17 第二批，同轮实测定案）：root 是 auto 高 flex 列容器，`min-height` 只抬下限——内容 flex-basis 计算仍把 root 撑过档位（实测 all 日历式 6 行 492>450，撑高者=左卡/图表 stretch 假象；对照实验：隐去左卡 root 即回 450、压行数无效）。固定 `height` 后内部 `min-height:0` 收缩链生效恒等于档位。语义取舍（记录在案）：内容真超高（极端 `--ui-font-size`）时 root 内裁剪（主链自然高 ≤360 可容纳；分布表展开由 dwrap 内滚上限吸收；矮视口仍由 tip 基类 maxHeight 钳制+内滚），「内容可撑高」语义废除。
+
+### 17.2 验收
+
+- VM/单测：spd3HeightTier 单档断言（五形态+empty 全 450，旧行数/日桶档断言删除）；charts plot CSS 串断言（无 max-height）；harness ⑧ min-height 恒 450±10、⑩ plot ≥200 无上限。
+- 真机：五 Tab 切换高度目测恒定（用户验收）。
