@@ -186,7 +186,7 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 
 ### 12.4 筛选栏单行（P1）
 
-`.zu-sv3-fbar{flex-wrap:nowrap}`：chips 区 `flex:1 1 auto;min-width:0;overflow:hidden`（视觉收纳），常驻 chips 预算降为 3（+N 收纳），计数与搜索 `flex:0 0 auto;white-space:nowrap`；长名 Chip ellipsis+hover 全名（已有）。任何模型数下 fbar 高度恒一行。
+`.zu-sv3-fbar{flex-wrap:nowrap}`：chips 区 `flex:1 1 auto;min-width:0;overflow:hidden`（视觉收纳），计数与搜索 `flex:0 0 auto;white-space:nowrap`；长名 Chip ellipsis+hover 全名（已有）。任何模型数下 fbar 高度恒一行。**v400 起（§23）常驻 chips 预算由视口感知动态化，「3」降级为 VM/无 window/窄窗的回退下限，不再是固定常驻数。**
 
 ### 12.5 折线与覆盖提示（P1）
 
@@ -462,3 +462,21 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 - 速度口径、柱高、数据、颜色规则、悬停卡、X 轴标签稀疏、历史四档、分布表、其它 Tooltip 全不变；仅调整常规位数值的估宽判定。
 - VM：翻转 n=18「仅 2 柱显值」旧断言为「18 柱全显」；补 6 字符读数（≥1000 t/s）守卫断言——让位仅剩关键位，锁定高速档碰撞避让为设计预期；n=24 让位仅关键位、n=30 步长抽样+钉边、窄窗仅关键位三条回归断言原样保持；悬停恒显与邻抑制在此密度下仍成立。
 - 真机：项目/全部 Tab 18 柱截图确认常规柱顶均有数值（截图值域 <1000 t/s）、无重叠、无裁切。
+
+## 23. v400 筛选条 chips 动态预算（2026-11-19，用户截图裁定）
+
+用户实测：模型筛选条在 chips（3 枚 + 「+8」）与右侧计数「已选 11/11 · 本期有效 11」之间留有大片空白（宽屏约 500-700px），空间未利用。
+
+### 23.1 根因与实现
+
+- 根因：v387 §12.4 把常驻 chips 预算硬编码为 3 枚（VM 时代保守值）；而 chips 区 CSS 本就是 `flex:1 1 auto + overflow:hidden`，宽屏下空间被白白空置。
+- 实现：`spd3FilterBarHTML` 内 MAX 动态化——视口感知估宽（与 §15.5 `spd3PlotEstW` 同哲学）。基数=根宽帽 `min(vw−60, 920)`（§11.1 宽度链，root 即 fbar 实际容器、自身无边框）；`avail = min(vw−60, 920) − 22（fbar padding 20+border 2） − 14（漏斗） − 18（三段 gap） − 36（+N 预留） − (visW(「模型筛选」标签)+6) − (visW(count)+16)`，其中 `visW(s)=逐字符 (charCodeAt>0x2E7F ? 11 : 6)`（CJK≈11px、ASCII≈6px，贴近 fbar 全线 11px=14−3 实字宽；en 文案全 ASCII 估宽偏保守）。逐枚累加 `chipW = min(visW(名), 137) + 33（padding 18+border 2+dot 8+dot gap 5）+ 4（gap）`（missing chip 额外 +36「无数据」标记；137=chip max-width 170 扣 dot/padding/border），装不下即止；MAX=装得下的枚数，clamp [3, 池大小]。
+- 回退：VM/无 `window` → MAX=3，v387 行为与全部既有测试保持不变；估宽偏差由既有 CSS 兜底（chip `max-width:170px` 省略、chips overflow:hidden、flex shrink + chip-name ellipsis），+N `flex:0 0 auto` 且恒预留，不参与收缩、不被裁。
+- 已知限制：visW 常数按默认字号 11px 定标；用户调大 `--ui-font-size` 时文字实宽变大、估宽系统性低估，溢出由 chip flex-shrink 吸收（同上兜底链），不裁 +N、不换行。
+- 恒单行契约不变（§12.4 双层 nowrap，v400 起该节「常驻 3」由本节动态化取代）；chips 池排序（out 降序）、弹出层、fcount「已选 X/Y · 本期有效 N」语义零改动。
+
+### 23.2 不变项与验收
+
+- 速度口径、左卡、图表、历史四档、分布表、弹出层交互、其它 Tooltip 全不变；仅筛选条常驻 chips 枚数由视口宽驱动。
+- VM：既有「3 枚 + +N」断言原样保持（无 window 回退）；新增视口分支断言——`innerWidth=1200` 显著多显 chips 且 +N 数字相应减少、`innerWidth=560` 仍 3 枚。
+- 真机：宽屏筛选条截图确认 chips 增多、+N 与计数无重叠、无换行、无裁切异常。

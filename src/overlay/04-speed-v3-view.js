@@ -121,7 +121,8 @@
    * pool = [{key,name,n?,missing?}]（spd3ChipPool 产出）；o = {selMissing?, pop?, active?}。
    * 选中态 = filt.mode==="sel" 且含该 key；无数据模型（missing / o.selMissing 命中，
    * 含 pool 外的 selMissing key 兜底补一枚）加 .zu-sv3-chip-empty + 「无数据」标记。
-   * ≤3 枚全显、超出收 +N（§12.4 常驻预算降为 3，fbar 恒单行）；pool 为空不渲染整条。
+   * ≤3 枚全显；超出按 v400 视口感知动态预算尽量多显（§23，可用宽逐枚估宽、下限仍 3）、
+   * 装不下的收 +N（fbar 恒单行；VM/无 window 回退 v387 常驻预算 3）；pool 为空不渲染整条。
    * §14.1 入口统一（方案 A）：旧右侧放大镜按钮（.zu-sv3-fsearch）整链退役；弹出层
    * 入口 = 「模型筛选」标签 button 与「+N」button（同挂 data-sv3-fopen，
    * aria-haspopup="dialog"、aria-expanded 随 o.pop.open），同一面板/同一状态/同一关闭行为。
@@ -139,7 +140,39 @@
     }
     if (!rows.length) return "";
     var isOn = function (k) { return !!(filt && filt.mode === "sel" && filt.keys && filt.keys.indexOf(k) >= 0); };
-    var chips = "", MAX = 3, onCount = 0;
+    var selX = filt && filt.mode === "sel" && filt.keys ? filt.keys.length : rows.length;
+    var act = typeof o.active === "number" ? o.active : 0;
+    var count = SPD_L("已选 " + selX + "/" + rows.length + " · 本期有效 " + act,
+      "Selected " + selX + "/" + rows.length + " · " + act + " active");
+    /* v400（spec §23）：常驻预算视口感知——v387 硬编码 3 是 VM 保守值，宽屏 chips 区
+     * flex:1 的空间被空置（用户截图裁定）。基数=根宽帽 min(vw−60, 920)（§11.1 宽度链，
+     * root 即 fbar 实际容器、无边框），扣 fbar padding+border 22、漏斗 14、三段 gap 18、
+     * +N 预留 36 与标签/计数估宽，逐枚累加 chip 估宽（visW：CJK≈11px、ASCII≈6px，贴近
+     * 11px 实字宽；chip 名帽 137=max-width 170 扣 dot/padding），装不下即止、下限仍 3。
+     * VM/无 window 回退 3（既有行为与 VM 断言不变）；估宽偏差由既有 CSS 兜底（chip
+     * max-width:170 省略、chips overflow:hidden、chip-name ellipsis、chip flex-shrink），
+     * +N 恒预留保证入口可见。常数按默认字号 11px（14−3）定标；用户调大 --ui-font-size
+     * 时低估由 shrink 吸收（已知限制，§23.2）。 */
+    var visW = function (s) {
+      var w = 0;
+      for (var ci = 0; ci < s.length; ci++) w += s.charCodeAt(ci) > 0x2e7f ? 11 : 6;
+      return w;
+    };
+    var chips = "", onCount = 0, MAX = 3;
+    var vw = 0;
+    try { vw = (typeof window !== "undefined" && window.innerWidth) || 0; } catch (eW) { vw = 0; }
+    if (vw > 0 && rows.length > 3) {
+      var avail = Math.min(vw - 60, 920) - 22 - 14 - 18 - 36 -
+        (visW(SPD_L("模型筛选", "Model filter")) + 6) - (visW(count) + 16);
+      var acc = 0;
+      for (var mi = 0; mi < rows.length; mi++) {
+        var cw = Math.min(visW(rows[mi].name), 137) + 33 + 4 + (rows[mi].missing ? 36 : 0);
+        if (acc + cw > avail) break;
+        acc += cw;
+        MAX = mi + 1;
+      }
+      if (MAX < 3) MAX = 3;
+    }
     for (i = 0; i < rows.length && i < MAX; i++) {
       var p = rows[i], on = isOn(p.key), empty = !!p.missing || miss.indexOf(p.key) >= 0;
       if (on) onCount++;
@@ -157,10 +190,6 @@
       spdEsc(SPD_L("其余 " + hidden + " 个模型，可搜索查看", hidden + " more models — use search")) +
       '" aria-label="' + spdEsc(SPD_L("还有 " + hidden + " 个未展示模型，点击查看和筛选",
         hidden + " more models not shown, click to view and filter")) + '">+' + hidden + "</button>";
-    var selX = filt && filt.mode === "sel" && filt.keys ? filt.keys.length : rows.length;
-    var act = typeof o.active === "number" ? o.active : 0;
-    var count = SPD_L("已选 " + selX + "/" + rows.length + " · 本期有效 " + act,
-      "Selected " + selX + "/" + rows.length + " · " + act + " active");
     return '<div class="zu-sv3-fbar"><span class="zu-sv3-fico">' + SPD3_SVG_FUNNEL + "</span>" +
       /* §14.1：「模型筛选」标签为真 button（弹出层入口之一，data-sv3-fopen） */
       '<button type="button" class="zu-sv3-flabel" data-sv3-fopen aria-haspopup="dialog" aria-expanded="' +

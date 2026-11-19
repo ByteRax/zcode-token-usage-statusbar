@@ -467,6 +467,40 @@ test('a11y: Tab/chips/入口/展开全为 button+aria，弹出层 role=dialog �
   assert.match(domMiss, /class="zu-sv3-notice">[^]*2 个模型中 1 个在当前范围无数据/);
 });
 
+// ---------- ⑥b v400 视口感知 chips 动态预算（spec §23） ----------
+test('chips 动态预算: 1200 宽屏多显（14 模型→8 枚+「+6」）/ 560 窄窗回退 3 枚 / VM 无 window 回退 3', () => {
+  const ctx = makeCtx();
+  const h14 = multiFixture(14);
+  const sel = { range: 'session', period: 'all', sid: 'sess_main' };
+  const an = analyze(ctx, h14, sel);
+  // 1200 宽屏：avail≈650±fcount（随模型数位数变化），Model-N chip（7 字符）估宽 79
+  // → 显著多于 3 枚，超出收 +N 且 chips+more=14（不钉具体枚数，fcount 长度耦合）
+  vm.runInContext('var window = { innerWidth: 1200 }', ctx);
+  const domWide = stripStyle(cardHTML(ctx, an, sel));
+  const wideChips = (domWide.match(/<button type="button" class="zu-sv3-chip[ "]/g) || []).length;
+  const wideMore = parseInt((/class="zu-sv3-chip-more"[^>]*>\+(\d+)<\/button>/.exec(domWide) || [])[1] || "0", 10);
+  assert.ok(wideChips >= 6, '1200 宽屏显著多显（≥6 枚），实得 ' + wideChips);
+  assert.equal(wideChips + wideMore, 14, '显出 + 收起 = 14 模型全量');
+  // 装得下就全显：8 模型（8×79=632≤avail）宽屏不再出 +N
+  const an8 = analyze(ctx, multiFixture(8), sel);
+  const domWide8 = stripStyle(cardHTML(ctx, an8, sel));
+  assert.equal((domWide8.match(/<button type="button" class="zu-sv3-chip[ "]/g) || []).length, 8,
+    '1200 宽屏 8 模型全显 8 枚（预算装得下不出 +N）');
+  assert.ok(!domWide8.includes('zu-sv3-chip-more'), '8 模型宽屏无 +N 残留');
+  // 560 窄窗：avail≈229 装 2 枚 → 下限回退 3（与 v387 行为一致）
+  vm.runInContext('window = { innerWidth: 560 }', ctx);
+  const domNarrow = stripStyle(cardHTML(ctx, an, sel));
+  assert.equal((domNarrow.match(/<button type="button" class="zu-sv3-chip[ "]/g) || []).length, 3,
+    '560 窄窗回退 3 枚（下限）');
+  assert.match(domNarrow, /其余 11 个模型，可搜索查看/, '560 窄窗仍「+11」');
+  vm.runInContext('window = undefined', ctx);
+  // VM 无 window：回退 3（既有断言同款口径，独立复核）
+  const domVm = stripStyle(cardHTML(ctx, an, sel));
+  assert.equal((domVm.match(/<button type="button" class="zu-sv3-chip[ "]/g) || []).length, 3,
+    '无 window 回退 3 枚（v387 常驻预算）');
+  assert.match(domVm, /其余 11 个模型，可搜索查看/, '无 window 仍「+11」');
+});
+
 // ---------- ⑦ CSS 锁 ----------
 test('CSS 锁: .zu-sv3-root 定宽变量、.zu-light 浅色覆写、focus-visible 焦点环、无功能说明常驻块', () => {
   const ctx = makeCtx();
