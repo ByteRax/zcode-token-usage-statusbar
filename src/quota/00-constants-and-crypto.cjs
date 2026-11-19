@@ -291,12 +291,14 @@ function decryptValue(value, key) {
  * 与旧键同构、键名带地区后缀；issue 的 401 对照是 bigmodel 端点，不代表 api.z.ai 不认）。
  * 旧键优先，缺失或空串才回退；指纹跟随实际命中的信封（宿主换发自动重拉）；
  * 回退信封解不出可用 token（非 JSON/字段缺失）按 decryptFailed 降级，零请求。
- * zcodejwttoken / oauth:active_provider 不是额度端点认的业务 token（实测 401），不作回退。 */
+ * zcodejwttoken / oauth:active_provider 不是额度端点认的业务 token（实测 401），不作回退。
+ * decrypt 可注入（issue #393）：model-puller 传自己的注入闭包（生产形态=同款分发器，
+ * 测试 stub 由此进入）；缺省用本模块分发器，键序/字段提取逻辑单一。 */
 const HOST_ALT_CRED_KEYS = {
   bigmodel: [{ key: "oauth:linked_bigmodel", field: "accessToken" }],
   zai: [{ key: "oauth:zai_cn:access_token" }],
 };
-function hostCredDecrypt(raw, fam, credKey, env) {
+function hostCredDecrypt(raw, fam, credKey, env, decrypt) {
   if (!raw || typeof raw !== "object") return null;
   let enc = raw[credKey], field = null;
   if (typeof enc !== "string" || !enc) {
@@ -307,7 +309,8 @@ function hostCredDecrypt(raw, fam, credKey, env) {
     }
   }
   if (!enc) return null;   // 旧键与新式键均缺席：未配置
-  let token = decryptValue(enc, deriveCipherKey(env));
+  const dec = typeof decrypt === "function" ? decrypt : decryptValue;
+  let token = dec(enc, deriveCipherKey(env));
   if (token && field) {
     try {
       const obj = JSON.parse(token);

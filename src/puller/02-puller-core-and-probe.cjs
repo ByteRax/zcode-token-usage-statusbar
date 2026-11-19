@@ -18,6 +18,7 @@ function createModelPuller(opts) {
   const cachePath = String(o.cachePath || "");   // 档位索引落盘路径（运行目录，inject-main 传入）；空=仅内存（测试）
   const credentialsPath = String(o.credentialsPath || "");   // 宿主 OAuth 凭据（套餐源）
   const decryptValue = typeof o.decryptValue === "function" ? o.decryptValue : null;   // 注入解密（主进程内存解密）
+  const credEnv = o.env && typeof o.env === "object" ? o.env : process.env;   // v1 信封派生钥环境（生产缺省 process.env，同注入闭包口径）
   let disposed = false;
   let applyBusy = false;   // 读-改-写竞态闸：UI 正常路径不会并发，这里防异常路径双写互相覆盖
   let catalogCache = null;   // {at, entries}：目录全量约数百 KB，成功后进程内复用
@@ -125,7 +126,10 @@ function createModelPuller(opts) {
    * 注入的 decryptValue 是 quota-client 的分发器（上游 #289）：v1/v2 双信封都能解，v2 密钥
    * 经 defaultDec 绑定的真实路径上下文取。本入口只被用户动作触达：先越过 v2 密钥的失败冷却
    * 与失配限频（钥匙串刚解锁时点一下就能拉到，不必等 60 秒）；密钥异步未热时本次为空、下次
-   * 即可。仍带 enc: 前缀的结果一律作废——热换竞窗里旧模块闭包可能透传密文，绝不外发。 */
+   * 即可。取键与额度链同走 quota-client 的 hostCredDecrypt 单一实现（issue #393：宿主 3.18+
+   * 新式登录态下旧平铺键整键缺席，业务 token 改存 linked_bigmodel/zai_cn 信封——旧键优先、
+   * 缺失才回退；热换竞窗里旧 quota-client 无该导出时回退旧平铺键直读，联动热换后自愈）。
+   * 仍带 enc: 前缀的结果一律作废——热换竞窗里旧模块闭包可能透传密文，绝不外发。 */
   function planTokenOf(providerId) {
     const src = PLAN_SOURCES[String(providerId || "")];
     if (!src || !credentialsPath || !decryptValue) return null;
@@ -133,6 +137,12 @@ function createModelPuller(opts) {
       const quota = require("./quota-client.cjs");
       if (typeof quota.v2KeyRetryNow === "function") quota.v2KeyRetryNow();
       const raw = JSON.parse(fs.readFileSync(credentialsPath, "utf8"));
+      if (typeof quota.hostCredDecrypt === "function") {
+        const hit = quota.hostCredDecrypt(raw, src.fam, src.credKey, credEnv, decryptValue);
+        let token = hit && typeof hit.token === "string" ? hit.token : null;
+        if (token && token.startsWith("enc:")) token = null;
+        return token && token.trim() ? token.trim() : null;
+      }
       const enc = raw && typeof raw === "object" ? raw[src.credKey] : null;
       if (typeof enc !== "string" || !enc) return null;
       let token = decryptValue(enc);

@@ -782,6 +782,7 @@ module.exports = {
   resolveCustomProvider,
   decryptValue,
   deriveCipherKey,
+  hostCredDecrypt,   // issue #393：model-puller 套餐 token 目录同走键名代际回退单一实现
   makeHostDecryptor,
   setDefaultDecryptCtx,
   ensureDefaultV2Key,
