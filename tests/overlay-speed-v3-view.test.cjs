@@ -685,6 +685,8 @@ test('v391 §15.2/§15.4: 图表边框只挂外层 [data-sv3-chart]、内层盒�
   assert.match(dwrapRule, /margin:6px -8px 0 0/, 'dwrap 右扩 8px（滚动条右移、表格增宽）');
   assert.match(dwrapRule, /scrollbar-width:thin/, '细滚动条（Chromium 121+）');
   assert.match(style, /\.zu-sv3-root \.zu-sv3-dwrap::-webkit-scrollbar\{width:6px\}/, 'webkit 6px 回退');
+  // v398 §21：无滚动条时恒定预留槽位（表格右缘不贴边）
+  assert.match(dwrapRule, /scrollbar-gutter:stable/, '滚动条槽位恒定预留（无滚动条时也留边界间距）');
   // §11.3 主数字恒在 + §14.2 Top6+其他：19 模型 → 主数字在场、恰 7 段（6+其他）
   const an19 = analyze(ctx, multiFixture(19), sel);
   const dom19 = stripStyle(cardHTML(ctx, an19, sel));
