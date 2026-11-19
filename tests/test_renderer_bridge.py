@@ -21,6 +21,7 @@ try:
 except OSError:
     HOST_ACCESSIBLE = False
 PANE_ANCHORS = {
+    '3.19.0': b'"data-testid":cw(gWe,e),"data-session-id":t??`draft`,',
     '3.18.2': b'"data-testid":aC(YVe,e),"data-session-id":t??`draft`,',
     '3.18.1': b'"data-testid":DS(EHe,e),"data-session-id":t??`draft`,',
     '3.18.0': b'"data-testid":iC(GVe,e),"data-session-id":t??`draft`,',
@@ -297,7 +298,7 @@ assert.equal(next['data-zusage-pane-id'],'pane-2');
                     patched = bridge.transform_module(module, 'patch')
                 text = patched.decode().replace('export function', 'function')
                 text = text.replace('export{ ' + target['names']['registry'] + ' };', '')
-                fixture = 'const vb=()=>"pane", Oa=vb, hb=vb, Sb=vb, Gb=vb, Fx=vb, iC=vb, DS=vb, aC=vb, VRe=null, Mr=null, WRe=null, aBe=null, hVe=null, GVe=null, EHe=null, YVe=null;\n' + text + assertions
+                fixture = 'const vb=()=>"pane", cw=vb, Oa=vb, hb=vb, Sb=vb, Gb=vb, Fx=vb, iC=vb, DS=vb, aC=vb, VRe=null, Mr=null, WRe=null, aBe=null, hVe=null, GVe=null, EHe=null, YVe=null, gWe=null;\n' + text + assertions
                 script = self.root / f'{target["version"]}-props.cjs'
                 script.write_text('const vm=require("node:vm");vm.runInNewContext(' +
                                   json.dumps(fixture) + ',{assert:require("node:assert/strict")});')
