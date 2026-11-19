@@ -1257,6 +1257,7 @@ function createQuotaClientInstance() {
       quotaEnabled,
       resetEnabled: resetBadgeEnabled,
       resetList: true,   // v135：bigmodel 族并行查网页控制台列表端点（近 7 天过期卡 + 上次重置）
+      saveSecrets: (mutate) => writeQuotaSecrets(mutate),   // issue #399 千问登录完成持久化（内部自带 credentialsChanged+tick+补推）
 
       log: (...a) => LOG("[quota]", ...a),
       onUpdate: () => {   // 刷新开始/结算及解冻时同步源状态与最近成功快照
@@ -2125,6 +2126,28 @@ function handleQuotaSourceRequest(req, wc) {
     respond({ ok: false, error: "Unable to save quota settings" });
   }
 }
+/* issue #399 千问设备码登录（⚙ 面板「登录」按钮）：start 起流并回授权页 URL（渲染端走
+ * openExternal 打开），渲染端每 2s 轮询 state 直至 done/failed；cancel 清理在途流。
+ * 热换竞窗守卫：quotaClient 为 null（dispose 在途）时按不可用回执，不碰旧实例。 */
+function handleQianwenSigninRequest(req, wc) {
+  const respond = (result) => deliverPluginRequest(wc, req.requestId, result);
+  const client = quotaClient;
+  if (!client || typeof client.qianwenSignInStart !== "function") { respond({ ok: false, error: "restart required" }); return; }
+  if (req.action !== "quota-qianwen-signin-state" && !quotaEnabled()) { respond({ ok: false, error: "quota disabled" }); return; }
+  try {
+    if (req.action === "quota-qianwen-signin") {
+      client.qianwenSignInStart().then((r) => respond(r), (e) => respond({ ok: false, error: String((e && e.message) || e).slice(0, 120) }));
+    } else if (req.action === "quota-qianwen-signin-state") {
+      respond(client.qianwenSignInState());
+    } else if (req.action === "quota-qianwen-signin-cancel") {
+      client.qianwenSignInCancel();
+      respond({ ok: true });
+    }
+  } catch (e) {
+    LOG("qianwen sign-in request failed:", e && e.message);
+    respond({ ok: false, error: "sign-in unavailable" });
+  }
+}
 /* 套餐额度开关（⚙ 面板）：原子写 config.json 的 quota_enabled（v111 起缺省开）。开启即刻 tick
  * 一次（结算后经 onUpdate 补推）；关闭后 handlePayload 不再 tick/附加，chip 随之隐藏。 */
 async function setQuotaEnabled(enabled, wc, requestId) {
@@ -2564,6 +2587,8 @@ async function pollPluginRequests() {
           handleAutoCompactConfig(req, wc);
         } else if (req && (req.action === "quota-src" || req.action === "quota-src-key" || req.action === "quota-src-refresh")) {
           handleQuotaSourceRequest(req, wc);
+        } else if (req && ["quota-qianwen-signin", "quota-qianwen-signin-state", "quota-qianwen-signin-cancel"].includes(req.action)) {   // issue #399：千问设备码登录
+          handleQianwenSigninRequest(req, wc);
         } else if (req && (req.action === "model-pull-list" || req.action === "model-pull-fetch" || req.action === "model-pull-apply" || req.action === "model-pull-probe")) {
           handleModelPullRequest(req, wc);
         } else if (req && (req.action === "prompt-enhance" || req.action === "prompt-enhance-v2")) {

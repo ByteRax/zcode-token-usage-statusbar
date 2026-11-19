@@ -1092,6 +1092,7 @@
       if (relaunchAckTimer) { clearTimeout(relaunchAckTimer); relaunchAckTimer = 0; }
       if (relaunchAliveTimer) { clearTimeout(relaunchAliveTimer); relaunchAliveTimer = 0; }
       if (relaunchConfirmTimer) { clearTimeout(relaunchConfirmTimer); relaunchConfirmTimer = 0; }   // v379 review：5s 确认还原定时器随实例销毁
+      if (typeof stopQianwenPoll === "function") stopQianwenPoll();   // issue #399：千问登录状态轮询随实例销毁
       bridgeDetach(bridge.handle);
       cancelAnimationFrame(frame);
       cancelTipGrace();

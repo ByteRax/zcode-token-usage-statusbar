@@ -50,11 +50,12 @@ function createQuotaClient(opts) {
     }
     return qErr("network_error", "HTTP " + status, { httpStatus: status });
   }
-  async function rawFetch(url, headers, ctl, method) {
+  async function rawFetch(url, headers, ctl, method, body) {
     const res = await fetchImpl(url, {
       method: method || "GET",
       headers: Object.assign({ accept: "application/json", "accept-encoding": "identity" }, headers),
       signal: ctl ? ctl.signal : undefined, redirect: "manual",
+      body: body == null ? undefined : body,
     });
     let text = "";
     if (res.body && typeof res.body.getReader === "function") {
@@ -84,8 +85,8 @@ function createQuotaClient(opts) {
     async maybeGetJson(url, headers, ctl) {
       try { return await http.getJson(url, headers, ctl); } catch (e) { return null; }
     },
-    async post(url, headers, ctl) {
-      const r = await rawFetch(url, headers, ctl, "POST");
+    async post(url, headers, ctl, body) {   // body：可选请求体字符串（JSON/form；火山调用不传维持原状）
+      const r = await rawFetch(url, headers, ctl, "POST", body);
       let json = null;
       try { json = JSON.parse(r.text); } catch (e) { json = null; }
       const meta = json && json.ResponseMetadata && json.ResponseMetadata.Error;   // 火山信封：HTTP 200 也可能带错
@@ -618,6 +619,11 @@ function createQuotaClient(opts) {
     tick,
     refresh() { v2KeyRetryNow(); return tick(true) > 0; },   // 用户显式刷新：越过 v2 密钥冷却/失配限频
     pokeReset,
+    /* 千问设备码登录（issue #399）：saveSecrets 由注入侧传入（writeQuotaSecrets），
+     * 登录完成持久化并触发 credentialsChanged 解冻；未传（旧装配/测试）时 start 报不可用。 */
+    qianwenSignInStart: () => Promise.resolve({ ok: false, error: "sign-in unavailable" }),
+    qianwenSignInState: () => ({ ok: false, error: "sign-in unavailable" }),
+    qianwenSignInCancel: () => { },
     refreshSource(id) {   // 厂商按钮刷新该厂商各账户；chip 的完整源 id 只刷新本账户
       const a = adapterOf(id);
       if (!a) return false;
@@ -739,7 +745,7 @@ function createQuotaClient(opts) {
         list.push({
           id: a.id, label: a.label, kind: a.kind, defaultOn: a.defaultOn, unverified: !!a.unverified,
           enabled: cfg.enabled !== false && (a.defaultOn || cfg.enabled === true),
-          credentialFields: a.id === "mimo" ? ["cookie"] : a.id === "volcano" ? ["accessKeyId", "secretAccessKey"] : a.id === "scnet" ? ["planCredits", "planStart"] : a.id === "anthropic" ? ["token"] : ["apiKey"],
+          credentialFields: a.id === "mimo" ? ["cookie"] : a.id === "volcano" ? ["accessKeyId", "secretAccessKey"] : a.id === "scnet" ? ["planCredits", "planStart"] : (a.id === "anthropic" || a.id === "qianwen") ? ["token"] : ["apiKey"],
           keyConfigured: !!(cfg.apiKey || cfg.cookie || cfg.token || cfg.accessKeyId ||
             accounts.some((entry) => !!entry.cred) || (a.id === "scnet" && num(cfg.planCredits) > 0)),
           keySource: st && st.cred ? st.cred.source : "",
@@ -759,6 +765,7 @@ function createQuotaClient(opts) {
     },
     secretsPath,
     dispose() {
+      client.disposeQianwenFlow();   // 千问登录流随实例销毁（在途轮询按 gen 自弃）
       for (const st of states.values()) {
         if (st.ctl) { try { st.ctl.abort(); } catch (e) { } }
         st.inFlight = null;
@@ -773,6 +780,7 @@ function createQuotaClient(opts) {
     _states: states,
     _adapters: ADAPTERS,
   };
+  installQianwenFlow(client, j, o);   // 覆写上面的 no-op 缺省：真登录流绑定本实例的 http 与 saveSecrets
   return client;
 }
 
