@@ -348,6 +348,8 @@
   function disposeOverlay() {
     if (disposed) return;
     disposed = true;
+    if (state.enhancePending) clearTimeout(state.enhancePending.timer);
+    state.enhancePending = null;
     pluginRequestCallbacks = {};
     clearTimeout(bootTimer);
     clearInterval(coordinatorTimer);

@@ -12,7 +12,7 @@
       } catch (e) { }
       return null;
     }
-    /* v405（issue #408）：问询/权限确认面板（宿主 elicitation 弹层）没有 group/toolbar
+    /* v406（issue #408）：问询/权限确认面板（宿主 elicitation 弹层）没有 group/toolbar
      * 工具行，默认主题此前 mountInCard 失败 → below-card 兜底胶囊，用户实报「默认样式
      * 下问询时底部变成药丸浮层」。面板卡带 data-elicitation-dialog-card 时改挂面板内容列
      * 末行（data-elicitation-dialog-footer 之后），沿用 .zu-in 的扁平外观，不再走悬浮兜底。
@@ -60,7 +60,7 @@
     var curDisplay = "none", lastPos = [-1, -1], hideSince = 0;
     /* v80：true=条挂在输入卡片内部（group/toolbar 工具行之后）；false=旧 below-card 悬浮兜底 */
     var cardMode = false;
-    /* v405：in-card 的实际宿主（多数是 cardCache；elicitation 面板是其内容列 wrapper，
+    /* v406：in-card 的实际宿主（多数是 cardCache；elicitation 面板是其内容列 wrapper，
      * 条不在 cardCache 的直接子层）——帧级补挂与同卡去重按它判宿主 */
     var cardHost = null;
     var pillSurface = null, pillObserver = null, pillSyncFrame = 0, pillTransitionTimer = 0;

@@ -209,11 +209,11 @@ test('v80 in-card mount: bar lands inside the card after the toolbar row, no pad
   assert.equal(cards[1].children.includes(barB), false);
 });
 
-/* v405（issue #408）：默认主题下，宿主 elicitation（问询/权限确认）面板打开时
+/* v406（issue #408）：默认主题下，宿主 elicitation（问询/权限确认）面板打开时
  * chat-composer-region display:none、面板内回答输入框成为 pane 候选；该面板卡没有
  * group/toolbar 工具行，旧 mountInCard 失败 → below-card 悬浮胶囊（用户实报的「默认
  * 样式底部药丸态」）。现在条应平铺进面板内容列（footer 之后），沿用 .zu-in，不上 body。 */
-test('v405 elicitation panel: default theme mounts flat inside the panel card after the footer', () => {
+test('v406 elicitation panel: default theme mounts flat inside the panel card after the footer', () => {
   const h = harness(), [card] = h.setPanes(['a']);
   const ta = card.children[0];
   const wrapper = new Element();
@@ -250,9 +250,9 @@ test('v405 elicitation panel: default theme mounts flat inside the panel card af
   h.window.__zusageDispose();
 });
 
-/* v405 去重平局语义（review 补）：同 slot 对手互不压制（barSlot 严格小于才让位）——
+/* v406 去重平局语义（review 补）：同 slot 对手互不压制（barSlot 严格小于才让位）——
  * `<=` 回归会让两根同 slot 条互见双隐（比并存更糟）。 */
-test('v405 dedup tie: same-slot rivals do not suppress each other', () => {
+test('v406 dedup tie: same-slot rivals do not suppress each other', () => {
   const h = harness(), [card] = h.setPanes(['a']);
   const ta = card.children[0];
   const wrapper = new Element();
@@ -278,10 +278,10 @@ test('v405 dedup tie: same-slot rivals do not suppress each other', () => {
   h.window.__zusageDispose();
 });
 
-/* v405 cardHost 去重语义（review 补）：同卡判定按实际宿主 wrapper 而非 cardCache——
+/* v406 cardHost 去重语义（review 补）：同卡判定按实际宿主 wrapper 而非 cardCache——
  * 面板场景双条同落内容列时 slot 大的让位（v169 规则对新挂载目标同样成立）。
  * 变异：sameCard 回退 cardCache 判定 → 对手被 continue 跳过 → 双条并存互不压制。 */
-test('v405 elicitation dedup: panel wrapper rivals are matched via cardHost, not cardCache', () => {
+test('v406 elicitation dedup: panel wrapper rivals are matched via cardHost, not cardCache', () => {
   const h = harness(), cards = h.setPanes(['a', 'b']);
   const taA = cards[0].children[0], taB = cards[1].children[0];
   const wrapper = new Element();
@@ -310,9 +310,9 @@ test('v405 elicitation dedup: panel wrapper rivals are matched via cardHost, not
   h.window.__zusageDispose();
 });
 
-/* v405 cardHost 重置语义（review 补）：面板关闭（属性摘除）→ heavy 回落 below-card 时
+/* v406 cardHost 重置语义（review 补）：面板关闭（属性摘除）→ heavy 回落 below-card 时
  * cardHost 必须清空，否则去重按陈旧宿主把几何无关的残留对手误判同卡、错误压制。 */
-test('v405 mountBelowCard resets cardHost so stale wrapper rivals cannot suppress after panel close', () => {
+test('v406 mountBelowCard resets cardHost so stale wrapper rivals cannot suppress after panel close', () => {
   const h = harness(), cards = h.setPanes(['a', 'b']);
   const taB = cards[1].children[0];
   const wrapper = new Element();

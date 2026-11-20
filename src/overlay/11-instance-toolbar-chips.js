@@ -1164,9 +1164,8 @@
       }
     }
     function restoreEnhanceBtn(alsoCancel) {
-      /* alsoCancel=true 仅 dispose/热更路径：实例销毁后回执无处落地，在途请求中断止损，
-       * 并置 settled 丢弃迟到回包。临时摘除（无锚/开关关）不传：请求照常完成，回包经
-       * finish 身份门 + sid/草稿守卫裁决回填（spec 承诺的「冲突保护兜底」），不清身份键。 */
+      /* 关闭功能或销毁实例时取消在途请求并丢弃迟到回包。暂时没有锚点时只摘 DOM，
+       * 仍由 finish 的会话与草稿校验决定是否回填。 */
       if (alsoCancel && enhanceInFlightId && !enhanceSettled) {
         pluginRequest("prompt-enhance-cancel", { requestId: enhanceInFlightId });
       }

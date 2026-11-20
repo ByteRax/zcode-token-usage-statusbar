@@ -6,15 +6,15 @@
 - 点击相位状态机：`idle` 点击发起增强；`enhancing`（loader-circle 旋转 + `aria-busy`）期间**再点 = 取消**（v344.1）：渲染端立即置 settled 丢弃迟到回包（不再应用结果）并恢复初始可点击态，同时经 `prompt-enhance-cancel`（载荷带在途 requestId，fire-and-forget）让主进程 abort 在途请求——`inject-main` 持有 requestId 到 AbortController 的在途表，`enhanceText` 接收外部 signal，取消返回 kind:"cancelled" 且不再重试，重试退避等待同样可被打断；该动作属主进程白名单，旧主进程吃 unknown 兜底回执，取消的「立即恢复+不应用结果」仍成立，仅「真中断网络请求」需重启加载新分支。- **会话切换（v344.3）**：发起时锚定会话身份（`enhanceSid = instSid || pickedSid`）。回填前先校验会话未变，变了则以「会话已切换，本次结果未应用」丢弃（区分于同会话内编辑导致的「草稿已变化」），**绝不把结果写进切换后的新会话草稿**——内容比对在两会话草稿恰好相同时会漏判，会话身份是权威闸。dispose/热更路径（`restoreEnhanceBtn(true)`）补发 `prompt-enhance-cancel` 中断在途请求止损额度；临时无锚只摘除 DOM、保持任务及超时；开关关闭则取消在途任务。
 
 **撤销相位已删除（v350.1，用户拍板 2026-11-15：去掉「撤销增强，恢复原文」状态展示）**：应用成功（写入确认）后按钮直接回 `idle`，不再展示 20 秒撤销窗、不再有撤销点击路径；聊天历史采集时机不变（应用成功即记录）。原撤销窗守卫（草稿基准/会话校验/自动收窗）随相位一并移除，回填前的会话与草稿比对守卫（防覆盖用户编辑、防跨会话写入）不受影响。
-- 增强 = 读取当前 composer 草稿全文（`__zcodeLexicalInputE2E.getText()`，`data-e2e-lexical-bridge === "ready"` 才可用）→ 主进程用当前会话模型对应凭据发起补全改写（Anthropic 流式聚合，其余非流式）→ 回填前核验会话身份和草稿全文，一致才 `setText()` 整体替换并重读确认（重读比对按 CRLF→LF 归一，v357：宿主桥读回可能规范化换行，逐字比对会把已成功写回误报成「写回失败或草稿已变化」）。会话身份未知、输入桥不可用或草稿变化时不应用结果。空草稿不发请求。
+- 增强 = 读取当前 composer 草稿全文（`__zcodeLexicalInputE2E.getText()`，`data-e2e-lexical-bridge === "ready"` 才可用）→ 主进程按已保存模式发起补全改写（默认用当前会话模型，自定义用已保存的增强供应商与模型；Anthropic 流式聚合，其余非流式）→ 回填前核验会话身份和草稿全文，一致才 `setText()` 整体替换并重读确认（重读比对按 CRLF→LF 归一，v357：宿主桥读回可能规范化换行，逐字比对会把已成功写回误报成「写回失败或草稿已变化」）。会话身份未知、输入桥不可用或草稿变化时不应用结果。空草稿不发请求。
 - **draft 会话放行（v354）**：新会话在发出首条消息前宿主不分配会话 ID（`data-session-id="draft"`，`SessionPane.tsx` 的 `sessionId ?? "draft"`），此类 pane 同样可增强——仅增强链经 `readPaneScope(..., allowDraft=true)` 显式放行 draft，发起身份键 = `"draft"` + workspace scope（scope 属性与 sessionId 无关，draft pane 照常携带）；scope 仅作渲染端回填闸，主进程 prompt-enhance 链不消费任何 sid/scope。在途时用户发出首条消息（draft→真实 sid 晋升）按既有「会话已切换」丢弃，绝不回填。共用归属链的其余消费面（quota 上报、状态条、远端路由、`getScope`）不传该参数，draft 一律维持拒绝——draft scope 绝不进上报链。非 custom 模式下模型闸先于会话闸，draft 且 chip 无模型时提示「未识别当前模型」。
 - 模型归属：优先渲染端实时选择（`v4-model-config` 的 `data-provider`/`data-model`，与额度 chip 同链），缺省回退快照 `last.provider_id`/`model`。主进程只接受 `{providerId, modelId, text}` 三元组；凭据解析失败、无 key、协议不支持一律 fail-closed 回错误，绝不显示假成功。
 - 增强 prompt 只改写不回答：语言跟随草稿（混合保持混合），~800 字符是软目标，长草稿以保真为先；保留代码/路径/命令/报错/数字/URL 及已有结构，不发明事实、技术栈或无关要求。用户草稿按 JSON 字符串序列化作素材，不能把此包装当成绝对的提示词注入防护；不新增无用标题或围栏，但保留原有代码围栏。仅正式答案字段可回填，只有思考内容、流错误、未完整结束的响应及清理后空文本均失败。仅发送当前草稿，不附会话历史、仓库文件或个人记忆。
-- 开关 `enhance_enabled`（config.json 顶层扁平键）：缺省开，显式 `false` 关（与 `quota_enabled` 同语义）；主进程在动作入口 fail-closed 校验，渲染端按钮显隐与 ⚙ 面板开关真值跟随推送面 `enhanceEnabled`。
+- 开关 `enhance_enabled`（config.json 顶层扁平键）：缺省开，显式 `false` 关（与 `quota_enabled` 同语义）。「增强提示词按钮」只出现在「提示词增强」分区顶部；经 `enhance` 动作由主进程原子写入，保存成功后广播 `enhanceEnabled` 给各窗口。切换时本窗口各分栏显示待保存的勾选态，暂不接受第二次切换或发起新测试；工具栏显隐仍以主进程确认值为准。保存失败或回执超时后回到最近确认值，迟到回执不覆盖后续操作；后续广播仍同步真实配置。面板原地更新，不重建配置表单。关闭后隐藏工具栏按钮、禁用新测试，保留配置编辑和在途测试的取消入口；主进程按已保存值拒绝新的增强请求。手机远控不提供桌面开关写入或测试操作。
 
 ## 增强专用供应商配置
 
-- 状态条设置新增「提示词增强」独立分区；右键增强按钮打开对应分区，设置已打开时切页，不触发增强、取消或撤销；齿轮导航和键盘同样可进入。
+- 状态条设置新增「提示词增强」独立分区；右键增强按钮打开对应分区，设置已打开时切页，不触发增强或取消；齿轮导航和键盘同样可进入。分区结构：顶部「增强提示词按钮」开关卡（`.zu-settings-card`，控制 ✦ 按钮显隐的功能总开关），其后 `.zu-ep` 表单区（配置来源/凭据/模型/测试区）。
 - 用户级配置全窗口共享：设置页以单一「配置来源」选择承载三态——跟随当前会话（内部默认模式）、ZCode 已有供应商（自定义+host）、手动配置／厂商预设（自定义+manual）；隐藏模式位由来源联动，持久化格式不变。自定义配置缺失、损坏、来源失效或请求失败均明确报错，不静默回退。
 - 自定义来源支持「从 ZCode 选择已有供应商」实时引用（含凭据可用的套餐源：BigModel/Start Plan 等，凭据由主进程 planKeyOf 解析，协议恒 anthropic）、「厂商预设」和手动填写；预设仅填经核实的地址与协议，不提供 Key。导入仅按显式选择的供应商 ID 解析，界面不回传保存过的 Key；宿主删除、禁用或目标身份（协议、地址）变化时停止使用并要求重新确认。自定义模式下选择 ZCode 来源或打开已保存的 ZCode 来源时自动拉取兼容供应商列表，恢复已保存 provider ID；明确区分加载中、空列表与读取失败，允许手动刷新。默认模式不展示自定义来源与字段，但保留已保存值，切回自定义不丢失。
 - 表单支持 Base URL、协议（OpenAI Chat Completions、OpenAI Responses、Anthropic Messages）、API Key、模型；Key 的保留、替换、移除是不同操作。Key 字段留空表示保留；移除已保存 Key 通过显式低视觉权重操作及二次确认完成，不用常驻复选框。改变目标不携带旧 Key；改变来源或协议后须重新选择/确认模型。切语言或并发保存不应丢失未提交输入。
@@ -54,8 +54,8 @@
 - 渲染端（`src/overlay/11-instance-toolbar-chips.js` 实例闭包）拥有按钮 DOM、相位、busy/undo 定时器与草稿快照；实例 dispose / 关开关 / 锚点消失一律摘除节点，新代清扫选择器含 `.zu-enhance`。
 - 主进程 `model-puller.cjs` 拥有凭据解析与 LLM 调用（`enhanceText`）：套餐源（`PLAN_SOURCES`，issue #336 起覆盖宿主 6 个套餐 id：bigmodel/zai 的 individual/team/start-plan）与 api-key 型自定义供应商（`provider_config.json` 的 `access.apiKey`/`api.baseUrl`/`api.type`）两路；三协议（anthropic-messages / openai-chat-completions / openai-responses）。模板创建的供应商（如 `opencode-go-chat`）个人规则不含 `baseUrl`，按显式 `templateId` 合并宿主打包 `zcode-builtin.json` 与个人 `provider_config.json` 的 `templateRules`（个人覆盖内置、显式配置优先、空串 `baseUrl` 回落模板；issue #364），不按 `providerId` 猜模板。OpenCode Go 网关（`opencode.ai` 及子域 + `/zen/go/v1`，与宿主 `createModelRequestAttributionHeaders` 同判定）的增强请求附带 `x-opencode-session`=每请求新生成的随机 UUID 路由键（一次性请求无宿主会话上下文，不携带真实 sid），缺失被网关 400 MissingSessionID 拒绝；其他目标不附带。仅补全调用（`enhanceText`）附带；增强分区的拉取模型（`listEnhanceModels`）不附——网关对 GET /models 是否强制该键未实测，若被拒可手动输入模型（issue #364）。宿主旧形 `builtin:*` 套餐 id 经 `planAliasId` 在拉模型/写入/探测/增强四入口归一为 `account:*`。套餐源鉴权默认**优先宿主对话同款** `v2/config.json` 的 `builtin:<plan>` provider `options.apiKey`（同目录并置文件，宿主 anthropic 端点 `/api/anthropic` + stream:true 实测正常），缺失/`enc:` 密文时回退 credentials.json OAuth token——**OAuth token 直连 messages 端点被网关以 500「网络错误 code 1234」拒绝**（2026-11-13 实测，stream 真/假、有无 UA 均复现），不得改回；例外与限制（issue #336，2026-11-14 实测定案）：`account:bigmodel-start-plan` 的推理与 coding plan **同走 `open.bigmodel.cn/api/anthropic`**，凭据=宿主在 bigmodel 账号下发放的**项目 API key**（名字 `zcode-api-key`、`usageScene=CODING_PLAN`、`id.secret` 形态，宿主已写入 v2 config 的 `builtin:bigmodel-coding-plan` 条目；本机 x-api-key/raw/Bearer 三头形实测 200）。此前按旧 config 注释打 `zcode.z.ai` + 会话 JWT 是双重错误（网关错+凭据错 → WAF 3012/401）；`zcode.z.ai` 仅承载计费（`billing/balance`，`zcodejwttoken`+`X-Device-Mid`）。`account:zai-start-plan` 走 api.z.ai anthropic + OAuth，端点未实测（无 zai 测试账号）。纯 start-plan（无 coding plan config 条目）账号回落 OAuth 会被 500 拒，需 GLr 项目密钥发放流程（未实现前诚实报 auth）。zai 团队与个人共享宿主同一 builtin 凭据条目，列表按同条目只列首档防重复行（credKey 兜底方向可能列出未开通套餐的假行，属已知取舍）。anthropic 协议走 SSE 流式聚合（`content_block_delta` 累积）；5xx/超时/网络类失败自动重试一次（1.2s 退避、单次 30s、总预算 ≈61s 留渲染端 75s 兜底内），凭据/路径/协议类不重试。凭据只在主进程内存与目标供应商请求中使用，不落盘、不进日志、不回传。
 - 通道：渲染端 `pluginRequest("prompt-enhance", {providerId, modelId, text}, done)` / `pluginRequest("enhance", enabled, done)`，沿用 `__zusagePluginRequests` 轮询协议与 `__zusagePluginResult` 回执；主进程 `inject-main.cjs` 白名单分支校验形状（providerId ≤160、model ≤200、text 1..20000 字符）后分派。旧主进程不认识动作时回执 `unknown action`，渲染端按错误相位提示，不挂起。
-- 配置开关经 `updateConfig` 原子事务写 `enhance_enabled`，保留未知键与用户显式值；⚙ 面板开关乐观更新，失败回执后回滚勾选态。
-- 本功能是用户主动触发的生成式调用，会向当前供应商发送草稿文本并消耗额度；不启动后台周期调用，不影响统计/额度/MCP 查询协议，stdout 契约不变。
+- 配置开关经 `updateConfig` 原子事务写 `enhance_enabled`，保留未知键与用户显式值；⚙ 面板开关点击进待保存态（期间锁开关与新测试），工具栏与真值以主进程广播为准，失败回执或超时后回到最近确认值。
+- 本功能仅在用户主动触发时发送草稿，可能消耗额度或产生费用。工具栏增强默认跟随会话供应商与模型，自定义模式使用已保存的增强供应商与模型；设置页测试按测试区的配置快照规则执行。不启动后台周期调用，不影响统计/额度/MCP 查询协议，stdout 契约不变。
 
 ## 验收场景
 
@@ -67,3 +67,5 @@
 6. draft 会话（新会话未发首条消息）输入草稿点按钮：正常发起增强且回包回填；增强在途时发出首条消息（会话晋升出真实 sid）后回包落「会话已切换」警示，草稿不被改写。
 7. draft 会话 pane 缺失 workspace scope（桥属性与 fiber 候选均不可得）：仍提示「未识别当前会话，暂不能增强」，不发起请求。
 8. draft scope 不进上报链：`getScope`/quota 上报面对 draft 返回空，归属链其余消费面行为与 v354 之前一致。
+9. 中英文设置中，开关只出现一次，位于「提示词增强」标题后、配置表单前；「回答统计」不再显示该开关。
+10. 在一个窗口关闭或重新开启后，其他已打开的设置面板随广播同步勾选态；关闭时新测试不可发起，开启后若没有在途测试则恢复。保存失败后，勾选态和测试入口一并回滚。
