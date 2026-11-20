@@ -269,12 +269,12 @@ test('费用语义：0 有效、缺失显 —、开关关收 KPI 格与表格费
   const html = h.drawProjectTip();
   console.error('YENCODE:', [...html].filter(c => c === '¥' || c === '￥').map(c => c.codePointAt(0).toString(16)).join(','));
   assert.ok(html.indexOf('priced') >= 0, 'TBODY: ' + (html.split('data-zu-pj-rows>')[1] || 'NONE').slice(0, 400));
-  assert.match(html, /<td class="zu-pj-mname zu-model-fit" title="unpriced">unpriced<\/td><td>50<\/td><td>2<\/td><td>\u2014<\/td>/);
+  assert.match(html, /<td class="zu-c-name zu-pj-mname zu-model-fit" title="unpriced">unpriced<\/td><td class="zu-c-tok" data-l="Token 用量">50<\/td><td class="zu-c-req" data-l="请求次数">2<\/td><td class="zu-c-spd">\u2014<\/td><td class="zu-c-cost" data-l="费用">\u2014<\/td>/);
   const h2 = harness({ kmbLS: '1' }); setup(h2);
   withProjectModels(h2, [{ model: 'k', requests: 12345, total: 1234567, cost_usd: 1 }]);
   const html2 = h2.drawProjectTip();
-  assert.match(html2, /<td>1.23M<\/td>/);        // token 走强制 K/M/B
-  assert.match(html2, /<td>1.23万<\/td>/);        // 次数不受 forceKmb 影响（保持万/亿口径）
+  assert.match(html2, /<td class="zu-c-tok" data-l="Token 用量">1.23M<\/td>/);        // token 走强制 K/M/B
+  assert.match(html2, /<td class="zu-c-req" data-l="请求次数">1.23万<\/td>/);        // 次数不受 forceKmb 影响（保持万/亿口径）
   const h3 = harness({ costLS: '0' }); setup(h3);
   withProjectModels(h3, [{ model: 'k', requests: 1, total: 10, cost_usd: 1 }]);
   const html3 = h3.drawProjectTip();

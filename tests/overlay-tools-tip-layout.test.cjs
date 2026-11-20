@@ -70,11 +70,11 @@ test('v304 tools tip: wrench SVG before title, duo KPI row with error coloring',
   // 扳手图标在标题文字之前（kpi-ico 外框 + tools 路径）
   assert.match(raw, /<svg class="zu-kpi-ico"[^]*?M14\.5 2\.5a6 6 0 0 0-5\.6 8\.1[^]*?<\/svg>工具调用</);
   assert.match(noStyle(raw), /zu-turn-kpis--duo/, '双列 KPI 容器');
-  assert.match(noStyle(raw), /调用总数<\/div><div class="zu-stat-v">1133 <small>次<\/small>/);
+  assert.match(noStyle(raw), /调用总数<\/div><div class="zu-stat-v"[^>]*>1133 <small>次<\/small>/);
   // 错误 >0：err 红档；0 时无 err 档
-  assert.match(raw, /错误<\/div><div class="zu-stat-v err">4 <small>次<\/small>/);
+  assert.match(raw, /错误<\/div><div class="zu-stat-v err"[^>]*>4 <small>次<\/small>/);
   const noErr = render(toolsFixture({ total: 5, errors: 0, list: [{ name: 'Bash', count: 5, duration_ms: 100, errors: 0 }] }));
-  assert.match(noErr, /错误<\/div><div class="zu-stat-v">0 <small>次<\/small>/, '零错误无红档');
+  assert.match(noErr, /错误<\/div><div class="zu-stat-v"[^>]*>0 <small>次<\/small>/, '零错误无红档');
   assert.doesNotMatch(noErr, /zu-stat-v err/);
 });
 

@@ -291,8 +291,9 @@
      * → v409 worktree chip 令牌与 tooltip 全量信息（用户规格）：chip/aria/响应式候选在 worktree 游离检出时分支令牌由 HEAD 改显 WorkTree（gitChipAria 第三参 wt，三处同令牌）；tooltip worktree 区块重组为「受管 Worktree」（bucket·名称短标识）、「Worktree 根目录」（仅 monorepo cwd≠root 时单列，不与目录行重复）、「主仓库」（.git 链接文件上溯源仓库，fail-soft）、「起点」、「创建于」（创建记录 time.start）；分支行游离时注 worktree 检出未建分支；快照 worktrees 字段新增 created/sourceRoot（_worktree_origin 返回三元组 + _worktree_source_root）。
      * → v410 worktree 令牌改小写（用户规格）：gitBranchToken 与 aria 的 WorkTree→worktree（游离检出令牌、aria「worktree（游离检出）」），文档同步。
      * → v411 git tooltip 逐文件变更清单（用户规格）：单仓查询 parseGitPorcelain 增可选收文件明细（collectFiles 仅 gitSingleStatus 开启，多仓聚合不收；帽 60 条，ft=changed+untracked 真实总数），每条 {p, s}（s=conflict/untracked/deleted/renamed/added/modified 展示标签）；tooltip worktree 区块后、「更新于」行前插「变更文件」滚动小节（复用 .zu-git-rows 容器 + 新 .zu-gf 标签列，冲突红其余黄，浅色变体；超出帽尾行「另有 N 项未列出」），chip 本体与 aria 不含逐文件；inject-main.cjs 冷文件需完全重启生效。
+     * → v412 统计 Tooltip 响应式布局（specs/stat-tooltip-responsive.md；本批原立账 v388，与主线 v388–v411 各批撞号，按合入顺序顺延 v412）：四卡理想宽度逐卡分化（本轮 540/会话 600/今日 600/项目 760，实际宽恒 min(理想宽, calc(100vw-16px))；tools 卡保持 450 不入响应式范围）；布局模式 data-zu-mode（full/compact/narrow/tiny）由 positionTip 按卡根实测宽写入（零新增监听），共享响应式核心 :is 四卡作用域——narrow 行一改「总用量整行+输入输出双列」、模型表速度/费用列收起改首列副行（.zu-md-sub 常驻 HTML）、tiny 表格卡片化（thead 收起、td[data-l] 字段名、行分隔线）、页脚区间整行换行、项目名 narrow 起换行独占第二行；statModelsTable 改直出表格（th/td 列类+data-l，tools 卡 statTable 不动）；statKpi 值节点补 title 完整值兜底；.tbody 滚动条从隐藏改可见细条；@media(max-width:375px) 兜底打开中窗口骤缩的模式陈旧（卡宽=min(理想宽,vw-16)，视口断点与卡宽断点一一对应）。
      */
-    var VERSION = "v411";
+    var VERSION = "v412";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
