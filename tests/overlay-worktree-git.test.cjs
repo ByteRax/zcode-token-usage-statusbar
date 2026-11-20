@@ -100,6 +100,42 @@ test('gitTipHTML: worktree 区块全量信息（短标识/根目录仅 monorepo/
   assert.ok(!html.includes('受管 Worktree'), '无 wt 字段不渲染区块（普通会话）');
 });
 
+test('gitTipHTML: 变更文件小节（状态标签/冲突红/帽尾提示/转义/无明细隐藏）', () => {
+  const sandbox = {
+    L: (cn) => cn,
+    cnUnits: () => false,
+    window: {},
+    document: { createElement: () => ({ style: {}, setAttribute() {}, appendChild() {} }), body: { appendChild() {} } },
+  };
+  const ctx = run('function stale(){ return false; }\n' + tipRegion(), sandbox);
+  const gitTipHTML = ctx.gitTipHTML;
+  const stBase = { branch: 'feat/x', upstream: '', ahead: 0, behind: 0, detached: false, noCommits: false,
+    staged: 0, unstaged: 0, untracked: 0, conflicts: 0, ins: 0, del: 0, ts: 1730000000000, repoPath: '/repo' };
+  const html = gitTipHTML({ path: '/repo', st: { ...stBase,
+    files: [{ p: 'src/a.py', s: 'modified' }, { p: 'new.md', s: 'untracked' }, { p: 'c.py', s: 'conflict' },
+            { p: 'del.js', s: 'deleted' }, { p: 'o.txt -> n.txt', s: 'renamed' }, { p: 'add.py', s: 'added' }], ft: 9 } });
+  assert.match(html, /<b>变更文件<\/b><span>9 项（列前 6 条）<\/span>/, '头部：真实总数+截断说明');
+  assert.match(html, /<b class="zu-gf">改<\/b><span>src\/a.py<\/span>/, 'modified 标签+路径');
+  assert.match(html, /<b class="zu-gf">新<\/b><span>new\.md<\/span>/, 'untracked 标签');
+  assert.match(html, /<b class="zu-gf zu-gf-c">冲突<\/b><span>c\.py<\/span>/, 'conflict 红色标签');
+  assert.match(html, /<b class="zu-gf">删<\/b>/, 'deleted 标签');
+  assert.match(html, /<b class="zu-gf">移<\/b><span>o\.txt -&gt; n\.txt<\/span>/, 'rename 路径原样（> 经 gitEsc 转义）');
+  assert.match(html, /<b class="zu-gf">新<\/b><span>add\.py<\/span>/, 'added 并入「新」标签');
+  assert.match(html, /另有 3 项未列出/, '帽尾提示');
+  const esc = gitTipHTML({ path: '/repo', st: { ...stBase,
+    files: [{ p: '<script>x</script>', s: 'modified' }], ft: 1 } });
+  assert.ok(!esc.includes('<script>x</script>'), '路径过 gitEsc');
+  assert.match(esc, /&lt;script&gt;x&lt;\/script&gt;/, '转义正断言（防整行消失假绿）');
+  const noTail = gitTipHTML({ path: '/repo', st: { ...stBase,
+    files: [{ p: 'a.py', s: 'modified' }], ft: 1 } });
+  assert.match(noTail, /<b>变更文件<\/b><span>1 项<\/span>/, '未截断无（列前 N）后缀');
+  assert.ok(!noTail.includes('未列出'), '未截断无尾行');
+  const clean = gitTipHTML({ path: '/repo', st: stBase });
+  assert.ok(!clean.includes('变更文件'), '无 files 字段（旧主进程/多仓）隐藏小节');
+  const empty = gitTipHTML({ path: '/repo', st: { ...stBase, files: [], ft: 0 } });
+  assert.ok(!empty.includes('变更文件'), '空数组隐藏小节');
+});
+
 test('gitChipHtml/gitChipAria: worktree 游离检出令牌显 worktree（chip/aria 同源）', () => {
   /* 切片含 gitBranchToken 单源助手（位于 gitChipHtml 之前） */
   const frag = sliceOverlay('    /* v409：游离检出分支令牌单源', '    function gitDotCls(st, stale)');

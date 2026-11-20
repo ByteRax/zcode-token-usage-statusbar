@@ -81,6 +81,43 @@ test("parseGitPorcelain: upstream with ahead/behind, per-code counts, rename and
     detached: false, noCommits: false, staged: 3, unstaged: 1, untracked: 1, conflicts: 1, changed: 5 });
 });
 
+test("parseGitPorcelain: collectFiles gathers labeled entries with cap and true total", async () => {
+  const { api } = loadPump();
+  /* 欠帽段：55 条 M + 5 条特殊状态 = 恰 60 条全收，逐状态验证标签 */
+  const lines = ["## main"];
+  for (let i2 = 0; i2 < 55; i2++) lines.push("M  f" + i2 + ".py");
+  lines.push("?? u0.md", "D  del.js", "R  old -> new.txt", "DD c.py", "A  add.py");
+  const r = api.parseGitPorcelain(lines.join("\n"), true);
+  assert.equal(r.files.length, 60);
+  assert.equal(r.ft, 60, "ft=真实总条目数（changed+untracked）");
+  /* VM realm 对象跨上下文 deepEqual 会因原型不等误报，展开成宿主对象再比 */
+  assert.deepEqual({ ...r.files[0] }, { p: "f0.py", s: "modified" });
+  assert.deepEqual({ ...r.files[55] }, { p: "u0.md", s: "untracked" });
+  assert.deepEqual({ ...r.files[56] }, { p: "del.js", s: "deleted" });
+  assert.deepEqual({ ...r.files[57] }, { p: "old -> new.txt", s: "renamed" });   // rename 路径原样保留
+  assert.deepEqual({ ...r.files[58] }, { p: "c.py", s: "conflict" });
+  assert.deepEqual({ ...r.files[59] }, { p: "add.py", s: "added" });
+  /* 超帽段：70 条 M + 5 条特殊 = 75 条，只收前 60，ft 仍报真实总数 */
+  const big = ["## main"];
+  for (let i3 = 0; i3 < 70; i3++) big.push("M  g" + i3 + ".py");
+  big.push("?? u0.md", "D  del.js", "R  old -> new.txt", "DD c.py", "A  add.py");
+  const b = api.parseGitPorcelain(big.join("\n"), true);
+  assert.equal(b.files.length, 60, "明细帽 60 条");
+  assert.equal(b.ft, 75, "超出帽后 ft 仍为真实总数（渲染端据以显「另有 N 项」）");
+  const small = api.parseGitPorcelain("## main\nM  a.py\n?? b.md\n", true);
+  assert.equal(small.ft, 2);
+  assert.deepEqual([...small.files].map(f => ({ ...f })), [{ p: "a.py", s: "modified" }, { p: "b.md", s: "untracked" }]);
+  const none = api.parseGitPorcelain("## main\n", true);
+  assert.deepEqual([...none.files], []);   // 干净仓库：空数组（渲染端按 length 隐藏小节）
+});
+
+test("parseGitPorcelain: multi-repo pipeline keeps counts only (no files field)", async () => {
+  const { api } = loadPump();
+  const r = api.parseGitPorcelain("## main\nM  a.py\n?? b.md\n");
+  assert.equal(r.files, undefined, "多仓逐仓管线不收明细");
+  assert.equal(r.ft, undefined);
+});
+
 test("parseGitPorcelain: bare branch without upstream tracks nothing", async () => {
   const { api } = loadPump();
   const r = api.parseGitPorcelain("## main\n");
@@ -135,6 +172,9 @@ test("queryGitStatus: one status + one diff HEAD call with locked-down env, merg
   const st = await api.queryGitStatus("/fixture/repo");
   assert.equal(st.ok, true);
   assert.deepEqual([st.branch, st.ahead, st.ins, st.del, st.unstaged], ["main", 2, 12, 4, 1]);
+  /* v411 接线断言：单仓查询必须收逐文件明细（collectFiles=true 漏传即红，审查 MAJOR-1） */
+  assert.equal(st.ft, 1);
+  assert.deepEqual({ ...st.files[0] }, { p: "a", s: "modified" });
   assert.equal(typeof st.ts, "number");
   assert.deepEqual(execs.map(e => [...e.args]), [
     ["-C", "/fixture/repo", "status", "--porcelain", "--branch"],

@@ -2006,6 +2006,8 @@
   }
   /* 进行中 Git 操作的展示名（主进程 fs 探针 detectGitOp 的代码 → 双语标签；am 主栏短标签「补丁」） */
   var GIT_OP_LABELS = { rebase: ["变基", "rebase"], merge: ["合并", "merge"], "cherry-pick": ["拣选", "cherry-pick"], revert: ["还原", "revert"], bisect: ["二分", "bisect"], am: ["补丁", "patch"] };
+  /* v411 逐文件状态标签（inject-main fileLabel 代码 → 双语短标；conflict 走红色 zu-gf-c） */
+  var GIT_FILE_LABELS = { conflict: ["冲突", "conflict"], untracked: ["新", "new"], deleted: ["删", "del"], renamed: ["移", "ren"], added: ["新", "new"], modified: ["改", "mod"] };
   function gitOpLabel(code) { var m = GIT_OP_LABELS[code]; return m ? L(m[0], m[1]) : code; }
   /* v96 multi：多仓库聚合口径（chip/aria/tooltip 共用）——总数、脏仓数（成功仓 changed>0 或
    * untracked>0）、改动/未跟踪文件求和、失败仓数、任一成功仓有冲突；聚合数由渲染端算，主进程不提供。 */
@@ -2062,6 +2064,10 @@
     ".zusage-git-tip .zu-gsep{opacity:.6}" +
     ".zusage-git-tip .zu-gdiv{color:var(--color-tooltip-tag-foreground,#afafb2);opacity:.85}" +
     ".zusage-git-tip .zu-git-rows{max-height:60vh;overflow-y:auto;overscroll-behavior:contain}" +
+    ".zusage-git-tip b.zu-gf{flex:0 0 auto;min-width:3.6em;color:#f0e6a0;font-weight:600}" +
+    ".zusage-git-tip b.zu-gf.zu-gf-c{color:#f09696}" +
+    ".zusage-git-tip[data-zusage-light] b.zu-gf{color:#946200}" +
+    ".zusage-git-tip[data-zusage-light] b.zu-gf.zu-gf-c{color:#d20f39}" +
     ".zusage-git-tip[data-zusage-light] .rt-h,.zusage-git-tip[data-zusage-light] .rt-row b,.zusage-git-tip[data-zusage-light] b.zu-gname{color:var(--color-tooltip-foreground,#2e3440)}" +
     ".zusage-git-tip[data-zusage-light] .c-mod,.zusage-git-tip[data-zusage-light] .c-unt,.zusage-git-tip[data-zusage-light] .c-warn{color:#946200}" +
     ".zusage-git-tip[data-zusage-light] .zu-gconf{color:#d20f39}" +
@@ -2090,6 +2096,15 @@
       (view.wt && view.wt.sourceRoot ? row(L("主仓库", "Source repo"), gitEsc(view.wt.sourceRoot)) : "") +
       (view.wt ? row(L("起点", "Start ref"), view.wt.ref ? gitEsc(view.wt.ref) : (view.wt.sha ? gitEsc(String(view.wt.sha).slice(0, 7)) : L("当前 HEAD（游离检出）", "current HEAD (detached)"))) : "") +
       (view.wt && view.wt.created ? row(L("创建于", "Created"), gitTimeStr(view.wt.created)) : "") +
+      /* v411 变更文件清单：单仓查询收逐文件明细（帽 60，ft=真实总数），多仓聚合不收 */
+      (st.files && st.files.length ?
+        '<div class="rt-row"><b>' + L("变更文件", "Changed files") + '</b><span>' + gitNum(st.ft) + L(" 项", " entries") + (st.ft > st.files.length ? L("（列前 " + st.files.length + " 条）", " (showing first " + st.files.length + ")") : "") + '</span></div>' +
+        '<div class="zu-git-rows">' + st.files.map(function (f) {
+          var lbl = GIT_FILE_LABELS[f.s] || GIT_FILE_LABELS.modified;
+          return '<div class="rt-row"><b class="zu-gf' + (f.s === "conflict" ? " zu-gf-c" : "") + '">' + L(lbl[0], lbl[1]) + '</b><span>' + gitEsc(f.p) + '</span></div>';
+        }).join("") +
+        (st.ft > st.files.length ? '<div class="rt-row"><b class="zu-gf"></b><span class="c-warn">' + L("…另有 " + gitNum(st.ft - st.files.length) + " 项未列出", "… " + gitNum(st.ft - st.files.length) + " more not listed") + '</span></div>' : "") +
+        '</div>' : "") +
       (when ? row(L("更新于", "Updated"), when) : "") +
       '<div class="rt-note">' + L("只读本地仓库，不自动 fetch（上游比较基于本地引用）；远端会话不显示。⚙ 设置可关。",
         "Local repositories read-only, never auto-fetches (upstream compares against local refs); hidden for remote sessions. Toggle in ⚙ settings.") + "</div>";
