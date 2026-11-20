@@ -37,6 +37,7 @@ import os
 import shutil
 import stat
 import sys
+import time
 from pathlib import Path
 from runtime_lock import fixed_drives, real_home as _rt_real_home, sudo_user as _rt_sudo_user, update_config
 
@@ -482,6 +483,26 @@ def remove_data_dir(dry):
     return True
 
 
+def _publish_mobile_pending(pi, result):
+    """replace-failed 的 stage 转存为待替换包（renderer 桥 v359 同款）：完全退出后
+    由监控自动收尾。publish 自持目标锁，必须在 pi._target_lock() 之外调用
+    （file_lock 不可重入）；stage 一经调用即由 publish 接管（成功转存或失败清理）。
+    独立链不写重启标记：restart_notice.py 不在独立运行目录分发清单，终端输出即
+    用户提示；缺标记时 _replace_pending 的 publish_install 门自然短路。"""
+    stage = Path(result["stage"])
+    try:
+        pi.publish_external_pending(stage, source=result.get("source"), operation="install")
+    except Exception as error:
+        print(f"[mobile relay] pending publish failed: {error}", file=sys.stderr)
+        return {"status": "skipped-error", "version": result.get("version"),
+                "detail": f"pending publish failed: {error}"}
+    try:
+        pi.launch_monitor(time.time())
+    except Exception as error:
+        print(f"[mobile relay] monitor launch failed: {error}", file=sys.stderr)
+    return {"status": "pending", "version": result.get("version"), "detail": result.get("detail")}
+
+
 def ensure_mobile_relay_stash(pi):
     from mobile_relay_patch import ensure_deployed
     try:
@@ -489,13 +510,9 @@ def ensure_mobile_relay_stash(pi):
             if any(path.exists() or path.is_symlink() for path in (pi.TMP, pi.TMP_META)):
                 return {"status": "deferred", "detail": "existing pending operation"}
             result = ensure_deployed(pi.ASAR, _locked=True)
-            if result.get("status") == "replace-failed":
-                try:
-                    Path(result["stage"]).unlink(missing_ok=True)
-                except OSError as error:
-                    return {"status": "deferred", "detail": f"stage cleanup failed: {error}"}
-                return {"status": "deferred", "detail": result.get("detail")}
+        if result.get("status") != "replace-failed":
             return result
+        return _publish_mobile_pending(pi, result)
     except TimeoutError as error:
         return {"status": "deferred", "detail": str(error)}
     except Exception as error:
@@ -648,15 +665,26 @@ def main():
                 else:
                     print(L("手机中继补丁已写入；下次打开 ZCode 时生效。",
                             "The mobile relay patch was written; it takes effect the next time ZCode starts."))
+            elif status == "pending":
+                print(L("手机中继补丁已排定：完全退出 ZCode 后会自动完成替换，之后重新打开即可生效，无需重试安装。",
+                        "The mobile relay patch is scheduled: it finishes automatically once ZCode quits "
+                        "completely; reopen ZCode afterwards. No need to retry the install."))
             elif status == "deferred":
-                print(L(f"手机中继补丁尚未就绪：请在完全退出 ZCode（含托盘/后台）后，对目标 asar 执行 "
-                        f"\"{sys.executable}\" \"{HERE / 'mobile_relay_patch.py'}\" apply --asar \"{asar}\""
-                        f"（或重跑 \"{sys.executable}\" \"{HERE / 'install.py'}\" --asar \"{asar}\"）。"
-                        "在运行中的客户端里重跑 /install-overlay 无法完成该补丁。",
-                        f"The mobile relay patch is not ready: quit ZCode completely (including the tray/background), "
-                        f"then run \"{sys.executable}\" \"{HERE / 'mobile_relay_patch.py'}\" apply --asar \"{asar}\""
-                        f" (or re-run \"{sys.executable}\" \"{HERE / 'install.py'}\" --asar \"{asar}\"). "
-                        "Re-running /install-overlay inside the running client cannot finish this patch."))
+                if mobile.get("detail") in ("existing pending operation", "bridge pending"):
+                    print(L("手机中继补丁暂缓：已有待替换操作待收尾，完全退出 ZCode 后会自动完成，"
+                            "之后的会话会自动补装，无需手动重试。",
+                            "The mobile relay patch is postponed: an existing pending replacement must finish "
+                            "first (it completes automatically once ZCode quits completely); later sessions "
+                            "install the patch automatically. No manual retry needed."))
+                else:
+                    print(L(f"手机中继补丁尚未就绪：请在完全退出 ZCode（含托盘/后台）后，对目标 asar 执行 "
+                            f"\"{sys.executable}\" \"{HERE / 'mobile_relay_patch.py'}\" apply --asar \"{asar}\""
+                            f"（或重跑 \"{sys.executable}\" \"{HERE / 'install.py'}\" --asar \"{asar}\"）。"
+                            "在运行中的客户端里重跑 /install-overlay 无法完成该补丁。",
+                            f"The mobile relay patch is not ready: quit ZCode completely (including the tray/background), "
+                            f"then run \"{sys.executable}\" \"{HERE / 'mobile_relay_patch.py'}\" apply --asar \"{asar}\""
+                            f" (or re-run \"{sys.executable}\" \"{HERE / 'install.py'}\" --asar \"{asar}\"). "
+                            "Re-running /install-overlay inside the running client cannot finish this patch."))
             elif status != "present":
                 print(L("手机中继补丁尚未就绪；请先完成已有待替换操作或解除占用及权限问题，再重试安装。",
                         "The mobile relay patch is not ready; complete any pending replacement or resolve access problems, then retry installation."))

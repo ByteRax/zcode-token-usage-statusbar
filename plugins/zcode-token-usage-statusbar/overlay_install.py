@@ -841,32 +841,77 @@ def _install_overlay(runtime, pi):
         runtime, {"state": "pending-install", "installation": installation}))
 
 
-def _ensure_mobile_patch_safely(pi, ensure):
-    """Never publish a mobile patch into the shared pending journal."""
+def _publish_mobile_pending(pi, result, quiet_monitor=False):
+    """replace-failed 的 stage 转存为待替换包（renderer 桥 v359 同款链）：完全退出后
+    由监控自动收尾，不再要求用户手动重跑命令。publish 自持目标锁，必须在
+    pi._target_lock() 之外调用（file_lock 不可重入）；stage 一经调用即由 publish
+    接管（成功转存或失败清理都归它）。"""
+    stage = Path(result["stage"])
+    installation = None
+    try:
+        installation = {"asar": str(pi.ASAR.resolve()),
+                        "entryHash": hashlib.sha256(pi.entry_bytes_of(stage)).hexdigest()}
+    except Exception as e:
+        # 指纹取不到（异常包/杀毒锁）就不写标记：宁缺勿假——没有 installation 的
+        # pending-install 标记 swap 后无法销账，红点会永远亮着
+        print(f"[zusage-plugin] mobile relay pending fingerprint failed（已忽略）：{e}", file=sys.stderr)
+    redirect = contextlib.redirect_stdout(sys.stderr) if quiet_monitor else contextlib.nullcontext()
+    try:
+        with redirect:
+            pi.publish_external_pending(stage, source=result.get("source"), operation="install")
+    except Exception as e:
+        print(f"[zusage-plugin] mobile relay pending publish failed（已忽略）：{e}", file=sys.stderr)
+        return {"status": "skipped-error", "version": result.get("version"),
+                "detail": f"pending publish failed: {e}"}
+    if installation is not None:
+        try:
+            from restart_notice import record_restart
+            record_restart(str(pi.RUNTIME), {"state": "pending-install", "installation": installation})
+        except Exception as e:
+            print(f"[zusage-plugin] mobile relay restart marker failed（已忽略）：{e}", file=sys.stderr)
+    monitor_env = {name: os.environ.get(name) for name in
+                   ("ZUSAGE_NO_MONITOR", "ZUSAGE_MONITOR_QUIET")}
+    try:
+        if quiet_monitor:
+            os.environ["ZUSAGE_NO_MONITOR"] = "1"
+            os.environ["ZUSAGE_MONITOR_QUIET"] = "1"
+        with redirect:
+            pi.launch_monitor(time.time())
+    except Exception as e:
+        print(f"[zusage-plugin] mobile relay monitor 启动失败（已忽略）：{e}", file=sys.stderr)
+    finally:
+        for name, value in monitor_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+    return {"status": "pending", "version": result.get("version"), "detail": result.get("detail")}
+
+
+def _ensure_mobile_patch_safely(pi, ensure, quiet_monitor=False):
+    """串行让位 + replace-failed 转存：目标锁内确认无既有 pending 才就地补打；
+    os.replace 被运行中客户端拒绝时把已构建 stage 转存为待替换包（锁外调 publish，
+    file_lock 不可重入），完全退出后自动收尾。已有 pending 时绝不读写/合并/重发。"""
     try:
         with pi._target_lock():
             if any(path.exists() or path.is_symlink() for path in (pi.TMP, pi.TMP_META)):
                 return {"status": "deferred", "detail": "existing pending operation"}
             result = ensure(pi.ASAR)
-            if result.get("status") != "replace-failed":
-                return result
-            try:
-                Path(result["stage"]).unlink(missing_ok=True)
-            except OSError as error:
-                return {"status": "deferred", "detail": f"stage cleanup failed: {error}"}
-            return {"status": "deferred", "version": result.get("version"),
-                    "detail": result.get("detail")}
+        if result.get("status") != "replace-failed":
+            return result
+        return _publish_mobile_pending(pi, result, quiet_monitor)
     except TimeoutError as error:
         return {"status": "deferred", "detail": str(error)}
 
 
 def ensure_mobile_relay_stash(pi, quiet_monitor=False):
-    """安全补装 mobile relay；有 pending 或无法替换时保守延后。"""
+    """安全补装 mobile relay；有 pending 时保守延后，replace-failed 转存待替换链。"""
     try:
         from mobile_relay_patch import ensure_deployed as ensure_stash
         redirect = contextlib.redirect_stdout(sys.stderr) if quiet_monitor else contextlib.nullcontext()
         with redirect:
-            return _ensure_mobile_patch_safely(pi, lambda path: ensure_stash(path, _locked=True))
+            return _ensure_mobile_patch_safely(pi, lambda path: ensure_stash(path, _locked=True),
+                                               quiet_monitor)
     except Exception as e:
         print(f"[zusage-plugin] mobile relay stash ensure failed（已忽略）：{e}", file=sys.stderr)
         return {"status": "skipped-error", "detail": str(e)}
@@ -886,14 +931,25 @@ def _mobile_deferred_message(pi):
             "在运行中的客户端里重跑 /install-overlay 无法完成该补丁。")
 
 
+def _mobile_pending_scheduled_message():
+    return ("手机中继补丁已排定：完全退出 ZCode 后会自动完成替换，之后重新打开即可生效，"
+            "无需重试安装。注意关闭窗口不等于退出：若关窗后仍未生效，说明 ZCode 仍驻留"
+            "托盘/后台，请从托盘图标退出，或在任务管理器中确认没有 ZCode 进程残留。")
+
+
+def _mobile_deferred_waiting_message():
+    return ("手机中继补丁暂缓：已有待替换操作待收尾，完全退出 ZCode 后会自动完成，"
+            "之后的会话会自动补装，无需手动重试。")
+
+
 def record_mobile_restart(runtime, pi, mobile):
-    """mobile 补丁刚写入且客户端仍在运行时标记需完全重启。
+    """mobile 补丁就地写入且客户端仍在运行时标记需完全重启。
 
     使用无 hashes、无 installation 的 state=installed + asarPatch=True：loader 在
     下一次启动按 createdAt 时间戳直接 ack 销账；asarPatch 让 ack_restart 拒绝把
     合并进来的 pending-sync hashes 走热销账路径（asar 中段补丁只能完全重启生效）。
-    pending-install 需要 installation/publishedAt，在 mobile 路径上永远无法销账，
-    不得借用。"""
+    pending-install 需要 installation/publishedAt，就地写入路径没有 swap 永远无法
+    销账，不得借用；转存路径的 pending-install 标记由 _publish_mobile_pending 负责。"""
     if (mobile or {}).get("status") != "patched":
         return False
     try:
@@ -999,18 +1055,22 @@ def ensure_renderer_bridge(pi, quiet_monitor=False):
 
 
 def _mobile_pending_notice(out, pi, mobile):
-    """SessionStart 静默链：只提示明确的 deferred（已有待替换操作，需用户先处理）。
-    skipped-error/unknown 属可选增强不可用（宿主不支持/夹具无有效 asar），不得每会话
-    打扰；显式 /install-overlay 的失败仍走 CLI 分支自行打印。
-
-    文案必须可执行：deferred 时在运行中的客户端里重试 /install-overlay 只会再次
-    撞上占用，唯一出路是完全退出后走独立补丁命令。已有 systemMessage 优先保留。"""
+    """SessionStart 静默链：pending=已排定自动收尾；deferred 按成因分流——已有
+    待替换操作（含 bridge pending）等收尾后自动补装，不给手动命令；其余（锁超时、
+    清理失败）才提示完全退出后走独立补丁命令。skipped-error/unknown 属可选增强
+    不可用（宿主不支持/夹具无有效 asar），不得每会话打扰；显式 /install-overlay
+    的失败仍走 CLI 分支自行打印。已有 systemMessage 优先保留。"""
     if "systemMessage" in out or "hookSpecificOutput" in out:
         return out
-    if (mobile or {}).get("status") == "deferred":
-        from restart_notice import PREFIX
-        return _nudge(out, PREFIX + _mobile_deferred_message(pi))
-    return out
+    status = (mobile or {}).get("status")
+    if status not in ("pending", "deferred"):
+        return out
+    from restart_notice import PREFIX
+    if status == "pending":
+        return _nudge(out, PREFIX + _mobile_pending_scheduled_message())
+    if (mobile or {}).get("detail") in ("existing pending operation", "bridge pending"):
+        return _nudge(out, PREFIX + _mobile_deferred_waiting_message())
+    return _nudge(out, PREFIX + _mobile_deferred_message(pi))
 
 
 def _bridge_notice(out, result, pi, quiet_hook=False):
@@ -1371,9 +1431,19 @@ def main():
                       else ensure_mobile_relay_stash(pi))
             record_mobile_restart(runtime, pi, mobile)
             status = mobile.get("status")
-            if status == "deferred":
-                print(_mobile_deferred_message(pi))
-            elif status not in ("present", "patched"):
+            if status == "pending":
+                print(_mobile_pending_scheduled_message())
+            elif status == "deferred":
+                if mobile.get("detail") in ("existing pending operation", "bridge pending"):
+                    print(_mobile_deferred_waiting_message())
+                else:
+                    print(_mobile_deferred_message(pi))
+            elif status == "patched":
+                if pi.client_running():
+                    print("手机中继补丁已写入；请完全退出并重开 ZCode 后生效（只关窗口或重开会话无效）。")
+                else:
+                    print("手机中继补丁已写入；下次打开 ZCode 时生效。")
+            elif status != "present":
                 print("手机中继补丁尚未就绪；请先完成已有待替换操作或解除占用及权限问题，再重试安装。本次未为手机中继排定替换。")
             if bridge.get("status") == "pending":
                 print("客户端运行中，逐问速率行补丁已排定：完全退出 ZCode 后自动完成替换。")

@@ -59,11 +59,17 @@ class MobileInstallTests(unittest.TestCase):
         self.pin = mock.patch.object(bridge, "HOST_TARGETS", [pin])
         self.pin.start()
         self.addCleanup(self.pin.stop)
+        self.renderer = renderer
+        self._write_legacy_asar()
+
+    def _write_legacy_asar(self):
+        """重建「loader 注入行在位 + 旧代 relay 注入」的目标 asar（handover 用例按 owner 复位）。"""
         stash = mobile.inject_for(b"relayProtocol=Ce,Q.disposeBridge")
         old = BODY.replace(b"relayProtocol=Ce,", b"relayProtocol=Ce," + stash).replace(ANCHOR, LEGACY)
+        target = bridge.NEWEST
         make_asar(self.target, files={"package.json": json.dumps({"name": "@zcode/desktop", "type": "module", "version": target["version"]}).encode(),
                                      "out/main/index.js": old + self.pi.INJECT_LINE.encode(),
-                                     target["asset"]: renderer})
+                                     target["asset"]: self.renderer})
         # Relay derives against this synthetic main bundle rather than the real pinned hash.
         p = mock.patch.object(mobile, "MOBILE_RELAY_TARGETS", [])
         p.start()
@@ -156,25 +162,36 @@ class MobileInstallTests(unittest.TestCase):
             self.assertEqual(self.standalone.main(), 0)
         self.assertEqual(mobile.check_deployed(self.target)["uplink_generation"], 2)
 
-    def test_failed_mobile_replace_never_publishes_pending(self):
+    def test_failed_mobile_replace_hands_over_to_pending_chain(self):
         real_replace = os.replace
         def replace(src, dst):
             if Path(dst) == self.pi.ASAR:
                 raise PermissionError("locked")
             return real_replace(src, dst)
-        original = self.target.read_bytes()
         for owner in (self.installer, self.standalone):
-            with self.subTest(owner=owner.__name__), \
-                    mock.patch.object(os, "replace", side_effect=replace), \
-                    mock.patch.object(self.pi, "_publish_pending", side_effect=AssertionError("publish forbidden")), \
-                    mock.patch.object(self.pi, "publish_external_pending", side_effect=AssertionError("publish forbidden")):
-                result = owner.ensure_mobile_relay_stash(self.pi)
-                self.assertEqual(result["status"], "deferred")
-                self.assertFalse(self.pi.TMP.exists())
-                self.assertFalse(self.pi.TMP_META.exists())
+            with self.subTest(owner=owner.__name__):
+                self._write_legacy_asar()
+                original = self.target.read_bytes()
+                (self.runtime / ".plugin-restart-required").unlink(missing_ok=True)
+                with mock.patch.object(os, "replace", side_effect=replace), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    result = owner.ensure_mobile_relay_stash(self.pi)
+                self.assertEqual(result["status"], "pending")
+                self.assertEqual(self.pi.pending_operation(), "install")
                 self.assertEqual(self.target.read_bytes(), original)
                 self.assertEqual(list(self.root.glob(".mobile-relay-*")), [])
-        self.monitor.assert_not_called()
+                self.monitor.assert_called()
+                if owner is self.installer:
+                    # 转存当轮记录 pending-install 标记（带 stage 入口指纹，swap 后销账用）
+                    marker = json.loads((self.runtime / ".plugin-restart-required")
+                                        .read_text(encoding="utf-8"))
+                    self.assertEqual(marker["state"], "pending-install")
+                    self.assertEqual(marker["installation"]["entryHash"],
+                                     hashlib.sha256(self.pi.entry_bytes_of(self.pi.TMP)).hexdigest())
+                # 完全退出后监控收尾：补丁落位
+                self.assertTrue(self.pi.finalize_tmp())
+                self.assertEqual(mobile.check_deployed(self.target)["uplink_generation"], 2)
+                self.monitor.reset_mock()
 
     def test_already_installed_does_not_copy_archive(self):
         self.assertEqual(self.standalone.ensure_mobile_relay_stash(self.pi)["status"], "patched")
@@ -274,6 +291,33 @@ class MobileInstallTests(unittest.TestCase):
         self.assertIn("mobile_relay_patch.py", message)
         self.assertIn("apply --asar", message)
         self.assertIn("手机中继补丁尚未就绪", output["hookSpecificOutput"]["additionalContext"])
+
+    def test_mobile_notice_splits_pending_and_waiting_from_manual_command(self):
+        # pending：已排定自动收尾，不给手动命令
+        scheduled = {"suppressOutput": True}
+        self.installer._mobile_pending_notice(scheduled, self.pi, {"status": "pending"})
+        message = scheduled["systemMessage"]
+        self.assertIn("已排定", message)
+        self.assertIn("完全退出", message)
+        self.assertIn("自动完成", message)
+        self.assertNotIn("mobile_relay_patch.py", message)
+        # deferred + 既有待替换操作/bridge pending：等待收尾后自动补装，不给手动命令
+        for detail in ("existing pending operation", "bridge pending"):
+            waiting = {"suppressOutput": True}
+            self.installer._mobile_pending_notice(waiting, self.pi,
+                                                  {"status": "deferred", "detail": detail})
+            self.assertIn("自动补装", waiting["systemMessage"])
+            self.assertNotIn("mobile_relay_patch.py", waiting["systemMessage"])
+        # 其余 deferred（锁超时等）：保留手动命令出口
+        manual = {"suppressOutput": True}
+        self.installer._mobile_pending_notice(manual, self.pi,
+                                              {"status": "deferred", "detail": "lock busy"})
+        self.assertIn("mobile_relay_patch.py", manual["systemMessage"])
+        # skipped-error 保持静默
+        quiet = {"suppressOutput": True}
+        self.assertIs(self.installer._mobile_pending_notice(
+            quiet, self.pi, {"status": "skipped-error", "detail": "no host"}), quiet)
+        self.assertNotIn("systemMessage", quiet)
 
     def test_standalone_remove_clears_mobile_injection(self):
         with mock.patch.object(sys, "argv", ["install.py", "--remove", "--asar", str(self.target),
@@ -412,6 +456,58 @@ class MobileInstallTests(unittest.TestCase):
         self.assertIn("mobile_relay_patch.py", text)
         self.assertIn("apply --asar", text)
         self.assertNotIn("全部完成", text)
+
+    def test_plugin_cli_reports_patched_pending_and_waiting(self):
+        def run_cli(mobile_result):
+            with mock.patch.object(self.installer, "resolve_paths", return_value=(self.runtime, self.pi)), \
+                    mock.patch.object(self.installer, "sync_runtime"), \
+                    mock.patch.object(self.installer, "_install_overlay", return_value=True), \
+                    mock.patch.object(self.installer, "ensure_renderer_bridge", return_value={"status": "present"}), \
+                    mock.patch.object(self.installer, "ensure_mobile_relay_stash", return_value=mobile_result), \
+                    mock.patch.object(self.installer, "save_runtime_config"), \
+                    mock.patch.object(self.installer, "chown_runtime_to_user"), \
+                    mock.patch.object(sys, "argv", ["overlay_install.py", "install"]), \
+                    contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as exit_code:
+                    self.installer.main()
+            self.assertEqual(exit_code.exception.code, 0)
+            return out.getvalue()
+
+        text = run_cli({"status": "patched"})
+        self.assertIn("手机中继补丁已写入", text)   # 此前 patched 静默，用户无法区分成败
+        self.assertIn("下次打开 ZCode", text)
+        text = run_cli({"status": "pending"})
+        self.assertIn("已排定", text)
+        self.assertIn("自动完成", text)
+        self.assertNotIn("mobile_relay_patch.py", text)
+        text = run_cli({"status": "deferred", "detail": "existing pending operation"})
+        self.assertIn("自动补装", text)
+        self.assertNotIn("mobile_relay_patch.py", text)
+        text = run_cli({"status": "deferred", "detail": "lock busy"})
+        self.assertIn("手机中继补丁尚未就绪", text)
+        self.assertIn("mobile_relay_patch.py", text)
+
+    def test_standalone_reports_scheduled_and_waiting(self):
+        def run_standalone(mobile_result):
+            with mock.patch.object(self.standalone, "load_lang_from_config", return_value=None), \
+                    mock.patch.object(self.standalone, "ensure_mobile_relay_stash", return_value=mobile_result), \
+                    mock.patch.object(self.standalone, "copy_runtime"), \
+                    mock.patch.object(self.standalone, "prepare_config"), \
+                    mock.patch.object(self.standalone, "remember_asar"), \
+                    mock.patch.object(self.pi, "install", return_value=True), \
+                    mock.patch.dict(sys.modules, {"patch_install": self.pi}), \
+                    mock.patch.object(sys, "argv", ["install.py", "--asar", str(self.target), "--no-mcp"]), \
+                    contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(self.standalone.main(), 0)
+            return out.getvalue()
+
+        text = run_standalone({"status": "pending"})
+        self.assertIn("已排定", text)
+        self.assertIn("自动完成", text)
+        self.assertNotIn("mobile_relay_patch.py", text)
+        text = run_standalone({"status": "deferred", "detail": "existing pending operation"})
+        self.assertIn("自动补装", text)
+        self.assertNotIn("mobile_relay_patch.py", text)
 
     def test_standalone_helper_upgrades_legacy(self):
         with contextlib.redirect_stderr(io.StringIO()):

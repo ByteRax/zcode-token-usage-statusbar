@@ -182,7 +182,7 @@ python3 sync_plugin.py --check
 
 - 只经宿主官方 acknowledged relay 推送（`relayProtocol.protocol.send`，seq/ack 归宿主），不自建 socket、不裸写 relay；目标唯一来源是可信唯一桌面窗口的 preload `getWebRemoteControlStatus()` + 唯一 ready live 桥，禁止用 DOM chips、目录/标题或最近会话猜测。`mobile_relay.enabled` 仅对象内显式 `true` 开启；新旧 loader 混载必须同时满足 `strictOptIn:true` 与能力回调。
 - wire 只下发目标统计投影、匿名 `binding` 与所属主机今日/项目聚合（可能含其他会话贡献），真实工作区身份/路径/标题/正文/凭据不得进入 wire；上行仅带显示偏好与代际。旧宿主 chips-only 帧只显示升级提示，不复活独立状态条。
-- 安装链的 mobile 补丁独立于 renderer pending journal：存在任何 pending/sidecar 时只返回 `deferred`，不读写/合并/重发；替换失败只清理本次 stage，不发布 pending、不启动监控；`hot_reload:false` 时 `mobile-relay.cjs` 变更写入 restart hashes。SessionStart 仅对 `deferred` 提示手机中继未就绪，`skipped-error/unknown` 保持静默。
+- 安装链的 mobile 补丁串行让位不变：存在任何 pending/sidecar 时只返回 `deferred`，不读写/合并/重发；`os.replace` 被拒时把 stage 经 `publish_external_pending` 转存为待替换包（bridge v359 同款，publish 自持目标锁须在锁外调用）并拉监控，记录 `pending-install` 标记，完全退出后自动收尾，返回 `pending`；仅转存失败回退 `skipped-error`。独立 `apply` CLI 仍不发布 pending（replace-failed 只清本次 stage）。`hot_reload:false` 时 `mobile-relay.cjs` 变更写入 restart hashes。SessionStart 对 `pending` 提示已排定、对 deferred 按成因分流（已有待替换操作/bridge pending=等待自动补装；其余=完全退出+独立命令），`skipped-error/unknown` 保持静默。
 - 完整契约见 [specs/mobile-relay.md](specs/mobile-relay.md)、[mobile-unified-overlay.md](specs/mobile-unified-overlay.md)、[mobile-relay-uplink-binding.md](specs/mobile-relay-uplink-binding.md)、[mobile-relay-install-upgrade.md](specs/mobile-relay-install-upgrade.md)、[mobile-userscript-build.md](specs/mobile-userscript-build.md)。
 
 ### 安装、数据保护与网络
