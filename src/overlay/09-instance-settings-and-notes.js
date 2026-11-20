@@ -147,6 +147,9 @@
       }
       /* v172 待办红点 → v208 仅待重启：需重启且未查看时亮 ⚙ 与「插件更新」导航点；其他窗口经各自 syncUpdate 收敛 */
       syncUpdateDots(updDotOn());
+      /* v413：待重启红点亮起即后台预取日志（悬停零等待）。pluginRequest 参与判定是为了
+       * VM 切片安全——不含 00 分片定义的切片沙箱里 typeof 为 undefined，整链跳过不抛错。 */
+      if (updDotOn() && typeof updNotePrefetch === "function" && typeof pluginRequest === "function") updNotePrefetch();
       var messages = {
         idle: L("尚未检测", "Not checked yet"),
         checking: L("正在检查更新…", "Checking for updates…"),
@@ -244,6 +247,76 @@
        * 渠道门控，market/local 会被拒绝且不产生任何网络请求。 */
       if (u.currentVersion) return { version: u.currentVersion, status: "current" };
       return null;
+    }
+    /* ---------- v413 齿轮悬停更新日志卡：待重启红点亮起时，悬停 ⚙ 直接展示待重启版本的
+     * Release 日志（形态对标宿主 UpdateReleaseNotesTooltip，规则见 overlay-ui.md）。
+     * 数据独立于设置页 notesResult——面板有粘性历史选择，两边不能互相干扰；主进程 1h
+     * 缓存兜底多窗与面板的重复请求。悬停只读不 ack，红点已读仍以点进「插件更新」分区为准。 */
+    var updNoteState = { version: "", seq: 0, loading: false, result: null, error: null };
+    function updNoteTargetVersion() {
+      var def = notesDefaultTarget(state.pluginUpdate);
+      return def && !def.unknown && def.version ? def.version : "";
+    }
+    function updNoteEnsure() {
+      var v = updNoteTargetVersion();
+      if (!v) return false;
+      if (updNoteState.version === v && (updNoteState.loading || updNoteState.result || updNoteState.error)) return false;
+      var seq = ++updNoteState.seq;
+      updNoteState.version = v; updNoteState.loading = true; updNoteState.result = null; updNoteState.error = null;
+      pluginRequest("release-notes", { version: v, force: false }, function (result) {
+        if (inactive() || seq !== updNoteState.seq) return;   // 乱序/实例销毁守卫：旧结果不覆盖新状态
+        updNoteState.loading = false;
+        updNoteState.result = result && result.ok ? result : null;
+        updNoteState.error = result && !result.ok ? result : null;
+        updNoteRefreshTip();
+      });
+      return true;
+    }
+    function updNotePrefetch() { updNoteEnsure(); }   // 红点亮起即后台拉取（syncUpdate 钩子），悬停到达时多半已就绪
+    function updNoteRefreshTip() {
+      if (!gear) return;
+      gear.__zuUpdHtml = updNoteHtml();
+      if (typeof renderUpdNoteTip === "function" && typeof updNoteTipFor !== "undefined" && updNoteTipFor === gear) renderUpdNoteTip();
+    }
+    function updNoteHtml() {
+      var v = updNoteState.version;
+      if (!v) return "";
+      var r = updNoteState.result;
+      var subs = [];
+      if (r && r.publishedAt) {
+        var d = notesFmtDate(r.publishedAt);
+        if (d) subs.push(d);
+      }
+      subs.push(L("已安装待重启，重启 ZCode 后生效", "Installed, pending restart — takes effect after restarting ZCode"));
+      if (r && r.mirror) subs.push(L("GitCode 镜像（GitHub 限流回退）", "GitCode mirror (GitHub rate-limit fallback)"));
+      else if (r && r.verified === false) subs.push(L("参考：同号 Release，未核实与本渠道一致", "reference: same-version release, parity unverified"));
+      var head = '<div class="zu-un-head"><div class="zu-un-title">' + mEsc("v" + v + L(" 更新日志", " release notes")) +
+        '</div><div class="zu-un-sub">' + mEsc(subs.join(" · ")) + "</div></div>";
+      var body;
+      if (updNoteState.loading) body = '<div class="zu-un-note">' + L("正在加载更新日志…", "Loading release notes…") + "</div>";
+      else if (updNoteState.error) {
+        var reason = String(updNoteState.error.reason || "");
+        var text = reason === "rate-limited" ? L("暂时无法获取（API 限流）", "Temporarily unavailable (rate limited)")
+          : reason === "missing" ? L("该版本暂无发布日志", "No release notes for this version")
+          : reason === "unsupported-channel" || reason === "unsupported" ? L("当前来源暂不支持在线日志", "Online release notes are unavailable for this source")
+          : L("暂时无法获取更新日志", "Temporarily unable to load release notes");
+        body = '<div class="zu-un-note">' + text + L("　详情见 ⚙ → 插件更新。", " — see ⚙ → Plugin updates.") + "</div>";
+      } else if (r && typeof r.body === "string" && r.body) {
+        body = notesHtml(r.body, true).html;   // 全量渲染（64KB 钳制 + 升级注意节高亮），超帽由卡内滚动承接
+      } else {
+        body = '<div class="zu-un-note">' + L("暂无正文内容。", "No content.") + "</div>";
+      }
+      return head + '<div class="zu-un-body">' + body + "</div>";
+    }
+    function onGearUpdEnter() {
+      if (!updDotOn()) return;   // 红点灭（含 restartNotice:false、已 ack）不弹
+      if (panel.classList.contains("open")) return;   // 面板开着：更高优先级界面，不弹卡
+      try { updNoteEnsure(); } catch (eUpdEns) { }
+      updNoteRefreshTip();
+      if (gear.__zuUpdHtml && typeof showUpdNoteTip === "function") showUpdNoteTip(gear);
+    }
+    function onGearUpdLeave() {
+      if (typeof scheduleUpdNoteHide === "function") scheduleUpdNoteHide();
     }
     function notesPickTarget(u) {
       var def = notesDefaultTarget(u);
@@ -2239,9 +2312,18 @@
       positionSettingsPanel();
       subPopClose(false, "gear-open");   // 与子代理统一浮层互斥（v49→v217）
       hideTip(true, "gear-open");   // 移向齿轮的路上可能触发过条目 tooltip，开面板时一并收掉
+      if (typeof hideUpdNoteTip === "function") hideUpdNoteTip();   // v413：悬停日志卡与面板互斥
       var activeNav = panel.querySelector('.zu-navitem[aria-current="page"]');
       if (activeNav) activeNav.focus();
     });
+    /* v413：待重启红点时悬停/聚焦 ⚙ 弹更新日志卡（壳与收放是 01 分片文档级单例）。
+     * 绑定放在 click 注册之后——大量 VM 切片以「gear.addEventListener("click"」收尾，
+     * 放前面会被一并切进无 gear 桩的沙箱求值而 ReferenceError。 */
+    gear.addEventListener("mouseenter", onGearUpdEnter);
+    gear.addEventListener("focus", onGearUpdEnter);
+    gear.addEventListener("mouseleave", onGearUpdLeave);
+    gear.addEventListener("blur", onGearUpdLeave);
+    gear.addEventListener("keydown", function (e) { if (e.key === "Escape" && typeof hideUpdNoteTip === "function") hideUpdNoteTip(); });
     panel.addEventListener("input", function (e) {
       var field = e.target;
       if (field.classList && field.classList.contains("zu-src-field")) field.__zuEditVersion = (field.__zuEditVersion || 0) + 1;
