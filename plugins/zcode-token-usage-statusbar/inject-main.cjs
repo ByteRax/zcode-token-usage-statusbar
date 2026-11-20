@@ -2303,6 +2303,7 @@ const GIT_ENV = Object.assign({}, process.env, { GIT_OPTIONAL_LOCKS: "0", GIT_TE
 const GIT_CONFLICT = new Set(["DD", "AU", "UD", "UA", "DU", "AA", "UU"]);
 const GIT_REPO_CAP = 32;   // 多仓聚合上限：父目录非仓库时最多查询 32 个直接子仓库，超出折叠进 more
 let gitTickBusy = false, gitRefreshPending = false, gitNoBinaryLogged = false;
+const gitMissingNotified = new Set();   // 已补推 notrepo 的「窗口id\u0000路径」键（恢复后移除，再消失重新通知）
 function gitRefreshResult(requestedPath, results) {
   if (typeof requestedPath !== "string" || !requestedPath) return { ok: false, error: "no paths" };
   if (!results || !results.has(requestedPath)) return { ok: false, error: "no paths" };
@@ -2486,8 +2487,10 @@ async function readGitPaths(wc) {
       new Promise((resolve) => { timer = setTimeout(() => resolve("[]"), 1000); }),
     ]).finally(() => { if (typeof clearTimeout === "function") clearTimeout(timer); });
     const arr = JSON.parse(String(raw || "[]"));
-    return Array.isArray(arr) ? arr.filter(gitPathOk) : [];
-  } catch (e) { return []; }
+    const ok = [], missing = [];
+    if (Array.isArray(arr)) for (const p of arr) (gitPathOk(p) ? ok : missing).push(p);
+    return { ok, missing };
+  } catch (e) { return { ok: [], missing: [] }; }
 }
 function pushGitState(wc, p, st) {
   if (!wc || wc.isDestroyed()) return;
@@ -2516,7 +2519,18 @@ async function gitTick(fromRefresh, requestId, requestWc, requestPath) {
     for (const wc of webContents.getAllWebContents()) {
       if (!isMainWindowState(wc) || wc.isDestroyed() || !isLocalHostPage(wc)) continue;
       const paths = await readGitPaths(wc);
-      if (paths.length) wants.push([wc, paths]);
+      /* 声明了但目录已消失的路径（worktree 被删等）补推一次 notrepo：渲染端按「非仓库」
+       * 摘 chip，不残留删除前的最后成功态；去重按「窗口×路径」（多窗声明同路径各推各的），
+       * 路径在该窗口恢复即解除，再次消失重新通知。 */
+      for (const p of paths.missing) {
+        const key = wc.id + "\u0000" + p;
+        if (!gitMissingNotified.has(key)) {
+          gitMissingNotified.add(key);
+          pushGitState(wc, p, { ok: false, reason: "notrepo", ts: Date.now() });
+        }
+      }
+      for (const p of paths.ok) gitMissingNotified.delete(wc.id + "\u0000" + p);
+      if (paths.ok.length) wants.push([wc, paths.ok]);
     }
     const all = new Set();
     for (const [, ps] of wants) for (const p of ps) all.add(p);

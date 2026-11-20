@@ -285,9 +285,11 @@
      * → v403 计数行去图标与量词（spec §24.3，用户裁定）：删 cube 图标（SPD3_SVG_CUBE 常量与 .zu-sv3-count svg CSS 一并退役，唯一消费者）、「N 个模型·M 轮」→「N 模型·M 轮」（en 不变）。
      * → v404 计数行前缀分隔符（spec §24.4，用户裁定）：count span 前加「 · 」引导——「 · N 模型·M 轮」（en 同），与标题间视觉分隔。
      * → v405 「增强提示词按钮」开关迁入「提示词增强」分区顶部（表单前）；按 enhanceEnabled 推送同步各窗口勾选态，关闭时禁用新测试；说明区分默认会话模型与已保存的自定义供应商，移除已退役的撤销窗文案。
-     * → v406 问询/权限确认面板下默认样式保持 in-card 平铺（issue #408，用户实报）：宿主 elicitation 弹层打开时 chat-composer-region display:none、面板内回答输入框成为 pane 候选，composerCardOf→panelCardOf 锚定 [data-elicitation-dialog-card]，但该卡无 group/toolbar，mountInCard 失败回落 below-card 悬浮胶囊（默认样式下出现药丸外观）。mountInCard 新增 panelRowOf：面板卡（data-elicitation-dialog-card）无工具行时改挂 [data-elicitation-dialog-footer] 之后的内容列末行，沿用 .zu-in 扁平外观；cardHost 记录实际宿主（帧级补挂/同卡去重按它判定）；普通卡片与药丸/精简主题行为不变。
+     * → v406 药丸条面隐藏滚动条（用户反馈）：.zu-pill .zu-main 去 scrollbar-width:thin 覆盖（回落基础 .zu-main 的 scrollbar-width:none），webkit 回退选择器去 :not(.zu-pill) 限定；窄时横向滚动行为不变（zu-clip 渐隐、聚焦滚入照旧），只是不再画出滚动条。
+     * → v407 worktree 会话 Git chip 路径修正（specs/worktree-branch.md）：快照顶层 worktrees（zusage 桌面链新增 include_worktree）按 sid 给出受管 worktree 真实 cwd，publishGitPaths/gitChipView/点击刷新用其覆写查询与显示路径（宿主分栏 workspacePath 对 worktree 会话是项目主目录，原实现读的是主 checkout 的分支）；tooltip 单仓路径加「受管 Worktree」（bucket·根目录）与「起点」（创建记录 ref/sha 短/当前 HEAD）两行，全部过 gitEsc；非受管/缺帧/远端行为不变。
+     * → v408 问询/权限确认面板下默认样式保持 in-card 平铺（issue #408，用户实报）：宿主 elicitation 弹层打开时 chat-composer-region display:none、面板内回答输入框成为 pane 候选，composerCardOf→panelCardOf 锚定 [data-elicitation-dialog-card]，但该卡无 group/toolbar，mountInCard 失败回落 below-card 悬浮胶囊（默认样式下出现药丸外观）。mountInCard 新增 panelRowOf：面板卡（data-elicitation-dialog-card）无工具行时改挂 [data-elicitation-dialog-footer] 之后的内容列末行，沿用 .zu-in 扁平外观；cardHost 记录实际宿主（帧级补挂/同卡去重按它判定）；普通卡片与药丸/精简主题行为不变。
      */
-    var VERSION = "v406";
+    var VERSION = "v408";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -369,10 +371,10 @@
       "border-width:var(--zu-pill-border-width,1px);border-style:var(--zu-pill-border-style,solid);" +
       "border-color:var(--zu-pill-border-color,var(--color-input-border,var(--color-border,transparent)));" +
       "border-radius:var(--zu-pill-radius,12px);backdrop-filter:none;-webkit-backdrop-filter:none}" +
-      ".zusage-root.zu-pill .zu-main{flex:0 1 auto;justify-content:flex-start;overflow-x:auto;scrollbar-width:thin}" +
+      ".zusage-root.zu-pill .zu-main{flex:0 1 auto;justify-content:flex-start;overflow-x:auto}" +
       ".zusage-root.zu-pill .ico{color:var(--color-brand,#3b82f6)}" +
       ".zu-main{overflow-x:auto;overflow-y:hidden;scrollbar-width:none;min-width:0;flex:1 1 auto;display:flex;align-items:center;gap:1px;justify-content:space-between}" +
-      ".zusage-root:not(.zu-pill) .zu-main::-webkit-scrollbar{display:none}" +
+      ".zusage-root .zu-main::-webkit-scrollbar{display:none}" +
       ".zusage-root.zu-tight .zu-main>.it{font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)));padding-left:4px;padding-right:4px;gap:3px}" +
       ".zusage-root.zu-tight .zu-main>.it>.ico{width:1em;height:1em}" +
       ".zusage-root.zu-narrow .it>.zu-secondary{position:absolute;left:0;visibility:hidden;pointer-events:none}" +

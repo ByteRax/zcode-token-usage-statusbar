@@ -1129,6 +1129,112 @@ def _all_projects_usage_safe(con):
         return None
 
 
+# ---------- 受管 worktree（specs/worktree-branch.md）----------
+# ZCode 受管 worktree 只是会话 cwd，布局固定 <数据根>/.zcode/worktrees/<4位hex bucket>/<源仓库名>
+# （宿主 managed-worktree/layout.ts 同规则；数据根 ZCODE_DATA_BASE_DIR 优先否则主目录，宿主 §6.3）。
+# 快照只给路径与创建记录（cwd/root/bucket/name/ref/sha），分支名由主进程既有 git 轮询按覆写路径实时给出。
+_MANAGED_WT_BUCKET_RE = re.compile(r"[0-9a-f]{4}")
+_WT_FACT_CACHE = {}      # sid → 事实 dict（受管）或 None（已判定非受管）
+_WT_FACT_CACHE_CAP = 512
+
+
+def _managed_worktree_root():
+    base = str(os.environ.get("ZCODE_DATA_BASE_DIR") or "").strip()
+    try:
+        root = Path(base).expanduser() if base else Path.home()
+        return Path(os.path.realpath(str(root / ".zcode" / "worktrees")))
+    except OSError:
+        return None
+
+
+def _worktree_fact(directory):
+    """会话目录 → 受管 worktree 路径事实；非受管布局返回 None。
+    只做纯路径布局匹配（宿主 parseManagedWorktreePath 同规则：realpath 归一 + 前缀 + 两级
+    结构），不读 .git、不执行 git；目录已删除照常报告（realpath 宽容），降级交渲染端。"""
+    root = _managed_worktree_root()
+    directory = str(directory or "").strip()
+    if root is None or not directory:
+        return None
+    try:
+        real_dir = Path(os.path.realpath(directory))
+        rel = real_dir.relative_to(root)
+    except (OSError, ValueError):
+        return None
+    parts = rel.parts
+    if len(parts) < 2 or not _MANAGED_WT_BUCKET_RE.fullmatch(parts[0]):
+        return None
+    return {"cwd": str(real_dir), "root": str(root / parts[0] / parts[1]),
+            "bucket": parts[0], "name": parts[1]}
+
+
+def _worktree_origin(con, sid):
+    """创建记录的起点（首轮 worktree_creation timeline part 的 ref/sha）；缺 part/解析失败
+    返回 (None, None)。detached 默认创建时 ref 为 null（宿主 §6.2），属正常形状。
+    LIKE 预滤会命中正文同字面量的行，按时间序取第一条真正含 worktreeCreation 的（损坏
+    JSON 跳过继续，不让单条坏 part 炸掉起点，更不遮蔽其后真实创建记录）。"""
+    try:
+        rows = con.execute(
+            "select data from part where session_id=? and data like ? order by time_created",
+            (sid, '%"timelineType":"worktree_creation"%')).fetchall()
+    except sqlite3.Error:
+        return None, None
+    for row in rows or []:
+        try:
+            fact = (json.loads(row[0]) or {}).get("worktreeCreation") or {}
+        except Exception:
+            continue   # LIKE 假命中或损坏行：跳过看下一条
+        if fact:
+            return fact.get("ref") or None, fact.get("sha") or None
+    return None, None
+
+
+def _worktree_facts(con, sids):
+    """force_sid → 受管 worktree 事实映射；无命中返回 None（快照省略字段，不是空对象）。"""
+    out = {}
+    for sid in sids:
+        if sid in _WT_FACT_CACHE:
+            fact = _WT_FACT_CACHE[sid]
+            if fact is None:
+                continue
+            if fact["ref"] is None and fact["sha"] is None:
+                # 起点「未决」：worktree_creation part 实测比 session 行晚 ~1.2s 落库，
+                # 首见帧可能缓存到空起点；命中也重查，拿到即随缓存对象更新转已决
+                #（sha 非空即已决，detached 默认形状 ref=null/sha=有值）。全 detached 且无
+                # part 记录的会话会每帧重查一次（索引范围扫描该 sid 全部 part 行，节流帧下可接受）。
+                ref, sha = _worktree_origin(con, sid)
+                if ref is not None or sha is not None:
+                    fact["ref"], fact["sha"] = ref, sha
+            out[sid] = fact
+            continue
+        try:
+            row = con.execute("select directory from session where id=?", (sid,)).fetchone()
+        except sqlite3.Error:
+            row = None
+        directory = str(row[0]).strip() if row and row[0] else ""
+        if not directory:
+            continue   # 行未落库/目录为空：不缓存（下一帧自然重查），与确认非受管分开
+        fact = _worktree_fact(directory)
+        if len(_WT_FACT_CACHE) >= _WT_FACT_CACHE_CAP:
+            _WT_FACT_CACHE.clear()
+        _WT_FACT_CACHE[sid] = fact   # None = 已判定非受管（负缓存）；受管事实连同起点一起入缓存
+        if fact is None:
+            continue
+        fact["ref"], fact["sha"] = _worktree_origin(con, sid)
+        out[sid] = fact
+    return out or None
+
+
+def _worktree_facts_safe(con, sids):
+    """同 _all_projects_usage_safe 口径：任何异常静默省略，不拖垮整帧。"""
+    if con is None or not sids:
+        return None
+    try:
+        return _worktree_facts(con, sids)
+    except (sqlite3.Error, TypeError, ValueError, KeyError, IndexError, OverflowError,
+            AttributeError, OSError):
+        return None
+
+
 def range_usage(con, start_ms, end_ms):
     # 末尾三列（reasoning/retry/cache_write）是 v30/v31 追加，CLI 老代码按索引 0-4 取值不受影响
     return con.execute(
@@ -3525,7 +3631,7 @@ def _provider_fallback_uncached(con):
 
 
 def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=False,
-             include_all_projects=False, include_speed_days=False):
+             include_all_projects=False, include_speed_days=False, include_worktree=False):
     """单次快照：最新会话 + 最近 6+6 会话池 + 今日。
     force_sid：各窗口当前会话 id，逗号分隔（泵按窗口汇总上报：主进程 IPC 映射的焦点会话 +
     overlay localStorage 键兜底），全部强制纳入快照——不在 6+6 池里的会话（新开的、久远的）
@@ -3540,6 +3646,8 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
     include_speed_days（v384，specs/speed-tooltip-v3.md §1.2）：同门控产出全历史按日聚合
     日桶帧（挂顶层 speed_days，≤550 日；550 日×8 模型满桶实测 ~105-120KB，与数值位数相关）；开关点与 include_speed_history
     完全一致，失败降级 None 不拖垮整帧。
+    include_worktree（specs/worktree-branch.md）：同门控产出 force_sid 中受管 worktree 会话的
+    路径与创建记录（挂顶层 worktrees，~百字节级）；分支名不在此读，主进程 git 轮询按覆写路径实时给出。
     连接所有权归调用方：serve 模式下查询期出错会就地 close（调用方下次探活重建），
     finally 不重复关闭。"""
     cfg = load_config()
@@ -3710,6 +3818,7 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
         # v331 全部项目聚合（specs/all-projects-usage.md）：桌面快照链显式开启；
         # 失败按无字段降级，不拖垮整帧（与 provider_fallback 同款口径）
         all_proj = _all_projects_usage_safe(con) if include_all_projects else None
+        wt_facts = _worktree_facts_safe(con, force_sids) if include_worktree else None
         return {
             # 宿主与能力声明（v241）：消费端据此选择可用指标，不再靠字段缺失猜数据源；
             # 旧消费端忽略未知键，不影响既有渲染。
@@ -3773,6 +3882,9 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
             # v331 全部项目聚合（specs/all-projects-usage.md）：桌面快照链顶层可选字段；
             # 无连接/缺列降级时省略，渲染端判空显「暂不可用」，不借当前项目数据冒充
             **({"all_projects": all_proj} if all_proj is not None else {}),
+            # 受管 worktree 会话路径与创建记录（specs/worktree-branch.md）：桌面链顶层可选
+            # 字段；无命中/降级省略（不是 null），渲染端判空回退现状
+            **({"worktrees": wt_facts} if wt_facts is not None else {}),
             "remote_enabled": bool(setup),        # 是否存在可用远端目标（区分"没配"与"配了没查到"）
             "known_sids": known_sids,
             "context_window": base["context_window"],
@@ -4513,7 +4625,8 @@ def serve():
             out = json.dumps(snapshot(force_sid, routes, serve_con=con,
                                       include_speed_history=not lean,
                                       include_all_projects=not lean,
-                                      include_speed_days=not lean), separators=(",", ":"))
+                                      include_speed_days=not lean,
+                                      include_worktree=not lean), separators=(",", ":"))
         except Exception as e:
             out = json.dumps({"error": str(e)[:200]})   # 单次查询失败不杀常驻进程
             _drop()   # 异常路径下连接状态未知：弃用，下轮重建
@@ -4593,7 +4706,8 @@ def main(argv):
             desktop = os.environ.get("ZUSAGE_REMOTE_CHILD") != "1" and not _query_lean(raw)
             print(json.dumps(snapshot(force_sid, routes, include_speed_history=desktop,
                                       include_all_projects=desktop,
-                                      include_speed_days=desktop), separators=(",", ":")))   # v384 同上
+                                      include_speed_days=desktop,
+                                      include_worktree=desktop), separators=(",", ":")))   # v384 同上
             return 0
         if cmd == "serve":
             serve()

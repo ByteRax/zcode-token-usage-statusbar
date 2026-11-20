@@ -14,9 +14,14 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 function loadPump(respond = () => ({})) {
   const intervals = [], timers = new Map(), windows = [], execs = [];
   let id = 0;
+  const state = { vanishOk: false };   // 测试可控的「目录存在性」开关（notrepo 补推用例）
   const mockFs = {
     readFileSync: file => String(file).endsWith("config.json") ? "{}" : "",
     statSync: file => {
+      if (file === "/fixture/vanish") {
+        if (state.vanishOk) return { isDirectory: () => true, mtimeMs: 1 };
+        throw Object.assign(new Error("ENOENT: /fixture/vanish"), { code: "ENOENT" });
+      }
       if (["/fixture/repo", "/fixture/repo2", "/fixture/parent", "/fixture/parent/a", "/fixture/parent/b"].includes(file)) return { isDirectory: () => true, mtimeMs: 1 };
       if (["/fixture/runtime/overlay.js", "/fixture/runtime/zusage.py"].includes(file)) return { mtimeMs: 1, size: 1 };
       throw Object.assign(new Error("ENOENT: " + file), { code: "ENOENT" });
@@ -64,7 +69,7 @@ function loadPump(respond = () => ({})) {
       } };
     windows.push(wc); return wc;
   }
-  return { api: sandbox.module.exports.__zusageTest, intervals, execs, addWindow };
+  return { api: sandbox.module.exports.__zusageTest, intervals, execs, addWindow, state };
 }
 
 /* ---------- parseGitPorcelain ---------- */
@@ -227,6 +232,53 @@ test("gitTick: no wanted paths means no git processes at all", async () => {
   wc.gitPaths = [];
   await h.api.gitTick(false); await flush();
   assert.equal(h.execs.length, 0);
+});
+
+test("gitTick: vanished declared paths get one notrepo push; recovery re-arms the notice", async () => {
+  const respond = args => args.includes("status") ? { stdout: "## main\n" } : { stdout: "" };
+  const h = loadPump(respond);
+  const wc = h.addWindow();
+  wc.gitPaths = ["/fixture/repo", "/fixture/vanish"];
+  h.state.vanishOk = false;
+  await h.api.gitTick(false); await flush();
+  const vanishPushes = () => wc.pushes.filter(js => js.includes("/fixture/vanish"));
+  assert.equal(vanishPushes().length, 1, "消失的已声明路径补推一次 notrepo（chip 摘除，不残留删除前状态）");
+  assert.match(vanishPushes()[0], /"ok":false/);
+  assert.match(vanishPushes()[0], /notrepo/);
+  wc.pushes.length = 0;
+  await h.api.gitTick(false); await flush();
+  assert.equal(vanishPushes().length, 0, "同一消失路径不逐拍重推");
+  h.state.vanishOk = true;
+  await h.api.gitTick(false); await flush();
+  const repo2like = wc.pushes.filter(js => js.includes("/fixture/vanish") && /"ok":true/.test(js));
+  assert.ok(repo2like.length >= 1, "目录恢复后正常查询并推送成功态");
+  wc.pushes.length = 0;
+  h.state.vanishOk = false;
+  await h.api.gitTick(false); await flush();
+  assert.equal(vanishPushes().length, 1, "再次消失重新通知（恢复即解除去重）");
+});
+
+test("gitTick: vanished path notifies every declaring window independently", async () => {
+  const respond = args => args.includes("status") ? { stdout: "## main\n" } : { stdout: "" };
+  const h = loadPump(respond);
+  const a = h.addWindow(), b = h.addWindow();
+  a.gitPaths = ["/fixture/vanish"];
+  b.gitPaths = ["/fixture/vanish"];
+  h.state.vanishOk = false;
+  await h.api.gitTick(false); await flush();
+  const pushesOf = wc => wc.pushes.filter(js => js.includes("/fixture/vanish") && /notrepo/.test(js));
+  assert.equal(pushesOf(a).length, 1, "窗口 A 补推一次");
+  assert.equal(pushesOf(b).length, 1, "窗口 B 独立补推一次（去重按窗口×路径，不是全局路径）");
+  a.pushes.length = b.pushes.length = 0;
+  await h.api.gitTick(false); await flush();
+  assert.equal(pushesOf(a).length + pushesOf(b).length, 0, "两窗都不逐拍重推");
+  h.state.vanishOk = true;
+  await h.api.gitTick(false); await flush();
+  h.state.vanishOk = false;
+  a.pushes.length = b.pushes.length = 0;
+  await h.api.gitTick(false); await flush();
+  assert.equal(pushesOf(a).length, 1, "恢复后 A 再消失重新通知");
+  assert.equal(pushesOf(b).length, 1, "恢复后 B 再消失重新通知");
 });
 
 test("manual Git refresh waits for the follow-up tick when a poll is already running", async () => {

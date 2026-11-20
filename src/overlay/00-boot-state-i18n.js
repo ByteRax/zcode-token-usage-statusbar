@@ -761,6 +761,11 @@
    * 捕获/回填（M3/S10：不挂在缺轮表分支，否则正常帧永不更新）。 */
   var lastSpeedDays = (typeof window !== "undefined" && window.__zusageSpdDaysSticky) || null;
   if (mobileMode) lastSpeedDays = null;
+  /* 受管 worktree 会话事实（specs/worktree-branch.md）：sid → {cwd, root, bucket, name, ref, sha}。
+   * 快照桌面链字段，进程生命周期内不可变（cwd 创建后固定、ref/sha 落库后不变），不粘性回填——
+   * 缺帧沿用自己的上一份；publishGitPaths/gitChipView 用 cwd 覆写 Git chip 的查询与显示路径。 */
+  var lastWorktrees = (typeof window !== "undefined" && window.__zusageWorktrees) || null;
+  if (mobileMode) lastWorktrees = null;
   function renderAll(rebuildPanels) {
     if (rateTipFor) showRateTip(rateTipFor);
     for (var i = 0; i < instances.length; i++) {
@@ -942,6 +947,12 @@
         var tks = Object.keys(remoteTodayCache);
         if (tks.length > 64) delete remoteTodayCache[tks[0]];
       }
+    }
+    /* 受管 worktree 事实（specs/worktree-branch.md）：先于尾部 render 循环捕获，同帧
+     * refreshWants → publishGitPaths 即可用新映射覆写 Git chip 查询路径；缺帧沿用上一份。 */
+    if (!isMobile && d.worktrees && typeof d.worktrees === "object") {
+      lastWorktrees = d.worktrees;
+      try { window.__zusageWorktrees = d.worktrees; } catch (_) { }
     }
     state.data = d;
     for (var i = 0; i < instances.length; i++) {
