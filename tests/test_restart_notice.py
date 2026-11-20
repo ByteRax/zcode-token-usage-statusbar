@@ -216,6 +216,31 @@ class RestartNoticeTests(unittest.TestCase):
             _loadedAt=json.loads(remaining)["publishedAt"] + 1))["cleared"])
         self.assertEqual(notice_context(self.runtime, injected=True), "")
 
+    def test_third_party_overwrite_supersedes_stale_digest_and_clears_marker(self):
+        """3.19.1 实机 ⚙ 红点永亮：同步写入缓存版字节并记 hashes 后，开发部署（preserved
+        保护，行为正确）把运行文件覆盖为更新字节——digest 与盘上现状永久分叉，旧逻辑
+        remaining 恒非空导致 marker 孤儿化。以盘上现状为准：digest 不在盘上即视为已被
+        超越，从待办剔除；全部剔除后 marker 清除，红点不再常亮。"""
+        import runtime_lock
+        self.pending_sync()
+        created_ms = json.loads((self.runtime / notice.MARKER).read_text(encoding="utf-8"))["createdAt"] * 1000
+        (self.runtime / "inject-main.cjs").write_bytes(b"newer deploy supersedes recorded digest")
+        ack = runtime_lock.ack_restart(self.runtime, {"_loadedAt": created_ms + 1})
+        self.assertTrue(ack["cleared"])
+        self.assertFalse((self.runtime / notice.MARKER).exists())
+
+    def test_disk_backed_digest_survives_when_loaded_snapshot_is_stale(self):
+        """对照侧：目标字节仍在盘上（等重启加载）、只是启动快照未持有——marker 必须保留，
+        不得因 loaded 未匹配被新逻辑误剔。"""
+        import runtime_lock
+        self.pending_sync()
+        created_ms = json.loads((self.runtime / notice.MARKER).read_text(encoding="utf-8"))["createdAt"] * 1000
+        ack = runtime_lock.ack_restart(self.runtime, {"_loadedAt": created_ms + 1})
+        self.assertFalse(ack["cleared"])
+        self.assertTrue((self.runtime / notice.MARKER).exists())
+        self.assertEqual(json.loads((self.runtime / notice.MARKER).read_text(encoding="utf-8"))["hashes"],
+                         {"inject-main.cjs": hashlib.sha256(b"new loader").hexdigest()})
+
     def test_publication_cas_does_not_recreate_or_certify_other_intents(self):
         import runtime_lock
         installation = {"asar": "fixture", "entryHash": "a" * 64}

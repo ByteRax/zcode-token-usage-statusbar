@@ -2,6 +2,7 @@
 """Permanent-file OS locks shared by the runtime synchronizer and Node helpers."""
 import argparse
 import errno
+import hashlib
 import json
 import os
 import shutil
@@ -395,7 +396,21 @@ def ack_restart(runtime, loaded):
                 return {"ok": True, "cleared": False}
         hashes = _hashes(data.get("hashes"))
         if hashes:
-            remaining = {key: digest for key, digest in hashes.items() if loaded.get(key) != digest}
+            remaining = {}
+            for key, digest in hashes.items():
+                if loaded.get(key) == digest:
+                    continue   # 本进程已持有目标字节
+                # 防孤儿 marker（2026-11-21 实机红点常亮）：digest 已不在盘上 = 记录后运行文件被第三方改写
+                #（如 preserved 保护的开发部署覆盖了同步写入的字节）。该目标重启也
+                # 加载不到（loaded 恒不等于 digest），保留只会让 ⚙ 红点永亮——以盘上
+                # 现状为准视为已被超越，从待办剔除；目标仍有效（盘上==digest）则照常保留。
+                try:
+                    on_disk = hashlib.sha256((runtime / key).read_bytes()).hexdigest()
+                except OSError:
+                    on_disk = None
+                if on_disk != digest:
+                    continue
+                remaining[key] = digest
             if remaining:
                 data["hashes"] = remaining
                 _write_marker(marker, data)
