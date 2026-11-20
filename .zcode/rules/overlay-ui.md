@@ -81,6 +81,7 @@
 ## 6. Git 状态 chip
 
 - 数据链：渲染端 `publishGitPaths()` → 主进程 `gitTick`（10s，各窗路径并集）+ `git-refresh`（点击立即执行；快照驱动的重查有 5s 节流）→ `gitState` 推回。命令 `git -C <p> status --porcelain --branch` + `diff HEAD --shortstat`，env `GIT_OPTIONAL_LOCKS=0`、`LC_ALL=C`、`GIT_TERMINAL_PROMPT=0`；无提交仓库 `diff HEAD` 退 128 属预期。
+- **受管 worktree 路径覆写（v407，规格 [specs/worktree-branch.md](../../specs/worktree-branch.md)）**：宿主分栏 `workspacePath` 对 worktree 会话是项目主目录（宿主 §2.1「带 workspace 的字段只表示归属」，ZCode 自家 Git 面板用 `gitCwd = task.cwd`），直接查 git 读的是主 checkout——快照顶层 `worktrees`（`zusage.py` `include_worktree` 桌面链门控，sid→`{cwd, root, bucket, name, ref, sha}`，事实不可变走 `_WT_FACT_CACHE`：只有 session 行存在且 directory 非空才写缓存，未落库不写负缓存）按 sid 给出真实 cwd，`worktreeFor` 命中即覆写发布、显示与点击刷新路径；tooltip 单仓路径加「受管 Worktree」「起点」两行。worktree 目录被删（冷=从未查过、热=查询后删除被 `gitPathOk` 滤除）时主进程对消失路径**补推一次 notrepo**（gitTick 内 `gitMissingNotified` 按「窗口×路径」去重，恢复即解除、再消失重新通知）→ chip 摘除，**绝不回退主 checkout 显示**；该补推在 `inject-main.cjs`（冷文件，改它必须完全重启）。非受管/缺帧/远端行为不变。
 - 口径：notrepo/nogit/远端 pane 不挂载；失败保留 lastGood 并以文字徽章标 stale（不用透明度）；多仓只看直接子目录、不查行数、有上限、恰 1 子仓回退单仓、失败仓不拖垮聚合；`?N` 是未跟踪条目数（目录折叠计 1）；单位词走 `L()`。
 - 计数缩写（v128，用户规格 2026-10-28）：chip 与 tooltip 的行数、porcelain 条目、↑↓、冲突计数 <1万原值；≥1万 中文（`cnUnits` 判定，cnNum 关闭与英文同为 k/M/B）万/亿、英文 k/M/B。k 门槛刻意抬到 1万（9999 内原值，与 token `fmt()` 的 K≥1000 是两套口径），小写 k、至多两位小数去尾零、数字与单位紧邻。`gitNum`/`unit2` 在文件级 git 区段，不与实例内 `cnUnit` 共用（`fmt..sec` 源码切片被测试整段求值）；仓库个数（多仓「N 个仓库」等）与 aria 播报（`gitChipAria`）保持原值。
 

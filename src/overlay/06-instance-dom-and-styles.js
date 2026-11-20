@@ -286,8 +286,9 @@
      * → v404 计数行前缀分隔符（spec §24.4，用户裁定）：count span 前加「 · 」引导——「 · N 模型·M 轮」（en 同），与标题间视觉分隔。
      * → v405 「增强提示词按钮」开关迁入「提示词增强」分区顶部（表单前）；按 enhanceEnabled 推送同步各窗口勾选态，关闭时禁用新测试；说明区分默认会话模型与已保存的自定义供应商，移除已退役的撤销窗文案。
      * → v406 药丸条面隐藏滚动条（用户反馈）：.zu-pill .zu-main 去 scrollbar-width:thin 覆盖（回落基础 .zu-main 的 scrollbar-width:none），webkit 回退选择器去 :not(.zu-pill) 限定；窄时横向滚动行为不变（zu-clip 渐隐、聚焦滚入照旧），只是不再画出滚动条。
+     * → v407 worktree 会话 Git chip 路径修正（specs/worktree-branch.md）：快照顶层 worktrees（zusage 桌面链新增 include_worktree）按 sid 给出受管 worktree 真实 cwd，publishGitPaths/gitChipView/点击刷新用其覆写查询与显示路径（宿主分栏 workspacePath 对 worktree 会话是项目主目录，原实现读的是主 checkout 的分支）；tooltip 单仓路径加「受管 Worktree」（bucket·根目录）与「起点」（创建记录 ref/sha 短/当前 HEAD）两行，全部过 gitEsc；非受管/缺帧/远端行为不变。
      */
-    var VERSION = "v406";
+    var VERSION = "v407";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
