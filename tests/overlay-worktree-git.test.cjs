@@ -100,7 +100,7 @@ test('gitTipHTML: worktree 区块全量信息（短标识/根目录仅 monorepo/
   assert.ok(!html.includes('受管 Worktree'), '无 wt 字段不渲染区块（普通会话）');
 });
 
-test('gitChipHtml/gitChipAria: worktree 游离检出令牌显 WorkTree（chip/aria 同源）', () => {
+test('gitChipHtml/gitChipAria: worktree 游离检出令牌显 worktree（chip/aria 同源）', () => {
   /* 切片含 gitBranchToken 单源助手（位于 gitChipHtml 之前） */
   const frag = sliceOverlay('    /* v409：游离检出分支令牌单源', '    function gitDotCls(st, stale)');
   const sandbox = {
@@ -115,14 +115,14 @@ test('gitChipHtml/gitChipAria: worktree 游离检出令牌显 WorkTree（chip/ar
     staged: 0, unstaged: 0, untracked: 0, conflicts: 0, ins: 0, del: 0, ts: 1 };
   const wt = { bucket: '0f62', root: '/wt', cwd: '/wt', name: 'repo', ref: null, sha: 'abc' };
   let html = ctx.gitChipHtml({ path: '/wt', st: stDetached, stale: false, wt });
-  assert.match(html, /<span class="zu-git-name">WorkTree<\/span>/, 'worktree 游离检出 chip 显 WorkTree');
+  assert.match(html, /<span class="zu-git-name">worktree<\/span>/, 'worktree 游离检出 chip 显 worktree');
   html = ctx.gitChipHtml({ path: '/proj', st: stDetached, stale: false, wt: null });
   assert.match(html, /<span class="zu-git-name">HEAD<\/span>/, '非 worktree 游离检出保持 HEAD');
   const stBranch = Object.assign({}, stDetached, { detached: false, branch: 'feat/x' });
   html = ctx.gitChipHtml({ path: '/wt', st: stBranch, stale: false, wt });
   assert.match(html, /<span class="zu-git-name">feat\/x<\/span>/, 'worktree 有分支照常显示分支名');
   let aria = ctx.gitChipAria(stDetached, false, wt);
-  assert.match(aria, /WorkTree（游离检出）/, 'aria 播报 worktree 游离检出');
+  assert.match(aria, /worktree（游离检出）/, 'aria 播报 worktree 游离检出');
   aria = ctx.gitChipAria(stDetached, false, null);
   assert.match(aria, /Git 分支 HEAD/, '非 worktree aria 保持 HEAD');
 });
@@ -171,14 +171,14 @@ test('gitCandidates: L2 摘要档与 gitBranchToken 单源接线（防令牌漂�
     gitMultiAgg: () => ({ total: 1, known: 1, changed: 0, conflict: 0, op: 0, failed: 0, staleAny: false, m: 0, q: 0 }),
     gitDotCls: () => 'zu-git-dot-g',
     gitChipHtml: () => '<i>full</i>',
-    gitBranchToken: (st, view) => st.detached ? (view.wt ? "WorkTree" : "HEAD") : String(st.branch || "HEAD"),
+    gitBranchToken: (st, view) => st.detached ? (view.wt ? "worktree" : "HEAD") : String(st.branch || "HEAD"),
   };
   const ctx = run(frag, sandbox);
   const stDetached = { branch: '', upstream: '', ahead: 0, behind: 0, detached: true, noCommits: false,
     staged: 0, unstaged: 0, untracked: 0, conflicts: 0, ins: 0, del: 0, ts: 1 };
   const view = { path: '/wt', st: stDetached, stale: false, wt: { bucket: '0f62', name: 'repo' } };
   const cands = ctx.gitCandidates(view);
-  assert.match(cands.L2, /<span class="zu-git-name">WorkTree<\/span>/, 'L2 摘要档经单源令牌显 WorkTree');
+  assert.match(cands.L2, /<span class="zu-git-name">worktree<\/span>/, 'L2 摘要档经单源令牌显 worktree');
   delete view.wt;
   cands.L2 = ctx.gitCandidates(view).L2;
   assert.match(cands.L2, /<span class="zu-git-name">HEAD<\/span>/, '非 worktree 游离检出 L2 保持 HEAD');

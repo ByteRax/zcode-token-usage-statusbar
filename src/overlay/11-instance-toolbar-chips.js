@@ -1249,7 +1249,7 @@
     }
     /* v409：游离检出分支令牌单源（chip L0 与响应式 L2 共用，防两处手抄漂移；aria 用更细文案不走此函数） */
     function gitBranchToken(st, view) {
-      return st.detached ? (view.wt ? "WorkTree" : "HEAD") : st.noCommits ? L("初始", "init") : String(st.branch || "HEAD");
+      return st.detached ? (view.wt ? "worktree" : "HEAD") : st.noCommits ? L("初始", "init") : String(st.branch || "HEAD");
     }
     function gitChipHtml(view) {   // view={path, st, stale}：stale 是工作区级过期标志（勿与闭包 stale() 函数混淆）
       var st = view.st, stale = view.stale;
@@ -1262,7 +1262,7 @@
         if (stale) parts.push('<span class="zu-git-warn">' + L("过期", "stale") + "</span>");   // 过期用文字提示，不降透明度
         return ZU_GIT_MULTI_ICON + parts.join('<span class="zu-git-sep">·</span>');
       }
-      var name = gitBranchToken(st, view);   // v409：worktree 游离检出显 WorkTree（specs/worktree-branch.md）
+      var name = gitBranchToken(st, view);   // v409：worktree 游离检出显 worktree（v410 改小写；specs/worktree-branch.md）
       var shown = name.length > 18 ? name.slice(0, 16) + "…" : name;   // 全名进 tooltip
       var h = ZU_GIT_ICON + '<span class="zu-git-name">' + gitEsc(shown) + "</span>";
       var ab = (st.ahead > 0 ? "↑" + gitNum(st.ahead) : "") + (st.behind > 0 ? (st.ahead > 0 ? " " : "") + "↓" + gitNum(st.behind) : "");
@@ -1288,7 +1288,7 @@
         if (stale) ms += L("，数据已过期", ", data stale");
         return ms;
       }
-      var s = L("Git 分支 ", "Git branch ") + (st.detached ? (wt ? L("WorkTree（游离检出）", "WorkTree (detached)") : "HEAD") : st.noCommits ? L("初始（尚无首次提交）", "init (no initial commit yet)") : st.branch);
+      var s = L("Git 分支 ", "Git branch ") + (st.detached ? (wt ? L("worktree（游离检出）", "worktree (detached)") : "HEAD") : st.noCommits ? L("初始（尚无首次提交）", "init (no initial commit yet)") : st.branch);
       if (st.ahead > 0) s += L("，领先 ", ", ahead ") + st.ahead;
       if (st.behind > 0) s += L("，落后 ", ", behind ") + st.behind;
       if (st.ins > 0 || st.del > 0) s += L("，改动 +", ", changes +") + (st.ins | 0) + " -" + (st.del | 0);

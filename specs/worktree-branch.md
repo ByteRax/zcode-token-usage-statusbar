@@ -40,7 +40,7 @@ ZCode 受管 worktree 的核心模型：**worktree 不是新 workspace，只是�
 - `publishGitPaths`：本地 pane（scope 有 `workspacePath` 且 identity 为空）若 `lastWorktrees` 命中本 pane sid，则发布 `wt.cwd` 替代 `workspacePath`。路径集变化触发既有 `askGitRefresh(changed)` 立即首查。
 - `gitChipView`：同规则覆写显示路径；view 携带 `wt` 供 tooltip 用。chip 上分支名、↑↓、改动计数全部来自 worktree 的实时 git 查询，不加新段、不缩写（四级响应式 v383 形态不动）。
 - tooltip（`gitTipHTML` 单仓路径，v409 重组）：`view.wt` 在场时追加——「受管 Worktree」= `<bucket> · <name>`（短标识，不再重复整条 root 路径）；「Worktree 根目录」= root，**仅 cwd ≠ root（monorepo 子目录）时单列**（否则「目录」行已是根）；「主仓库」= sourceRoot（有则显示）；「起点」= `ref`，无则 `sha` 前 7 位，都无则「当前 HEAD」；「创建于」= created（有则显示，gitTimeStr 格式）。全字段过 `gitEsc`/既有时间格式化。multi 聚合路径不加区块（worktree cwd 恒为单仓，多仓触发即说明未覆写）。
-- 分支名不在 Python 读：主进程 `git status --porcelain --branch` 已按覆写路径实时给出。**worktree 会话游离检出的分支令牌显 `WorkTree`**（v409，用户规格）：chip（L0 `gitChipHtml`）、aria（`gitChipAria` 第三参 wt）与四级响应式候选（`gitCandidates`）三处共用同一令牌判定——`detached && wt → "WorkTree"`，detached 非 worktree 保持 `HEAD`，有分支照常显示分支名；tooltip「分支」行在 wt 游离时注「worktree 检出，未建分支」。「目录」行随之显示 worktree cwd。
+- 分支名不在 Python 读：主进程 `git status --porcelain --branch` 已按覆写路径实时给出。**worktree 会话游离检出的分支令牌显 `worktree`**（v409 引入、v410 改小写，用户规格）：chip（L0 `gitChipHtml`）、aria（`gitChipAria` 第三参 wt）与四级响应式候选（`gitCandidates`）三处共用同一令牌判定——`detached && wt → "worktree"`，detached 非 worktree 保持 `HEAD`，有分支照常显示分支名；tooltip「分支」行在 wt 游离时注「worktree 检出，未建分支」。「目录」行随之显示 worktree cwd。
 
 ## 边界与降级
 
@@ -58,7 +58,7 @@ ZCode 受管 worktree 的核心模型：**worktree 不是新 workspace，只是�
 
 | ID | 场景 | 预期 |
 |---|---|---|
-| WTB-01 | 打开受管 worktree 会话 | chip 分支/↑↓/计数为 worktree 实时值（游离检出令牌显 WorkTree，非 worktree 会话显 HEAD）；tooltip「目录」= worktree cwd，另有受管 Worktree（bucket·名称）、起点，及根目录/主仓库/创建于（条件在场）等行 |
+| WTB-01 | 打开受管 worktree 会话 | chip 分支/↑↓/计数为 worktree 实时值（游离检出令牌显 worktree，非 worktree 会话显 HEAD）；tooltip「目录」= worktree cwd，另有受管 Worktree（bucket·名称）、起点，及根目录/主仓库/创建于（条件在场）等行 |
 | WTB-02 | 普通项目会话 | 无 `worktrees` 条目，chip 数据链与显示同现状 |
 | WTB-03 | worktree 目录被删 | chip 隐藏，不显示主 checkout 状态 |
 | WTB-04 | 起点 ref 有 / 无 / 缺 part | tooltip 起点分别 = ref / sha 前 7 位 / 「当前 HEAD」 |

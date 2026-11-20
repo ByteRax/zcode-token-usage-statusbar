@@ -289,8 +289,9 @@
      * → v407 worktree 会话 Git chip 路径修正（specs/worktree-branch.md）：快照顶层 worktrees（zusage 桌面链新增 include_worktree）按 sid 给出受管 worktree 真实 cwd，publishGitPaths/gitChipView/点击刷新用其覆写查询与显示路径（宿主分栏 workspacePath 对 worktree 会话是项目主目录，原实现读的是主 checkout 的分支）；tooltip 单仓路径加「受管 Worktree」（bucket·根目录）与「起点」（创建记录 ref/sha 短/当前 HEAD）两行，全部过 gitEsc；非受管/缺帧/远端行为不变。
      * → v408 问询/权限确认面板下默认样式保持 in-card 平铺（issue #408，用户实报）：宿主 elicitation 弹层打开时 chat-composer-region display:none、面板内回答输入框成为 pane 候选，composerCardOf→panelCardOf 锚定 [data-elicitation-dialog-card]，但该卡无 group/toolbar，mountInCard 失败回落 below-card 悬浮胶囊（默认样式下出现药丸外观）。mountInCard 新增 panelRowOf：面板卡（data-elicitation-dialog-card）无工具行时改挂 [data-elicitation-dialog-footer] 之后的内容列末行，沿用 .zu-in 扁平外观；cardHost 记录实际宿主（帧级补挂/同卡去重按它判定）；普通卡片与药丸/精简主题行为不变。
      * → v409 worktree chip 令牌与 tooltip 全量信息（用户规格）：chip/aria/响应式候选在 worktree 游离检出时分支令牌由 HEAD 改显 WorkTree（gitChipAria 第三参 wt，三处同令牌）；tooltip worktree 区块重组为「受管 Worktree」（bucket·名称短标识）、「Worktree 根目录」（仅 monorepo cwd≠root 时单列，不与目录行重复）、「主仓库」（.git 链接文件上溯源仓库，fail-soft）、「起点」、「创建于」（创建记录 time.start）；分支行游离时注 worktree 检出未建分支；快照 worktrees 字段新增 created/sourceRoot（_worktree_origin 返回三元组 + _worktree_source_root）。
+     * → v410 worktree 令牌改小写（用户规格）：gitBranchToken 与 aria 的 WorkTree→worktree（游离检出令牌、aria「worktree（游离检出）」），文档同步。
      */
-    var VERSION = "v409";
+    var VERSION = "v410";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
