@@ -148,8 +148,11 @@
       /* v172 待办红点 → v208 仅待重启：需重启且未查看时亮 ⚙ 与「插件更新」导航点；其他窗口经各自 syncUpdate 收敛 */
       syncUpdateDots(updDotOn());
       /* v413：待重启红点亮起即后台预取日志（悬停零等待）。pluginRequest 参与判定是为了
-       * VM 切片安全——不含 00 分片定义的切片沙箱里 typeof 为 undefined，整链跳过不抛错。 */
-      if (updDotOn() && typeof updNotePrefetch === "function" && typeof pluginRequest === "function") updNotePrefetch();
+       * VM 切片安全——不含 00 分片定义的切片沙箱里 typeof 为 undefined，整链跳过不抛错。
+       * 预取链不参与实例存亡：异常只记诊断，绝不沿 buildPanel → spawnInstance 拖垮条挂载。 */
+      try {
+        if (updDotOn() && typeof updNotePrefetch === "function" && typeof pluginRequest === "function") updNotePrefetch();
+      } catch (eUpdNote) { try { window.__zusageDiag.updNoteErr = String((eUpdNote && eUpdNote.stack) || eUpdNote); } catch (_) { } }
       var messages = {
         idle: L("尚未检测", "Not checked yet"),
         checking: L("正在检查更新…", "Checking for updates…"),
@@ -258,6 +261,10 @@
       return def && !def.unknown && def.version ? def.version : "";
     }
     function updNoteEnsure() {
+      /* issue #55 时序翻版防御：模块级赋值在 IIFE 深处，而 buildPanel 首轮经 syncUpdate →
+       * updNotePrefetch 同步到达此处时可能尚未执行（v1.5.2 同款「读到 undefined 拖垮实例创建」，
+       * 3.19.1 实机 coordErr 实证：spawn 半途夭折、主条整条不挂）。红点亮起才走得到本行。 */
+      if (!updNoteState) updNoteState = { version: "", seq: 0, loading: false, result: null, error: null };
       var v = updNoteTargetVersion();
       if (!v) return false;
       if (updNoteState.version === v && (updNoteState.loading || updNoteState.result || updNoteState.error)) {

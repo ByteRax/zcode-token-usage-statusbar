@@ -500,12 +500,44 @@ test("v413 wiring: boot sweep, cleanup chain, tip shell, prefetch hook and gear 
   assert.ok(/function showUpdNoteTip[\s\S]{0,300}cancelUpdNoteHide\(\)/.test(tips), "show 路径未取消在途收起（重入闪烁）");
   assert.ok(tips.includes("Math.max(8, Math.min(Math.round(r.right - tw)"), "tip 左缘 8px 视口钳边缺失");
   const dom = read("06-instance-dom-and-styles.js");
-  assert.ok(dom.includes('var VERSION = "v413"'), "VERSION 未升 v413");
+  assert.ok(dom.includes('var VERSION = "v414"'), "VERSION 未升 v414");
   assert.ok(dom.includes(".zusage-upd-note-tip .zu-un-body"), "tip 作用域样式缺失");
   const notes = read("09-instance-settings-and-notes.js");
   assert.ok(notes.includes('typeof pluginRequest === "function") updNotePrefetch()'), "syncUpdate 预取钩子缺失");
   assert.ok(notes.includes('gear.addEventListener("mouseenter", onGearUpdEnter)'), "齿轮悬停绑定缺失");
   assert.ok(notes.includes('typeof hideUpdNoteTip === "function") hideUpdNoteTip()'), "开面板收卡缺失");
+});
+
+test("first-tick spawn before module assignment: ensure lazy-inits instead of crashing spawn (3.19.1 coordErr)", () => {
+  const ctx = makeUpdContext({ dotOn: true, pluginUpdate: restartUpdate() });
+  ctx.updNoteState = undefined;   // 模拟 IIFE 同步首拍：tick→spawnInstance→buildPanel→syncUpdate 早于模块级赋值（var 只提升声明）
+  assert.doesNotThrow(() => ctx.updNoteEnsure());   // 懒初始化兜底，不拖垮实例创建
+  assert.equal(ctx.__sent.length, 1);
+  assert.equal(ctx.__sent[0].action, "release-notes");
+  assert.equal(ctx.__sent[0].extra.version, "1.5.8");
+  assert.equal(ctx.updNoteState.version, "1.5.8");   // 状态重建
+  assert.equal(ctx.updNoteState.loading, true);
+});
+
+test("prefetch hook failure is isolated from syncUpdate and recorded in diag", () => {
+  const syncSource = extract("    function updFingerprint(u) {", "    function syncPanel() {");
+  const status = {};
+  const relaunch = { disabled: false, classList: { toggle: () => {} } };
+  const context = {
+    state: { pluginUpdate: restartUpdate(), rateLine: true, restartNotice: true },
+    panel: { querySelector: (sel) => sel === ".zu-update-status" ? status : sel === "[data-update=relaunch]" ? relaunch : { textContent: "", hidden: false, checked: false, disabled: false, style: {}, dataset: {}, classList: { toggle: () => {}, contains: () => false } } },
+    gear: { querySelector: () => null },
+    LS: { updSeen: "zusage3.updSeen" },
+    localStorage: { getItem: () => null, setItem: () => {} },
+    L: (zh, en) => zh,
+    /* 预取链异常源：pluginRequest 在 updNoteEnsure 内同步抛（切片自带的 updNotePrefetch 声明提升会
+     * 遮蔽沙箱同名桩，不能用作注入点；原崩形态 updNoteState 未赋值已被 v414 懒初始化堵死） */
+    pluginRequest: function () { throw new TypeError("Cannot read properties of undefined (reading 'version')"); },
+    __zusageDiag: {},
+  };
+  context.window = context;   // catch 内层经 window.__zusageDiag 落诊断（生产 window 恒在）
+  vm.runInNewContext(syncSource + "\nsyncUpdate();", context);   // 无 try 包裹时此处会向外抛
+  assert.match(String(context.__zusageDiag.updNoteErr), /reading 'version'/);
 });
 
 test("gear hover card title escapes the pending version (feed-sourced markerVersion)", () => {
