@@ -284,7 +284,7 @@
      * → v402 左卡计数行并入标题行（spec §24，用户裁定）：.zu-sv3-count（cube+N 模型·M 轮）从主数字下独立行移入 .zu-sv3-title-row（ltitle 后、live 徽标前），文案去「本期有效」前缀（en 去 active）；CSS 去 margin-top、span nowrap；miss 提示仍随 count 块换行；筛选条 fcount「本期有效」不动。
      * → v403 计数行去图标与量词（spec §24.3，用户裁定）：删 cube 图标（SPD3_SVG_CUBE 常量与 .zu-sv3-count svg CSS 一并退役，唯一消费者）、「N 个模型·M 轮」→「N 模型·M 轮」（en 不变）。
      * → v404 计数行前缀分隔符（spec §24.4，用户裁定）：count span 前加「 · 」引导——「 · N 模型·M 轮」（en 同），与标题间视觉分隔。
-     * → v405 问询/权限确认面板下默认样式保持 in-card 平铺（issue #408，用户实报）：宿主 elicitation 弹层打开时 chat-composer-region display:none、面板内回答输入框成为 pane 候选，composerCardOf→panelCardOf 锚定 [data-elicitation-dialog-card]，但该卡无 group/toolbar → mountInCard 失败回落 below-card 悬浮胶囊（默认样式下出现药丸外观）。mountInCard 新增 panelRowOf：面板卡（data-elicitation-dialog-card）无工具行时改挂 [data-elicitation-dialog-footer] 之后的内容列末行，沿用 .zu-in 扁平外观；cardHost 记录实际宿主（帧级补挂/同卡去重按它判定）；普通卡片与药丸/精简主题行为不变。
+     * → v405 问询/权限确认面板下默认样式保持 in-card 平铺（issue #408，用户实报）：宿主 elicitation 弹层打开时 chat-composer-region display:none、面板内回答输入框成为 pane 候选，composerCardOf→panelCardOf 锚定 [data-elicitation-dialog-card]，但该卡无 group/toolbar，mountInCard 失败回落 below-card 悬浮胶囊（默认样式下出现药丸外观）。mountInCard 新增 panelRowOf：面板卡（data-elicitation-dialog-card）无工具行时改挂 [data-elicitation-dialog-footer] 之后的内容列末行，沿用 .zu-in 扁平外观；cardHost 记录实际宿主（帧级补挂/同卡去重按它判定）；普通卡片与药丸/精简主题行为不变。
      */
     var VERSION = "v405";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升

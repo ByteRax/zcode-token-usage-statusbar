@@ -133,7 +133,7 @@ python3 sync_plugin.py --check
 - 常驻查询是一请求一行 JSON 的协议；MCP 是 JSON-RPC，不可混用两者消息形状。增字段需兼容生产者、消费者与测试夹具。
 - 维护要求：新增定时器、文件/IPC/DOM 监听器、子进程要有明确归属，验证热更新、导航、窗口关闭后的停用，不能声称当前已有完整全局 dispose；超时兜底定时器（如 `Promise.race` 的 fallback `setTimeout`、`AbortController` 的 `kill` 定时器、宽限期定时器）必须在结算后通过 `.finally(() => { if (typeof clearTimeout === "function") clearTimeout(timer); })` 立即清理并调用 `timer.unref?.()`，防止挂起事件循环与测试进程。
 - 保留浮层代际守卫、幂等内容更新、tooltip 解绑/扫描清理；`rAF` 自调度必须异常后续帧，诊断对象原地更新，不替换闭包共享引用。
-- 桌面默认样式优先挂输入卡工具行之后，缺工具行时回退 body 级 fixed；药丸样式在所属输入卡下方居中，表面随输入卡主题和状态变化。样式挂在条内，几何避开输入框中心点命中检测，避免自遮挡闪烁；宽度和窄窗策略见 overlay-ui 规则。
+- 桌面默认样式优先挂输入卡工具行之后；缺工具行时，问询/权限确认面板卡（data-elicitation-dialog-card）挂面板内容列末行（footer 之后，无 footer 退化整卡末尾，v405），其余回退 body 级 fixed；药丸样式在所属输入卡下方居中，表面随输入卡主题和状态变化。样式挂在条内，几何避开输入框中心点命中检测，避免自遮挡闪烁；宽度和窄窗策略见 overlay-ui 规则。
 - 配置/更新/安装锁跨 Python 与 Node；OS advisory 锁文件永久保留，不通过删锁文件解锁。更新租约/所有者与旧锁恢复是另一层协议，保留各自规则，不把冲突当成功，也不删运行目录绕过并发或热修保护。
 - `.gitattributes` 固定 LF。发现 CRLF 或未提交改动时先保留数据，用干净的独立工作树验证；禁止用强制 reset/clean/重新检出解决问题而丢失用户修改。
 

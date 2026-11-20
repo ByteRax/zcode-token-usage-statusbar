@@ -29,7 +29,7 @@ class Element {
     el.parentElement = this;
     return el;
   }
-  remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(e => e !== this); this.isConnected = false; }
+  remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(e => e !== this); this.parentElement = null; this.isConnected = false; }
   // v280：模块级 Portal（spdHoverPortal）创建路径用到 setAttribute / classList（补夹具纪律）
   setAttribute(k, v) { this.dataset[k] = v; }
   classList = { toggle() {}, add() {}, remove() {} };
@@ -237,12 +237,109 @@ test('v405 elicitation panel: default theme mounts flat inside the panel card af
   const bodyBars = h.body.children.filter(e => /zusage-root/.test(e.className || '') && e.parentElement === h.body);
   assert.equal(bodyBars.length, 0, 'body 上不留悬浮条: ' + bodyBars.map(b => b.getAttribute('data-zusage-slot') + '/' + b.className).join(','));
   // React 重挂面板子树：帧级与 heavy 对账都按实际宿主 wrapper 补挂
+  // （夹具 remove() 清 parentElement：mountInCard 的 parentElement 判定会真实重挂，
+  //  isConnected/成员断言防止「parentElement 陈旧引用」让对账断言空洞）
   bar.remove();
   h.runFrame();
   assert.equal(bar.parentElement, wrapper, 'track 帧对账重挂回面板内容列');
+  assert.equal(bar.isConnected, true, 'track 帧重挂后真实连通（非陈旧引用）');
   bar.remove();
   h.tick();
   assert.equal(bar.parentElement, wrapper, 'heavy 周期对账同样重挂');
+  assert.equal(bar.isConnected, true, 'heavy 重挂后真实连通');
+  h.window.__zusageDispose();
+});
+
+/* v405 去重平局语义（review 补）：同 slot 对手互不压制（barSlot 严格小于才让位）——
+ * `<=` 回归会让两根同 slot 条互见双隐（比并存更糟）。 */
+test('v405 dedup tie: same-slot rivals do not suppress each other', () => {
+  const h = harness(), [card] = h.setPanes(['a']);
+  const ta = card.children[0];
+  const wrapper = new Element();
+  wrapper.className = 'flex min-h-0 flex-1 flex-col gap-3 p-3';
+  card.children = [wrapper]; wrapper.parentElement = card; wrapper.isConnected = true;
+  wrapper.appendChild(ta);
+  const footer = wrapper.appendChild(new Element());
+  footer.setAttribute('data-elicitation-dialog-footer', 'true');
+  card.setAttribute('data-elicitation-dialog-card', 'true');
+  ta.closest = sel => sel === '[data-elicitation-dialog-card]' ? card : null;
+  card.queries.set('[data-elicitation-dialog-footer]', footer);
+  h.inject(); h.boot(); h.runFrame();
+  const bar = wrapper.children.find(e => /zusage-root/.test(e.className || ''));
+  assert.ok(bar, '条已平铺进面板内容列');
+  assert.equal(bar.getAttribute('data-zusage-slot'), '0', 'harness sanity: 单实例 slot 0');
+  const tie = wrapper.appendChild(new Element('div'));
+  tie.className = 'zusage-root';
+  tie.setAttribute('data-zusage-slot', '0');   // 与本实例同 slot（v169 陈旧视图副本形态）
+  card.querySelectorAll = sel => sel === '.zusage-root' && tie.isConnected ? [tie] : [];
+  h.document.elementFromPoint = () => ta;
+  h.tick();
+  assert.equal(bar.style.display, 'flex', '同 slot 平局不让位（<= 变异在此变红：双条双隐）');
+  h.window.__zusageDispose();
+});
+
+/* v405 cardHost 去重语义（review 补）：同卡判定按实际宿主 wrapper 而非 cardCache——
+ * 面板场景双条同落内容列时 slot 大的让位（v169 规则对新挂载目标同样成立）。
+ * 变异：sameCard 回退 cardCache 判定 → 对手被 continue 跳过 → 双条并存互不压制。 */
+test('v405 elicitation dedup: panel wrapper rivals are matched via cardHost, not cardCache', () => {
+  const h = harness(), cards = h.setPanes(['a', 'b']);
+  const taA = cards[0].children[0], taB = cards[1].children[0];
+  const wrapper = new Element();
+  wrapper.className = 'flex min-h-0 flex-1 flex-col gap-3 p-3';
+  cards[0].children = [wrapper]; wrapper.parentElement = cards[0]; wrapper.isConnected = true;
+  wrapper.appendChild(taA); wrapper.appendChild(taB);
+  const footer = wrapper.appendChild(new Element());
+  footer.setAttribute('data-elicitation-dialog-footer', 'true');
+  cards[0].setAttribute('data-elicitation-dialog-card', 'true');
+  // 面板打开时两 pane 候选都锚到同一面板卡（v169「宿主保留旧视图副本」的双实例形态）
+  taA.closest = taB.closest = sel => sel === '[data-elicitation-dialog-card]' ? cards[0] : null;
+  cards[0].queries.set('[data-elicitation-dialog-footer]', footer);
+  h.inject(); h.boot(); h.runFrame();
+  const barsIn = () => wrapper.children.filter(e => /zusage-root/.test(e.className || '') && e.parentElement === wrapper);
+  assert.equal(barsIn().length, 2, '两实例双条同落面板内容列');
+  // 对手收集走 cardCache.querySelectorAll：桩按 wrapper 实况应答（含两根条）
+  cards[0].querySelectorAll = sel => sel === '.zusage-root' ? wrapper.children.filter(e => /zusage-root/.test(e.className || '')) : [];
+  // 命中点 taA 同在 cardCache 子树：两实例的卡内豁免都放行（barA 自身命中、barB 走 coverOK）
+  h.document.elementFromPoint = () => taA;
+  h.tick();
+  const [barA, barB] = barsIn();
+  assert.equal(barB.getAttribute('data-zusage-slot'), '1', 'harness sanity: bar b owns slot 1');
+  assert.equal(barB.style.display, 'none', '同宿主对手经 cardHost 判定：slot 1 让位隐藏');
+  h.runFrame();
+  assert.equal(barB.style.display, 'none', 'dupSuppress 不被 track 复显打穿（v177 规则沿袭）');
+  h.window.__zusageDispose();
+});
+
+/* v405 cardHost 重置语义（review 补）：面板关闭（属性摘除）→ heavy 回落 below-card 时
+ * cardHost 必须清空，否则去重按陈旧宿主把几何无关的残留对手误判同卡、错误压制。 */
+test('v405 mountBelowCard resets cardHost so stale wrapper rivals cannot suppress after panel close', () => {
+  const h = harness(), cards = h.setPanes(['a', 'b']);
+  const taB = cards[1].children[0];
+  const wrapper = new Element();
+  wrapper.className = 'flex min-h-0 flex-1 flex-col gap-3 p-3';
+  cards[1].children = [wrapper]; wrapper.parentElement = cards[1]; wrapper.isConnected = true;
+  wrapper.appendChild(taB);
+  const footer = wrapper.appendChild(new Element());
+  footer.setAttribute('data-elicitation-dialog-footer', 'true');
+  cards[1].setAttribute('data-elicitation-dialog-card', 'true');
+  taB.closest = sel => sel === '[data-elicitation-dialog-card]' && cards[1].hasAttribute('data-elicitation-dialog-card') ? cards[1] : null;
+  cards[1].queries.set('[data-elicitation-dialog-footer]', footer);
+  // 命中点指向 composer 本体（v177 先例）：默认桩返回 panes[0]=taA 不在 b 卡内，遮挡判定会藏条
+  h.document.elementFromPoint = () => taB;
+  h.inject(); h.boot(); h.runFrame();
+  const barB = wrapper.children.find(e => /zusage-root/.test(e.className || ''));
+  assert.ok(barB && barB.parentElement === wrapper, 'sanity: b 实例平铺进面板内容列');
+  // 面板关闭：宿主摘掉面板标记；wrapper 里残留一条几何无关的陈旧对手（矩形远离 body 兜底位）
+  const stale = wrapper.appendChild(new Element('div'));
+  stale.className = 'zusage-root';
+  stale.setAttribute('data-zusage-slot', '0');
+  stale.getBoundingClientRect = () => ({ top: 0, bottom: 20, left: 0, right: 60, width: 60, height: 20 });
+  // 对手收集走 cardCache.querySelectorAll（夹具恒 []）：按 wrapper 实况应答
+  cards[1].querySelectorAll = sel => sel === '.zusage-root' && stale.isConnected ? [stale] : [];
+  cards[1].removeAttribute('data-elicitation-dialog-card');
+  h.tick();
+  assert.equal(barB.parentElement, h.document.body, '面板标记摘除后 heavy 回落 below-card 兜底');
+  assert.equal(barB.style.display, 'flex', 'cardHost 已重置：几何无关的陈旧对手走矩形判定、不压制');
   h.window.__zusageDispose();
 });
 
