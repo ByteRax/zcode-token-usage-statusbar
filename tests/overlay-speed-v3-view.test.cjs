@@ -145,6 +145,18 @@ test('spd3CardHTML 结构锁: 根类/data-sv-key/双 Tab 组/chips/单多左卡�
   assert.match(dom, /· 2 模型 · 3 轮/);
   assert.doesNotMatch(dom, /本期有效 \d+ 个模型/, '左卡计数前缀「本期有效」已去（筛选条 fcount 保留）');
   assert.doesNotMatch(dom, /已选 \d+ 个模型/, '旧「已选 N 个模型」计数行已被计数语义替换');
+
+test('空池门控: 降级帧（real 非空、perModel 空）不拼伪造计数（v402 §24 审查收口）', () => {
+  const ctx = makeCtx();
+  const h = fixture();
+  const sel = { range: 'session', period: 'all', sid: 'sess_main' };
+  const anD = Object.assign({}, analyze(ctx, h, sel), { perModel: [] });
+  assert.ok(anD.real && anD.real.length && anD.overall, '前置：real/overall 在（走空池门控而非空态分支）');
+  const domD = stripStyle(cardHTML(ctx, anD, sel));
+  assert.doesNotMatch(domD, /zu-sv3-count/, '空池门控生效：不渲染 count 块');
+  assert.doesNotMatch(domD, / · 0 模型/, '无伪造「 · 0 模型」计数（与请求轮次 0 自相矛盾）');
+  assert.match(domD, /zu-sv3-main-num/, 'real 数据仍渲染主数字（非空态分支）');
+});
   assert.match(dom, /zu-sv3-dtab/);
   assert.match(dom, /所选模型分布 · 按请求数/);
   assert.doesNotMatch(dom, /唯一模型/);
