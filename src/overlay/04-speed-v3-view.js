@@ -41,7 +41,7 @@
    * 不显 0%，dbar aria 简化为「模型分布：N 个模型」（完整数据由下方表格承载）。 */
   /* SPD_V3_VIEW_BEGIN */
   var SPD3_SVG_FUNNEL = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8v5l-4 2v-7L3 5Z"/></svg>';
-  var SPD3_SVG_CUBE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>';
+  /* v403（§24 用户追加裁定）：SPD3_SVG_CUBE 随 count 图标删除（唯一消费者退役） */
   /* v387 §11.5：标题 📈 emoji 换自包含 SVG（16×16 轴+折线，stroke currentColor 随主题） */
   var SPD3_SVG_TREND = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4v16h18"/><path d="m7 14 4-5 3 3 5-7"/></svg>';
   /* 数值格式沿用 V2 口径：整数直显、小数留 1 位、空值 em dash（绝不显 0 t/s） */
@@ -278,8 +278,10 @@
      * turns/missN 随之提前到此（原在分布构建段）；空态分支不拼 count（models/overall 判空） */
     var missN = an.selMissing && an.selMissing.length ? an.selMissing.length : 0;
     var turns = spdNum(overall ? overall.turns : 0);
-    var countRow = '<div class="zu-sv3-count">' + SPD3_SVG_CUBE + "<span>" +
-      spdEsc(SPD_L(models.length + " 个模型 · " + turns + " 轮",
+    /* v403（§24 用户追加裁定）：去 cube 图标（SPD3_SVG_CUBE 及其 CSS 随之删除）；文案
+     * 「N 个模型」→「N 模型」（en 无对应变化）。 */
+    var countRow = '<div class="zu-sv3-count"><span>' +
+      spdEsc(SPD_L(models.length + " 模型 · " + turns + " 轮",
         models.length + " models · " + turns + " turns")) + "</span>" +
       (missN ? '<em class="zu-sv3-count-miss">' + spdEsc(SPD_L("已选模型中 " + missN + " 个在当前范围无有效记录",
         missN + " selected models have no valid records in this range")) + "</em>" : "") + "</div>";
@@ -558,7 +560,6 @@
        * v401 §24：count 并入标题行（去 margin-top，独立行退役；wrap 保留供 miss 提示换行） */
       ".zu-sv3-root .zu-sv3-count{display:flex;align-items:center;flex-wrap:wrap;gap:4px 6px;min-width:0;" +
         "font-size:calc(var(--ui-font-size,14px) - 1px);font-weight:600}" +
-      ".zu-sv3-root .zu-sv3-count svg{flex:0 0 auto;opacity:.85}" +
       ".zu-sv3-root .zu-sv3-count>span{white-space:nowrap}" +
       /* §11.3：selMissing 非空时计数行下的无有效记录提示（整行小字） */
       ".zu-sv3-root .zu-sv3-count-miss{flex:1 1 100%;font-style:normal;font-weight:400;" +

@@ -119,7 +119,7 @@ test('weighted average is Σout/Σms, never the arithmetic mean of per-turn spee
   // 多模型态（无筛选）：主数字恒在（§11.3）+ 计数行（v402 §24 起并入标题行、无「本期有效」前缀）；
   // 分布表每模型 tps 仍是 Σout/Σms 口径（A=1700t/13s=130.8…）
   const multi = dom(card(ctx, { range: 'session', period: 'all' }));
-  assert.match(multi, /zu-sv3-count">[\s\S]*?2 个模型 · 3 轮/, 'multi-model count row（title-row 内，无前缀）');
+  assert.match(multi, /zu-sv3-count">[\s\S]*?2 模型 · 3 轮/, 'multi-model count row（title-row 内，无前缀无图标）');
   assert.match(multi, /zu-sv3-main-num"><span class="[a-z-]+">\d/, 'multi-model main number always present');
   assert.match(multi, /zu-sv3-dtab/, 'distribution table present');
   // v390 用户裁定：「唯一模型」徽标全局去除（.zu-sv3-only）——真单模型池也不再显

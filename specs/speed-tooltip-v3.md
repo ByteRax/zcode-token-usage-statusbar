@@ -497,3 +497,8 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 - 速度口径、分布表、筛选条 fcount「已选 X/Y · 本期有效 N」（筛选条计数不动，仍带「本期有效」）、固定高 450、其它 Tooltip 全不变。
 - VM：左卡 count 断言翻转（「本期有效 N 个模型」→「N 个模型」+ 位置在 title-row 内）；en 断言 "active models" → "models"；筛选条 fcount 断言原样保持。
 - 真机：左卡标题行截图确认 count 与标题同行、主数字下方无残留空行。
+
+### 24.3 v403 追加裁定：去图标与量词（2026-11-20）
+
+- 删除 count 的 cube 图标（`SPD3_SVG_CUBE` 常量与 `.zu-sv3-count svg` CSS 一并删除——count 为其唯一消费者）；「N 个模型 · M 轮」→「N 模型 · M 轮」（en "N models · M turns" 本就无量词，不变）。
+- VM：左卡 count 断言「个模型」→「模型」同步翻转；其余同 §24.2。
