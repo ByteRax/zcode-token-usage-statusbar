@@ -1469,6 +1469,7 @@
   }
   function showUpdNoteTip(el) {
     if (stale() || !el || !el.isConnected) { hideUpdNoteTip(); return; }
+    cancelUpdNoteHide();   // 离开后 220ms 内重入（快速往返/多实例齿轮切换）：取消在途收起，防刚显即闪没
     var dark = true;
     try { dark = document.documentElement.classList.contains("dark"); } catch (e) { }
     updNoteTip.classList.toggle("zu-light", !dark);

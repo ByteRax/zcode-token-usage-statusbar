@@ -260,9 +260,13 @@
     function updNoteEnsure() {
       var v = updNoteTargetVersion();
       if (!v) return false;
-      if (updNoteState.version === v && (updNoteState.loading || updNoteState.result || updNoteState.error)) return false;
+      if (updNoteState.version === v && (updNoteState.loading || updNoteState.result || updNoteState.error)) {
+        updNoteRefreshTip();   // 持续悬停中（syncUpdate 每拍钩子）超时/迟到回包也能即时重画；签名幂等无 DOM 抖动
+        return false;
+      }
       var seq = ++updNoteState.seq;
       updNoteState.version = v; updNoteState.loading = true; updNoteState.result = null; updNoteState.error = null;
+      updNoteState.at = Date.now();
       pluginRequest("release-notes", { version: v, force: false }, function (result) {
         if (inactive() || seq !== updNoteState.seq) return;   // 乱序/实例销毁守卫：旧结果不覆盖新状态
         updNoteState.loading = false;
@@ -289,14 +293,21 @@
       }
       subs.push(L("已安装待重启，重启 ZCode 后生效", "Installed, pending restart — takes effect after restarting ZCode"));
       if (r && r.mirror) subs.push(L("GitCode 镜像（GitHub 限流回退）", "GitCode mirror (GitHub rate-limit fallback)"));
-      else if (r && r.verified === false) subs.push(L("参考：同号 Release，未核实与本渠道一致", "reference: same-version release, parity unverified"));
+      else if (r && r.verified === false) subs.push(L("参考：同号 Release，未核实与本渠道一致", "reference: same-version release, parity with this source unverified"));
       var head = '<div class="zu-un-head"><div class="zu-un-title">' + mEsc("v" + v + L(" 更新日志", " release notes")) +
         '</div><div class="zu-un-sub">' + mEsc(subs.join(" · ")) + "</div></div>";
       var body;
-      if (updNoteState.loading) body = '<div class="zu-un-note">' + L("正在加载更新日志…", "Loading release notes…") + "</div>";
-      else if (updNoteState.error) {
-        var reason = String(updNoteState.error.reason || "");
-        var text = reason === "rate-limited" ? L("暂时无法获取（API 限流）", "Temporarily unavailable (rate limited)")
+      /* 回执丢失兜底（与设置页 NOTES_LOADING_TIMEOUT_MS 同款）：超时把 loading 转为可读错误，
+       * 卡对同版本不再永挂「正在加载」；下一次悬停/回包到达即按新状态重画 */
+      var timedOut = updNoteState.loading && Date.now() - (updNoteState.at || 0) > NOTES_LOADING_TIMEOUT_MS;
+      var err = timedOut ? { reason: "network" } : updNoteState.error;
+      if (updNoteState.loading && !err) {
+        body = '<div class="zu-un-note">' + L("正在加载更新日志…", "Loading release notes…") + "</div>";
+      } else if (err) {
+        var reason = String(err.reason || "");
+        var errText = String(err.error || err.message || "");
+        var text = /^unknown action:/.test(errText) ? L("当前主进程为旧版本，暂不支持在线更新日志。", "The main process is outdated; online release notes are unavailable.")
+          : reason === "rate-limited" ? L("暂时无法获取（API 限流）", "Temporarily unavailable (rate limited)")
           : reason === "missing" ? L("该版本暂无发布日志", "No release notes for this version")
           : reason === "unsupported-channel" || reason === "unsupported" ? L("当前来源暂不支持在线日志", "Online release notes are unavailable for this source")
           : L("暂时无法获取更新日志", "Temporarily unable to load release notes");

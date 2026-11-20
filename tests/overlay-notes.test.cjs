@@ -497,6 +497,8 @@ test("v413 wiring: boot sweep, cleanup chain, tip shell, prefetch hook and gear 
   assert.ok(tips.includes('className = "tip zusage-quota-tip zusage-upd-note-tip"'), "tip 壳未挂清理宿主类");
   assert.ok(tips.includes("hideUpdNoteTip();\n    updNoteTip.remove();"), "cleanupRateTip 清理链缺 v413 卡");
   assert.ok(tips.includes('e.target.closest(".zu-notes-lnk")'), "tip 链接点击委托缺失");
+  assert.ok(/function showUpdNoteTip[\s\S]{0,300}cancelUpdNoteHide\(\)/.test(tips), "show 路径未取消在途收起（重入闪烁）");
+  assert.ok(tips.includes("Math.max(8, Math.min(Math.round(r.right - tw)"), "tip 左缘 8px 视口钳边缺失");
   const dom = read("06-instance-dom-and-styles.js");
   assert.ok(dom.includes('var VERSION = "v413"'), "VERSION 未升 v413");
   assert.ok(dom.includes(".zusage-upd-note-tip .zu-un-body"), "tip 作用域样式缺失");
@@ -504,4 +506,30 @@ test("v413 wiring: boot sweep, cleanup chain, tip shell, prefetch hook and gear 
   assert.ok(notes.includes('typeof pluginRequest === "function") updNotePrefetch()'), "syncUpdate 预取钩子缺失");
   assert.ok(notes.includes('gear.addEventListener("mouseenter", onGearUpdEnter)'), "齿轮悬停绑定缺失");
   assert.ok(notes.includes('typeof hideUpdNoteTip === "function") hideUpdNoteTip()'), "开面板收卡缺失");
+});
+
+test("gear hover card title escapes the pending version (feed-sourced markerVersion)", () => {
+  const ctx = makeUpdContext({ dotOn: true, pluginUpdate: restartUpdate({ markerVersion: '1.5.<b onerror="x()">' }) });
+  ctx.onGearUpdEnter();
+  ctx.__dones[0]({ ok: true, version: ctx.updNoteState.version, tag: "vx", body: "hello" });
+  const html = ctx.gear.__zuUpdHtml;
+  assert.ok(html.includes("&lt;b onerror=&quot;x()&quot;&gt;"), "版本号未经转义直进 innerHTML");
+  assert.doesNotMatch(html, /<b onerror=/);
+});
+
+test("gear hover card converts a lost reply into a readable timeout error", () => {
+  const ctx = makeUpdContext({ dotOn: true, pluginUpdate: restartUpdate() });
+  ctx.onGearUpdEnter();   // loading 中
+  ctx.updNoteState.at = Date.now() - 121000;   // 越过 NOTES_LOADING_TIMEOUT_MS(120s)
+  const html = ctx.updNoteHtml();
+  assert.doesNotMatch(html, /正在加载更新日志/);
+  assert.match(html, /暂时无法获取更新日志/);
+  assert.match(html, /详情见 ⚙ → 插件更新/);
+});
+
+test("gear hover card surfaces the legacy main-process note for unknown actions", () => {
+  const ctx = makeUpdContext({ dotOn: true, pluginUpdate: restartUpdate() });
+  ctx.onGearUpdEnter();
+  ctx.__dones[0]({ ok: false, reason: "error", error: "unknown action: release-notes" });
+  assert.match(ctx.gear.__zuUpdHtml, /当前主进程为旧版本/);
 });
