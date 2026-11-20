@@ -1526,6 +1526,128 @@ test('buildPanel shows the full-path toggle in both languages and restores its c
   assert.equal(ppBox.checked, false);
 });
 
+test('buildPanel places the prompt-enhance toggle once, before its configuration form in both languages', () => {
+  const buildSource = getNamedSlice('barOrderHelpers') + '\n' +
+    extract('    function settingRow(', '    function syncSettingsScroll() {');
+  for (const lang of ['zh', 'en']) {
+    const context = {
+      slot: 0,
+      panel: { innerHTML: '', querySelector: () => ({ value: '' }), querySelectorAll: () => [] },
+      state: { lang, show: {}, ctxOv: '', settingsSec: 'enhance-provider' },
+      L: (zh, en) => lang === 'en' ? en : zh,
+      syncUpdate: () => {}, syncSettingsScroll: () => {},
+    };
+    vm.runInNewContext(buildSource + '\nbuildPanel();', context);
+    const html = context.panel.innerHTML;
+    const enhancement = html.match(/<section[^>]*data-sec="enhance-provider"[^>]*>([\s\S]*?)<\/section>/)?.[1];
+    const stats = html.match(/<section[^>]*data-sec="stats"[^>]*>([\s\S]*?)<\/section>/)?.[1];
+    assert.equal((html.match(/<input[^>]*class="zu-enhance-toggle"/g) || []).length, 1);
+    assert.match(enhancement, /class="cap"[^>]*>[^<]+<\/div>[\s\S]*class="zu-enhance-toggle"[\s\S]*class="zu-ep"/);
+    assert.match(enhancement, lang === 'en' ? /Prompt enhance button/ : /增强提示词按钮/);
+    assert.doesNotMatch(stats, /zu-enhance-toggle/);
+  }
+});
+
+test('a main-process push updates the open enhancement controls without replacing the form', () => {
+  const updateSource = extract('  window.__zusagePluginUpdate =', '  /* 工作区身份来自当前会话节点');
+  const syncSource = extract('    function updFingerprint(u) {', '    function syncPanel() {');
+  const toggle = { checked: true }, run = { disabled: false }, draft = { value: 'unsaved' };
+  const controls = { '.zu-enhance-toggle': toggle, '.zu-ep-test-run': run, '.zu-ep-test-draft': draft };
+  const context = {
+    window: {}, stale: () => false, scanRateLines: () => {},
+    state: { pluginUpdate: { enhanceEnabled: true }, enhanceEnabled: true },
+    epTest: { id: '' },
+    gear: { querySelector: () => null },
+    panel: {
+      innerHTML: 'existing form',
+      querySelector: sel => (controls[sel] ||= { style: {}, classList: { toggle() {} } }),
+    },
+    LS: { updSeen: 'zusage3.updSeen' },
+    localStorage: { getItem: () => null },
+    L: zh => zh,
+  };
+  vm.runInNewContext(`${updateSource}\n${syncSource}\nvar instances = [{ syncUpdate }];`, context);
+  context.window.__zusagePluginUpdate({ enhanceEnabled: false });
+  assert.equal(toggle.checked, false);
+  assert.equal(run.disabled, true);
+  assert.equal(draft.value, 'unsaved');
+  assert.equal(context.panel.innerHTML, 'existing form');
+  context.window.__zusagePluginUpdate({ enhanceEnabled: true });
+  assert.equal(toggle.checked, true);
+  assert.equal(run.disabled, false);
+  context.epTest.id = 'in-flight';
+  context.window.__zusagePluginUpdate({ enhanceEnabled: true, phase: 'idle' });
+  assert.equal(run.disabled, true, 'a push must not re-enable a running test');
+});
+
+test('enhancement switch waits for save and keeps the last broadcast value on failure or timeout', () => {
+  const controlsSource = extract('    function canStartEnhanceTest() {', '    function syncUpdate() {');
+  const changeSource = extract('    panel.addEventListener("change",', '    listenGlobal(document, "mousedown",');
+  const toggle = { type: 'checkbox', checked: false, dataset: {}, classList: { contains: n => n === 'zu-enhance-toggle' } };
+  const run = { disabled: false };
+  const requests = [], feedback = [], timers = new Map(), forgotten = [];
+  let change, peerSyncs = 0, seq = 0;
+  const context = {
+    state: { enhanceEnabled: true },
+    instances: [{ syncUpdate: () => { peerSyncs++; } }],
+    panel: {
+      addEventListener: (_, fn) => { change = fn; },
+      querySelector: sel => sel === '.zu-enhance-toggle' ? toggle : sel === '.zu-ep-test-run' ? run : null,
+    },
+    inactive: () => false, stale: () => false,
+    showSettingsFeedback: (...args) => feedback.push(args),
+    pluginRequest(action, enabled, done) {
+      assert.equal(action, 'enhance');
+      requests.push({ enabled, done });
+      return 'save-' + requests.length;
+    },
+    forgetPluginRequest: id => forgotten.push(id),
+    setTimeout(fn) { timers.set(++seq, fn); return seq; },
+    clearTimeout: id => timers.delete(id),
+  };
+  vm.runInNewContext(controlsSource + '\n' + changeSource, context);
+  change({ target: toggle });
+  assert.equal(requests[0].enabled, false);
+  assert.equal(context.state.enhanceEnabled, true, 'the toolbar keeps its confirmed value');
+  assert.equal(toggle.disabled, true);
+  assert.equal(run.disabled, true);
+  toggle.checked = true;
+  change({ target: toggle });
+  assert.equal(requests.length, 1, 'duplicate writes are rejected while saving');
+  assert.equal(toggle.checked, false);
+  requests[0].done({ ok: false });
+  assert.equal(toggle.checked, true);
+  assert.equal(run.disabled, false);
+  assert.equal(timers.size, 0);
+  assert.equal(peerSyncs, 2);
+
+  toggle.checked = false;
+  change({ target: toggle });
+  context.state.enhanceEnabled = false;   // confirmed concurrently by the main process
+  timers.get(2)();
+  assert.deepEqual(forgotten, ['save-1', 'save-2']);
+  assert.equal(toggle.disabled, false);
+  assert.equal(toggle.checked, false);
+  assert.equal(run.disabled, true);
+
+  toggle.checked = true;
+  change({ target: toggle });
+  requests[1].done({ ok: false });   // a late result must not unlock the new request
+  assert.equal(toggle.disabled, true);
+  context.state.enhanceEnabled = true;
+  requests[2].done({ ok: true });
+  assert.deepEqual(feedback.at(-1), [false, false]);
+  assert.equal(toggle.checked, true);
+  assert.equal(run.disabled, false);
+  assert.equal(timers.size, 0);
+
+  context.mobileMode = true;
+  change({ target: toggle });
+  assert.equal(requests.length, 3, 'the mobile page cannot submit this setting');
+  assert.equal(toggle.disabled, true);
+  assert.equal(run.disabled, true);
+});
+
 test('syncPanel restores the full-path toggle and tolerates its absence', () => {
   const syncSource = getNamedSlice('barOrderHelpers') + '\n' +
     extract('    function syncPanel() {', '    panel.addEventListener("click",');
