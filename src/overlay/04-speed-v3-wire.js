@@ -15,6 +15,8 @@
     return spd3ChartHTML(an, hoverIdx, o);
   }
   function spd3RebuildOr(h, sd, sel, hover, liveOrSess, o, paneSess) {
+    /* liveOrSess 为 v415 前 live 徽标的遗留参数（三调用点与接线测试锁签名），徽标
+     * 删除后本函数与视图均不再消费，保留形参仅为兼容。 */
     if (!h || !h.turns || typeof h.turns.length !== "number" || !h.turns.length) {
       /* v261 同款：null 原因取证（typeof FATAL 守卫，VM 切片夹具无 FATAL 不炸）。 */
       try { if (typeof FATAL !== "undefined" && FATAL) FATAL.spdNull =
@@ -23,13 +25,13 @@
       return null;
     }
     var sess = paneSess || null;
-    var live = liveOrSess || null;
     var dftFilt = function () {
       return (typeof spd3FilterAuto === "function") ? spd3FilterAuto() : { mode: "auto", keys: null };
     };
-    /* 串级 memo（M4/S10，闭包局部）：V3 卡不含逐拍走字（live 只进 statusText 状态
-     * 词），an 引用与呈现态全等的拍产物逐字节恒等——每拍重拼 259KB 级串纯浪费。
-     * 键=[an 引用, hover, pop.open, pop.query, live.statusText]：交互路径
+    /* 串级 memo（M4/S10，闭包局部）：V3 卡不含逐拍走字（v415 起 live 徽标删除，
+     * statusText 等实时态不再进产物），an 引用与呈现态全等的拍产物逐字节恒等——
+     * 每拍重拼 259KB 级串纯浪费。
+     * 键=[an 引用, hover, pop.open, pop.query]：交互路径
      * （柱 hover/chips/Tab/弹出层/会话相位变化→an 引用变）自然失效。缓存命中须同时
      * 保鲜 SPD_PORTAL 侧信道（消费即清后重挂同一悬停卡，否则悬停中下一拍 Portal
      * 被清空收起）。 */
@@ -49,15 +51,14 @@
           sid: core.sid, remote: core.remote, filt: dftFilt() }) || an;
       SPD3_POOL = (poolAn && poolAn.perModel) || [];
       var pop = (cur && cur.pop) || { open: false, query: "" };
-      var tail = [hi, pop.open ? 1 : 0, pop.query || "",
-        (live && live.statusText) || ""].join("\u0001");
+      var tail = [hi, pop.open ? 1 : 0, pop.query || ""].join("\u0001");
       if (lastAn === an && lastTail === tail) {
         SPD_PORTAL = lastPortal;
         return lastOut;
       }
       var chart = spd3ChartFor(an, sd, hi, o);
       var html = spd3CardHTML(an, {
-          sel: core, hover: hi, live: live, o: o,
+          sel: core, hover: hi, o: o,
           pop: pop,
           pool: SPD3_POOL
         }).replace("<!--CHART-->", chart);

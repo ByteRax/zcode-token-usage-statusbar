@@ -289,9 +289,12 @@ test('单模型左卡: 五 period 标题文案、主数字/档位恒在、同构
   assert.ok(!domTurn.includes('日均'), 'turn 粒度不出现日均词');
   // 主数字档位色：filt[B] 会话/全部 = 300 t/s → zu-azure
   assert.match(domTurn, /zu-sv3-main-num"><span class="zu-azure">300<\/span>/);
-  // 实时状态词 = 标题行右侧轻量徽标
-  const domLive = stripStyle(cardHTML(ctx, analyze(ctx, h, selRec), selRec, { live: { statusText: '生成中' } }));
-  assert.match(domLive, /zu-sv3-sub">生成中<\/span>/);
+  // v415：live 徽标已移除——估算「实时估算中」与思考/工具 statusText 临时态不再展示
+  const domLive = stripStyle(cardHTML(ctx, analyze(ctx, h, selRec), selRec,
+    { live: { statusText: '生成中', speedIsEstimated: true } }));
+  assert.ok(!domLive.includes('zu-sv3-sub'), '徽标容器不渲染');
+  assert.ok(!domLive.includes('生成中'), 'statusText 透传文本不落串');
+  assert.ok(!domLive.includes('实时估算中'), '估算固定文案不落串');
 });
 
 // ---------- ③ 多模型分布 ----------
