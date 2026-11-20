@@ -2074,7 +2074,7 @@
     var when = gitTimeStr(st.ts);
     return GIT_TIP_CSS +
       '<div class="rt-h">⎇ ' + L("Git 状态", "Git status") + (view.stale ? ' <span class="c-warn">' + L("· 上次查询失败，显示的是最近成功结果", "· last query failed; showing the last good result") + "</span>" : "") + "</div>" +
-      row(L("分支", "Branch"), st.detached ? L("游离 HEAD（不在任何分支上）", "detached HEAD (on no branch)") : gitEsc(st.branch || "") + (st.noCommits ? L("（尚无首次提交）", " (no initial commit yet)") : "")) +
+      row(L("分支", "Branch"), st.detached ? (view.wt ? L("游离 HEAD（worktree 检出，未建分支）", "detached HEAD (worktree checkout, no branch yet)") : L("游离 HEAD（不在任何分支上）", "detached HEAD (on no branch)")) : gitEsc(st.branch || "") + (st.noCommits ? L("（尚无首次提交）", " (no initial commit yet)") : "")) +
       row(L("上游", "Upstream"), up) +
       row(L("已暂存", "Staged"), items(st.staged)) +
       row(L("未暂存", "Unstaged"), items(st.unstaged)) +
@@ -2083,10 +2083,13 @@
       (st.op ? row(L("进行中操作", "Git operation"), gitEsc(gitOpLabel(st.op))) : "") +
       row(L("改动行数", "Diff lines"), "+" + gitNum(st.ins) + " / -" + gitNum(st.del) + L(" 行（工作区相对 HEAD 的合计口径，非净差异）", " lines (worktree vs HEAD, combined—not a net diff)")) +
       row(L("目录", "Directory"), gitEsc(st.repoPath || view.path)) +   // v96：repoPath=真实仓库绝对路径，缺省回退工作区路径
-      /* 受管 worktree 区块（specs/worktree-branch.md）：bucket 与根目录定位 worktree；「起点」
-       * 是创建记录里的检出分支（detached 默认创建时无 ref），不随后续切分支变化。 */
-      (view.wt ? row(L("受管 Worktree", "Managed worktree"), gitEsc(view.wt.bucket) + " · " + gitEsc(view.wt.root)) : "") +
+      /* 受管 worktree 区块（specs/worktree-branch.md §v409）：短标识 + 源仓库 + 起点与创建
+       * 时刻；root 仅在 cwd ≠ root（monorepo）时单列，否则「目录」行已是根不重复。 */
+      (view.wt ? row(L("受管 Worktree", "Managed worktree"), gitEsc(view.wt.bucket) + " · " + gitEsc(view.wt.name)) : "") +
+      (view.wt && view.wt.root && view.wt.root !== view.wt.cwd ? row(L("Worktree 根目录", "Worktree root"), gitEsc(view.wt.root)) : "") +
+      (view.wt && view.wt.sourceRoot ? row(L("主仓库", "Source repo"), gitEsc(view.wt.sourceRoot)) : "") +
       (view.wt ? row(L("起点", "Start ref"), view.wt.ref ? gitEsc(view.wt.ref) : (view.wt.sha ? gitEsc(String(view.wt.sha).slice(0, 7)) : L("当前 HEAD（游离检出）", "current HEAD (detached)"))) : "") +
+      (view.wt && view.wt.created ? row(L("创建于", "Created"), gitTimeStr(view.wt.created)) : "") +
       (when ? row(L("更新于", "Updated"), when) : "") +
       '<div class="rt-note">' + L("只读本地仓库，不自动 fetch（上游比较基于本地引用）；远端会话不显示。⚙ 设置可关。",
         "Local repositories read-only, never auto-fetches (upstream compares against local refs); hidden for remote sessions. Toggle in ⚙ settings.") + "</div>";

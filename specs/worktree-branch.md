@@ -14,7 +14,7 @@ ZCode 受管 worktree 的核心模型：**worktree 不是新 workspace，只是�
 ## 目标
 
 1. worktree 会话（本地、受管布局内）：Git chip 的查询路径与全部显示（分支/上游/ahead-behind/改动计数/进行中操作）落到 worktree 本身。
-2. Git chip tooltip 增加「受管 worktree」区块：bucket 标识、根目录、起点（起点分支 ref，无 ref 显起点 SHA 短哈希，都没有显「当前 HEAD」——起点来自创建记录，不随后续切分支变化）。
+2. Git chip tooltip 的 worktree 区块全量化（v409）：短标识（bucket·名称）、根目录（仅 monorepo cwd≠root 单列）、主仓库（源检出路径）、起点（起点分支 ref，无 ref 显起点 SHA 短哈希，都没有显「当前 HEAD」——来自创建记录，不随后续切分支变化）与创建时刻。
 3. 非 worktree 会话行为逐字节不变；远端 pane、手机 lean 帧、CLI/MCP stdout 契约不受影响。
 
 ## 数据契约
@@ -22,11 +22,13 @@ ZCode 受管 worktree 的核心模型：**worktree 不是新 workspace，只是�
 ### Python（zusage.py → 快照顶层 `worktrees`）
 
 - `snapshot()` 新增 `include_worktree=False` 参数，开启时顶层挂 `worktrees`；开关点与 `include_speed_history` 完全一致（serve 常驻 + legacySpawn 一次性 json 的桌面链；`lean:true` 与 `ZUSAGE_REMOTE_CHILD=1` 关闭）。WorkBuddy 分支在进入 zcode 逻辑前提前 return，不涉及。
-- 形状：`{ "<sid>": {"cwd","root","bucket","name","ref","sha"} }`，只覆盖本帧 force_sid 中命中受管布局的会话；无命中时省略字段（不是空对象）。
+- 形状：`{ "<sid>": {"cwd","root","bucket","name","ref","sha","created","sourceRoot"} }`，只覆盖本帧 force_sid 中命中受管布局的会话；无命中时省略字段（不是空对象）。
   - `cwd`：会话 `session.directory`（realpath 归一，可能是 worktree 内的 monorepo 子目录，`root` ≠ `cwd` 属正常）。
   - `root`：`<managedRoot>/<bucket>/<name>`（realpath 归一）；`bucket`：4 位小写 hex；`name`：源仓库名。
   - `ref`/`sha`：会话首轮 `worktree_creation` timeline part 的 `worktreeCreation.ref`/`sha`（detached 默认创建时 `ref=null`，解析失败按缺失）。
-- 受管判定只做纯路径布局匹配（前缀 + 两级结构 + bucket 形状），与宿主 `parseManagedWorktreePath` 同规则；不读 `.git`、不执行 git。目录已删除的 worktree 照常报告（realpath 宽容、part 记录仍在），交由渲染端/主进程自然降级。
+  - `created`：同一条 part 的 `time.start`（毫秒，创建时刻；缺 part/解析失败为 null，随起点未决一起补齐）。
+  - `sourceRoot`：源仓库路径，读 `<root>/.git` 链接文件（`gitdir: <sourceRoot>/.git/worktrees/<id>` 上溯两级）；非链接/读失败为 null（fail-soft 隐藏行）。
+- 受管判定只做纯路径布局匹配（前缀 + 两级结构 + bucket 形状），与宿主 `parseManagedWorktreePath` 同规则；不执行 git。`.git` 链接文件只为 sourceRoot 做一次小读（缓存内不可变事实），不读分支。目录已删除的 worktree 照常报告（realpath 宽容、part 记录仍在），交由渲染端/主进程自然降级。
 - managedRoot 解析：`ZCODE_DATA_BASE_DIR` 优先，否则用户主目录，再接 `.zcode/worktrees`（与宿主 `resolveManagedWorktreeRoot` 一致）。
 - 起点查询：`part_session_idx` 索引按 sid 取行，`data LIKE '%"timelineType":"worktree_creation"%'` 预滤后按 `time_created` 序在 Python 侧逐行 `json.loads` 校验，取第一条真正含 `worktreeCreation` 的（不依赖 SQLite JSON1；正文同字面量与损坏 JSON 行跳过继续，不遮蔽其后真实创建记录）。
 - 进程内按 sid 缓存整条事实（cwd 创建后固定、ref/sha 落库后不变，属不可变事实）：**只有 session 行存在且 directory 非空**的 sid 才写缓存——已判定非受管写负缓存（None），行未落库/目录为空不写（下一帧自然重查）；缓存（含负条目）超 512 条整体清空。起点有「未决」态：`worktree_creation` part 实测比 session 行晚 ~1.2s 落库，首见帧可能缓存到空起点（ref/sha 同为 None），命中缓存也重查一次，拿到即转已决（sha 非空即已决，detached 默认形状 ref=null/sha=有值；全 detached 且无 part 记录的会话每帧一次该 sid 范围扫描，节流帧下可接受）。
@@ -36,9 +38,9 @@ ZCode 受管 worktree 的核心模型：**worktree 不是新 workspace，只是�
 
 - `window.__zusageUpdate`：本帧带 `worktrees` 对象时捕获到模块级 `lastWorktrees`（外层 IIFE 闭包变量，与 speed 粘性同位）；捕获先于尾部 render 循环，同帧 `refreshWants → publishGitPaths` 即可用上。
 - `publishGitPaths`：本地 pane（scope 有 `workspacePath` 且 identity 为空）若 `lastWorktrees` 命中本 pane sid，则发布 `wt.cwd` 替代 `workspacePath`。路径集变化触发既有 `askGitRefresh(changed)` 立即首查。
-- `gitChipView`：同规则覆写显示路径；view 携带 `wt` 供 tooltip 用。chip 上分支名/HEAD、↑↓、改动计数全部来自 worktree 的实时 git 查询，不加新段、不缩写（四级响应式 v383 形态不动）。
-- tooltip（`gitTipHTML` 单仓路径）：`view.wt` 在场时追加两行——「受管 Worktree」= `<bucket> · <root 根目录路径>`（root 末段即源仓库名，name 不再单列）；「起点」= `ref`，无则 `sha` 前 7 位，都无则「当前 HEAD」；全部用户数据过 `gitEsc`。multi 聚合路径不加区块（worktree cwd 恒为单仓，多仓触发即说明未覆写）。
-- 分支名不在 Python 读：主进程 `git status --porcelain --branch` 已按覆写路径实时给出（detached → chip 显 `HEAD`，与 ZCode 自家 chip 一致）；tooltip「目录」行随之显示 worktree cwd。
+- `gitChipView`：同规则覆写显示路径；view 携带 `wt` 供 tooltip 用。chip 上分支名、↑↓、改动计数全部来自 worktree 的实时 git 查询，不加新段、不缩写（四级响应式 v383 形态不动）。
+- tooltip（`gitTipHTML` 单仓路径，v409 重组）：`view.wt` 在场时追加——「受管 Worktree」= `<bucket> · <name>`（短标识，不再重复整条 root 路径）；「Worktree 根目录」= root，**仅 cwd ≠ root（monorepo 子目录）时单列**（否则「目录」行已是根）；「主仓库」= sourceRoot（有则显示）；「起点」= `ref`，无则 `sha` 前 7 位，都无则「当前 HEAD」；「创建于」= created（有则显示，gitTimeStr 格式）。全字段过 `gitEsc`/既有时间格式化。multi 聚合路径不加区块（worktree cwd 恒为单仓，多仓触发即说明未覆写）。
+- 分支名不在 Python 读：主进程 `git status --porcelain --branch` 已按覆写路径实时给出。**worktree 会话游离检出的分支令牌显 `WorkTree`**（v409，用户规格）：chip（L0 `gitChipHtml`）、aria（`gitChipAria` 第三参 wt）与四级响应式候选（`gitCandidates`）三处共用同一令牌判定——`detached && wt → "WorkTree"`，detached 非 worktree 保持 `HEAD`，有分支照常显示分支名；tooltip「分支」行在 wt 游离时注「worktree 检出，未建分支」。「目录」行随之显示 worktree cwd。
 
 ## 边界与降级
 
@@ -56,7 +58,7 @@ ZCode 受管 worktree 的核心模型：**worktree 不是新 workspace，只是�
 
 | ID | 场景 | 预期 |
 |---|---|---|
-| WTB-01 | 打开受管 worktree 会话 | chip 分支/↑↓/计数为 worktree 实时值（detached 显 HEAD）；tooltip「目录」= worktree cwd，另有受管 Worktree 与起点两行 |
+| WTB-01 | 打开受管 worktree 会话 | chip 分支/↑↓/计数为 worktree 实时值（游离检出令牌显 WorkTree，非 worktree 会话显 HEAD）；tooltip「目录」= worktree cwd，另有受管 Worktree（bucket·名称）、起点，及根目录/主仓库/创建于（条件在场）等行 |
 | WTB-02 | 普通项目会话 | 无 `worktrees` 条目，chip 数据链与显示同现状 |
 | WTB-03 | worktree 目录被删 | chip 隐藏，不显示主 checkout 状态 |
 | WTB-04 | 起点 ref 有 / 无 / 缺 part | tooltip 起点分别 = ref / sha 前 7 位 / 「当前 HEAD」 |

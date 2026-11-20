@@ -1247,6 +1247,10 @@
       var v = gitViewFor(gp);
       return v ? { path: gp, st: v.st, stale: v.stale, wt: wt } : null;
     }
+    /* v409：游离检出分支令牌单源（chip L0 与响应式 L2 共用，防两处手抄漂移；aria 用更细文案不走此函数） */
+    function gitBranchToken(st, view) {
+      return st.detached ? (view.wt ? "WorkTree" : "HEAD") : st.noCommits ? L("初始", "init") : String(st.branch || "HEAD");
+    }
     function gitChipHtml(view) {   // view={path, st, stale}：stale 是工作区级过期标志（勿与闭包 stale() 函数混淆）
       var st = view.st, stale = view.stale;
       if (st.kind === "multi") {   // v96 multi：仓库数 + ·分隔语义段（已知/上次前缀、!冲突、失败、过期）；文件条目汇总在 tooltip 不上 chip
@@ -1258,7 +1262,7 @@
         if (stale) parts.push('<span class="zu-git-warn">' + L("过期", "stale") + "</span>");   // 过期用文字提示，不降透明度
         return ZU_GIT_MULTI_ICON + parts.join('<span class="zu-git-sep">·</span>');
       }
-      var name = st.detached ? "HEAD" : st.noCommits ? L("初始", "init") : String(st.branch || "HEAD");
+      var name = gitBranchToken(st, view);   // v409：worktree 游离检出显 WorkTree（specs/worktree-branch.md）
       var shown = name.length > 18 ? name.slice(0, 16) + "…" : name;   // 全名进 tooltip
       var h = ZU_GIT_ICON + '<span class="zu-git-name">' + gitEsc(shown) + "</span>";
       var ab = (st.ahead > 0 ? "↑" + gitNum(st.ahead) : "") + (st.behind > 0 ? (st.ahead > 0 ? " " : "") + "↓" + gitNum(st.behind) : "");
@@ -1273,7 +1277,7 @@
       if (stale) h += ' <span class="zu-git-warn">' + L("过期", "stale") + "</span>";
       return h;
     }
-    function gitChipAria(st, stale) {
+    function gitChipAria(st, stale, wt) {
       if (st.kind === "multi") {
         var a = gitMultiAgg(st);
         var ms = L("Git " + a.total + " 个仓库", "Git " + a.total + " repos");
@@ -1284,7 +1288,7 @@
         if (stale) ms += L("，数据已过期", ", data stale");
         return ms;
       }
-      var s = L("Git 分支 ", "Git branch ") + (st.detached ? "HEAD" : st.noCommits ? L("初始（尚无首次提交）", "init (no initial commit yet)") : st.branch);
+      var s = L("Git 分支 ", "Git branch ") + (st.detached ? (wt ? L("WorkTree（游离检出）", "WorkTree (detached)") : "HEAD") : st.noCommits ? L("初始（尚无首次提交）", "init (no initial commit yet)") : st.branch);
       if (st.ahead > 0) s += L("，领先 ", ", ahead ") + st.ahead;
       if (st.behind > 0) s += L("，落后 ", ", behind ") + st.behind;
       if (st.ins > 0 || st.del > 0) s += L("，改动 +", ", changes +") + (st.ins | 0) + " -" + (st.del | 0);
@@ -1321,7 +1325,7 @@
           (agg.changed > 0 ? '<span class="zu-git-more">⋯</span>' : "");
         return { L0: full, L1: full, L2: l2m, L3: ZU_GIT_MULTI_ICON + mdotEl + mrisk, L3I: ZU_GIT_MULTI_ICON + mdotEl };
       }
-      var name = st.detached ? "HEAD" : st.noCommits ? L("初始", "init") : String(st.branch || "HEAD");
+      var name = gitBranchToken(st, view);   // v409：单源令牌，与 gitChipHtml 恒一致
       var shown = name.length > 18 ? name.slice(0, 16) + "…" : name;   // 截断与转义同 L0，全名进 Tooltip
       var nums = [];
       if (st.ins > 0) nums.push('<span class="zu-git-ins">+' + gitNum(st.ins) + "</span>");
@@ -1463,7 +1467,7 @@
         if (gitChipCache) { gitChipCache.classList.remove("zu-gbusy"); gitChipCache.setAttribute("aria-busy", "false"); }
         enhanceGitChip();
         var view = gitChipView();
-        var summary = view ? gitChipAria(view.st, view.stale) : L("当前目录没有 Git 状态", "No Git status for this directory");
+        var summary = view ? gitChipAria(view.st, view.stale, view.wt) : L("当前目录没有 Git 状态", "No Git status for this directory");
         var text = result && result.ok
           ? L("Git 状态已更新：", "Git status updated: ") + summary
           : L("Git 状态查询失败：", "Git status query failed: ") + summary;
@@ -1475,7 +1479,7 @@
         gitRefreshPath = "";
         if (gitChipCache) { gitChipCache.classList.remove("zu-gbusy"); gitChipCache.setAttribute("aria-busy", "false"); }
         var currentView = gitChipView();
-        var currentStatus = currentView ? gitChipAria(currentView.st, currentView.stale) : "";
+        var currentStatus = currentView ? gitChipAria(currentView.st, currentView.stale, currentView.wt) : "";
         ariaLiveState.__zuGitLive = currentStatus;
         ariaLiveState.textContent = currentStatus || ariaLiveState.__zuQuotaLive || "";
         enhanceGitChip();
@@ -1589,7 +1593,7 @@
       else if (mount.after) mis = slotNode !== chip && !(tpsChipCache && slotNode === tpsChipCache);
       else mis = wrap.lastElementChild !== chip && !(sysmonChipCache && wrap.lastElementChild === sysmonChipCache);   // v356：容忍系统状态 chip 收尾（[锚][速率][git][sysmon] 收敛，防两 chip 逐拍拉锯）
       if (mis) wrap.insertBefore(chip, slotNode);
-      var gitLiveText = gitChipAria(view.st, view.stale);
+      var gitLiveText = gitChipAria(view.st, view.stale, view.wt);
       if (ariaLiveState.__zuGitLive !== gitLiveText) {
         ariaLiveState.__zuGitLive = gitLiveText;
         ariaLiveState.textContent = ariaLiveState.__zuGitLive || ariaLiveState.__zuQuotaLive || "";
@@ -1631,7 +1635,7 @@
       if (chip.__zuSig !== sig) {   // 幂等：内容不变时不重建 chip
         chip.__zuSig = sig;
         chip.className = cls + (busy ? " zu-gbusy" : "");
-        chip.setAttribute("aria-label", gitChipAria(view.st, view.stale));
+        chip.setAttribute("aria-label", gitChipAria(view.st, view.stale, view.wt));
         chip.innerHTML = html;
       }
       chip.setAttribute("data-zusage-glevel", level);   // React 不动 data-*；诊断/测试读级

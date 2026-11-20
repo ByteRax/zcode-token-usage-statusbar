@@ -102,26 +102,27 @@ class WorktreeOriginTests(unittest.TestCase):
     def test_ref_extracted_from_creation_part(self):
         self.insert_part(WT_PART.replace('"ref":null', '"ref": "feature/branch"'))
         self.assertEqual(zusage._worktree_origin(self.con, "s_wt"),
-                         ("feature/branch", "0eb3d3133adc5c1905e042f73c4b06b139478791"))
+                         ("feature/branch", "0eb3d3133adc5c1905e042f73c4b06b139478791", None))
 
     def test_detached_ref_is_none(self):
         self.insert_part(WT_PART)
-        ref, sha = zusage._worktree_origin(self.con, "s_wt")
+        ref, sha, created = zusage._worktree_origin(self.con, "s_wt")
         self.assertIsNone(ref)
         self.assertEqual(sha, "0eb3d3133adc5c1905e042f73c4b06b139478791")
+        self.assertIsNone(created)   # 无 time 字段不伪造
 
     def test_like_prefilter_no_false_positive(self):
         """推理正文里出现同字面量不误报：json 校验 timelineType 后丢弃。"""
         self.insert_part(json.dumps({"type": "reasoning",
                                      "text": 'the part key is "timelineType":"worktree_creation" ok'}))
-        self.assertEqual(zusage._worktree_origin(self.con, "s_wt"), (None, None))
+        self.assertEqual(zusage._worktree_origin(self.con, "s_wt"), (None, None, None))
 
     def test_corrupt_json_part_skipped_not_fatal(self):
         """损坏 JSON 的 LIKE 命中行跳过继续，不炸帧也不遮蔽其后真实创建记录（审查 M2a）。"""
         self.insert_part('{"timelineType":"worktree_creation","broken', ts=500)   # 非法 JSON
         self.insert_part(WT_PART.replace('"ref":null', '"ref":"late/ref"'), ts=1000)
         self.assertEqual(zusage._worktree_origin(self.con, "s_wt"),
-                         ("late/ref", "0eb3d3133adc5c1905e042f73c4b06b139478791"))
+                         ("late/ref", "0eb3d3133adc5c1905e042f73c4b06b139478791", None))
 
     def test_earlier_plain_part_does_not_shadow_creation(self):
         """更早的普通 part（正文同字面量、合法 JSON、无 worktreeCreation）不遮蔽其后真实 part（M2b）。"""
@@ -130,13 +131,57 @@ class WorktreeOriginTests(unittest.TestCase):
             separators=(",", ":")), ts=500)
         self.insert_part(WT_PART.replace('"ref":null', '"ref":"feat/real"'), ts=1000)
         self.assertEqual(zusage._worktree_origin(self.con, "s_wt"),
-                         ("feat/real", "0eb3d3133adc5c1905e042f73c4b06b139478791"))
+                         ("feat/real", "0eb3d3133adc5c1905e042f73c4b06b139478791", None))
+
+    def test_created_extracted_from_part_time(self):
+        """创建时刻取 part 信封层 time.start（毫秒）；非数值/越界不伪造（v409）。"""
+        part = json.dumps({
+            "timelineType": "worktree_creation", "display": "worklog",
+            "worktreeCreation": {"path": "/x/wt", "sha": "0eb3d3133adc5c1905e042f73c4b06b139478791", "ref": "feat/t"},
+            "time": {"start": 1795056006731, "end": 1795056006732},
+        }, separators=(",", ":"))
+        self.insert_part(part)
+        self.assertEqual(zusage._worktree_origin(self.con, "s_wt"),
+                         ("feat/t", "0eb3d3133adc5c1905e042f73c4b06b139478791", 1795056006731))
+
+    def test_created_rejects_bool_and_oversize(self):
+        """布尔（int 子类）与超出 1970~2100 量级的时间不伪造（审查 MINOR-6）。"""
+        for bad in (True, 10 ** 16, -5, "1.7e12"):
+            part = json.dumps({
+                "timelineType": "worktree_creation", "display": "worklog",
+                "worktreeCreation": {"path": "/x/wt", "sha": "s", "ref": None},
+                "time": {"start": bad},
+            }, separators=(",", ":"))
+            self.insert_part(part)
+            self.assertEqual(zusage._worktree_origin(self.con, "s_wt")[2], None, repr(bad))
 
     def test_missing_part_and_missing_table(self):
-        self.assertEqual(zusage._worktree_origin(self.con, "nope"), (None, None))
+        self.assertEqual(zusage._worktree_origin(self.con, "nope"), (None, None, None))
         bare = sqlite3.connect(":memory:")
         self.addCleanup(bare.close)
-        self.assertEqual(zusage._worktree_origin(bare, "s_wt"), (None, None))   # 缺表静默降级
+        self.assertEqual(zusage._worktree_origin(bare, "s_wt"), (None, None, None))   # 缺表静默降级
+
+
+class WorktreeSourceRootTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / "wt"
+        self.root.mkdir(parents=True)
+
+    def test_source_root_from_git_link(self):
+        """<root>/.git 链接文件上溯两级得源仓库（v409）。"""
+        (self.root / ".git").write_text("gitdir: /src/repo/.git/worktrees/wtname6\n", encoding="utf-8")
+        self.assertEqual(zusage._worktree_source_root(str(self.root)), "/src/repo")
+
+    def test_fail_soft_cases(self):
+        self.assertIsNone(zusage._worktree_source_root(str(self.root)))   # 无 .git
+        (self.root / ".git").write_text("gitdir: /src/repo/.git\n", encoding="utf-8")
+        self.assertIsNone(zusage._worktree_source_root(str(self.root)))   # 非 worktrees 布局
+        (self.root / ".git").write_text("gitdir: /x/.git/worktrees/w\n", encoding="utf-8")
+        self.assertEqual(zusage._worktree_source_root(str(self.root)), "/x")   # 最短合法形态
+        (self.root / ".git").write_text("not gitdir line\n", encoding="utf-8")
+        self.assertIsNone(zusage._worktree_source_root(str(self.root)))   # 格式不符
 
 
 class WorktreeSnapshotGateTests(unittest.TestCase):

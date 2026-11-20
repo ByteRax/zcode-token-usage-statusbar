@@ -66,7 +66,7 @@ test('publishGitPaths: 受管会话发布 wt.cwd，普通会话发布 workspaceP
   assert.deepEqual([...h.ctx.window.__zusageGitPaths], [], '开关关闭不上报（现状行为）');
 });
 
-test('gitTipHTML: worktree 区块两行（bucket·根目录 + 起点），转义与三级起点回退', () => {
+test('gitTipHTML: worktree 区块全量信息（短标识/根目录仅 monorepo/主仓库/起点/创建于），转义与回退', () => {
   const sandbox = {
     L: (cn) => cn,
     cnUnits: () => false,
@@ -77,19 +77,54 @@ test('gitTipHTML: worktree 区块两行（bucket·根目录 + 起点），转义
   const gitTipHTML = ctx.gitTipHTML;
   const st = { branch: 'feat/x', upstream: '', ahead: 0, behind: 0, detached: false, noCommits: false,
     staged: 0, unstaged: 0, untracked: 0, conflicts: 0, ins: 0, del: 0, ts: 1730000000000, repoPath: '/wt/cwd' };
-  let html = gitTipHTML({ path: '/wt/cwd', st, stale: false, wt: { bucket: 'd0c5', root: '/wt/root', name: 'repo', ref: 'feat/big', sha: '0eb3d313' } });
+  /* monorepo：cwd ≠ root → 根目录行单列 */
+  let html = gitTipHTML({ path: '/wt/cwd', st, stale: false, wt: { bucket: 'd0c5', root: '/wt/root', cwd: '/wt/cwd/sub', name: 'repo', ref: 'feat/big', sha: '0eb3d313', sourceRoot: '/src/repo', created: 1730000000000 } });
   assert.match(html, /受管 Worktree/, 'worktree 标题行');
-  assert.match(html, /d0c5 · \/wt\/root/, 'bucket 与根目录');
+  assert.match(html, /<b>受管 Worktree<\/b><span>d0c5 · repo<\/span>/, '短标识 bucket·名称（不重复整条 root 路径）');
+  assert.match(html, /<b>Worktree 根目录<\/b><span>\/wt\/root<\/span>/, 'monorepo 时根目录单列');
+  assert.match(html, /<b>主仓库<\/b><span>\/src\/repo<\/span>/, '源仓库行');
   assert.match(html, /<b>起点<\/b><span>feat\/big<\/span>/, '起点优先 ref');
-  html = gitTipHTML({ path: '/wt/cwd', st, stale: false, wt: { bucket: 'd0c5', root: '/wt/root', name: 'repo', ref: null, sha: '0eb3d3133adc' } });
+  assert.match(html, /<b>创建于<\/b><span>2024-10-27/, '创建时间行');
+  /* cwd == root：根目录行不重复（「目录」行已是根） */
+  html = gitTipHTML({ path: '/wt/root', st, stale: false, wt: { bucket: 'd0c5', root: '/wt/root', cwd: '/wt/root', name: 'repo', ref: null, sha: '0eb3d3133adc', sourceRoot: null, created: null } });
+  assert.ok(!html.includes('Worktree 根目录'), 'cwd=根时不再单列根目录行');
+  assert.ok(!html.includes('主仓库'), '无 sourceRoot 隐藏行');
+  assert.ok(!html.includes('创建于'), '无 created 隐藏行');
   assert.match(html, /<b>起点<\/b><span>0eb3d31<\/span>/, '无 ref 回退 sha 前 7 位');
-  html = gitTipHTML({ path: '/wt/cwd', st, stale: false, wt: { bucket: 'd0c5', root: '/wt/root', name: 'repo', ref: null, sha: null } });
+  html = gitTipHTML({ path: '/wt/cwd', st, stale: false, wt: { bucket: 'd0c5', root: '/wt/root', cwd: '/wt/root', name: 'repo', ref: null, sha: null } });
   assert.match(html, /<b>起点<\/b><span>当前 HEAD（游离检出）<\/span>/, '都无显当前 HEAD');
-  html = gitTipHTML({ path: '/wt/cwd', st, stale: false, wt: { bucket: 'd0c5', root: '/wt/<script>alert(1)</script>', name: 'repo', ref: 'a<b', sha: null } });
-  assert.ok(!html.includes('<script>alert(1)</script>'), '根目录用户数据过 gitEsc');
+  html = gitTipHTML({ path: '/wt/cwd', st, stale: false, wt: { bucket: 'd<c', root: '/wt/<script>alert(1)</script>', cwd: '/wt/x', name: 'r<b', ref: 'a<b', sha: null, sourceRoot: '/src/<i>' } });
+  assert.ok(!html.includes('<script>alert(1)</script>') && !html.includes('<i>'), '用户数据全过 gitEsc');
   assert.match(html, /a&lt;b/, 'ref 用户数据过 gitEsc');
   html = gitTipHTML({ path: '/proj', st, stale: false });
   assert.ok(!html.includes('受管 Worktree'), '无 wt 字段不渲染区块（普通会话）');
+});
+
+test('gitChipHtml/gitChipAria: worktree 游离检出令牌显 WorkTree（chip/aria 同源）', () => {
+  /* 切片含 gitBranchToken 单源助手（位于 gitChipHtml 之前） */
+  const frag = sliceOverlay('    /* v409：游离检出分支令牌单源', '    function gitDotCls(st, stale)');
+  const sandbox = {
+    L: (cn) => cn,
+    ZU_GIT_ICON: '<i>ico</i>',
+    gitEsc: (x) => String(x),
+    gitNum: (n) => String(n | 0),
+    gitOpLabel: (c) => c,
+  };
+  const ctx = run(frag, sandbox);
+  const stDetached = { branch: '', upstream: '', ahead: 0, behind: 0, detached: true, noCommits: false,
+    staged: 0, unstaged: 0, untracked: 0, conflicts: 0, ins: 0, del: 0, ts: 1 };
+  const wt = { bucket: '0f62', root: '/wt', cwd: '/wt', name: 'repo', ref: null, sha: 'abc' };
+  let html = ctx.gitChipHtml({ path: '/wt', st: stDetached, stale: false, wt });
+  assert.match(html, /<span class="zu-git-name">WorkTree<\/span>/, 'worktree 游离检出 chip 显 WorkTree');
+  html = ctx.gitChipHtml({ path: '/proj', st: stDetached, stale: false, wt: null });
+  assert.match(html, /<span class="zu-git-name">HEAD<\/span>/, '非 worktree 游离检出保持 HEAD');
+  const stBranch = Object.assign({}, stDetached, { detached: false, branch: 'feat/x' });
+  html = ctx.gitChipHtml({ path: '/wt', st: stBranch, stale: false, wt });
+  assert.match(html, /<span class="zu-git-name">feat\/x<\/span>/, 'worktree 有分支照常显示分支名');
+  let aria = ctx.gitChipAria(stDetached, false, wt);
+  assert.match(aria, /WorkTree（游离检出）/, 'aria 播报 worktree 游离检出');
+  aria = ctx.gitChipAria(stDetached, false, null);
+  assert.match(aria, /Git 分支 HEAD/, '非 worktree aria 保持 HEAD');
 });
 
 test('gitChipView 行为断言：wt 命中按 wt.cwd 取数并携带 wt，未命中走 workspacePath（防同字面量写反）', () => {
@@ -123,6 +158,30 @@ test('gitChipView 行为断言：wt 命中按 wt.cwd 取数并携带 wt，未命
   assert.equal(view.wt, null, '未命中时 wt 为 null');
   sandbox.state.show.git = false;
   assert.equal(ctx.gitChipView(), null, '开关关闭不显示（现状行为）');
+});
+
+test('gitCandidates: L2 摘要档与 gitBranchToken 单源接线（防令牌漂移，审查 M5）', () => {
+  const frag = sliceOverlay('    function gitCandidates(view) {', '    function gitMeasureAvail(');
+  const sandbox = {
+    L: (cn) => cn,
+    ZU_GIT_ICON: '<i>ico</i>', ZU_GIT_MULTI_ICON: '<i>multi</i>',
+    gitEsc: (x) => String(x),
+    gitNum: (n2) => String(n2 | 0),
+    gitOpLabel: (c) => c,
+    gitMultiAgg: () => ({ total: 1, known: 1, changed: 0, conflict: 0, op: 0, failed: 0, staleAny: false, m: 0, q: 0 }),
+    gitDotCls: () => 'zu-git-dot-g',
+    gitChipHtml: () => '<i>full</i>',
+    gitBranchToken: (st, view) => st.detached ? (view.wt ? "WorkTree" : "HEAD") : String(st.branch || "HEAD"),
+  };
+  const ctx = run(frag, sandbox);
+  const stDetached = { branch: '', upstream: '', ahead: 0, behind: 0, detached: true, noCommits: false,
+    staged: 0, unstaged: 0, untracked: 0, conflicts: 0, ins: 0, del: 0, ts: 1 };
+  const view = { path: '/wt', st: stDetached, stale: false, wt: { bucket: '0f62', name: 'repo' } };
+  const cands = ctx.gitCandidates(view);
+  assert.match(cands.L2, /<span class="zu-git-name">WorkTree<\/span>/, 'L2 摘要档经单源令牌显 WorkTree');
+  delete view.wt;
+  cands.L2 = ctx.gitCandidates(view).L2;
+  assert.match(cands.L2, /<span class="zu-git-name">HEAD<\/span>/, '非 worktree 游离检出 L2 保持 HEAD');
 });
 
 test('gitChipView/onGitClick 覆写为锚定源码契约（与行为断言双保险）', () => {
