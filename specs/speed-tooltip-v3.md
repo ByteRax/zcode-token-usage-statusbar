@@ -343,7 +343,7 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 
 - 真因：`spd3WeekHTML` 恒走折线（v384 spec §5 原设计「week=每日折线」），单有效日时折线退化为孤立点+端标签——无柱可看；而 today 单模型恒柱状，形态不对称。
 - 裁定：week **单模型**改每日平均柱状（7 日槽位、空日=空位不显 0、覆盖提示「有效 X/7 天」与折线共用），与 today 单模型对称；**多模型保留折线+面积+总体虚线**（spec §5 多模型专属设计不动——总体线/分段面积只在多模型折线有意义）。单模型判定与 today 同源（`perModel.length===1`）。
-- 实现落点：`spd3WeekHTML` 加单模型分支（复用 today 单模型的 `spd3BarsFrame+spd3BarCols+spd3PortalFor` 组合，slots 直接作 items——空槽轻卡/悬停链复用既有委托）。
+- 实现落点：`spd3WeekHTML` 加单模型分支（复用 today 单模型的 `spd3BarsFrame+spd3BarCols+spd3PortalFor` 组合，slots 直接作 items——空槽轻卡/悬停链复用既有委托）。注意 slots 是**日桶**：`spd3PortalFor` 的 slotDay 必须传 `true`（区间/轻卡按 §11.5 日桶口径、大字=综合日均）；v392 移植时误带了 today 分支的 `false`，v416 修正并由单模型周视图悬停断言锁定。
 
 ### 16.2 范围切换 tooltip 高度跳变（P1）
 

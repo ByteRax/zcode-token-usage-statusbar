@@ -114,7 +114,7 @@ function harness({ costLS = null, kmbLS = null, lang = 'zh' } = {}) {
     .replace('if (typeof projTipPositionGrowUp === "function") projTipPositionGrowUp(host, prevBottom);',
              'if (typeof projTipPositionGrowUp === "function") { window.__zuGrowArgs = (window.__zuGrowArgs || []).concat(prevBottom); projTipPositionGrowUp(host, prevBottom); }')
     .replace(/\}\)\(\);\s*$/, 'window.costTest = { state: function() { return state; } };})();');
-  function inject() { window.__zusageOverlay = false; if (!globalThis.__exeDumped) { globalThis.__exeDumped = true; fs.writeFileSync('/tmp/exe-full.js', executable); } vm.runInContext(executable, sandbox); }
+  function inject() { window.__zusageOverlay = false; if (!globalThis.__exeDumped) { globalThis.__exeDumped = true; fs.writeFileSync(path.join(require('node:os').tmpdir(), 'exe-full.js'), executable); } vm.runInContext(executable, sandbox); }
   function tick() { for (const t of [...timers.values()]) if (t.interval && (t.ms === 600 || t.ms === 500)) t.fn(); }
   function boot() { for (const [n, t] of [...timers]) if (!t.interval && t.ms === 0) { timers.delete(n); t.fn(); } }
   function buildComposer(pid, sid) {

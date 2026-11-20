@@ -255,7 +255,10 @@
      * Release 日志（形态对标宿主 UpdateReleaseNotesTooltip，规则见 overlay-ui.md）。
      * 数据独立于设置页 notesResult——面板有粘性历史选择，两边不能互相干扰；主进程 1h
      * 缓存兜底多窗与面板的重复请求。悬停只读不 ack，红点已读仍以点进「插件更新」分区为准。 */
-    var updNoteState = { version: "", seq: 0, loading: false, result: null, error: null };
+    /* 保留 buildPanel 期懒初始化的对象：赋值行在 spawn 体内执行晚于 buildPanel 首拍
+     * （issue #55 var 只提升声明的同款时序），无条件重赋会丢掉首拍预取的在途状态、
+     * 令其结果被 seq 守卫弃收后重发一轮（v416 补充防御；崩溃根因见 updNoteEnsure）。 */
+    var updNoteState = updNoteState || { version: "", seq: 0, loading: false, result: null, error: null };
     function updNoteTargetVersion() {
       var def = notesDefaultTarget(state.pluginUpdate);
       return def && !def.unknown && def.version ? def.version : "";

@@ -449,7 +449,9 @@ test("client: zcode-start 链（zcodejwttoken）与重置卡链解 enc:v2，请�
     env: { ZCODE_CREDENTIAL_SECRET: ENV_SECRET }, credsPath,
     resetEnabled: () => true,
     readFile: (p) => {
-      if (p === credsPath) return {
+      /* 基名匹配：freshCreds 是 POSIX 形状虚拟路径，Windows 下客户端 path.resolve
+       * 后与原串失配（v416 改平台无关基名等值） */
+      if (String(p).split(/[\\/]+/).pop() === "credentials.json") return {
         zcodejwttoken: v2Entry("start.v2.jwt", ENV_KEY, "env"),
         "oauth:bigmodel:access_token": v2Entry("oauth.v2.tok", ENV_KEY, "env"),
       };
@@ -486,7 +488,8 @@ test("client: 新式登录态键回退（issue #391）——linked_bigmodel/zai_
   const { client, calls, clock } = makeClient(t, {
     env: { ZCODE_CREDENTIAL_SECRET: ENV_SECRET }, credsPath,
     readFile: (p) => {
-      if (p === credsPath) return {
+      /* 基名匹配（平台无关）：同 makeClient 桩的 Windows 路径归一失配问题（v416） */
+      if (String(p).split(/[\\/]+/).pop() === "credentials.json") return {
         "oauth:linked_bigmodel": v2Entry(linkedJson, ENV_KEY, "env"),
         "oauth:zai_cn:access_token": v2Entry("zai.cn.v2.tok", ENV_KEY, "env"),
       };

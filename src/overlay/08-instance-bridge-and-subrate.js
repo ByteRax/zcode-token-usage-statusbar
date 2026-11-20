@@ -1135,18 +1135,20 @@
     function positionTip(el, keepTop) {
       if (tip.__zuSpeedSize && (tip.__zuSpeedSize.vw !== innerWidth || tip.__zuSpeedSize.vh !== innerHeight)) spdFitTip(tip, true);
       if (tip.__zuModelFitWidth !== innerWidth) { fitModelNames(tip); tip.__zuModelFitWidth = innerWidth; }
-      /* v412 统计卡响应式模式：按卡根实测内容宽写 data-zu-mode（full=距理想宽 <24px/
+      /* v412 统计卡响应式模式：按卡根实测内容宽写 data-zu-mode（full=距理想宽 <32px/
        * compact=已偏离理想宽未降列/narrow≥360/tiny<360，specs/stat-tooltip-responsive.md
        * §2）。阈值相对每卡 data-zu-w——540 理想宽的本轮卡在宽窗口恒 full，760 的项目卡
-       * 684 时是 compact。positionTip 本就持有测量时机，零新增监听；仅变化才写 DOM；
-       * 量不到宽（隐藏态/夹具桩）保持现值。 */
+       * 684 时是 compact。容差取 32px：卡根外层 .tip 自带 padding 10px 13px + border
+       * 1px（box-sizing:border-box）= 28px chrome，原值 24px 使 full 档在真实 DOM 恒
+       * 不可达（v416 修正）。positionTip 本就持有测量时机，零新增监听；仅变化才写
+       * DOM；量不到宽（隐藏态/夹具桩）保持现值。 */
       if (tip.querySelector && tip.style && tip.style.display === "block") {
         var statRoot = tip.querySelector(".zu-stat-tip[data-zu-w]");   // v412.1：带 data-zu-w 才是统计卡（V1 速度卡根不带）
         if (statRoot && statRoot.getBoundingClientRect && statRoot.getAttribute && statRoot.setAttribute) {
           var mw = statRoot.getBoundingClientRect().width;
           if (mw > 0) {
             var zuIdeal = parseInt(statRoot.getAttribute("data-zu-w"), 10) || 600;
-            var zuMode = mw >= zuIdeal - 24 ? "full" : mw >= 440 ? "compact" : mw >= 360 ? "narrow" : "tiny";
+            var zuMode = mw >= zuIdeal - 32 ? "full" : mw >= 440 ? "compact" : mw >= 360 ? "narrow" : "tiny";
             if (statRoot.getAttribute("data-zu-mode") !== zuMode) {
               statRoot.setAttribute("data-zu-mode", zuMode);
               /* 档位变化重跑 fit：重建路径 fitModelNames 在模式生效前按旧帽量测过缩 */

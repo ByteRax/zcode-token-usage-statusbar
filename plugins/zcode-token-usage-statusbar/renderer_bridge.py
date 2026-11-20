@@ -1024,7 +1024,8 @@ def _inspect_deploy(asar_path):
     modified = transform_module(original, "patch", target)
     if modified == original:
         return "result", {"status": "present", "version": version, "detail": "bridge already deployed"}
-    return "patch", (before, base, nodes, header, version, auto, asset_path, original, modified)
+    return "patch", (before, base, nodes, header, version, auto, bool(target.get("derived")),
+                     asset_path, original, modified)
 
 
 def ensure_deployed(asar_path):
@@ -1070,7 +1071,7 @@ def ensure_deployed(asar_path):
             kind, payload = _inspect_deploy(asar_path)
             if kind == "result":
                 return payload
-            before, base, nodes, header, version, auto, asset_path, original, modified = payload
+            before, base, nodes, header, version, auto, derived, asset_path, original, modified = payload
             fd, name = asar.bounded_mkstemp(prefix=".zusage-bridge-", dir=str(asar_path.parent))
             stage = Path(name)
             try:
@@ -1098,7 +1099,9 @@ def ensure_deployed(asar_path):
                     except OSError:
                         pass
         return {"status": "patched", "version": version,
-                "detail": "auto-derived bridge deployed" if auto else "bridge deployed"}
+                "detail": ("auto-derived bridge deployed" if auto else
+                           ("bridge deployed (derived fingerprint)" if derived
+                            else "bridge deployed"))}
     except PermissionError as error:
         # 权限不足要单独可辨：Windows 的 os.access 看不见 ACL（目录恒报可写），
         # 调用方只能按本标记给用户提权指引（issue #67 场景 1）

@@ -428,6 +428,12 @@ test('week 单/多: 单=7 日槽柱状（空日空位、模型色柱、无折线
   }
   assert.match(h1, /aria-label="[^"]*10\/30[^"]*无数据/, '空日槽 aria 报无数据');
   assert.match(h1, /data-head-sub="有效 2\/7 天"/, '单模型柱状同款覆盖提示');
+  // 悬停槽位卡按日桶口径（v416：slotDay=true——v392 自 today 移植时误带 false，
+  // 曾把日桶区间渲染成「00:00 – 00:00」小时口径）：已结束日=全天、大字=综合日均
+  chart(ctx, w1, 5);
+  const pw5 = portal(ctx);
+  assert.match(pw5, /区间[^]*2026\/11\/04 · 全天/, '单模型周视图悬停已结束日=日桶全天口径（§11.5）');
+  assert.match(pw5, /综合日均/, '日桶槽位卡大字=综合日均（§6 unit=day 标签契约）');
   // 多模型：全池
   const w2 = analyze(ctx, fixture(), { range: 'all', period: 'week', sid: 'sess_main' });
   const h2 = chart(ctx, w2, -1);
@@ -442,7 +448,7 @@ test('week 单/多: 单=7 日槽柱状（空日空位、模型色柱、无折线
   const ptB = new RegExp('<circle class="zu-sv3-pt" cx="[\\d.]+%" cy="[\\d.]+%" r="2\\.5" fill="' + colorOf(ctx, KEYS.b) + '"');
   assert.match(h2, ptB, 'B 单点仍落真实数据点（cy 百分比）');
   // §12.5（新契约）：week 多模型端数值标签默认不画——多线右缘堆叠实测重叠，
-  // 数值经悬停十字卡承载；单模型保留端标签（上方 h1 已断言 1 枚）
+  // 数值经悬停十字卡承载（v392 起单模型恒柱状不进本折线路径，与端标签无关）
   const labelYs = [];
   const re = /<text class="zu-sv3-elabel[^"]*" x="99\.2%" y="([-\d.]+)%"/g;
   let m;

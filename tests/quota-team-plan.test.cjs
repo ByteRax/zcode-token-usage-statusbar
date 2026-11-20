@@ -41,8 +41,11 @@ function makeTeamClient(t, { setting = SETTING, fam = "bigmodel", creds, calls, 
     settingPath: "/virtual/team/setting.json",
     credsPath,
     readFile: (p) => {
-      if (p === credsPath) return creds;
-      if (p === "/virtual/team/setting.json") return setting === null ? (() => { throw new Error("ENOENT"); })() : setting;
+      /* 基名匹配：客户端经 path.resolve 归一路径，POSIX 形状虚拟路径在 Windows 解析
+       * 成 <盘>:\virtual\...，精确等值比较恒失配（v416 改平台无关基名等值） */
+      const base = String(p).split(/[\\/]+/).pop();
+      if (base === "credentials.json") return creds;
+      if (base === "setting.json") return setting === null ? (() => { throw new Error("ENOENT"); })() : setting;
       throw new Error("ENOENT: " + p);
     },
     fetchImpl: (url, init) => {
