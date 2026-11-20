@@ -671,6 +671,91 @@ ADAPTERS.push({
   },
 });
 
+/* --- Ollama Cloud（issue #410；官方 /api/balance 单端点，两代套餐形状） ---
+ * 自定义供应商 baseUrl host 为 ollama.com 时零配置认领（路径不参与判定，/v1 等宿主
+ * baseUrl 变体同域命中；本地 11434 非 https 不命中）。新套餐 included.balance_usd
+ * （本期剩余）+ allowance_usd（总额）+ period → 月度额度池窗；旧套餐 included.session/
+ * weekly 的 remaining_percent（剩余制）翻转为已用并映射 5 小时/周窗；purchased.
+ * balance_usd 是套餐外充值余额——有窗口时不进顶层 balance（渲染端余额形态优先会挤掉
+ * 窗口段），仅无窗口时退化为余额卡。端点与两代响应形状转写自 magpie（MIT）与官方
+ * docs（docs.ollama.com/cloud/usage、/api/balance）；限流 10 req/min，429 由调度器按
+ * Retry-After 退避；未真账号实测（unverified）。 */
+function normalizeOllama(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw qErr("parse_error", "ollama shape");
+  const included = body.included && typeof body.included === "object" && !Array.isArray(body.included) ? body.included : null;
+  const purchased = body.purchased && typeof body.purchased === "object" && !Array.isArray(body.purchased) ? body.purchased : null;
+  if (!included && !purchased) throw qErr("parse_error", "ollama empty");
+  const windows = {};
+  /* 旧套餐：remaining_percent 是剩余制（75=还剩 75%），翻转为已用并钳 [0,100]；
+   * 缺 remaining_percent 不猜 0，直接无窗。 */
+  const pctWin = (l) => {
+    if (!l || typeof l !== "object" || Array.isArray(l)) return null;
+    const left = num(l.remaining_percent);
+    if (left == null) return null;
+    return { percent: Math.round(clampPct(100 - left) * 10) / 10, resetsAt: resetOf(l.resets_at) };
+  };
+  const s = pctWin(included && included.session);
+  if (s) windows.fiveHour = s;
+  const w = pctWin(included && included.weekly);
+  if (w) windows.weekly = w;
+  /* 新套餐：allowance<=0（含 0 档/字段为 0）无窗防除零；balance>allowance（超支后
+   * 由充值余额垫付）钳满格。period.until 可解析才带 resetsAt 并入月窗，否则落 plan
+   * 窗（「套餐」标签不带周期语义，不冒充月窗）。 */
+  if (included) {
+    const allowance = num(included.allowance_usd);
+    const left = num(included.balance_usd);
+    if (allowance != null && allowance > 0 && left != null) {
+      const used = Math.min(allowance, Math.max(0, allowance - left));
+      const win = {
+        percent: Math.round(clampPct((used / allowance) * 100) * 10) / 10,
+        used, total: allowance,
+        remaining: Math.min(Math.max(0, left), allowance),
+        currency: "USD",
+      };
+      const period = included.period && typeof included.period === "object" && !Array.isArray(included.period) ? included.period : null;
+      const until = period ? resetOf(period.until) : null;
+      if (until) { win.resetsAt = until; windows.monthly = win; }
+      else windows.plan = win;
+    }
+  }
+  const out = { label: "Ollama Cloud", kind: "plan" };
+  if (Object.keys(windows).length) { out.windows = windows; return out; }
+  const bought = purchased ? num(purchased.balance_usd) : null;
+  if (bought != null && bought >= 0) {
+    out.kind = "balance";
+    out.balance = { amount: bought, currency: "USD" };
+  }
+  /* included 在但无任何可解析窗口且无/负 purchased：ok 空窗——纯 PAYG 账号合法形态，
+   * 不判 no_plan 冻结（balance 端点对有效 key 恒回其账号数据，无「无订阅」信封可辨）。 */
+  return out;
+}
+ADAPTERS.push({
+  id: "ollama", label: "Ollama Cloud", kind: "plan", defaultOn: true, unverified: true,
+  envKeys: ["OLLAMA_API_KEY"],
+  detect(j, providerId) {
+    if (providerId.indexOf("account:") === 0) return null;
+    const cp = j.customProviderOf(providerId);
+    if (!cp) return null;
+    let u = null;
+    try { u = new URL(cp.baseUrl); } catch (e) { return null; }
+    if (u.protocol !== "https:" || u.hostname.toLowerCase() !== "ollama.com") return null;
+    return { key: cp.apiKey, origin: "cfg" };
+  },
+  resolveCred(j, ctx) {
+    for (const k of this.envKeys) {
+      const v = j.env[k];
+      if (v) return { token: v, fingerprint: "env:" + sha16(v), source: "env" };
+    }
+    const sec = (j.secrets.sources || {}).ollama || {};
+    if (sec.apiKey) return { token: sec.apiKey, fingerprint: "sec:" + sha16(sec.apiKey), source: "secrets" };
+    if (ctx.key) return { token: ctx.key, fingerprint: "cfg:" + sha16(ctx.key), source: "provider_config" };
+    return null;
+  },
+  async fetchOne(j, ctx, cred, ctl) {
+    return normalizeOllama(await j.http.getJson("https://ollama.com/api/balance", { authorization: "Bearer " + cred.token }, ctl));
+  },
+});
+
 /* --- 自定义中转（sub2api / OpenAI legacy；仅查询配置地址的同源） --- */
 ADAPTERS.push({
   id: "custom", label: "中转站", kind: "balance", defaultOn: false,
@@ -731,5 +816,6 @@ const SOURCE_PRESETS = {
   mimo: { keyUrl: "https://platform.xiaomimimo.com" },
   volcano: { keyUrl: "https://console.volcengine.com/ark" },
   qianwen: { keyUrl: "https://platform.qianwenai.com" },
+  ollama: { keyUrl: "https://ollama.com/settings/keys" },
 };
 
