@@ -285,8 +285,9 @@
      * → v403 计数行去图标与量词（spec §24.3，用户裁定）：删 cube 图标（SPD3_SVG_CUBE 常量与 .zu-sv3-count svg CSS 一并退役，唯一消费者）、「N 个模型·M 轮」→「N 模型·M 轮」（en 不变）。
      * → v404 计数行前缀分隔符（spec §24.4，用户裁定）：count span 前加「 · 」引导——「 · N 模型·M 轮」（en 同），与标题间视觉分隔。
      * → v405 「增强提示词按钮」开关迁入「提示词增强」分区顶部（表单前）；按 enhanceEnabled 推送同步各窗口勾选态，关闭时禁用新测试；说明区分默认会话模型与已保存的自定义供应商，移除已退役的撤销窗文案。
+     * → v406 药丸条面隐藏滚动条（用户反馈）：.zu-pill .zu-main 去 scrollbar-width:thin 覆盖（回落基础 .zu-main 的 scrollbar-width:none），webkit 回退选择器去 :not(.zu-pill) 限定；窄时横向滚动行为不变（zu-clip 渐隐、聚焦滚入照旧），只是不再画出滚动条。
      */
-    var VERSION = "v405";
+    var VERSION = "v406";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -368,10 +369,10 @@
       "border-width:var(--zu-pill-border-width,1px);border-style:var(--zu-pill-border-style,solid);" +
       "border-color:var(--zu-pill-border-color,var(--color-input-border,var(--color-border,transparent)));" +
       "border-radius:var(--zu-pill-radius,12px);backdrop-filter:none;-webkit-backdrop-filter:none}" +
-      ".zusage-root.zu-pill .zu-main{flex:0 1 auto;justify-content:flex-start;overflow-x:auto;scrollbar-width:thin}" +
+      ".zusage-root.zu-pill .zu-main{flex:0 1 auto;justify-content:flex-start;overflow-x:auto}" +
       ".zusage-root.zu-pill .ico{color:var(--color-brand,#3b82f6)}" +
       ".zu-main{overflow-x:auto;overflow-y:hidden;scrollbar-width:none;min-width:0;flex:1 1 auto;display:flex;align-items:center;gap:1px;justify-content:space-between}" +
-      ".zusage-root:not(.zu-pill) .zu-main::-webkit-scrollbar{display:none}" +
+      ".zusage-root .zu-main::-webkit-scrollbar{display:none}" +
       ".zusage-root.zu-tight .zu-main>.it{font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)));padding-left:4px;padding-right:4px;gap:3px}" +
       ".zusage-root.zu-tight .zu-main>.it>.ico{width:1em;height:1em}" +
       ".zusage-root.zu-narrow .it>.zu-secondary{position:absolute;left:0;visibility:hidden;pointer-events:none}" +
