@@ -1412,6 +1412,97 @@
       else done();
     }
   });
+  /* ---------- v413 齿轮悬停更新日志卡：待重启红点 × ⚙ 悬停弹出（宿主 UpdateReleaseNotesTooltip 同款形态）。
+   * document 级单例同 enhanceTip 套路；内容由实例侧（09 分片）写入 gear.__zuUpdHtml（含门控），
+   * 本层只管壳、定位与收放；220ms 宽限让指针从齿轮移入卡内保活，Escape 收起。 */
+  var updNoteTip = document.createElement("div");
+  updNoteTip.className = "tip zusage-quota-tip zusage-upd-note-tip";
+  /* rateTip 定义在本段之前的 01 分片处；VM 切片（如增强历史表格）起点在其后、终点在其后，
+   * 会把本段切进无 rateTip 的沙箱——typeof 守卫兜底，缺省时靠 .tip 类样式与 06 分片作用域规则。 */
+  if (typeof rateTip !== "undefined" && rateTip) updNoteTip.style.cssText = rateTip.style.cssText;
+  updNoteTip.style.width = "384px";
+  updNoteTip.style.maxWidth = "calc(100vw - 16px)";
+  updNoteTip.style.maxHeight = "min(420px,72vh)";
+  updNoteTip.style.display = "flex";
+  updNoteTip.style.flexDirection = "column";
+  updNoteTip.style.overflow = "hidden";
+  updNoteTip.style.padding = "0";
+  updNoteTip.style.display = "none";
+  if (typeof updNoteTip.setAttribute === "function") updNoteTip.setAttribute("role", "tooltip");   // 切片桩元素缺该方法，跳过不碍运行
+  document.body.appendChild(updNoteTip);
+  var updNoteTipFor = null;
+  var UN_HIDE_DELAY_MS = 220;
+  var unHideTimer = 0;
+  /* 定位：右缘对齐齿轮右缘（齿轮居条最右，居中/左对齐都会越出右缘）+ 8px 视口钳边；
+   * 垂直三档照 placeEnhanceTip：上方够→bottom 锚定，不够→翻下方，两侧都不够→钳高内滚。
+   * 先解除上一拍钳高再量自然高——否则小钳位会锁死后续测量（v355 教训）。 */
+  function placeUpdNoteTip() {
+    var el = updNoteTipFor;
+    if (!el || !el.isConnected) return;
+    var r = el.getBoundingClientRect(), vw = window.innerWidth, vh = window.innerHeight;
+    var tw = Math.min(384, vw - 16);
+    updNoteTip.style.left = Math.max(8, Math.min(Math.round(r.right - tw), Math.round(vw - tw - 8))) + "px";
+    var above = r.top - 20, below = vh - r.bottom - 20;   // 12px 间距 + 8px 视口边距
+    updNoteTip.style.maxHeight = "";
+    var h = updNoteTip.offsetHeight || 0;
+    if (h <= above) {
+      updNoteTip.style.top = "auto";
+      updNoteTip.style.bottom = (vh - Math.round(r.top) + 12) + "px";
+      updNoteTip.style.maxHeight = "min(420px,72vh)";   // 恢复自然帽，不因走该分支而锁死
+    } else if (below >= Math.min(h, 320)) {   // 至少 320px 高才值得翻到下方
+      updNoteTip.style.top = (Math.round(r.bottom) + 12) + "px";
+      updNoteTip.style.bottom = "auto";
+      updNoteTip.style.maxHeight = Math.min(h, below) + "px";
+    } else {
+      updNoteTip.style.top = "auto";
+      updNoteTip.style.bottom = (vh - Math.round(r.top) + 12) + "px";
+      updNoteTip.style.maxHeight = Math.max(above, 0) + "px";
+    }
+  }
+  function renderUpdNoteTip() {
+    var el = updNoteTipFor;
+    if (!el) return;
+    var html = String(el.__zuUpdHtml || "");
+    if (!html) { hideUpdNoteTip(); return; }
+    if (updNoteTip.__zuTipSig !== html) { updNoteTip.innerHTML = html; updNoteTip.__zuTipSig = html; }   // 签名幂等：滚动位不因重画丢失
+    placeUpdNoteTip();
+  }
+  function showUpdNoteTip(el) {
+    if (stale() || !el || !el.isConnected) { hideUpdNoteTip(); return; }
+    cancelUpdNoteHide();   // 离开后 220ms 内重入（快速往返/多实例齿轮切换）：取消在途收起，防刚显即闪没
+    var dark = true;
+    try { dark = document.documentElement.classList.contains("dark"); } catch (e) { }
+    updNoteTip.classList.toggle("zu-light", !dark);
+    updNoteTipFor = el;
+    updNoteTip.style.display = "flex";
+    renderUpdNoteTip();
+  }
+  function scheduleUpdNoteHide() {
+    if (state.devKeepTip) return;   // 开发者常驻开关：不自动收，仅 Escape 手动关
+    if (unHideTimer) clearTimeout(unHideTimer);
+    unHideTimer = setTimeout(function () { unHideTimer = 0; hideUpdNoteTip(); }, UN_HIDE_DELAY_MS);
+  }
+  function cancelUpdNoteHide() {
+    if (unHideTimer) { clearTimeout(unHideTimer); unHideTimer = 0; }
+  }
+  function hideUpdNoteTip() {
+    cancelUpdNoteHide();
+    updNoteTip.style.display = "none";
+    updNoteTipFor = null;
+  }
+  updNoteTip.addEventListener("mouseenter", cancelUpdNoteHide);
+  updNoteTip.addEventListener("mouseleave", scheduleUpdNoteHide);
+  updNoteTip.addEventListener("keydown", function (e) { if (e.key === "Escape") hideUpdNoteTip(); });
+  updNoteTip.addEventListener("click", function (e) {
+    var lnk = e.target && e.target.closest && e.target.closest(".zu-notes-lnk");
+    if (!lnk) return;
+    var url = lnk.getAttribute("data-href") || "";
+    if (/^https:\/\//.test(url) && url.length <= 600) {   // 双重校验：渲染时已过滤，点击再验一次（与 ⚙ 面板同款）
+      var zn = window.zcode;
+      if (zn && typeof zn.openExternal === "function") zn.openExternal(url);
+      else window.open(url, "_blank", "noopener");
+    }
+  });
   /* ---------- 自绘确认弹框（zu-compact-dlg 同款外壳）：overlay 内确认类交互统一走它，
    * 不用 window.confirm（原生框样式不可控、英文按钮与宿主视觉割裂，2026-11-15 用户拍板）。
    * 复用压缩确认弹框全套类（遮罩/卡片/按钮/动画/减动效），零新增样式；规则见 overlay-ui.md。 */
@@ -1971,6 +2062,8 @@
     fxTip.remove();   // v202：预估费用说明小气泡同链清理
     hideEnhanceTip();
     enhanceTip.remove();   // v344：增强按钮 tooltip 同链清理（dispose 不留 body 孤儿浮层）
+    hideUpdNoteTip();
+    updNoteTip.remove();   // v413：齿轮悬停更新日志卡同链清理（dispose/热更不留 body 孤儿浮层）
     spdHoverPortalHide();
     spdHoverPortal.remove();   // v280：柱 hover Portal 同链清理（dispose/热更不留孤儿浮层）
     spdLegendTipHide();

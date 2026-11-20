@@ -11,6 +11,9 @@ function extract(start, end) {
 const notesVarsSource = extract("/* 更新日志卡片运行态", "var ZU_NAV_GROUPS = [");
 const notesSource = extract("function notesChannelOf(u) {", "/* ---------- v179 自动压缩阈值");
 const mEscSource = extract("function mEsc(s)", "\n");
+/* v413 齿轮悬停更新日志卡：独立段落切片（位于 notesDefaultTarget 与 notesPickTarget 之间）。
+ * 起始锚点取段内首条 var（段首注释在 01 分片壳层有相似文字，且注释中部起切会丢 /* 开符） */
+const updNoteSource = extract("var updNoteState = ", "function notesPickTarget(u) {");
 
 function el() {
   const node = {
@@ -47,10 +50,26 @@ function makeContext({ pluginUpdate = null, lang = "zh", open = true } = {}) {
     mEsc: (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])),
     pluginRequest: (action, extra, done) => { sent.push({ action, extra }); if (done) dones.push(done); return "req" + sent.length; },
     inactive: () => false,
+    /* v413 齿轮悬停卡桩：updDotOn 在 09 分片更早段落（本切片外），01 分片壳函数以桩捕获调用 */
+    gear: null,
+    __dotOn: false,
+    updDotOn: function () { return context.__dotOn; },
+    updNoteTipFor: null,
+    __shown: [], __renders: [], __hides: [],
+    showUpdNoteTip: function (el2) { context.__shown.push(el2); },
+    scheduleUpdNoteHide: function () { context.__hides.push(1); },
+    renderUpdNoteTip: function () { context.__renders.push(context.gear ? context.gear.__zuUpdHtml : null); },
     __sent: sent, __dones: dones, __bySel: bySel,
   };
+  context.gear = {};
   vm.runInNewContext(mEscSource + "\n" + notesVarsSource + "\n" + notesSource, context);
   return context;
+}
+function makeUpdContext({ dotOn = true, pluginUpdate, open = false } = {}) {
+  const ctx = makeContext({ pluginUpdate, open });
+  ctx.__dotOn = dotOn;
+  vm.runInContext(updNoteSource, ctx);
+  return ctx;
 }
 const releaseUpdate = (over = {}) => ({ supported: true, phase: "available", currentVersion: "1.5.6", latestVersion: "1.5.7",
   channel: "release", channelHost: "github", channelRepo: "ByteRax/zcode-token-usage-statusbar", restartRequired: false, markerVersion: "", releaseUrl: "", ...over });
@@ -386,4 +405,131 @@ test("mirror fallback replies label the actual source and point the link at the 
   assert.equal(ctx.__bySel[".zu-notes-link"].getAttribute("data-href"),
     "https://gitcode.com/tanranran/zcode-token-usage-statusbar/releases");   // 来源域的 tag 深链页不可达，落到列表页
   assert.equal(ctx.__bySel[".zu-notes-badge"].classList.contains("zu-notes-warn"), false);   // verified 渠道不因镜像回退变成参考态
+});
+
+/* ---------- v413 齿轮悬停更新日志卡 ---------- */
+const restartUpdate = (over = {}) => ({ supported: true, phase: "updated", currentVersion: "1.5.7", latestVersion: "1.5.8",
+  channel: "release", channelHost: "github", channelRepo: "ByteRax/zcode-token-usage-statusbar",
+  restartRequired: true, markerVersion: "1.5.8", ...over });
+
+test("gear hover card gates strictly on the restart dot and closed panel", () => {
+  const u = restartUpdate();
+  const ctx1 = makeUpdContext({ dotOn: false, pluginUpdate: u });
+  ctx1.onGearUpdEnter();
+  assert.equal(ctx1.__sent.length, 0);
+  assert.equal(ctx1.__shown.length, 0);
+  const ctx2 = makeUpdContext({ dotOn: true, pluginUpdate: u, open: true });
+  ctx2.onGearUpdEnter();
+  assert.equal(ctx2.__sent.length, 0);
+  assert.equal(ctx2.__shown.length, 0);
+  const ctx3 = makeUpdContext({ dotOn: true, pluginUpdate: u });
+  ctx3.onGearUpdEnter();
+  assert.equal(ctx3.__sent.length, 1);
+  assert.equal(ctx3.__sent[0].action, "release-notes");
+  assert.equal(ctx3.__sent[0].extra.version, "1.5.8");   // 待重启 = marker 版本（VM realm 对象勿用 deepEqual）
+  assert.equal(ctx3.__sent[0].extra.force, false);
+  assert.equal(ctx3.__shown.length, 1);
+  assert.match(ctx3.gear.__zuUpdHtml, /v1\.5\.8 更新日志/);
+  assert.match(ctx3.gear.__zuUpdHtml, /正在加载更新日志/);
+  assert.equal(ctx3.updNoteTipFor, null);   // 实例侧不碰 01 分片的 tip 目标（由 show 桩接管）
+});
+
+test("gear hover card renders version date body once notes arrive; duplicate ensures dedupe", () => {
+  const ctx = makeUpdContext({ dotOn: true, pluginUpdate: restartUpdate() });
+  ctx.onGearUpdEnter();
+  assert.equal(ctx.__sent.length, 1);
+  assert.equal(ctx.updNoteEnsure(), false);   // 同版本加载中不再发
+  ctx.__dones[0]({ ok: true, version: "1.5.8", tag: "v1.5.8", name: "v1.5.8", publishedAt: "2026-11-19T00:00:00.000Z",
+    body: "# 新功能\n\n- 工具升级期间旧版本继续可用\n\n## 问题修复\n\n- 修复登录失败", url: "https://github.com/x/releases/tag/v1.5.8" });
+  const html = ctx.gear.__zuUpdHtml;
+  assert.match(html, /v1\.5\.8 更新日志/);
+  assert.match(html, /已安装待重启/);
+  assert.match(html, /2026/);   // 日期行（具体本地化格式不锁）
+  assert.match(html, /zu-notes-h1/);
+  assert.match(html, /修复登录失败/);
+  assert.doesNotMatch(html, /正在加载更新日志/);
+  ctx.updNotePrefetch();   // 红点仍在：重复预取不再发请求
+  assert.equal(ctx.__sent.length, 1);
+});
+
+test("stale reply for an old target is dropped by the seq guard", () => {
+  const ctx = makeUpdContext({ dotOn: true, pluginUpdate: restartUpdate() });
+  ctx.onGearUpdEnter();   // v1.5.8, seq=1
+  const oldDone = ctx.__dones[0];
+  ctx.state.pluginUpdate = restartUpdate({ markerVersion: "1.5.9", latestVersion: "1.5.9" });
+  ctx.updNotePrefetch();   // v1.5.9, seq=2
+  assert.equal(ctx.__sent.length, 2);
+  oldDone({ ok: true, version: "1.5.8", tag: "v1.5.8", body: "old" });
+  assert.equal(ctx.updNoteState.version, "1.5.9");
+  assert.equal(ctx.updNoteState.loading, true);   // 旧回包不覆盖新目标
+});
+
+test("failure states render reason plus settings pointer; mirror and unverified get honest labels", () => {
+  const ctx = makeUpdContext({ dotOn: true, pluginUpdate: restartUpdate() });
+  ctx.onGearUpdEnter();
+  ctx.__dones[0]({ ok: false, reason: "rate-limited" });
+  assert.match(ctx.gear.__zuUpdHtml, /暂时无法获取（API 限流）/);
+  assert.match(ctx.gear.__zuUpdHtml, /插件更新/);
+  assert.equal(ctx.updNoteEnsure(), false);   // 失败同版本不重发（重试入口在设置页）
+  const ctx2 = makeUpdContext({ dotOn: true, pluginUpdate: restartUpdate() });
+  ctx2.onGearUpdEnter();
+  ctx2.__dones[0]({ ok: true, version: "1.5.8", tag: "v1.5.8", body: "hello", mirror: true });
+  assert.match(ctx2.gear.__zuUpdHtml, /GitCode 镜像/);
+  const ctx3 = makeUpdContext({ dotOn: true, pluginUpdate: restartUpdate({ channel: "market" }) });
+  ctx3.onGearUpdEnter();
+  ctx3.__dones[0]({ ok: true, version: "1.5.8", tag: "v1.5.8", body: "hello", verified: false });
+  assert.match(ctx3.gear.__zuUpdHtml, /参考：同号 Release/);
+});
+
+test("unknown pending version identity keeps the card silent", () => {
+  const ctx = makeUpdContext({ dotOn: true, pluginUpdate: restartUpdate({ markerVersion: "", latestVersion: "" }) });
+  ctx.onGearUpdEnter();
+  assert.equal(ctx.__sent.length, 0);
+  assert.equal(ctx.__shown.length, 0);
+});
+
+test("v413 wiring: boot sweep, cleanup chain, tip shell, prefetch hook and gear bindings", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const read = (f) => fs.readFileSync(path.join(__dirname, "..", "src", "overlay", f), "utf8");
+  assert.ok(read("00-boot-state-i18n.js").includes(".zusage-upd-note-tip"), "热更清扫选择器缺 v413 卡宿主类");
+  const tips = read("01-git-and-doc-tooltips.js");
+  assert.ok(tips.includes('className = "tip zusage-quota-tip zusage-upd-note-tip"'), "tip 壳未挂清理宿主类");
+  assert.ok(tips.includes("hideUpdNoteTip();\n    updNoteTip.remove();"), "cleanupRateTip 清理链缺 v413 卡");
+  assert.ok(tips.includes('e.target.closest(".zu-notes-lnk")'), "tip 链接点击委托缺失");
+  assert.ok(/function showUpdNoteTip[\s\S]{0,300}cancelUpdNoteHide\(\)/.test(tips), "show 路径未取消在途收起（重入闪烁）");
+  assert.ok(tips.includes("Math.max(8, Math.min(Math.round(r.right - tw)"), "tip 左缘 8px 视口钳边缺失");
+  const dom = read("06-instance-dom-and-styles.js");
+  assert.ok(dom.includes('var VERSION = "v413"'), "VERSION 未升 v413");
+  assert.ok(dom.includes(".zusage-upd-note-tip .zu-un-body"), "tip 作用域样式缺失");
+  const notes = read("09-instance-settings-and-notes.js");
+  assert.ok(notes.includes('typeof pluginRequest === "function") updNotePrefetch()'), "syncUpdate 预取钩子缺失");
+  assert.ok(notes.includes('gear.addEventListener("mouseenter", onGearUpdEnter)'), "齿轮悬停绑定缺失");
+  assert.ok(notes.includes('typeof hideUpdNoteTip === "function") hideUpdNoteTip()'), "开面板收卡缺失");
+});
+
+test("gear hover card title escapes the pending version (feed-sourced markerVersion)", () => {
+  const ctx = makeUpdContext({ dotOn: true, pluginUpdate: restartUpdate({ markerVersion: '1.5.<b onerror="x()">' }) });
+  ctx.onGearUpdEnter();
+  ctx.__dones[0]({ ok: true, version: ctx.updNoteState.version, tag: "vx", body: "hello" });
+  const html = ctx.gear.__zuUpdHtml;
+  assert.ok(html.includes("&lt;b onerror=&quot;x()&quot;&gt;"), "版本号未经转义直进 innerHTML");
+  assert.doesNotMatch(html, /<b onerror=/);
+});
+
+test("gear hover card converts a lost reply into a readable timeout error", () => {
+  const ctx = makeUpdContext({ dotOn: true, pluginUpdate: restartUpdate() });
+  ctx.onGearUpdEnter();   // loading 中
+  ctx.updNoteState.at = Date.now() - 121000;   // 越过 NOTES_LOADING_TIMEOUT_MS(120s)
+  const html = ctx.updNoteHtml();
+  assert.doesNotMatch(html, /正在加载更新日志/);
+  assert.match(html, /暂时无法获取更新日志/);
+  assert.match(html, /详情见 ⚙ → 插件更新/);
+});
+
+test("gear hover card surfaces the legacy main-process note for unknown actions", () => {
+  const ctx = makeUpdContext({ dotOn: true, pluginUpdate: restartUpdate() });
+  ctx.onGearUpdEnter();
+  ctx.__dones[0]({ ok: false, reason: "error", error: "unknown action: release-notes" });
+  assert.match(ctx.gear.__zuUpdHtml, /当前主进程为旧版本/);
 });

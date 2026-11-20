@@ -292,8 +292,9 @@
      * → v410 worktree 令牌改小写（用户规格）：gitBranchToken 与 aria 的 WorkTree→worktree（游离检出令牌、aria「worktree（游离检出）」），文档同步。
      * → v411 git tooltip 逐文件变更清单（用户规格）：单仓查询 parseGitPorcelain 增可选收文件明细（collectFiles 仅 gitSingleStatus 开启，多仓聚合不收；帽 60 条，ft=changed+untracked 真实总数），每条 {p, s}（s=conflict/untracked/deleted/renamed/added/modified 展示标签）；tooltip worktree 区块后、「更新于」行前插「变更文件」滚动小节（复用 .zu-git-rows 容器 + 新 .zu-gf 标签列，冲突红其余黄，浅色变体；超出帽尾行「另有 N 项未列出」），chip 本体与 aria 不含逐文件；inject-main.cjs 冷文件需完全重启生效。
      * → v412 统计 Tooltip 响应式布局（specs/stat-tooltip-responsive.md；本批原立账 v388，与主线 v388–v411 各批撞号，按合入顺序顺延 v412）：四卡理想宽度逐卡分化（本轮 540/会话 600/今日 600/项目 760，实际宽恒 min(理想宽, calc(100vw-16px))；tools 卡保持 450 不入响应式范围）；布局模式 data-zu-mode（full/compact/narrow/tiny）由 positionTip 按卡根实测宽写入（零新增监听），共享响应式核心 :is 四卡作用域——narrow 行一改「总用量整行+输入输出双列」、模型表速度/费用列收起改首列副行（.zu-md-sub 常驻 HTML）、tiny 表格卡片化（thead 收起、td[data-l] 字段名、行分隔线）、页脚区间整行换行、项目名 narrow 起换行独占第二行；statModelsTable 改直出表格（th/td 列类+data-l，tools 卡 statTable 不动）；statKpi 值节点补 title 完整值兜底；.tbody 滚动条从隐藏改可见细条；@media(max-width:375px) 兜底打开中窗口骤缩的模式陈旧（卡宽=min(理想宽,vw-16)，视口断点与卡宽断点一一对应）。
+     * → v413 齿轮悬停更新日志卡（用户规格，样式对标宿主 UpdateReleaseNotesTooltip）：待重启红点亮起（updDotOn，v208 语义不变——发现新版未安装仍不亮、不触发）时悬停/聚焦 ⚙ 弹 384px 文档级浮卡（.zusage-upd-note-tip，01 分片单例+220ms 移入保活+三档钳位、右缘对齐齿轮），展示 markerVersion（退 pendingRelease）的 Release 日志：标题+日期+「已安装待重启」说明+notesHtml 全量正文（64KB 钳制/升级注意节高亮），mirror 与 verified:false 如实注记；syncUpdate 红点亮起即后台预取（updNotePrefetch，主进程 1h 缓存兜底），悬停未就绪显加载态回包原地填充，失败/回执丢失 120s 转可读错误（复用设置页超时常量，unknown action 显旧主进程文案）+指引不加重试；数据独立于设置页 notesResult（面板粘性选择互不干扰），悬停不 ack 红点（已读仍以点进「插件更新」分区为准），齿轮点击开面板即收卡互斥，show 路径取消在途收起防重入闪烁。
      */
-    var VERSION = "v412";
+    var VERSION = "v413";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -994,6 +995,27 @@
       ".zu-settings .zu-notes-hist-ver{flex:0 0 auto;font-family:var(--font-mono,Consolas,Menlo,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums}" +
       ".zu-settings .zu-notes-hist-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-foreground-subtle,#8d95a5)}" +
       ".zu-settings .zu-notes-hist-note{color:var(--color-foreground-subtle,#6f7989);font-size:calc(var(--ui-font-size,14px) - 2px);padding:2px 6px}" +
+      /* v413 齿轮悬停更新日志卡：宿主 UpdateReleaseNotesTooltip 同款形态（384px、标题+日期行、正文内滚）。
+       * .zu-notes-* 子元素规则是 .zu-settings 作用域的 tip 副本（不动既有行，避免扰动面板断言）；
+       * 色值走 --color-tooltip-* 族变量随亮暗自适应，无需成套 .zu-light 字面覆盖。 */
+      ".zusage-upd-note-tip .zu-un-head{flex:0 0 auto;padding:10px 14px 8px;border-bottom:1px solid var(--color-popover-border,var(--color-border,rgba(255,255,255,.14)))}" +
+      ".zusage-upd-note-tip .zu-un-title{font-weight:600;font-size:calc(var(--ui-font-size,14px) + 1px);color:var(--color-tooltip-foreground,#fafafa)}" +
+      ".zusage-upd-note-tip .zu-un-sub{margin-top:3px;font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,rgba(250,250,250,.55));overflow-wrap:anywhere}" +
+      ".zusage-upd-note-tip .zu-un-body{flex:1 1 auto;min-height:0;overflow-y:auto;padding:10px 14px;font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.65;color:var(--color-tooltip-foreground,#fafafa);overflow-wrap:anywhere;scrollbar-width:thin}" +
+      ".zusage-upd-note-tip .zu-un-note{color:var(--color-tooltip-tag-foreground,rgba(250,250,250,.55))}" +
+      ".zusage-upd-note-tip .zu-un-body p{margin:4px 0}" +
+      ".zusage-upd-note-tip .zu-un-body ul,.zusage-upd-note-tip .zu-un-body ol{margin:4px 0;padding-left:1.5em}" +
+      ".zusage-upd-note-tip .zu-un-body blockquote{margin:4px 0;padding:2px 10px;border-left:3px solid var(--color-border,rgba(255,255,255,.14));color:var(--color-tooltip-tag-foreground,rgba(250,250,250,.55))}" +
+      ".zusage-upd-note-tip .zu-un-body pre{background:var(--color-input,rgba(0,0,0,.25));border:1px solid var(--color-border,rgba(255,255,255,.1));border-radius:8px;padding:8px 10px;overflow-x:auto;font-family:var(--font-mono,Consolas,Menlo,'Microsoft YaHei UI',monospace);font-size:calc(var(--ui-font-size,14px) - 2px)}" +
+      ".zusage-upd-note-tip .zu-un-body code{font-family:var(--font-mono,Consolas,Menlo,'Microsoft YaHei UI',monospace);font-size:calc(var(--ui-font-size,14px) - 2px);background:var(--color-hover,rgba(255,255,255,.08));border-radius:4px;padding:0 4px}" +
+      ".zusage-upd-note-tip .zu-un-body pre code{background:none;padding:0}" +
+      ".zusage-upd-note-tip .zu-un-body hr{border:0;border-top:1px solid var(--color-border,rgba(255,255,255,.12));margin:8px 0}" +
+      ".zusage-upd-note-tip .zu-notes-h{font-weight:600;color:var(--color-tooltip-foreground,#fafafa);margin:10px 0 4px;line-height:1.4}" +
+      ".zusage-upd-note-tip .zu-notes-h1{font-size:calc(var(--ui-font-size,14px) + 2px)}" +
+      ".zusage-upd-note-tip .zu-notes-h2{font-size:calc(var(--ui-font-size,14px) + 1px)}" +
+      ".zusage-upd-note-tip .zu-notes-h3{font-size:var(--ui-font-size,14px)}" +
+      ".zusage-upd-note-tip .zu-notes-lnk{background:none;border:0;padding:0;font:inherit;color:var(--color-brand,#57c7ff);text-decoration:underline;cursor:pointer;overflow-wrap:anywhere;text-align:left}" +
+      ".zusage-upd-note-tip .zu-notes-attn{border:1px solid color-mix(in srgb,#d97706 45%,transparent);background:color-mix(in srgb,#d97706 8%,transparent);border-radius:8px;padding:6px 10px;margin:6px 0}" +
       ".panel.zu-settings{box-sizing:border-box;min-width:0;max-width:none;" +
       "max-height:min(90vh,var(--zu-settings-height,90vh));padding:0;gap:0;overflow:hidden;line-height:1.5}" +
       ".zu-settings .zu-settings-head{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:12px;" +
