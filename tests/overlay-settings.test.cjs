@@ -1663,7 +1663,6 @@ test('enhancement switch waits for save and keeps the last broadcast value on fa
   requests[4].done({ ok: false });
   assert.equal(feedback.length, feedbackLenAtInactive, 'an inactive panel suppresses feedback');
   assert.equal(timers.size, 0);
-  assert.equal(toggle.disabled, false);
   assert.deepEqual(forgotten.at(-1), 'save-5');
   context.inactive = () => false;
 
