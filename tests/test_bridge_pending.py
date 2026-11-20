@@ -452,10 +452,12 @@ class OverlayBridgeNoticeTests(unittest.TestCase):
         return outcome, stdout.getvalue()
 
     def test_run_hook_reports_permission_but_not_pending_or_other_errors(self):
-        # v172：桥 pending（客户端退出后监控自动收尾）不再发会话文字。
+        # v172：桥 pending（客户端退出后监控自动收尾）本身不发会话文字；mobile 侧
+        # 对 bridge pending 延后时提示等待收尾后自动补装（不给手动命令）。
         pending = {"status": "pending", "version": "3.16.2", "detail": ""}
         outcome, stdout = self.hook_output(pending)
-        self.assertIn("尚未就绪", outcome["systemMessage"])
+        self.assertIn("自动补装", outcome["systemMessage"])
+        self.assertNotIn("mobile_relay_patch.py", outcome["systemMessage"])
         self.assertEqual(stdout, "")
         # v258：SessionStart 自动链（quiet_hook=True）且注入行在位时，桥缺席/打不上
         # 静默放行——fiber 兜底 + 渲染端运行时合成桥接手，DB 轮询保底；受保护目录
@@ -682,7 +684,9 @@ class RealHookChainTests(unittest.TestCase):
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
                 outcome = self.installer.run_hook()
         self.assertEqual(stdout.getvalue(), "", "hook stdout 只能是 hook JSON")
-        self.assertIn("尚未就绪", outcome["systemMessage"])
+        # 桥 publish pending → mobile 延后（detail=bridge pending）：等待收尾后自动补装
+        self.assertIn("自动补装", outcome["systemMessage"])
+        self.assertNotIn("mobile_relay_patch.py", outcome["systemMessage"])
         self.assertTrue(self.pi.TMP.is_file())
         self.assertEqual(self.pi.pending_tmp(operation="install")["operation"], "install")
         self.pi.launch_monitor.assert_called_once()
