@@ -1168,24 +1168,51 @@ def _worktree_fact(directory):
 
 
 def _worktree_origin(con, sid):
-    """创建记录的起点（首轮 worktree_creation timeline part 的 ref/sha）；缺 part/解析失败
-    返回 (None, None)。detached 默认创建时 ref 为 null（宿主 §6.2），属正常形状。
-    LIKE 预滤会命中正文同字面量的行，按时间序取第一条真正含 worktreeCreation 的（损坏
-    JSON 跳过继续，不让单条坏 part 炸掉起点，更不遮蔽其后真实创建记录）。"""
+    """创建记录的起点与时刻（首轮 worktree_creation timeline part 的 ref/sha/time.start）；
+    缺 part/解析失败返回 (None, None, None)。detached 默认创建时 ref 为 null（宿主 §6.2），
+    属正常形状。LIKE 预滤会命中正文同字面量的行，按时间序取第一条真正含 worktreeCreation
+    的（损坏 JSON 跳过继续，不让单条坏 part 炸掉起点，更不遮蔽其后真实创建记录）。"""
     try:
         rows = con.execute(
             "select data from part where session_id=? and data like ? order by time_created",
             (sid, '%"timelineType":"worktree_creation"%')).fetchall()
     except sqlite3.Error:
-        return None, None
+        return None, None, None
     for row in rows or []:
         try:
-            fact = (json.loads(row[0]) or {}).get("worktreeCreation") or {}
+            data = json.loads(row[0]) or {}
+            fact = data.get("worktreeCreation") or {}
         except Exception:
             continue   # LIKE 假命中或损坏行：跳过看下一条
         if fact:
-            return fact.get("ref") or None, fact.get("sha") or None
-    return None, None
+            start = (data.get("time") or {}).get("start")   # time 是 part 信封层字段（宿主 §6.6.4）
+            # 数值守卫：布尔/非数值/超出 1970~2100 量级的一律 None（畸形 part 不伪造时刻）
+            if isinstance(start, (int, float)) and not isinstance(start, bool) and 0 < start < 4102444800000:
+                created = int(start)
+            else:
+                created = None
+            return fact.get("ref") or None, fact.get("sha") or None, created
+    return None, None, None
+
+
+def _worktree_source_root(root):
+    """受管 worktree 的源仓库路径（读 <root>/.git 链接文件上溯两级）；非链接/读失败
+    返回 None（fail-soft，展示行隐藏）。链接文件形如 `gitdir: <sourceRoot>/.git/worktrees/<id>`。
+    与宿主 trust-identity 解析的有意从简：不解析相对 gitdir、不做 realpath 与 admin/gitdir
+    回链校验——仅用于 tooltip 展示，不做任何授权判定。"""
+    try:
+        git_path = Path(root) / ".git"
+        if not git_path.is_file():
+            return None
+        text = git_path.read_text(encoding="utf-8", errors="replace").strip()
+        if not text.startswith("gitdir:"):
+            return None
+        gitdir = Path(text.split(":", 1)[1].strip())
+        if gitdir.parent.name != "worktrees" or gitdir.parent.parent.name != ".git":
+            return None
+        return str(gitdir.parent.parent.parent)
+    except OSError:
+        return None
 
 
 def _worktree_facts(con, sids):
@@ -1196,14 +1223,14 @@ def _worktree_facts(con, sids):
             fact = _WT_FACT_CACHE[sid]
             if fact is None:
                 continue
-            if fact["ref"] is None and fact["sha"] is None:
+            if fact["ref"] is None and fact["sha"] is None and fact.get("created") is None:
                 # 起点「未决」：worktree_creation part 实测比 session 行晚 ~1.2s 落库，
                 # 首见帧可能缓存到空起点；命中也重查，拿到即随缓存对象更新转已决
                 #（sha 非空即已决，detached 默认形状 ref=null/sha=有值）。全 detached 且无
                 # part 记录的会话会每帧重查一次（索引范围扫描该 sid 全部 part 行，节流帧下可接受）。
-                ref, sha = _worktree_origin(con, sid)
-                if ref is not None or sha is not None:
-                    fact["ref"], fact["sha"] = ref, sha
+                ref, sha, created = _worktree_origin(con, sid)
+                if ref is not None or sha is not None or created is not None:
+                    fact["ref"], fact["sha"], fact["created"] = ref, sha, created
             out[sid] = fact
             continue
         try:
@@ -1219,7 +1246,8 @@ def _worktree_facts(con, sids):
         _WT_FACT_CACHE[sid] = fact   # None = 已判定非受管（负缓存）；受管事实连同起点一起入缓存
         if fact is None:
             continue
-        fact["ref"], fact["sha"] = _worktree_origin(con, sid)
+        fact["ref"], fact["sha"], fact["created"] = _worktree_origin(con, sid)
+        fact["sourceRoot"] = _worktree_source_root(fact["root"])
         out[sid] = fact
     return out or None
 
