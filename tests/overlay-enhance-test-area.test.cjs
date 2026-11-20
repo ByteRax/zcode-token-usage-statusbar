@@ -3,6 +3,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { sliceOverlay } = require('./helpers/overlay-extract.cjs');
+const controlsSource = sliceOverlay('    function canStartEnhanceTest() {', '    function syncUpdate() {',
+  { file: 'src/overlay/09-instance-settings-and-notes.js' });
 const source = fs.readFileSync(path.join(__dirname, '../src/overlay/09-instance-settings-and-notes.js'), 'utf8');
 const a = source.indexOf('    var epTest =');
 const b = source.indexOf('    function epRisk(', a);
@@ -19,13 +22,41 @@ function harness() {
     quotaSelection: { providerId: 'p', modelId: 'm' }, readQuotaSelection: () => false, enhanceCurrentScope: () => 'scope', inactive: () => false, L: zh => zh,
     pluginRequest(action, opts, cb) { const id = cb ? 'r' + (++seq) : ''; requests.push({ action, opts, id }); if (cb) callbacks[id] = cb; return id; },
     forgetPluginRequest(id) { delete callbacks[id]; }, setTimeout(fn) { timers.set(++seq, fn); return seq; }, clearTimeout(id) { timers.delete(id); }, Date, JSON };
-  vm.runInNewContext(source.slice(a, b) + '\nthis.api={start:epTestStart,stop:epTestStop,state:epTest,render:epTestRender};', context);
+  vm.runInNewContext(controlsSource + '\n' + source.slice(a, b) + '\nthis.api={start:epTestStart,stop:epTestStop,state:epTest,render:epTestRender};', context);
   return { context, fields, requests, callbacks, timers, api: context.api };
 }
 test('blank and oversized drafts never send a request', () => {
   const h = harness(); h.api.state.draft = '  '; h.api.start(); assert.equal(h.requests.length, 0);
   h.api.state.draft = 'x'.repeat(20001); h.api.start(); assert.equal(h.requests.length, 0);
 });
+test('disabled enhancement blocks new tests even when the form is valid', () => {
+  const h = harness();
+  h.api.state.draft = 'valid draft';
+  h.context.state.enhanceEnabled = false;
+  h.api.render();
+  assert.equal(h.fields['.zu-ep-test-run'].disabled, true);
+  h.api.start();
+  assert.equal(h.requests.length, 0);
+  h.context.state.enhanceEnabled = true;
+  h.api.render();
+  assert.equal(h.fields['.zu-ep-test-run'].disabled, false);
+  h.api.start();
+  assert.equal(h.requests.length, 1);
+});
+
+test('a pending switch save or mobile mode prevents sending a new test', () => {
+  const h = harness();
+  h.api.state.draft = 'valid draft';
+  h.context.state.enhancePending = { enabled: false };
+  h.api.start();
+  h.context.state.enhancePending = null;
+  h.context.mobileMode = true;
+  h.api.render();
+  assert.equal(h.fields['.zu-ep-test-run'].disabled, true);
+  h.api.start();
+  assert.equal(h.requests.length, 0);
+});
+
 test('dirty custom configuration still tests using the form snapshot', () => {
   const h = harness(); h.api.state.draft = 'draft'; h.context.epEditVersion = 5; h.api.start();
   assert.equal(h.requests.length, 1);

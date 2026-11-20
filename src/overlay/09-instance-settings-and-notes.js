@@ -80,8 +80,22 @@
       if (navBody) navBody.scrollTop = 0;
       syncSettingsScroll();
     }
+    function canStartEnhanceTest() {
+      return !(typeof mobileMode !== "undefined" && mobileMode) && state.enhanceEnabled !== false && !state.enhancePending;
+    }
+    function syncEnhanceControls() {
+      var readOnly = typeof mobileMode !== "undefined" && mobileMode, pending = state.enhancePending;
+      var toggle = panel.querySelector(".zu-enhance-toggle");
+      if (toggle) {
+        toggle.checked = !readOnly && (pending ? pending.enabled : state.enhanceEnabled !== false);
+        toggle.disabled = readOnly || !!pending;
+      }
+      var run = panel.querySelector(".zu-ep-test-run");
+      if (run) run.disabled = !canStartEnhanceTest() || !!(typeof epTest !== "undefined" && epTest && epTest.id);
+    }
     function syncUpdate() {
       var u = state.pluginUpdate;
+      syncEnhanceControls();
       if (typeof epReconcile === "function") epReconcile(u && u.enhanceProvider);
       if (typeof epTest !== "undefined" && epTest && typeof epTestSignature === "function" && epTest.signature && epTest.signature !== epTestSignature()) {
         if (epTest.id) epTestStop(L("配置已变化，请重新测试。", "Settings changed; test again."));
@@ -1457,7 +1471,7 @@
       var status = panel.querySelector(".zu-ep-test-status");
       status.textContent = epTest.status;
       status.classList.toggle("zu-ep-test-err", !!epTest.failed);
-      panel.querySelector(".zu-ep-test-run").disabled = !!epTest.id;
+      syncEnhanceControls();
       panel.querySelector(".zu-ep-test-cancel").hidden = !epTest.id;
     }
     function epTestStop(message, failed) {
@@ -1471,7 +1485,7 @@
     }
     function epTestStart() {
       var ep = state.pluginUpdate && state.pluginUpdate.enhanceProvider, draft = epTest.draft;
-      if (epTest.id) return;
+      if (!canStartEnhanceTest() || epTest.id) return;
       if (!draft.trim() || draft.length > 20000) { epTest.status = L("请输入 1–20000 字符的草稿。", "Enter a draft of 1–20000 characters."); epTestRender(); return; }
       if (!ep || ep.capability !== 1 || ep.unreadable || epSaving || epConflict || !Number.isSafeInteger(epSavedRevision)) { epTest.status = L("增强配置暂不可用，请稍后重试。", "Enhancement settings are temporarily unavailable; retry."); epTestRender(); return; }
       var editingMode = epValue(".zu-ep-mode"), useDraftForm = editingMode === "custom";
@@ -1778,8 +1792,6 @@
       if (devKeepTipBox) devKeepTipBox.checked = !!state.devKeepTip;
       var qrBox = panel.querySelector(".zu-quota-remain");
       if (qrBox) qrBox.checked = !!state.quotaRemain;
-      var enhBox = panel.querySelector(".zu-enhance-toggle");   // v344：勾选态由推送面 enhanceEnabled 决定
-      if (enhBox) enhBox.checked = state.enhanceEnabled !== false;
       if (typeof epReconcile === "function") epReconcile(state.pluginUpdate && state.pluginUpdate.enhanceProvider);
       if (typeof epSyncDirtyStatus === "function") epSyncDirtyStatus();
       if (typeof zuRotatorSyncPanel === "function") zuRotatorSyncPanel(panel);
@@ -2466,20 +2478,26 @@
         return;
       }
       if (t2.classList.contains("zu-enhance-toggle")) {
-        /* v344：乐观更新，真值以主进程写 config.json 的 enhance_enabled 后回推为准；按钮
-           显隐在下一次 render/heavy 对账点收敛，主进程动作入口 fail-closed 双保险 */
-        var requestedEnh = t2.checked;
-        var previousEnh = state.enhanceEnabled !== false;
-        state.enhanceEnabled = requestedEnh;
+        if ((typeof mobileMode !== "undefined" && mobileMode) || state.enhancePending) { syncEnhanceControls(); return; }
+        /* 待保存的勾选态在同窗口共享，不提前改变真正的工具栏开关。 */
+        var enhanceSave = state.enhancePending = { enabled: t2.checked, timer: 0, id: "" };
+        function syncEnhancePanels() {
+          if (!inactive()) syncEnhanceControls();
+          instances.forEach(function (inst) { inst.syncUpdate(); });
+        }
+        function finishEnhanceSave(result) {
+          if (stale() || state.enhancePending !== enhanceSave) return;
+          clearTimeout(enhanceSave.timer);
+          forgetPluginRequest(enhanceSave.id);
+          state.enhancePending = null;
+          syncEnhancePanels();
+          if (!inactive()) showSettingsFeedback(!(result && result.ok === true), false);
+        }
+        syncEnhancePanels();
         showSettingsFeedback(false, true);
-        pluginRequest("enhance", requestedEnh, function (result) {
-          if (inactive()) return;
-          if (result.ok) { showSettingsFeedback(false, false); return; }
-          state.enhanceEnabled = previousEnh;
-          syncPanel();
-          showSettingsFeedback(true);
-        });
-        renderAll(false);
+        enhanceSave.timer = setTimeout(finishEnhanceSave, 20000);   // 主进程配置写入上限 15s，另留投递时间
+        enhanceSave.timer.unref?.();
+        enhanceSave.id = pluginRequest("enhance", enhanceSave.enabled, finishEnhanceSave);
         return;
       }
       if (t2.classList.contains("zu-rst-enable")) {
