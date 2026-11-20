@@ -149,7 +149,7 @@
 ### 11.5 语义与文案
 
 - 模型数量三语义：可选 Y（池全部）/ 已选 X（filt）/ **本期有效 N**（perModel.length）；计数行与 chips 计数统一「已选 X/Y · 本期有效 N」；「唯一模型」只用于真单模型池。
-- live 徽标：估算态措辞改「实时估算中」（历史均速含义不被污染），非估算实时态（思考/工具）透传不变。
+- live 徽标已移除（v415，用户裁定）：标题行只留常驻统计（ltitle+count），「实时估算中」与思考/工具等 statusText 临时态不再展示——速度含义恒为统计口径，不被实时相位词污染；wire memo 键随之去 live.statusText（实时态变化不再触发整卡重拼）。
 - 同名不同供应商（同 name 异 key）：分布表/chips 名称右侧加供应商副标（pid 尾段），hover title=全 provider/model；不合并身份。
 - 标题 📈 换自包含 SVG 折线图标（currentColor，随主题）。
 - 今天/进行中日桶 hover 区间：「YYYY/M/D · 00:00 – 截至 HH:mm」；已结束日「YYYY/M/D · 全天」——core 对 today 及跨今天的桶 item.b 钳到 now。
@@ -487,7 +487,7 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 
 ### 24.1 实现与布局
 
-- `spd3LeftHTML`：count div 移入 `.zu-sv3-title-row`，顺序 = ltitle → count → live 徽标（live 徽标保持最后，临时态不挤占常驻统计位）；主数字下方原 count 位不再渲染（主数字 → 档位胶囊 → 分布标题的间距由 `.zu-sv3-dist-h` 自带 `margin-top:10px` 承接）。
+- `spd3LeftHTML`：count div 移入 `.zu-sv3-title-row`，顺序 = ltitle → count → live 徽标（live 徽标保持最后，临时态不挤占常驻统计位；该徽标已随 v415 移除，现行标题行顺序为 ltitle → count，见 §11.5）；主数字下方原 count 位不再渲染（主数字 → 档位胶囊 → 分布标题的间距由 `.zu-sv3-dist-h` 自带 `margin-top:10px` 承接）。
 - 文案：`SPD_L(N + " 个模型 · " + M + " 轮", N + " models · " + M + " turns")`；语义限定（哪些算「有效」）由 miss 提示与 §19 分布口径承载，不再在计数行重复。
 - CSS：`.zu-sv3-count` 去 `margin-top:8px`（在标题行内），其余布局原样（flex wrap 保留——selMissing 的 `.zu-sv3-count-miss` 提示 `flex:1 1 100%` 仍在 count 块内换行到第二行）；count 的 `<span>` 加 `white-space:nowrap`（短文案不折行，极端窄时由 ltitle 的 ellipsis 让位承担）。
 - 空态分支无 count（既有），标题行结构不变。

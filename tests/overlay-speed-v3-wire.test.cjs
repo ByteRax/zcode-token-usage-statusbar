@@ -77,14 +77,15 @@ function fixture() {
     mnames: ['GLM-A', 'Claude-B'], mkeys: [KEYS.a, KEYS.b], turns };
 }
 
-function rebuild(ctx, h, sel, hover, o, sess, sd) {
+function rebuild(ctx, h, sel, hover, o, sess, sd, live) {
   ctx.__h = h === undefined ? null : h;
   ctx.__sd = sd === undefined ? null : sd;
   ctx.__sel = sel || { range: 'recent', period: 'recent', sid: 'sess_main' };
   ctx.__hi = typeof hover === 'number' ? hover : -1;
   ctx.__o = o || O;
   ctx.__sess = sess || { sid: 'sess_main' };
-  return vm.runInContext('spd3RebuildOr(__h, __sd, __sel, __hi, null, __o, __sess)', ctx);
+  ctx.__live = live || null;
+  return vm.runInContext('spd3RebuildOr(__h, __sd, __sel, __hi, __live, __o, __sess)', ctx);
 }
 function cardOf(ctx, rb, curHover, curSel) {
   ctx.__rb = rb;
@@ -119,6 +120,21 @@ test('spd3RebuildOr 契约: 无轮表→null；有轮表→闭包；闭包产物
   assert.ok(stripStyle(html).includes('zu-sv-head'), 'V3 头部（范围/时间双 Tab）');
   assert.ok(html.includes('data-sv3-chart'), '图表占位容器（<!--CHART--> 已替换）');
   assert.ok(!html.includes('<!--CHART-->'), '占位符必须被图表产物替换（wire 装配职责）');
+});
+
+// v415 live 徽标移除后的行为锁：live 视图（估算/思考 statusText）绝不影响卡片产物——
+// 防将来把 live 消费重新引入卡片 HTML 却漏改 memo 键时产生状态词陈旧渲染
+// （视图层「不渲染」由 overlay-speed-v3-view.test.cjs 的 absence 断言锁定，本条锁装配层）。
+test('v415 live 不进产物: 不同 statusText 的闭包产物逐字节恒等', () => {
+  const ctx = makeCtx();
+  const sel = { range: 'session', period: 'all', sid: 'sess_main' };
+  const rbThink = rebuild(ctx, fixture(), sel, -1, null, null, null,
+    { statusText: '思考中…3秒', phase: 'thinking' });
+  const rbEst = rebuild(ctx, fixture(), sel, -1, null, null, null,
+    { statusText: '实时估算中', speedIsEstimated: true });
+  assert.equal(typeof rbThink, 'function');
+  assert.strictEqual(cardOf(ctx, rbThink), cardOf(ctx, rbEst),
+    'live 状态词不得影响整卡产物（v415 起 spd3RebuildOr 不消费第 5 参）');
 });
 
 test('spd3RebuildOr: 闭包读显式 curHover/curSel；不传 curSel 回退外层 sel；缺 filt 默认 auto', () => {

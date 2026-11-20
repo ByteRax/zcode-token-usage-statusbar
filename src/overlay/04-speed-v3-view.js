@@ -238,7 +238,9 @@
    * v391 用户裁定「查看全部」折叠按钮退役）→ 峰/低/新。分布行序按 share（请求数占比）降序；
    * msAvail=false 降级：隐藏「均速」列（.zu-sv3-dtab-noms 两列变体），绝不出现 t/s 假值。
    * poolSingle 为集成签名遗留（见文件头），函数体自 v396 起不消费。「本期统计」组标题与
-   * 「覆盖范围」kv 已随 v391 §15.1 删除（范围语义由标题行承载）。 */
+   * 「覆盖范围」kv 已随 v391 §15.1 删除（范围语义由标题行承载）。live 徽标（标题行临时态，
+   * 估算「实时估算中」/思考/工具 statusText）已随 v415 删除（用户裁定）：速度含义恒为统计
+   * 口径，live 参数随之退化为签名遗留不再消费。 */
   function spd3LeftTitle(an) {
     var n = an && an.items ? an.items.length : 0;
     var t = an && an.period === "recent" ? SPD_L("最近 " + n + " 轮", "Last " + n + " turns")
@@ -270,10 +272,7 @@
     var models = an.perModel || [];
     var bd = overall ? tpsBand(overall.v) : null;
     var dayLbl = an.unit === "day";
-    /* live 徽标（§11.5）：估算态固定「实时估算中」（历史均速含义不被污染），
-     * 非估算实时态（思考/工具）statusText 透传不变 */
-    var liveTxt = live ? (live.speedIsEstimated ? SPD_L("实时估算中", "live estimate") : (live.statusText || "")) : "";
-    /* v402（§24）：count 并入标题行（ltitle 后、live 徽标前），文案去「本期有效」前缀；
+    /* v402（§24）：count 并入标题行（ltitle 后），文案去「本期有效」前缀；
      * miss 提示仍随 count 块 wrap 换行（.zu-sv3-count-miss flex-basis:100%）。
      * turns/missN 随之提前到此（原在分布构建段）；空态分支不拼 count（models/overall 判空） */
     var missN = an.selMissing && an.selMissing.length ? an.selMissing.length : 0;
@@ -285,8 +284,7 @@
       (missN ? '<em class="zu-sv3-count-miss">' + spdEsc(SPD_L("已选模型中 " + missN + " 个在当前范围无有效记录",
         missN + " selected models have no valid records in this range")) + "</em>" : "") + "</div>";
     var headRow = '<div class="zu-sv3-title-row"><span class="zu-sv3-ltitle">' + spdEsc(spd3LeftTitle(an)) + "</span>" +
-      (models.length && overall ? countRow : "") +
-      (liveTxt ? '<span class="zu-sv3-sub">' + spdEsc(liveTxt) + "</span>" : "") + "</div>";
+      (models.length && overall ? countRow : "") + "</div>";
     var stats = '<div class="zu-sv3-stats">' +
       spd3StatHTML(SPD_L("峰值", "Peak"), an.peak, dayLbl ? SPD_L("最高日均", "Best daily") : "") +
       spd3StatHTML(SPD_L("最低", "Low"), an.low, dayLbl ? SPD_L("最低日均", "Worst daily") : "") +
@@ -544,8 +542,6 @@
       ".zu-sv3-root .zu-sv3-title-row{display:flex;align-items:center;gap:6px;min-width:0}" +
       ".zu-sv3-root .zu-sv3-ltitle{font-weight:600;font-size:calc(var(--ui-font-size,14px) - 1px);" +
         "color:var(--color-foreground,#e9edf4);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
-      ".zu-sv3-root .zu-sv3-sub{flex:0 0 auto;white-space:nowrap;font-weight:400;font-size:calc(var(--ui-font-size,14px) - 3px);" +
-        "color:var(--color-tooltip-tag-foreground,#a6a6a6);opacity:.85}" +
       ".zu-sv3-root .zu-sv3-main-num{margin-top:8px;font-variant-numeric:tabular-nums;" +
         "font-size:calc(var(--ui-font-size,14px) + 22px);font-weight:700;line-height:1.1;white-space:nowrap}" +
       ".zu-sv3-root .zu-sv3-main-num .zu-sv3-unit{font-size:calc(var(--ui-font-size,14px) + 4px);font-weight:600;" +
