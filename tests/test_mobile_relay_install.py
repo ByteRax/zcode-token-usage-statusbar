@@ -200,7 +200,8 @@ class MobileInstallTests(unittest.TestCase):
 
     def test_mobile_publish_failure_falls_back_to_skipped_error_and_cleans_stage(self):
         def takeover(stage, source=None, operation="install"):
-            stage.unlink(missing_ok=True)   # publish 接管语义：失败也清 stage
+            # 不预删 stage：锁外前置失败窗口（publish 的 finally 在锁体内不覆盖）
+            # 由调用方兜底清理——本用例同时锁定该兜底
             raise OSError("[Errno 5] Input/output error")
         real_replace = os.replace
         def replace(src, dst):
@@ -588,6 +589,7 @@ class MobileInstallTests(unittest.TestCase):
         self.assertIn("自动完成", text)
         self.assertNotIn("mobile_relay_patch.py", text)
         self.assertNotIn("全部完成", text)   # pending 不得承诺全部完成
+        self.assertNotIn("尚未生效", text)   # 汇总行 pending 单列，不得误指独立命令
         text = run_standalone({"status": "deferred", "detail": "existing pending operation"})
         self.assertIn("重跑本安装", text)   # 独立链无 SessionStart hook：重跑安装补装
         self.assertNotIn("mobile_relay_patch.py", text)
