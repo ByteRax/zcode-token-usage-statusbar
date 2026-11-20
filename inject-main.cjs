@@ -2320,8 +2320,18 @@ function finishGitRefreshWaiters(results) {
   }
 }
 
-function parseGitPorcelain(text) {
+const GIT_FILES_CAP = 60;   // 逐文件明细帽：tooltip 列前 60 条，ft 承载真实总数
+function fileLabel(x, y) {   // 展示标签：冲突 > 未跟踪 > 删除 > 改名 > 改（与 tooltip 颜色档对应）
+  if (GIT_CONFLICT.has(x + y)) return "conflict";
+  if (x === "?" ) return "untracked";
+  if (x === "D" || y === "D") return "deleted";
+  if (x === "R" || y === "R") return "renamed";
+  if (x === "A" || y === "A") return "added";
+  return "modified";
+}
+function parseGitPorcelain(text, collectFiles) {
   const out = { branch: "", upstream: "", ahead: 0, behind: 0, detached: false, noCommits: false, staged: 0, unstaged: 0, untracked: 0, conflicts: 0, changed: 0 };
+  if (collectFiles) { out.files = []; out.ft = 0; }
   for (const raw of String(text || "").split("\n")) {
     const line = raw.replace(/\r$/, "");
     if (!line) continue;
@@ -2341,13 +2351,19 @@ function parseGitPorcelain(text) {
     }
     if (line.length < 2) continue;
     const x = line[0], y = line[1];
-    if (x === "?" && y === "?") { out.untracked++; continue; }
+    if (x === "?" && y === "?") {
+      out.untracked++;
+      if (collectFiles && out.files.length < GIT_FILES_CAP) out.files.push({ p: line.slice(3), s: fileLabel(x, y) });
+      continue;
+    }
     if (x === "!" && y === "!") continue;   // 仅 --ignored 时出现
     out.changed++;   // 非未跟踪/非忽略的条目行计 1：MM 部分暂存也只算一行，不与 staged/unstaged 相加重复计
+    if (collectFiles && out.files.length < GIT_FILES_CAP) out.files.push({ p: line.slice(3), s: fileLabel(x, y) });
     if (GIT_CONFLICT.has(x + y)) { out.conflicts++; continue; }
     if (x !== " ") out.staged++;
     if (y !== " ") out.unstaged++;
   }
+  if (collectFiles) out.ft = out.changed + out.untracked;   // 真实总条目数（含未入帽的）
   return out;
 }
 function parseShortstat(text) {
@@ -2396,7 +2412,7 @@ async function gitSingleStatus(cwd) {
     }
   }
   if (!counts) return { ok: false, reason: gitFailure(d1) || "error", ts: Date.now() };
-  return Object.assign({ ok: true, ts: Date.now(), ins: counts.ins, del: counts.del, repoPath: cwd, op: detectGitOp(cwd) }, parseGitPorcelain(st.stdout));
+  return Object.assign({ ok: true, ts: Date.now(), ins: counts.ins, del: counts.del, repoPath: cwd, op: detectGitOp(cwd) }, parseGitPorcelain(st.stdout, true));   // v411：单仓收逐文件明细（多仓聚合不收）
 }
 /* 进行中的 Git 操作探测：解析 .git 目录（目录或 worktree 链接文件都认），按官方触发器文件
  * 存在性判操作类型。纯 fs 探针零子进程；rebase-apply 目录被 rebase --apply 与 git am 共用，
