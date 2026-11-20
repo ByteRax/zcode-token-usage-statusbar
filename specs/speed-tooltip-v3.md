@@ -480,3 +480,20 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 - 速度口径、左卡、图表、历史四档、分布表、弹出层交互、其它 Tooltip 全不变；仅筛选条常驻 chips 枚数由视口宽驱动。
 - VM：既有「3 枚 + +N」断言原样保持（无 window 回退）；新增视口分支断言——`innerWidth=1200` 显著多显 chips 且 +N 数字相应减少、`innerWidth=560` 仍 3 枚。
 - 真机：宽屏筛选条截图确认 chips 增多、+N 与计数无重叠、无换行、无裁切异常。
+
+## 24. v401 左卡计数行并入标题行（2026-11-20，用户裁定）
+
+用户指定：把左卡 `.zu-sv3-count`（cube 图标 + 模型数/轮数）从主数字下方独立行移到标题 `.zu-sv3-ltitle`（如「历史平均速度」）后面同一行；文案「本期有效 N 个模型 · M 轮」去掉「本期有效」前缀，变为「N 个模型 · M 轮」（en 同步去 "active"）。
+
+### 24.1 实现与布局
+
+- `spd3LeftHTML`：count div 移入 `.zu-sv3-title-row`，顺序 = ltitle → count → live 徽标（live 徽标保持最后，临时态不挤占常驻统计位）；主数字下方原 count 位不再渲染（主数字 → 档位胶囊 → 分布标题的间距由 `.zu-sv3-dist-h` 自带 `margin-top:10px` 承接）。
+- 文案：`SPD_L(N + " 个模型 · " + M + " 轮", N + " models · " + M + " turns")`；语义限定（哪些算「有效」）由 miss 提示与 §19 分布口径承载，不再在计数行重复。
+- CSS：`.zu-sv3-count` 去 `margin-top:8px`（在标题行内），其余布局原样（flex wrap 保留——selMissing 的 `.zu-sv3-count-miss` 提示 `flex:1 1 100%` 仍在 count 块内换行到第二行）；count 的 `<span>` 加 `white-space:nowrap`（短文案不折行，极端窄时由 ltitle 的 ellipsis 让位承担）。
+- 空态分支无 count（既有），标题行结构不变。
+
+### 24.2 不变项与验收
+
+- 速度口径、分布表、筛选条 fcount「已选 X/Y · 本期有效 N」（筛选条计数不动，仍带「本期有效」）、固定高 450、其它 Tooltip 全不变。
+- VM：左卡 count 断言翻转（「本期有效 N 个模型」→「N 个模型」+ 位置在 title-row 内）；en 断言 "active models" → "models"；筛选条 fcount 断言原样保持。
+- 真机：左卡标题行截图确认 count 与标题同行、主数字下方无残留空行。

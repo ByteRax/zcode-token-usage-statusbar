@@ -273,7 +273,18 @@
     /* live 徽标（§11.5）：估算态固定「实时估算中」（历史均速含义不被污染），
      * 非估算实时态（思考/工具）statusText 透传不变 */
     var liveTxt = live ? (live.speedIsEstimated ? SPD_L("实时估算中", "live estimate") : (live.statusText || "")) : "";
+    /* v401（§24）：count 并入标题行（ltitle 后、live 徽标前），文案去「本期有效」前缀；
+     * miss 提示仍随 count 块 wrap 换行（.zu-sv3-count-miss flex-basis:100%）。
+     * turns/missN 随之提前到此（原在分布构建段）；空态分支不拼 count（models/overall 判空） */
+    var missN = an.selMissing && an.selMissing.length ? an.selMissing.length : 0;
+    var turns = spdNum(overall ? overall.turns : 0);
+    var countRow = '<div class="zu-sv3-count">' + SPD3_SVG_CUBE + "<span>" +
+      spdEsc(SPD_L(models.length + " 个模型 · " + turns + " 轮",
+        models.length + " models · " + turns + " turns")) + "</span>" +
+      (missN ? '<em class="zu-sv3-count-miss">' + spdEsc(SPD_L("已选模型中 " + missN + " 个在当前范围无有效记录",
+        missN + " selected models have no valid records in this range")) + "</em>" : "") + "</div>";
     var headRow = '<div class="zu-sv3-title-row"><span class="zu-sv3-ltitle">' + spdEsc(spd3LeftTitle(an)) + "</span>" +
+      (models.length && overall ? countRow : "") +
       (liveTxt ? '<span class="zu-sv3-sub">' + spdEsc(liveTxt) + "</span>" : "") + "</div>";
     var stats = '<div class="zu-sv3-stats">' +
       spd3StatHTML(SPD_L("峰值", "Peak"), an.peak, dayLbl ? SPD_L("最高日均", "Best daily") : "") +
@@ -303,7 +314,6 @@
      * 表列共用 spd3PctTxt，极小占比显 <0.1% 不显 0%）。dbar aria 简化为概况
      * （PRD 6.7：完整数据由下方表格承载），段 title 保留。 */
     var shareSorted = models.slice().sort(function (a, b) { return (b.share || 0) - (a.share || 0); });
-    var turns = spdNum(overall.turns);
     var TOP_SEGS = 6, totalN = 0, tni;
     for (tni = 0; tni < models.length; tni++) totalN += models[tni].n || 0;
     var bar = "";
@@ -348,9 +358,8 @@
     var top6Pct = 0;
     for (var t6 = 0; t6 < Math.min(6, shareSorted.length); t6++) top6Pct += (shareSorted[t6].share || 0) * 100;
     top6Pct = Math.round(top6Pct);
-    var missN = an.selMissing && an.selMissing.length ? an.selMissing.length : 0;
     /* v396 §19：单模型分布块后保留「有效输出」kv（fmtTok 在场才显示，绝不虚构）；
-     * 「请求轮次」已由 count 行承载不再单列；多模型态不追加本行。 */
+     * 「请求轮次」已由 count 行（v401 起在标题行）承载不再单列；多模型态不追加本行。 */
     var outKv = "";
     if (models.length === 1 && typeof fmtTok === "function") {
       outKv = '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("有效输出", "Effective output")) + "</i><b>" +
@@ -359,11 +368,6 @@
     return '<div class="zu-sv3-left">' + headRow +
       spd3MainNumHTML(overall.v) +
       (bd ? spd3BandHTML(bd) : "") +
-      '<div class="zu-sv3-count">' + SPD3_SVG_CUBE + "<span>" +
-      spdEsc(SPD_L("本期有效 " + models.length + " 个模型 · " + turns + " 轮",
-        models.length + " active models · " + turns + " turns")) + "</span>" +
-      (missN ? '<em class="zu-sv3-count-miss">' + spdEsc(SPD_L("已选模型中 " + missN + " 个在当前范围无有效记录",
-        missN + " selected models have no valid records in this range")) + "</em>" : "") + "</div>" +
       '<div class="zu-sv3-dist-h">' + spdEsc(SPD_L("所选模型分布 · 按请求数", "Selected models · by requests")) + "</div>" +
       '<div class="zu-sv3-dbar" role="img" aria-label="' +
       spdEsc(SPD_L("模型分布：" + models.length + " 个模型，前 " + Math.min(6, models.length) + " 占 " + top6Pct + "%",
@@ -550,10 +554,12 @@
         "border:1px solid var(--color-popover-border,rgba(255,255,255,.16));border-radius:999px;padding:2px 10px;" +
         "white-space:nowrap;align-self:flex-start}" +
       ".zu-light .zu-sv3-root .zu-sv3-band{border-color:rgba(15,23,42,.16)}" +
-      /* v396 §19：.zu-sv3-model 单行胶囊随单模型同构分布块退役（CSS 与 spd3DotAndName 一并删除） */
-      ".zu-sv3-root .zu-sv3-count{display:flex;align-items:center;flex-wrap:wrap;gap:4px 6px;margin-top:8px;min-width:0;" +
+      /* v396 §19：.zu-sv3-model 单行胶囊随单模型同构分布块退役（CSS 与 spd3DotAndName 一并删除）；
+       * v401 §24：count 并入标题行（去 margin-top，独立行退役；wrap 保留供 miss 提示换行） */
+      ".zu-sv3-root .zu-sv3-count{display:flex;align-items:center;flex-wrap:wrap;gap:4px 6px;min-width:0;" +
         "font-size:calc(var(--ui-font-size,14px) - 1px);font-weight:600}" +
       ".zu-sv3-root .zu-sv3-count svg{flex:0 0 auto;opacity:.85}" +
+      ".zu-sv3-root .zu-sv3-count>span{white-space:nowrap}" +
       /* §11.3：selMissing 非空时计数行下的无有效记录提示（整行小字） */
       ".zu-sv3-root .zu-sv3-count-miss{flex:1 1 100%;font-style:normal;font-weight:400;" +
         "font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
