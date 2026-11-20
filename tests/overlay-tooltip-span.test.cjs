@@ -45,7 +45,7 @@ function fixture() {
 test('tooltip uses supplied weighted rate and complete local date ranges in both languages', () => {
   for (const lang of ['zh', 'en']) {
     const tips = render(fixture(), lang);
-    const turn = tips.find(tip => tip.includes('zu-stat-tip--turn'));
+    const turn = tips.find(tip => tip.includes('class="zu-stat-tip zu-stat-tip--turn"'));
     // v299：速度值经 TPS_BANDS 档位色强调（<b class="ok"> 文字色，无背景胶囊）
     assert.match(turn, /<b class="ok">102\.2<\/b> <small>t\/s<\/small>/);
     assert.doesNotMatch(turn, /27\.9 (?:tok|t)\/s/);
@@ -55,7 +55,7 @@ test('tooltip uses supplied weighted rate and complete local date ranges in both
     // v299：本轮 tip 内联 <style> 含 .zu-pj-mhead 选择器文本——断言先剥 style 块（既有反污染模式）
     const noStyle = s => s.replace(/<style>[\s\S]*?<\/style>/g, '');
     assert.doesNotMatch(noStyle(turn), /模型明细|zu-pj-mhead/);
-    assert.doesNotMatch(noStyle(tips.find(tip => tip.includes('zu-stat-tip--today'))), /模型明细|zu-pj-mhead/);
+    assert.doesNotMatch(noStyle(tips.find(tip => tip.includes('class="zu-stat-tip zu-stat-tip--today"'))), /模型明细|zu-pj-mhead/);
     // v210：全部时间范围行精确到秒（v166 先行会话/项目累计，本轮/今日合计/速率最近一段跟进；
     // 本用例未开 proj 开关，项目累计 tip 不渲染，共 4 处）
     assert.equal(tips.filter(tip => tip.includes('2026-10-19 13:42:00 — 2026-10-19 13:43:00')).length, 4);
@@ -67,7 +67,7 @@ test('old remote payloads and unavailable rates do not fall back to total durati
   for (const tps of [undefined, null, 0, NaN, Infinity, '102.2']) {
     const data = fixture();
     data.last_turn.tps = tps;
-    const turn = render(data).find(tip => tip.includes('zu-stat-tip--turn'));
+    const turn = render(data).find(tip => tip.includes('class="zu-stat-tip zu-stat-tip--turn"'));
     assert.doesNotMatch(turn, /27\.9 tok\/s/);
     assert.match(turn, /zu-stat-tip--turn/);
     assert.match(turn, /时间范围/);
@@ -94,8 +94,7 @@ test('v214 project total card: KPI/details/scale/models table/time, bilingual', 
     models: [{ model: 'GLM-5.3', requests: 40, total: 6000, cost_usd: 12, avg_tps: 66.6 }, { model: 'gpt-6.1-sol', requests: 5, total: 700, cost_usd: 0.5, avg_tps: 44.4 }],
   };
   const zh = render(data, 'zh', null, { proj: true }).find(tip => tip.includes('zu-project-tip'));
-  console.error('SPANPJ:' + String(zh).slice(0, 700));
-  const strip = s => s.replace(/<[^>]+>/g, '');
+  const strip = s => s.replace(/<div class="zu-md-sub"[\s\S]*?<\/div>/g, '').replace(/<[^>]+>/g, '');
   // 标题与统计范围（v331：范围胶囊由右上双范围 Tab 替代，默认选中当前项目）
   assert.match(zh, /zu-pj-title">项目累计</);
   assert.match(zh, /zu-pj-tabs/);
@@ -136,7 +135,7 @@ test('v163 session total card: per-model table rows from snapshot models', () =>
   const data = fixture();
   data.session.total = 1250300;
   data.session.models = [{ model: 'GLM-5.3', requests: 180, total: 1200000 }, { model: '', requests: 7, total: 300 }];
-  const zh = render(data, 'zh', null, { proj: false }).find(tip => tip.includes('zu-stat-tip--session'));
+  const zh = render(data, 'zh', null, { proj: false }).find(tip => tip.includes('class="zu-stat-tip zu-stat-tip--session"'));
   const strip = s => s.replace(/<[^>]+>/g, '');
   assert.match(strip(zh), /总用量\s*1250300/);
   assert.match(zh, /zu-stat-time/);
@@ -144,7 +143,7 @@ test('v163 session total card: per-model table rows from snapshot models', () =>
   assert.match(strip(zh), /GLM-5\.3\s*1200000\s*180/);
   assert.match(strip(zh), /未知模型\s*300\s*7/);
   // 无 models 字段（轻量行/旧快照）：模型明细块降级但不报错
-  const bare = render(fixture(), 'zh', null, { proj: false }).find(tip => tip.includes('zu-stat-tip--session'));
+  const bare = render(fixture(), 'zh', null, { proj: false }).find(tip => tip.includes('class="zu-stat-tip zu-stat-tip--session"'));
   assert.ok(bare, 'session card renders');
   assert.doesNotMatch(bare, /未知模型/);
 });
@@ -165,13 +164,13 @@ test('v246 turn/today cards lead with total tokens and the tools table dims sub-
     { name: 'Read', count: 1, duration_ms: 1500, errors: 0 },
   ] };
   const strip = s => s.replace(/<[^>]+>/g, '');
-  const turn = render(data).find(tip => tip.includes('zu-stat-tip--turn'));
+  const turn = render(data).find(tip => tip.includes('class="zu-stat-tip zu-stat-tip--turn"'));
   assert.match(strip(turn), /总用量\s*752/, '本轮首格=总用量（回退「请求次数」即红）');
   // v299.1：文案再精简为「缓存 N%」内联在输入值右侧，今日卡维持「缓存命中率」不变
   assert.match(turn, /缓存\s*83%/, '本轮输入标签行右侧=命中率（v299.1 无空格间距由 margin 提供）');
   // v302：请求次数回归为行二 KPI 首格（用户规格：请求次数|请求轮数|请求会话）
   assert.match(strip(turn), /请求次数2请求轮数/);
-  const today = render(data).find(tip => tip.includes('zu-stat-tip--today'));
+  const today = render(data).find(tip => tip.includes('class="zu-stat-tip zu-stat-tip--today"'));
   assert.match(strip(today), /总用量\s*900/, '今日首格=总用量');
   assert.match(today, /缓存命中率 75%/, '今日命中率=输入格 dsub 副行（v301 三行 KPI 同本轮形态）');
   const tools = render(data, 'zh', null, { tools: true }).find(tip => tip.includes('zu-stat-tip--tools'));

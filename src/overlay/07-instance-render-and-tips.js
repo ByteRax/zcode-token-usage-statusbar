@@ -177,16 +177,30 @@
      * 重编的数据源快照（下一帧 render 以新数据覆盖）。specs/all-projects-usage.md */
     var projTipScope = "cur", projTipProjExpanded = false, projTipPj = null;
     function escAttr(s) { return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+    /* v412 模型行首列副行（速度·费用）：节点常驻 HTML，full/compact 由 CSS 隐藏、
+     * narrow/tiny（速度/费用列收起时）显示——列收缩是展示调整，数据不丢。
+     * 段值缺省各自省略，全缺省不产节点；title 带全文兜底。 */
+    function mdSubHtml(speedTxt, costUsd) {
+      var raw = [];
+      if (speedTxt && speedTxt !== "—") raw.push(speedTxt);
+      if (state.cost && typeof costUsd === "number" && isFinite(costUsd)) raw.push(fmtMoney(costUsd));
+      if (!raw.length) return "";
+      /* 正文用 ttEsc 串、title 用未转义原值一次 escAttr——fmtMoney 可产 "<¥0.01"，
+       * 对已转义串再 escAttr 会双重转义（&amp;lt;），title 悬停显示错文本 */
+      return '<div class="zu-md-sub" title="' + escAttr(raw.join(" · ")) + '">' + raw.map(ttEsc).join(" · ") + '</div>';
+    }
     function pjRowsHTML(list, full) {
       var showCost = !!state.cost;   // ⚙ 开关关：费用列整体不渲染（与费用行同语义）
+      /* v412 列类 + tiny 卡片化字段名（data-l 经 CSS ::before 呈现） */
+      var lb = { tok: escAttr(L("Token 用量", "Tokens")), req: escAttr(L("请求次数", "Requests")), cost: escAttr(L("费用", "Cost")) };
       return list.map(function (m1) {
         var name = m1.model || L("未知模型", "unknown");
         return '<tr>' +
-          '<td class="zu-pj-mname zu-model-fit"' + (full ? ' title="' + escAttr(name) + '"' : '') + '>' + ttEsc(name) + '</td>' +
-          '<td>' + ttEsc(fmt(m1.total || 0)) + '</td>' +
-          '<td>' + ttEsc(countFmt(m1.requests || 0)) + '</td>' +
-          '<td>' + ttEsc(modelTpsText(m1)) + '</td>' +
-          (showCost ? '<td>' + (typeof m1.cost_usd === "number" && isFinite(m1.cost_usd) ? ttEsc(fmtMoney(m1.cost_usd)) : "—") + '</td>' : "") +
+          '<td class="zu-c-name zu-pj-mname zu-model-fit"' + (full ? ' title="' + escAttr(name) + '"' : '') + '>' + ttEsc(name) + mdSubHtml(modelTpsText(m1), m1.cost_usd) + '</td>' +
+          '<td class="zu-c-tok" data-l="' + lb.tok + '">' + ttEsc(fmt(m1.total || 0)) + '</td>' +
+          '<td class="zu-c-req" data-l="' + lb.req + '">' + ttEsc(countFmt(m1.requests || 0)) + '</td>' +
+          '<td class="zu-c-spd">' + ttEsc(modelTpsText(m1)) + '</td>' +
+          (showCost ? '<td class="zu-c-cost" data-l="' + lb.cost + '">' + (typeof m1.cost_usd === "number" && isFinite(m1.cost_usd) ? ttEsc(fmtMoney(m1.cost_usd)) : "—") + '</td>' : "") +
           '</tr>';
       }).join("");
     }
@@ -204,14 +218,15 @@
     }
     function pjProjRowsHTML(list) {
       var showCost = !!state.cost;
+      var lb = { tok: escAttr(L("Token 用量", "Tokens")), req: escAttr(L("请求次数", "Requests")), cost: escAttr(L("费用", "Cost")) };
       return list.map(function (p1) {
         var name = p1.unattributed ? L("未归属项目", "Unattributed")
           : (p1.name || p1.directory || L("未知项目", "Unknown"));
         return '<tr>' +
-          '<td class="zu-pj-mname" title="' + escAttr(p1.directory || name) + '">' + ttEsc(name) + '</td>' +
-          '<td>' + ttEsc(fmt(p1.total || 0)) + '</td>' +
-          '<td>' + ttEsc(countFmt(p1.requests || 0)) + '</td>' +
-          (showCost ? '<td>' + (typeof p1.cost_usd === "number" && isFinite(p1.cost_usd) ? ttEsc(fmtMoney(p1.cost_usd)) : "—") + '</td>' : "") +
+          '<td class="zu-c-name zu-pj-mname" title="' + escAttr(p1.directory || name) + '">' + ttEsc(name) + '</td>' +
+          '<td class="zu-c-tok" data-l="' + lb.tok + '">' + ttEsc(fmt(p1.total || 0)) + '</td>' +
+          '<td class="zu-c-req" data-l="' + lb.req + '">' + ttEsc(countFmt(p1.requests || 0)) + '</td>' +
+          (showCost ? '<td class="zu-c-cost" data-l="' + lb.cost + '">' + (typeof p1.cost_usd === "number" && isFinite(p1.cost_usd) ? ttEsc(fmtMoney(p1.cost_usd)) : "—") + '</td>' : "") +
           '</tr>';
       }).join("");
     }
@@ -235,7 +250,7 @@
         '</div></div>';
       if (isAll && !all) {   // v331：缺 all_projects 字段（旧主进程/旧 Python 帧）显式不可用，不冒充
         return statCompactStyle("project") +
-          '<div class="zu-project-tip zu-stat-tip zu-stat-tip--project" data-key="' + escAttr(ownerKey) + '">' + head +
+          '<div class="zu-project-tip zu-stat-tip zu-stat-tip--project" data-zu-w="' + STAT_TIP_W.project + '" data-key="' + escAttr(ownerKey) + '">' + head +
           '<div class="zu-stat-note">' + ttEsc(L("全部项目统计暂不可用", "All-projects stats unavailable")) + '</div></div>';
       }
       var v = all || pj;   // cur=pj；all=全部项目聚合（字段名与 project 行同构，KPI/明细/时间共用）
@@ -283,9 +298,9 @@
         '<div class="zu-pj-models">' +
         (v.projects_truncated ? '<div class="zu-pj-mhead"><div class="zu-pj-morder zu-pj-mnote">' + ttEsc(L("已截断，共 " + (v.projects_total || plist.length) + " 项", "truncated, " + (v.projects_total || plist.length) + " total")) + '</div></div>' : "") +
         (plist.length
-          ? '<table class="zu-pj-table"><thead><tr><th>' + ttEsc(L("项目明细", "Projects")) + '</th>' +
-            '<th>' + ttEsc(L("Token 用量 ↓", "Tokens ↓")) + '</th><th>' + ttEsc(L("请求次数", "Requests")) + '</th>' +
-            (showCost ? '<th>' + ttEsc(L("预估费用", "Est. cost")) + '</th>' : "") + '</tr></thead>' +
+          ? '<table class="zu-pj-table"><thead><tr><th class="zu-c-name">' + ttEsc(L("项目明细", "Projects")) + '</th>' +
+            '<th class="zu-c-tok">' + ttEsc(L("Token 用量 ↓", "Tokens ↓")) + '</th><th class="zu-c-req">' + ttEsc(L("请求次数", "Requests")) + '</th>' +
+            (showCost ? '<th class="zu-c-cost">' + ttEsc(L("预估费用", "Est. cost")) + '</th>' : "") + '</tr></thead>' +
             '<tbody data-zu-pj-projects>' + pjProjRowsHTML(pjProjRowsFor(v, projTipProjExpanded)) + '</tbody></table>' +
             (plist.length > 5
               ? '<button type="button" class="zu-pj-more" data-kind="proj" data-key="' + escAttr(ownerKey) + '" aria-expanded="' + (projTipProjExpanded ? "true" : "false") + '">' +
@@ -296,13 +311,14 @@
       /* v303 根类并入统计卡家族：statCompactStyle("project") :has 作用域（450 宽/
        * 自适应高/共享规则）在此生效；zu-project-tip 保留（fxq 计价范围气泡与测试锚点） */
       return statCompactStyle("project") +
-        '<div class="zu-project-tip zu-stat-tip zu-stat-tip--project" data-key="' + escAttr(ownerKey) + '">' +
+        '<div class="zu-project-tip zu-stat-tip zu-stat-tip--project" data-zu-w="' + STAT_TIP_W.project + '" data-key="' + escAttr(ownerKey) + '">' +
         head +
         /* v303 项目累计紧凑化（用户 /goal，同本轮/会话/今日四行 KPI 形态）：
          * ①总用量|输入(缓存 N% 徽标随标签；v331 副行「含缓存」)|输出(含思考)
          * ②请求次数|请求轮数|请求会话 ③平均耗时|平均延迟|总耗时
-         * ④平均输出速度(加权均 avg_tps 档色)|预估费用（>0 门控，缺失不伪造 0s/0%） */
-        '<div class="zu-turn-kpis">' +
+         * ④平均输出速度(加权均 avg_tps 档色)|预估费用（>0 门控，缺失不伪造 0s/0%）
+         * v412：zu-krow-total=行一标记类（specs/stat-tooltip-responsive.md §4） */
+        '<div class="zu-turn-kpis zu-krow-total">' +
           statKpi(kpiIco("total") + L("总用量", "Total tokens"), ttEsc(fmt(v.total || 0)), turnVBkt(fmt(v.total || 0))) +
           statKpi(kpiIco("input") + '<span class="zu-kpi-label">' + L("输入", "Input") + '</span>' +
             (hitPct >= 0 ? '<span class="hit zu-turn-hit">' + ttEsc(L("缓存", "cache ") + hitPct + "%") + '</span>' : ""),
@@ -332,10 +348,10 @@
                 [(v.tool_calls ? ttEsc(L("工具调用 ", "tools ") + countFmt(v.tool_calls) + L(" 次", " calls")) : ""),
                  (v.retries ? ttEsc(L("重试 ", "retries ") + countFmt(v.retries) + L(" 次", " times")) : "")].filter(Boolean).join('<i class="zu-turn-sep">·</i>') + '</div></div>'
               : "") +
-            '<table class="zu-pj-table"><thead><tr><th>' + ttEsc(L("模型明细", "Models")) + '</th>' +
-            '<th>' + ttEsc(L("Token 用量 ↓", "Tokens ↓")) + '</th><th>' + ttEsc(L("请求次数", "Requests")) + '</th>' +
-            '<th>' + ttEsc(L("平均速度", "Avg speed")) + '</th>' +
-            (showCost ? '<th>' + ttEsc(L("预估费用", "Est. cost")) + '</th>' : "") + '</tr></thead>' +
+            '<table class="zu-pj-table"><thead><tr><th class="zu-c-name">' + ttEsc(L("模型明细", "Models")) + '</th>' +
+            '<th class="zu-c-tok">' + ttEsc(L("Token 用量 ↓", "Tokens ↓")) + '</th><th class="zu-c-req">' + ttEsc(L("请求次数", "Requests")) + '</th>' +
+            '<th class="zu-c-spd">' + ttEsc(L("平均速度", "Avg speed")) + '</th>' +
+            (showCost ? '<th class="zu-c-cost">' + ttEsc(L("预估费用", "Est. cost")) + '</th>' : "") + '</tr></thead>' +
             '<tbody data-zu-pj-rows>' + pjRowsHTML(shown, true) + '</tbody></table>' +
             (fullList.length > 6
               ? '<button type="button" class="zu-pj-more" data-key="' + escAttr(ownerKey) + '" aria-expanded="' + (expanded ? "true" : "false") + '" aria-controls="zu-pj-rows">' +
@@ -401,6 +417,85 @@
       if (tipFor) projTipPositionGrowUp(tipFor, prevBottom);
       return true;
     }
+    /* v412 统计卡理想宽度（specs/stat-tooltip-responsive.md）：每卡一份，实际宽恒为
+     * min(理想宽, calc(100vw - 16px))；tools 卡不在响应式范围保持 450。 */
+    var STAT_TIP_W = { turn: 540, session: 600, today: 600, project: 760, tools: 450 };
+    /* v412 四卡共享响应式核心：模式规则（data-zu-mode 由 08 positionTip 按卡根实测宽
+     * 写入，full/compact/narrow/tiny，零新增监听）、模型明细三模式（full/compact 五列、
+     * narrow 隐速度/费用列显行内副行、tiny 卡片化）、页脚换行、项目名换行。作用域恒
+     * :is 锚定四卡，tools/速度卡绝不波及。@media(max-width:375px) 兜底「打开中窗口
+     * 骤缩、模式属性陈旧」：卡宽=min(理想宽,vw-16)，vw<376 ⟺ 卡宽<360，视口断点与
+     * 卡宽断点一一对应。 */
+    function statResponsiveCore() {
+      var C = ':is(.zu-stat-tip--turn,.zu-stat-tip--session,.zu-stat-tip--today,.zu-stat-tip--project)';
+      var M = function (m) { return C + '[data-zu-mode="' + m + '"]'; };
+      var N = M("narrow"), T = M("tiny");
+      /* v412.1 级联纪律（review 修复）：tiny 与 @media 兜底是同一套布局的两条触发路径
+       * （tiny=模式属性；@media=属性陈旧时的视口安全档），规则集必须同构，且每条都要以
+       * 特异性+文档序压过本 <style> 串后半的变体规则（首列 100/150px 帽 (0,4,1)/(0,3,1)、
+       * 变体 td padding (0,3,1)、变体三列 KPI (0,2,0)）——首列帽解除与列隐藏统一走
+       * 「.zu-turn-models/.zu-pj-table 前缀 + td.zu-c-* 加类 + tbody 中缀」高特异性形态，
+       * 列隐藏恒排在 td 变形规则之后（同特异性时后写胜）。 */
+      function tinySet(S, statTd, pjTd, statTd1, pjTd1, statHide, pjHide) {
+        return '' +
+          S + ' .zu-turn-kpis.zu-turn-kpis{grid-template-columns:repeat(2,1fr)!important}' +
+          S + ' .zu-krow-total .zu-stat-kpi:first-child{grid-column:1/-1!important}' +
+          S + ' .zu-krow-total .zu-stat-kpi:nth-child(2){border-left:0!important;padding-left:0!important}' +
+          S + ' .zu-turn-kpis .zu-stat-kpi:nth-child(2n+1){border-left:0!important;padding-left:0!important}' +
+          S + ' .zu-turn-kpis--trio .zu-stat-kpi:nth-child(3){grid-column:1/-1!important}' +
+          S + ' .zu-stat-time span{flex:0 0 100%!important;white-space:normal!important}' +
+          S + ' .zu-md-sub{display:block!important}' +
+          S + ' .zu-stat-table,' + S + ' table.zu-pj-table{display:block!important;width:100%!important}' +
+          S + ' .zu-stat-table thead,' + S + ' table.zu-pj-table thead{display:none!important}' +
+          S + ' .zu-stat-table tbody,' + S + ' table.zu-pj-table tbody{display:block!important}' +
+          S + ' .zu-stat-table tbody tr,' + S + ' table.zu-pj-table tbody tr{display:block!important;padding:6px 0!important;border-top:1px solid var(--color-popover-border,rgba(255,255,255,.08))!important}' +
+          S + ' .zu-stat-table tbody tr:first-child,' + S + ' table.zu-pj-table tbody tr:first-child{border-top:0!important;padding-top:0!important}' +
+          statTd + '{display:flex!important;justify-content:space-between!important;align-items:baseline!important;gap:10px!important;border-top:0!important;height:auto!important;padding:2px 0!important;max-width:none!important}' +
+          pjTd + '{display:flex!important;justify-content:space-between!important;align-items:baseline!important;gap:10px!important;border-top:0!important;height:auto!important;padding:2px 0!important;max-width:none!important}' +
+          statTd1 + pjTd1 + '{display:block!important;max-width:none!important}' +
+          statHide + '{display:none!important}' +
+          pjHide + '{display:none!important}' +
+          S + ' td[data-l]::before{content:attr(data-l);flex:none!important;color:var(--color-tooltip-tag-foreground,#a6a6a6)!important;font-weight:400!important;font-size:calc(var(--ui-font-size,14px) - 3px)!important}' +
+          '.zusage-tip-root.zu-light ' + S + ' .zu-stat-table tbody tr,.zusage-tip-root.zu-light ' + S + ' table.zu-pj-table tbody tr{border-top-color:rgba(0,0,0,.08)!important}';
+      }
+      return '' +
+        /* 模型明细行内副行（速度·费用）：构建时常驻 HTML，full/compact 隐藏、narrow 起显示 */
+        C + ' .zu-md-sub{display:none;font-size:calc(var(--ui-font-size,14px) - 3px)!important;font-weight:400!important;color:var(--color-tooltip-tag-foreground,#a6a6a6)!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;margin-top:1px!important;line-height:1.4!important}' +
+        /* narrow：行一改「总用量整行 + 输入/输出双列」；页脚区间整行换行 */
+        N + ' .zu-krow-total{grid-template-columns:repeat(2,1fr)!important}' +
+        N + ' .zu-krow-total .zu-stat-kpi:first-child{grid-column:1/-1!important}' +
+        N + ' .zu-krow-total .zu-stat-kpi:nth-child(2){border-left:0!important;padding-left:0!important}' +
+        N + ' .zu-stat-time span{flex:0 0 100%!important}' +
+        /* narrow：模型/项目表 3 列——速度、费用列隐藏，数据由首列副行承载；
+         * 首列帽放宽到 170px 给副行留宽（压过变体 100/150px 帽，特异性高一档） */
+        N + ' .zu-c-spd,' + N + ' .zu-c-cost{display:none!important}' +
+        N + ' .zu-md-sub{display:block!important}' +
+        N + ' .zu-turn-models .zu-stat-table td:first-child,' + N + ' .zu-turn-models .zu-stat-table th:first-child{max-width:170px!important}' +
+        N + ' .zu-pj-table td:first-child,' + N + ' .zu-pj-table th:first-child{max-width:170px!important}' +
+        /* narrow：项目名换行到标题第二行独占整行，Tab 保持第一行右侧 */
+        N + ' .zu-pj-title,.zu-stat-tip--project[data-zu-mode="tiny"] .zu-pj-title{flex-wrap:wrap!important}' +
+        N + ' .zu-pj-pname,.zu-stat-tip--project[data-zu-mode="tiny"] .zu-pj-pname{flex:0 0 100%!important}' +
+        /* tiny：KPI 两列（总用量整行）、模型/项目表卡片化（thead 收起、行成卡、
+         * 值行「字段名…值」两端对齐、名称行整行含副行）、速度/费用列隐藏改副行承载 */
+        tinySet(T,
+          T + ' .zu-turn-models .zu-stat-table tbody td',
+          T + ' table.zu-pj-table tbody td',
+          T + ' .zu-turn-models .zu-stat-table tbody td:first-child,',
+          T + ' table.zu-pj-table tbody td:first-child',
+          T + ' .zu-turn-models .zu-stat-table tbody td.zu-c-spd,' + T + ' .zu-turn-models .zu-stat-table tbody td.zu-c-cost',
+          T + ' table.zu-pj-table tbody td.zu-c-spd,' + T + ' table.zu-pj-table tbody td.zu-c-cost') +
+        /* @media 兜底（模式属性陈旧时的安全档）：与 tiny 段同构的规则集、不带模式属性
+         * 限定（属性可能停留在旧档）；特异性按变体规则逐一核对（KPI 双类、tbody 中缀） */
+        '@media (max-width:375px){' +
+        tinySet(C,
+          C + ' .zu-turn-models .zu-stat-table tbody td',
+          C + ' .zu-pj-table.zu-pj-table tbody td',
+          C + ' .zu-turn-models .zu-stat-table tbody td:first-child,',
+          C + ' .zu-pj-table.zu-pj-table tbody td:first-child',
+          C + ' .zu-turn-models .zu-stat-table tbody td.zu-c-spd,' + C + ' .zu-turn-models .zu-stat-table tbody td.zu-c-cost',
+          C + ' .zu-pj-table.zu-pj-table tbody td.zu-c-spd,' + C + ' .zu-pj-table.zu-pj-table tbody td.zu-c-cost') +
+        '}';
+    }
     /* v215 统计卡公共片段（六卡共用）：head/KPI/明细/规模/表格/时间。数据全部真实字段。 */
     function statHead(title, scope, name, icoHtml) {
       /* v230.1 名称与标题垂直居中：带名称时标题容器切 flex，名称作为子项中心对齐；
@@ -412,13 +507,18 @@
     /* v300：本轮/会话累计共用紧凑布局作用域 CSS——同一份规则按卡变体替换 :has 作用域类；
      * 渲染串内联（速度卡同款先例），随内容存在、签名幂等重建不叠加 */
     function statCompactStyle(variant) {
-      return '<style>' +
+      /* v412 宽度按 STAT_TIP_W 取每卡理想宽；.tbody 滚动条从隐藏改可见细条——隐藏滚动
+       * 条的内滚区在低高度窗口等于「内容被裁切且无法访问」（specs/stat-tooltip-responsive.md §3）。
+       * tools 卡不在响应式范围：无 zu-c-*、zu-md-sub、zu-krow-total 消费，不注入共享核心。 */
+      var w = STAT_TIP_W[variant] || 450;
+      return '<style>' + (variant === "tools" ? "" : statResponsiveCore()) +
 
-          '.zusage-tip-root:has(.zu-stat-tip--' + variant + '){width:min(450px,calc(100vw - 16px))!important;max-width:min(450px,calc(100vw - 16px))!important;max-height:calc(100vh - 24px)!important;box-sizing:border-box!important;overflow:hidden!important}' +
+          '.zusage-tip-root:has(.zu-stat-tip--' + variant + '){width:min(' + w + 'px,calc(100vw - 16px))!important;max-width:min(' + w + 'px,calc(100vw - 16px))!important;max-height:calc(100vh - 24px)!important;box-sizing:border-box!important;overflow:hidden!important}' +
           /* v303.1 五卡 padding 统一：内容边距只吃根 .tip 的 10px 13px（与速度卡一致），
            * .tbody 不再叠第二层（此前 9px 12px 叠加成 19/25 双层，与速度卡不一致） */
-          '.zusage-tip-root:has(.zu-stat-tip--' + variant + ') .tbody{box-sizing:border-box!important;overflow-y:auto!important;scrollbar-gutter:auto!important;scrollbar-width:none!important;padding:0!important}' +
-      '.zusage-tip-root:has(.zu-stat-tip--' + variant + ') .tbody::-webkit-scrollbar{display:none!important}' +
+          '.zusage-tip-root:has(.zu-stat-tip--' + variant + ') .tbody{box-sizing:border-box!important;overflow-y:auto!important;scrollbar-gutter:auto!important;scrollbar-width:thin!important;padding:0!important}' +
+      '.zusage-tip-root:has(.zu-stat-tip--' + variant + ') .tbody::-webkit-scrollbar{width:8px!important;height:8px!important}' +
+      '.zusage-tip-root:has(.zu-stat-tip--' + variant + ') .tbody::-webkit-scrollbar-thumb{background:var(--color-border,rgba(128,128,128,.45))!important;border-radius:4px!important}' +
           '' + '.zu-stat-tip--' + variant + '{box-sizing:border-box!important;display:flex!important;flex-direction:column!important;gap:3px!important;min-height:0!important}' +
           '' + '.zu-stat-tip--' + variant + ' .zu-stat-head{margin:0!important}' +
           '' + '.zu-stat-tip--' + variant + ' .zu-stat-title{font-size:calc(var(--ui-font-size,14px) + 3px)!important}' +
@@ -480,7 +580,8 @@
             : "") +
           (variant === "project"
             ? /* v303 项目卡专属：旧分区 margin 交给 flex gap；模型表为 840px 宽卡设计，
-               * 450px 下收紧内距；名称列上限同步收窄；展开按钮压缩 */
+               * v303-v386 曾压 450px 内距（v412 起理想宽 760，收紧值留作窄档兜底）；
+               * 名称列上限同步收窄；展开按钮压缩 */
               '.zu-stat-tip--project .zu-pj-head{margin-bottom:0!important}' +
               '.zu-stat-tip--project .zu-pj-table th{padding:1px 3px 4px!important;white-space:nowrap!important}' +
               '.zu-stat-tip--project .zu-pj-table td{padding:3px!important;height:auto!important}' +
@@ -507,8 +608,13 @@
     function statKpi(k, vHtml, extraCls, sub) {
       /* v299：第四参 sub=KPI 辅助行 HTML（含思考挂到输出格下，不占第四列）；
        * v299.1：extraCls 改挂 .zu-stat-v（长度分桶缩字号锚在值元素上，此前挂外层
-       * div 导致分桶 CSS 永不命中）；既有其它调用点均 ≤2 参，行为不变 */
-      return '<div class="zu-stat-kpi"><div class="zu-stat-k">' + k + '</div><div class="zu-stat-v' + (extraCls ? " " + extraCls : "") + '">' + vHtml + '</div>' +
+       * div 导致分桶 CSS 永不命中）；既有其它调用点均 ≤2 参，行为不变。
+       * v412：值节点补 title 完整值兜底（缩字/降列后仍可能省略号截断，任何模式
+       * 悬停可达完整值；标签剥除+实体还原后再 escAttr，避免双重转义）。 */
+      var plain = String(vHtml == null ? "" : vHtml).replace(/<[^>]*>/g, "")
+        .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").trim();
+      return '<div class="zu-stat-kpi"><div class="zu-stat-k">' + k + '</div><div class="zu-stat-v' + (extraCls ? " " + extraCls : "") + '"' +
+        (plain ? ' title="' + escAttr(plain) + '"' : "") + '>' + vHtml + '</div>' +
         (sub ? '<div class="zu-stat-dsub">' + sub + '</div>' : "") + '</div>';
     }
     function statDetail(k, dv, sub) {
@@ -550,24 +656,32 @@
      * 空明细/旧快照缺字段整块不渲染。精简摘要的 rt-models 行式（modelsBlock）保留。 */
     function statModelsTable(models, headRight, tableOnly) {
       if (!models || !models.length) return "";
-      var heads = [L("模型", "Model"), L("Token 用量 ↓", "Tokens ↓"), L("请求次数", "Requests"), L("平均速度", "Avg speed")];
-      if (state.cost) heads.push(L("预估费用", "Est. cost"));
+      /* v412：改本构建器直出表格（不再借 statTable）——th/td 带列类（zu-c-*）与
+       * tiny 卡片化字段名（data-l），首列副行承载 narrow 档收起的速度/费用；
+       * 排序不变（副本按 total 降序）。tools 卡仍走 statTable，不受影响。 */
+      var heads = '<th class="zu-c-name">' + ttEsc(L("模型", "Model")) + '</th>' +
+        '<th class="zu-c-tok">' + ttEsc(L("Token 用量 ↓", "Tokens ↓")) + '</th>' +
+        '<th class="zu-c-req">' + ttEsc(L("请求次数", "Requests")) + '</th>' +
+        '<th class="zu-c-spd">' + ttEsc(L("平均速度", "Avg speed")) + '</th>' +
+        (state.cost ? '<th class="zu-c-cost">' + ttEsc(L("预估费用", "Est. cost")) + '</th>' : "");
+      var lb = { tok: escAttr(L("Token 用量", "Tokens")), req: escAttr(L("请求次数", "Requests")), cost: escAttr(L("费用", "Cost")) };
       /* v299：headRight=表头行右侧自定义 HTML（本轮卡放工具调用次数；已转义/可信），
        * 缺省/空串维持「按用量排序」，会话/今日调用点不变；
        * tableOnly=只出表格（本轮卡标题行固定在滚动区外、表体独立滚动） */
       var head = tableOnly ? "" :
         '<div class="zu-pj-mhead"><div class="zu-pj-mtitle">' + ttEsc(L("模型明细", "Models")) + '</div><div class="zu-pj-morder">' + (headRight ? headRight : ttEsc(L("按用量排序", "by usage"))) + '</div></div>';
       return head +
-        statTable(heads, models.slice().sort(function (a, b) { return (b.total || 0) - (a.total || 0); }).map(function (m1) {
+        '<table class="zu-stat-table"><thead><tr>' + heads + '</tr></thead><tbody>' +
+        models.slice().sort(function (a, b) { return (b.total || 0) - (a.total || 0); }).map(function (m1) {
           var name = m1.model || L("未知模型", "unknown");
           return '<tr>' +
-            '<td class="zu-pj-mname zu-model-fit" title="' + escAttr(name) + '">' + ttEsc(name) + '</td>' +
-            '<td>' + ttEsc(fmt(m1.total || 0)) + '</td>' +
-            '<td>' + ttEsc(countFmt(m1.requests || 0)) + '</td>' +
-            '<td>' + ttEsc(modelTpsText(m1)) + '</td>' +
-            (state.cost ? '<td>' + (typeof m1.cost_usd === "number" && isFinite(m1.cost_usd) ? ttEsc(fmtMoney(m1.cost_usd)) : "—") + '</td>' : "") +
+            '<td class="zu-c-name zu-pj-mname zu-model-fit" title="' + escAttr(name) + '">' + ttEsc(name) + mdSubHtml(modelTpsText(m1), m1.cost_usd) + '</td>' +
+            '<td class="zu-c-tok" data-l="' + lb.tok + '">' + ttEsc(fmt(m1.total || 0)) + '</td>' +
+            '<td class="zu-c-req" data-l="' + lb.req + '">' + ttEsc(countFmt(m1.requests || 0)) + '</td>' +
+            '<td class="zu-c-spd">' + ttEsc(modelTpsText(m1)) + '</td>' +
+            (state.cost ? '<td class="zu-c-cost" data-l="' + lb.cost + '">' + (typeof m1.cost_usd === "number" && isFinite(m1.cost_usd) ? ttEsc(fmtMoney(m1.cost_usd)) : "—") + '</td>' : "") +
             '</tr>';
-        }).join(""));
+        }).join("") + '</tbody></table>';
     }
     /* v248：KPI 费用 ? 图标随卡携带模型上下文——data-model/data-rates=按用量最多模型、
      * data-mcount=模型数、data-mscope=计价范围名词（气泡多模型时显示「计价范围」行）。
@@ -1002,15 +1116,17 @@
            * ①总用量|输入(缓存命中)|输出(含思考) ②请求次数|请求轮数|请求会话
            * ③平均耗时|平均延迟|总耗时 ④平均输出速度(档位色文字强调)|预估费用；
            * 工具调用并入模型明细标题行右侧；
-           * 模型表独立滚动区（主 tooltip 无滚动条）；时间范围钉底。
+           * 模型表独立滚动区（v412 起 .tbody 超帽时显示细滚动条——隐藏滚动条的内滚区
+           * 已废除）；时间范围钉底。
            * 样式全部经内联 <style> 以 :has(.zu-stat-tip--turn) 作用域——只影响本轮卡，
            * 会话/今日/项目/工具/速度卡与共享 .zu-stat-* 规则零波及（速度卡同款先例）。 */
           "\x01" +
           statCompactStyle("turn") +
-          '<div class="zu-stat-tip zu-stat-tip--turn">' +
+          '<div class="zu-stat-tip zu-stat-tip--turn" data-zu-w="' + STAT_TIP_W.turn + '">' +
           statHead(L("本轮", "Latest turn"), countFmt(lt.requests || 0) + L(" 次请求", " requests")) +
-          /* 行一：总用量 | 输入（缓存命中辅助行）| 输出（含思考辅助行） */
-          '<div class="zu-turn-kpis">' +
+          /* 行一：总用量 | 输入（缓存命中辅助行）| 输出（含思考辅助行）。
+           * v412：zu-krow-total=行一标记类，narrow/tiny 模式据此改「总用量整行+双列」 */
+          '<div class="zu-turn-kpis zu-krow-total">' +
             statKpi(kpiIco("total") + L("总用量", "Total tokens"), ttEsc(fmt(lt.total || 0)), turnVBkt(fmt(lt.total || 0))) +
             /* v299.1（用户规格）：缓存命中率改「缓存 N%」，放「输入」标签行右侧
              * （statKpi 的 k 为 raw HTML；标签行短，徽标空间充裕不再截断） */
@@ -1050,8 +1166,8 @@
               : "") +
           '</div>' +
           /* 模型明细：工具调用/重试/错误并入标题行右侧（原独立 scale 行删除）；
-           * 标题行固定、表格进独立滚动区——多模型超高处区内滚，主 tooltip 无滚动条、
-           * 时间行不挤出、首行模型恒可见 */
+           * 标题行固定、表格进独立滚动区——多模型超高处区内滚（v412 起 .tbody 超帽显示
+           * 细滚动条）、时间行不挤出、首行模型恒可见 */
           ((lt.models && lt.models.length)
             ? '<div class="zu-pj-mhead"><div class="zu-pj-mtitle">' + ttEsc(L("模型明细", "Models")) + '</div><div class="zu-pj-morder">' +
               (turnToolsHtml ? turnToolsHtml : ttEsc(L("按用量排序", "by usage"))) + '</div></div>' +
@@ -1072,15 +1188,15 @@
           (state.theme === "pill" ? "" :
             '<span class="dim zu-secondary">' + countFmt(sess.turns || 0) + L("轮 ", " turns · ") + countFmt(sess.requests || 0) + L("次", " req") + "</span>"),
           "\x01" + statCompactStyle("session") +
-          '<div class="zu-stat-tip zu-stat-tip--session">' +
+          '<div class="zu-stat-tip zu-stat-tip--session" data-zu-w="' + STAT_TIP_W.session + '">' +
           statHead(L("会话累计", "Session total"), L("全部请求", "All requests"),
             /* v374：名称超长省略时 title 保留全名（同项目名/词包标题/agent 名的截断契约） */
             ((sess.title || "").trim() ? (function () {
               var full = String(sess.title).replace(/\s+/g, " ").trim();
               return '<span class="zu-st-name" title="' + escAttr(full) + '">' + ttEsc(full) + '</span>';
             })() : "")) +
-          /* v300 行一：总用量 | 输入（缓存 N% 徽标随标签右侧）| 输出（含思考辅助行） */
-          '<div class="zu-turn-kpis">' +
+          /* v300 行一：总用量 | 输入（缓存 N% 徽标随标签右侧）| 输出（含思考辅助行）；v412 标记类同本轮 */
+          '<div class="zu-turn-kpis zu-krow-total">' +
             statKpi(kpiIco("total") + L("总用量", "Total tokens"), ttEsc(fmt(sess.total || 0)), turnVBkt(fmt(sess.total || 0))) +
             statKpi(kpiIco("input") + '<span class="zu-kpi-label">' + L("输入", "Input") + '</span>' +
               (hitPctOf(sess.input, sess.cache_read) >= 0 ? '<span class="hit zu-turn-hit">' + ttEsc(L("缓存", "cache ") + hitPctOf(sess.input, sess.cache_read) + "%") + '</span>' : ""),
@@ -1150,10 +1266,10 @@
               : '<span class="dim zu-secondary">' + countFmt(today.requests || 0) + L("次", " req") + "</span>")),
           "\x01" +
           statCompactStyle("today") +
-          '<div class="zu-stat-tip zu-stat-tip--today">' +
+          '<div class="zu-stat-tip zu-stat-tip--today" data-zu-w="' + STAT_TIP_W.today + '">' +
           statHead(L("今日合计", "Today"), L("今天所有会话", "All sessions today")) +
-          /* 行一：总用量 | 输入（缓存命中率副行，柔和绿）| 输出（含思考副行） */
-          '<div class="zu-turn-kpis">' +
+          /* 行一：总用量 | 输入（缓存命中率副行，柔和绿）| 输出（含思考副行）；v412 标记类同本轮 */
+          '<div class="zu-turn-kpis zu-krow-total">' +
             statKpi(kpiIco("total") + L("总用量", "Total tokens"), ttEsc(fmt(today.total || 0)), turnVBkt(fmt(today.total || 0))) +
             statKpi(kpiIco("input") + L("输入", "Input"), ttEsc(fmt(today.input || 0)), turnVBkt(fmt(today.input || 0)),
               (today.input > 0 ? '<span class="hit">' + ttEsc(L("缓存命中率 ", "cache hit ") + Math.round((today.cache_read || 0) / today.input * 100) + "%") + '</span>' : "")) +
@@ -1233,7 +1349,7 @@
             tls.errors + "</span>" : ""),
           "\x01" +
           statCompactStyle("tools") +
-          '<div class="zu-stat-tip zu-stat-tip--tools">' +
+          '<div class="zu-stat-tip zu-stat-tip--tools" data-zu-w="' + STAT_TIP_W.tools + '">' +
           statHead(L("工具调用", "Tool calls"), "", "", kpiIco("tools")) +
           '<div class="zu-turn-kpis zu-turn-kpis--duo">' +
             statKpi(kpiIco("requests") + L("调用总数", "Total calls"), ttEsc(countFmt(tls.total || 0)) + ' <small>' + ttEsc(L("次", "calls")) + '</small>', turnVBkt(countFmt(tls.total || 0))) +
