@@ -1,7 +1,8 @@
 /* 额度客户端（主进程热换模块）v3：多厂商适配器 + 多源调度器。
  * 阶段 3（浮层 v96 线）：BigModel/Z.ai 内置套餐（解密宿主 OAuth 凭据直查 monitor 端点）
  * 之外，新增零配置官方域适配器（MiniMax/Kimi/CommandCode/DeepSeek/OpenRouter/SiliconFlow/
- * Anthropic OAuth/Ollama Cloud）与显式配置适配器（Cline/MiMo Cookie/火山 AK-SK/SCNet 账本）。
+ * Anthropic OAuth/OpenCode Go/R4 Coder/千问/Ollama Cloud）与显式配置适配器（Cline/MiMo
+ * Cookie/火山 AK-SK/SCNet 账本）；清单仅为沿革，现行注册表以 ADAPTERS 为准。
  *
  * 调度语义：enabled 源全量低频刷新（供 tooltip 分家列全），chip 主显跟随本 pane 会话的
  * 模型归属（primary 源）。每源独立 nextAt/epoch/退避/凭据指纹；凭据只在内存，不落盘、
@@ -2310,8 +2311,8 @@ ADAPTERS.push({
  * weekly 的 remaining_percent（剩余制）翻转为已用并映射 5 小时/周窗；purchased.
  * balance_usd 是套餐外充值余额——有窗口时不进顶层 balance（渲染端余额形态优先会挤掉
  * 窗口段），仅无窗口时退化为余额卡。端点与两代响应形状转写自 magpie（MIT）与官方
- * docs（docs.ollama.com/cloud/usage、/api/balance）；限流 10 req/min，429 由调度器按
- * Retry-After 退避；未真账号实测（unverified）。 */
+ * docs（docs.ollama.com/cloud/usage、/api/balance）；限流 10 req/min（issue 报告者
+ * 转述，未实测），429 由调度器按 Retry-After 退避；未真账号实测（unverified）。 */
 function normalizeOllama(body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) throw qErr("parse_error", "ollama shape");
   const included = body.included && typeof body.included === "object" && !Array.isArray(body.included) ? body.included : null;
@@ -2345,7 +2346,10 @@ function normalizeOllama(body) {
         currency: "USD",
       };
       const period = included.period && typeof included.period === "object" && !Array.isArray(included.period) ? included.period : null;
-      const until = period ? resetOf(period.until) : null;
+      /* until 非空但非日期（端点改版回垃圾串）不得冒充月窗：resetOf 对非空字符串透传是
+       * 全仓基线，此处单适配器内敛加 Date.parse 门，解析失败落 plan 窗。 */
+      const untilRaw = period ? resetOf(period.until) : null;
+      const until = untilRaw && !Number.isNaN(Date.parse(untilRaw)) ? untilRaw : null;
       if (until) { win.resetsAt = until; windows.monthly = win; }
       else windows.plan = win;
     }

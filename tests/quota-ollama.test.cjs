@@ -113,6 +113,10 @@ test("ollama: windowless reply (no period) yields plan window without resetsAt",
   assert.equal(p.used, 1);
   assert.equal(p.total, 20);
   assert.equal(p.resetsAt, undefined);
+
+  const garbage = Q.normalizeOllama({ included: { balance_usd: 19, allowance_usd: 20, period: { until: "TBD" } } });
+  assert.ok(garbage.windows.plan, "until 非空但非日期不冒充月窗（resetOf 透传是全仓基线，ollama 侧 Date.parse 门内敛加固）");
+  assert.equal(garbage.windows.monthly, undefined);
 });
 
 test("ollama: purchased-only account degrades to balance card; zero allowance no divide-by-zero", () => {
@@ -141,12 +145,25 @@ test("ollama: clamps — overdraw pins 100%, remaining>100 pins 0%, negative pur
 
   const negPct = Q.normalizeOllama({ included: { weekly: { remaining_percent: -20 } } });
   assert.equal(negPct.windows.weekly.percent, 100, "remaining_percent<0 钳到 100% 已用");
+
+  const negBought = Q.normalizeOllama({ purchased: { balance_usd: -3 } });
+  assert.equal(negBought.kind, "plan", "负 purchased 视为无充值，不出余额卡");
+  assert.equal(negBought.windows, undefined);
+  assert.equal(negBought.balance, undefined);
 });
 
 test("ollama: string numbers tolerated; drift and empty shapes fail closed", () => {
   const str = Q.normalizeOllama({ included: { balance_usd: "72.5", allowance_usd: "100" },
     purchased: { balance_usd: "25" } });
   assert.equal(str.windows.plan.percent, 27.5, "服务端字符串数字宽容解析（无 period 落 plan 窗）");
+
+  const nan = Q.normalizeOllama({ included: { balance_usd: NaN, allowance_usd: Infinity },
+    purchased: { balance_usd: 25 } });
+  assert.equal(nan.windows, undefined, "NaN/Infinity 不是数字：无月窗");
+  assert.equal(nan.kind, "balance", "退化为 purchased 余额卡");
+
+  const dirty = Q.normalizeOllama({ included: { session: { remaining_percent: "abc" } } });
+  assert.equal(dirty.windows, undefined, "脏字符串不猜 0%：对应窗缺席");
 
   assert.throws(() => Q.normalizeOllama(null), /ollama shape/);
   assert.throws(() => Q.normalizeOllama([]), /ollama shape/);
