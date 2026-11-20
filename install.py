@@ -493,6 +493,12 @@ def _publish_mobile_pending(pi, result):
     try:
         pi.publish_external_pending(stage, source=result.get("source"), operation="install")
     except Exception as error:
+        # publish 的 finally 在其锁体内：锁获取超时等锁外前置失败的窗口不覆盖，
+        # 这里兜底清理（publish 已删过则 no-op）
+        try:
+            stage.unlink(missing_ok=True)
+        except OSError:
+            pass
         print(f"[mobile relay] pending publish failed: {error}", file=sys.stderr)
         return {"status": "skipped-error", "version": result.get("version"),
                 "detail": f"pending publish failed: {error}"}
@@ -671,11 +677,12 @@ def main():
                         "completely; reopen ZCode afterwards. No need to retry the install."))
             elif status == "deferred":
                 if mobile.get("detail") in ("existing pending operation", "bridge pending"):
-                    print(L("手机中继补丁暂缓：已有待替换操作待收尾，完全退出 ZCode 后会自动完成，"
-                            "之后的会话会自动补装，无需手动重试。",
+                    # 独立链无 SessionStart hook，没有「之后的会话自动补装」——重跑本安装补装
+                    print(L("手机中继补丁暂缓：已有待替换操作待收尾，完全退出 ZCode 后会自动完成；"
+                            "之后重跑本安装即可补装。",
                             "The mobile relay patch is postponed: an existing pending replacement must finish "
-                            "first (it completes automatically once ZCode quits completely); later sessions "
-                            "install the patch automatically. No manual retry needed."))
+                            "first (it completes automatically once ZCode quits completely); re-run this "
+                            "installer afterwards to add the patch."))
                 else:
                     print(L(f"手机中继补丁尚未就绪：请在完全退出 ZCode（含托盘/后台）后，对目标 asar 执行 "
                             f"\"{sys.executable}\" \"{HERE / 'mobile_relay_patch.py'}\" apply --asar \"{asar}\""
@@ -705,6 +712,10 @@ def main():
                        "Installation did not finish: the asar injection could not be finalized. "
                        "Follow the message above to complete the pending replacement or retry; "
                        "the MCP and /usage command parts were still processed."))
+    elif mobile is not None and mobile.get("status") == "pending":
+        print("\n" + L("状态条安装已处理；手机中继补丁已排定，完全退出 ZCode 后自动完成（见上方提示）。",
+                       "Status bar installation was processed; the mobile relay patch is scheduled and "
+                       "finishes automatically once ZCode quits completely (see the message above)."))
     elif mobile is not None and mobile.get("status") not in ("present", "patched"):
         print("\n" + L("状态条安装已处理；手机中继补丁尚未生效（见上方提示与独立命令）。",
                        "Status bar installation was processed; the mobile relay patch is not active yet "

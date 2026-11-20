@@ -860,6 +860,12 @@ def _publish_mobile_pending(pi, result, quiet_monitor=False):
         with redirect:
             pi.publish_external_pending(stage, source=result.get("source"), operation="install")
     except Exception as e:
+        # publish 的 finally 在其锁体内：锁获取超时等锁外前置失败的窗口不覆盖，
+        # 这里兜底清理（publish 已删过则 no-op），与桥链 discard_stage 同位
+        try:
+            stage.unlink(missing_ok=True)
+        except OSError:
+            pass
         print(f"[zusage-plugin] mobile relay pending publish failed（已忽略）：{e}", file=sys.stderr)
         return {"status": "skipped-error", "version": result.get("version"),
                 "detail": f"pending publish failed: {e}"}

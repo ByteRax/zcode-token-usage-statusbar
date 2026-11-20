@@ -170,6 +170,8 @@ class MobileInstallTests(unittest.TestCase):
             return real_replace(src, dst)
         for owner in (self.installer, self.standalone):
             with self.subTest(owner=owner.__name__):
+                self.pi.TMP.unlink(missing_ok=True)     # 前 owner 失败残留不得干扰本 owner 归因
+                self.pi.TMP_META.unlink(missing_ok=True)
                 self._write_legacy_asar()
                 original = self.target.read_bytes()
                 (self.runtime / ".plugin-restart-required").unlink(missing_ok=True)
@@ -188,10 +190,87 @@ class MobileInstallTests(unittest.TestCase):
                     self.assertEqual(marker["state"], "pending-install")
                     self.assertEqual(marker["installation"]["entryHash"],
                                      hashlib.sha256(self.pi.entry_bytes_of(self.pi.TMP)).hexdigest())
+                else:
+                    # 独立链不写重启标记（restart_notice.py 不在独立运行目录分发清单）
+                    self.assertFalse((self.runtime / ".plugin-restart-required").exists())
                 # 完全退出后监控收尾：补丁落位
                 self.assertTrue(self.pi.finalize_tmp())
                 self.assertEqual(mobile.check_deployed(self.target)["uplink_generation"], 2)
                 self.monitor.reset_mock()
+
+    def test_mobile_publish_failure_falls_back_to_skipped_error_and_cleans_stage(self):
+        def takeover(stage, source=None, operation="install"):
+            stage.unlink(missing_ok=True)   # publish 接管语义：失败也清 stage
+            raise OSError("[Errno 5] Input/output error")
+        real_replace = os.replace
+        def replace(src, dst):
+            if Path(dst) == self.pi.ASAR:
+                raise PermissionError("locked")
+            return real_replace(src, dst)
+        for owner in (self.installer, self.standalone):
+            with self.subTest(owner=owner.__name__), \
+                    mock.patch.object(os, "replace", side_effect=replace), \
+                    mock.patch.object(self.pi, "publish_external_pending", side_effect=takeover), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                result = owner.ensure_mobile_relay_stash(self.pi)
+                self.assertEqual(result["status"], "skipped-error")
+                self.assertIn("pending publish failed", result["detail"])
+                self.assertFalse(self.pi.TMP.exists())
+                self.assertFalse(self.pi.TMP_META.exists())
+                self.assertEqual(list(self.root.glob(".mobile-relay-*")), [])
+        self.monitor.assert_not_called()
+
+    def test_mobile_quiet_monitor_env_set_and_restored_for_hook_chain(self):
+        real_replace = os.replace
+        def replace(src, dst):
+            if Path(dst) == self.pi.ASAR:
+                raise PermissionError("locked")
+            return real_replace(src, dst)
+        captured = {}
+        def launch(epoch):
+            captured["no_monitor"] = os.environ.get("ZUSAGE_NO_MONITOR")
+            captured["quiet"] = os.environ.get("ZUSAGE_MONITOR_QUIET")
+        try:
+            with mock.patch.object(os, "replace", side_effect=replace), \
+                    mock.patch.object(self.pi, "launch_monitor", side_effect=launch), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                result = self.installer.ensure_mobile_relay_stash(self.pi, quiet_monitor=True)
+            self.assertEqual(result["status"], "pending")
+            self.assertEqual(captured, {"no_monitor": "1", "quiet": "1"})   # SessionStart 静默不弹黑窗
+            self.assertIsNone(os.environ.get("ZUSAGE_MONITOR_QUIET"))       # 调用后还原进前值
+            self.assertEqual(os.environ.get("ZUSAGE_NO_MONITOR"), "1")      # setUp 既有值不动
+        finally:
+            self.pi.TMP.unlink(missing_ok=True)
+            self.pi.TMP_META.unlink(missing_ok=True)
+            (self.runtime / ".plugin-restart-required").unlink(missing_ok=True)
+
+    def test_mobile_fingerprint_failure_still_hands_over_without_marker(self):
+        real_replace = os.replace
+        def replace(src, dst):
+            if Path(dst) == self.pi.ASAR:
+                raise PermissionError("locked")
+            return real_replace(src, dst)
+        real_entry = self.pi.entry_bytes_of
+        calls = {"n": 0}
+        def flaky_entry(path):
+            # 仅指纹预取被杀毒锁住；publish 内部 self_check 随后恢复，走真实现
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("av lock")
+            return real_entry(path)
+        try:
+            with mock.patch.object(os, "replace", side_effect=replace), \
+                    mock.patch.object(self.pi, "entry_bytes_of", side_effect=flaky_entry), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                result = self.installer.ensure_mobile_relay_stash(self.pi)
+            self.assertEqual(result["status"], "pending")
+            self.assertGreaterEqual(calls["n"], 2)
+            # 宁缺勿假：指纹取不到不写标记，缺 installation 的 pending-install 无法销账
+            self.assertFalse((self.runtime / ".plugin-restart-required").exists())
+            self.assertTrue(self.pi.TMP.exists())
+        finally:
+            self.pi.TMP.unlink(missing_ok=True)
+            self.pi.TMP_META.unlink(missing_ok=True)
 
     def test_already_installed_does_not_copy_archive(self):
         self.assertEqual(self.standalone.ensure_mobile_relay_stash(self.pi)["status"], "patched")
@@ -474,8 +553,11 @@ class MobileInstallTests(unittest.TestCase):
             return out.getvalue()
 
         text = run_cli({"status": "patched"})
-        self.assertIn("手机中继补丁已写入", text)   # 此前 patched 静默，用户无法区分成败
+        self.assertIn("手机中继补丁已写入", text)   # 此前插件 CLI patched 静默，用户无法区分成败
         self.assertIn("下次打开 ZCode", text)
+        with mock.patch.object(self.pi, "client_running", return_value=True):
+            text = run_cli({"status": "patched"})
+        self.assertIn("请完全退出并重开 ZCode 后生效", text)   # 运行中=要求完全重启
         text = run_cli({"status": "pending"})
         self.assertIn("已排定", text)
         self.assertIn("自动完成", text)
@@ -505,8 +587,9 @@ class MobileInstallTests(unittest.TestCase):
         self.assertIn("已排定", text)
         self.assertIn("自动完成", text)
         self.assertNotIn("mobile_relay_patch.py", text)
+        self.assertNotIn("全部完成", text)   # pending 不得承诺全部完成
         text = run_standalone({"status": "deferred", "detail": "existing pending operation"})
-        self.assertIn("自动补装", text)
+        self.assertIn("重跑本安装", text)   # 独立链无 SessionStart hook：重跑安装补装
         self.assertNotIn("mobile_relay_patch.py", text)
 
     def test_standalone_helper_upgrades_legacy(self):
