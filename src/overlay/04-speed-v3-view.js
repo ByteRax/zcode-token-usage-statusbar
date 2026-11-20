@@ -278,11 +278,10 @@
      * turns/missN 随之提前到此（原在分布构建段）；空态分支不拼 count（models/overall 判空） */
     var missN = an.selMissing && an.selMissing.length ? an.selMissing.length : 0;
     var turns = spdNum(overall ? overall.turns : 0);
-    /* v403（§24 用户追加裁定）：去 cube 图标（SPD3_SVG_CUBE 及其 CSS 随之删除）；文案
-     * 「N 个模型」→「N 模型」（en 无对应变化）。 */
+    /* v404（§24 用户追加裁定）：span 前缀「 · 」分隔符（标题与计数间视觉引导）。 */
     var countRow = '<div class="zu-sv3-count"><span>' +
-      spdEsc(SPD_L(models.length + " 模型 · " + turns + " 轮",
-        models.length + " models · " + turns + " turns")) + "</span>" +
+      spdEsc(SPD_L(" · " + models.length + " 模型 · " + turns + " 轮",
+        " · " + models.length + " models · " + turns + " turns")) + "</span>" +
       (missN ? '<em class="zu-sv3-count-miss">' + spdEsc(SPD_L("已选模型中 " + missN + " 个在当前范围无有效记录",
         missN + " selected models have no valid records in this range")) + "</em>" : "") + "</div>";
     var headRow = '<div class="zu-sv3-title-row"><span class="zu-sv3-ltitle">' + spdEsc(spd3LeftTitle(an)) + "</span>" +

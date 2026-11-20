@@ -502,3 +502,8 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 
 - 删除 count 的 cube 图标（`SPD3_SVG_CUBE` 常量与 `.zu-sv3-count svg` CSS 一并删除——count 为其唯一消费者）；「N 个模型 · M 轮」→「N 模型 · M 轮」（en "N models · M turns" 本就无量词，不变）。
 - VM：左卡 count 断言「个模型」→「模型」同步翻转；其余同 §24.2。
+
+### 24.4 v404 追加裁定：前缀分隔符（2026-11-20）
+
+- count span 前加「 · 」引导（` · N 模型 · M 轮`，en 同 ` · N models · M turns`）——与标题间视觉分隔。
+- VM：count 断言补「· 」前缀；其余同 §24.2/§24.3。

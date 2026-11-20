@@ -142,7 +142,7 @@ test('spd3CardHTML 结构锁: 根类/data-sv-key/双 Tab 组/chips/单多左卡�
   assert.match(dom, /zu-sv3-main-num"><span class="[a-z-]+">\d/, '多模型主数字恒在（非 —）');
   assert.match(dom, /zu-sv3-title-row"><span class="zu-sv3-ltitle">[^<]*<\/span><div class="zu-sv3-count">/,
     'count 在标题行内紧跟 ltitle（v402 §24）');
-  assert.match(dom, /2 模型 · 3 轮/);
+  assert.match(dom, /· 2 模型 · 3 轮/);
   assert.doesNotMatch(dom, /本期有效 \d+ 个模型/, '左卡计数前缀「本期有效」已去（筛选条 fcount 保留）');
   assert.doesNotMatch(dom, /已选 \d+ 个模型/, '旧「已选 N 个模型」计数行已被计数语义替换');
   assert.match(dom, /zu-sv3-dtab/);
@@ -239,7 +239,7 @@ test('单模型左卡: 五 period 标题文案、主数字/档位恒在、同构
     assert.ok(!dom.includes('zu-sv3-cov-set'), 'period=' + period + ' 五值 set 已废除');
     // v396 §19：单模型=多模型同构分布块，单行 .zu-sv3-model 胶囊退役
     assert.match(dom, /zu-sv3-count">/, 'period=' + period + ' 计数行在场（v402 起在标题行内）');
-    assert.match(dom, /1 模型 · \d+ 轮/, 'period=' + period + ' count 含模型数+轮数');
+    assert.match(dom, /· 1 模型 · \d+ 轮/, 'period=' + period + ' count 含模型数+轮数');
     assert.match(dom, /zu-sv3-dist-h">所选模型分布 · 按请求数/, 'period=' + period + ' 分布标题在场');
     assert.match(dom, /zu-sv3-dbar" role="img"/, 'period=' + period + ' 分布条在场');
     assert.match(dom, /zu-sv3-dwrap"/, 'period=' + period + ' 明细表容器在场');
@@ -302,7 +302,7 @@ test('多模型分布: share 数据级和=1、显示占比和=100%、行序按 s
   assert.equal((tab.match(/zu-sv3-drow/g) || []).length, 9, 'Grid 表头 + 8 行（恒全量展开）');
   assert.ok(!dom.includes('data-sv3-more') && !dom.includes('zu-sv3-more'), '折叠按钮整链退役');
   assert.match(dom, /zu-sv3-main-num"><span class="[a-z-]+">\d/, '多模型主数字恒在（§11.3）');
-  assert.match(dom, /8 模型 · 8 轮/, '计数行（v402 标题行内，无前缀）');
+  assert.match(dom, /· 8 模型 · 8 轮/, '计数行（v402 标题行内，无前缀）');
   // §14.1：+N 为弹出层入口真 button（data-sv3-fopen，关闭态 aria-expanded=false）
   assert.match(dom,
     /<button type="button" class="zu-sv3-chip-more" data-sv3-fopen aria-haspopup="dialog" aria-expanded="false" title="其余 5 个模型，可搜索查看" aria-label="还有 5 个未展示模型，点击查看和筛选">\+5<\/button>/,
@@ -357,7 +357,7 @@ test('多模型分布: share 数据级和=1、显示占比和=100%、行序按 s
     const domN = stripStyle(cardHTML(ctx, anN, { range: 'session', period: 'all', sid: 'sess_main' }));
     assert.match(domN, /zu-sv3-main-num"><span class="[a-z-]+">\d/, 'n=' + n + ' 主数字恒在（非 —）');
     assert.match(domN, /zu-sv3-band">/, 'n=' + n + ' 档位胶囊随主数字在场');
-    assert.match(domN, new RegExp(n + ' 模型 · \\d+ 轮'), 'n=' + n + ' 计数行');
+    assert.match(domN, new RegExp('· ' + n + ' 模型 · \\d+ 轮'), 'n=' + n + ' 计数行');
     assert.doesNotMatch(domN, /class="dim">—/, 'n=' + n + ' 多模型态不显空读数');
   }
 });
@@ -374,7 +374,7 @@ test('i18n: lang=en 关键文案切英文（SPD_L 桩实现真实 L 逻辑）', 
   assert.match(dom, /zu-sv-flabel">Time</, '时间标签');
   assert.match(dom, /Model filter/, '筛选标签');
   assert.match(dom, /zu-sv3-fcount">Selected 2\/2 · 2 active</, 'auto 计数（已选=池全量）');
-  assert.match(dom, /2 models · 3 turns/, '多模型计数行（v402 标题行内，无 active 前缀）');
+  assert.match(dom, /· 2 models · 3 turns/, '多模型计数行（v402 标题行内，无 active 前缀）');
   assert.match(dom, /Selected models · by requests/, '分布标题');
   assert.match(dom,
     /<span class="zu-sv3-dcell" role="columnheader">Model<\/span><span class="zu-sv3-dcell zu-sv3-dnum" role="columnheader">Avg speed<\/span><span class="zu-sv3-dcell zu-sv3-dnum" role="columnheader">Share<\/span>/,
@@ -390,7 +390,7 @@ test('i18n: lang=en 关键文案切英文（SPD_L 桩实现真实 L 逻辑）', 
   assert.match(domB, /zu-sv3-stat"><i>Peak<\/i>/);
   assert.doesNotMatch(domB, /Coverage|This period/, 'v391 §15.1：组标题/覆盖范围英文态同样已删');
   assert.match(domB, /Last \d+ turns · average speed/, 'recent 英文标题');
-  assert.match(domB, /1 models? · \d+ turns/, 'count 行英文（v402 标题行内，无 active）');
+  assert.match(domB, /· 1 models? · \d+ turns/, 'count 行英文（v402 标题行内，无 active）');
   assert.doesNotMatch(domB, /Turns<\/i>/, '单模型态无独立「请求轮次」kv');
   // 弹出层英文
   ctx.__pool = [{ key: KEYS.a, name: 'GLM-A', n: 3 }, { key: KEYS.b, name: 'Claude-B', n: 1 }];

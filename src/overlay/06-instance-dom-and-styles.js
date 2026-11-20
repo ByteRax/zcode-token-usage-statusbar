@@ -283,8 +283,9 @@
      * → v401 千问 Token Plan 额度源（issue #399，specs/qianwen-plan-quota.md）：⚙ 额度源面板新增 qianwen 行（登录按钮 .zu-src-signin 走官方设备码授权 + 2s 轮询状态 + 手填 token 字段），凭据披露句补 qianwenai 三域与授权说明；额度链与桥动作在 quota-client.cjs / inject-main.cjs。
      * → v402 左卡计数行并入标题行（spec §24，用户裁定）：.zu-sv3-count（cube+N 模型·M 轮）从主数字下独立行移入 .zu-sv3-title-row（ltitle 后、live 徽标前），文案去「本期有效」前缀（en 去 active）；CSS 去 margin-top、span nowrap；miss 提示仍随 count 块换行；筛选条 fcount「本期有效」不动。
      * → v403 计数行去图标与量词（spec §24.3，用户裁定）：删 cube 图标（SPD3_SVG_CUBE 常量与 .zu-sv3-count svg CSS 一并退役，唯一消费者）、「N 个模型·M 轮」→「N 模型·M 轮」（en 不变）。
+     * → v404 计数行前缀分隔符（spec §24.4，用户裁定）：count span 前加「 · 」引导——「 · N 模型·M 轮」（en 同），与标题间视觉分隔。
      */
-    var VERSION = "v403";
+    var VERSION = "v404";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */

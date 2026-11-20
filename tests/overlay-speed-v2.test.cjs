@@ -119,7 +119,7 @@ test('weighted average is Σout/Σms, never the arithmetic mean of per-turn spee
   // 多模型态（无筛选）：主数字恒在（§11.3）+ 计数行（v402 §24 起并入标题行、无「本期有效」前缀）；
   // 分布表每模型 tps 仍是 Σout/Σms 口径（A=1700t/13s=130.8…）
   const multi = dom(card(ctx, { range: 'session', period: 'all' }));
-  assert.match(multi, /zu-sv3-count">[\s\S]*?2 模型 · 3 轮/, 'multi-model count row（title-row 内，无前缀无图标）');
+  assert.match(multi, /zu-sv3-count"><span> · 2 模型 · 3 轮/, 'multi-model count row（title-row 内，· 前缀无图标）');
   assert.match(multi, /zu-sv3-main-num"><span class="[a-z-]+">\d/, 'multi-model main number always present');
   assert.match(multi, /zu-sv3-dtab/, 'distribution table present');
   // v390 用户裁定：「唯一模型」徽标全局去除（.zu-sv3-only）——真单模型池也不再显
@@ -259,7 +259,7 @@ test('bilingual labels follow the instance language', () => {
   assert.match(html, /View speed bands/, 'en bands entry label');
   // 计数行三语义统一（§11.5）：auto → 已选=池全量；左卡计数（v402 §24）去 active 前缀
   assert.match(html, /zu-sv3-fcount">Selected 2\/2 · 2 active</, 'en filter count (selected/pool · active)');
-  assert.match(html, /2 models · 4 turns</, 'en multi-model count row (title-row 内，无 active)');
+  assert.match(html, /· 2 models · 4 turns</, 'en multi-model count row (title-row 内，无 active)');
 });
 
 // ---------- 空态（有效轮表 + 筛选/时间窗内无数据；§11.4 view 空态接管） ----------
