@@ -209,6 +209,43 @@ test('v80 in-card mount: bar lands inside the card after the toolbar row, no pad
   assert.equal(cards[1].children.includes(barB), false);
 });
 
+/* v405（issue #408）：默认主题下，宿主 elicitation（问询/权限确认）面板打开时
+ * chat-composer-region display:none、面板内回答输入框成为 pane 候选；该面板卡没有
+ * group/toolbar 工具行，旧 mountInCard 失败 → below-card 悬浮胶囊（用户实报的「默认
+ * 样式底部药丸态」）。现在条应平铺进面板内容列（footer 之后），沿用 .zu-in，不上 body。 */
+test('v405 elicitation panel: default theme mounts flat inside the panel card after the footer', () => {
+  const h = harness(), [card] = h.setPanes(['a']);
+  const ta = card.children[0];
+  const wrapper = new Element();
+  wrapper.className = 'flex min-h-0 flex-1 flex-col gap-3 p-3';
+  card.children = [wrapper]; wrapper.parentElement = card; wrapper.isConnected = true;
+  wrapper.appendChild(ta);
+  const footer = wrapper.appendChild(new Element());
+  footer.setAttribute('data-elicitation-dialog-footer', 'true');
+  card.setAttribute('data-elicitation-dialog-card', 'true');
+  // 宿主面板内的回答输入框：closest 命中面板卡（panelCardOf 的锚点改判）
+  ta.closest = sel => sel === '[data-elicitation-dialog-card]' ? card : null;
+  card.queries.set('[data-elicitation-dialog-footer]', footer);
+  h.inject(); h.boot(); h.runFrame();
+  const bar = wrapper.children.find(e => /zusage-root/.test(e.className || ''));
+  assert.ok(bar, '条已挂载');
+  assert.equal(bar.parentElement, wrapper, '条平铺在面板内容列内，不再回落 body 悬浮胶囊');
+  assert.equal(bar.classList.contains('zu-in'), true, '默认主题沿用 .zu-in 扁平外观');
+  assert.notEqual(bar.style.position, 'fixed', '无兜底 fixed 定位');
+  assert.ok(wrapper.children.indexOf(bar) > wrapper.children.indexOf(footer), '条位于 footer 之后');
+  /* 夹具 appendChild 不像真实 DOM 那样从旧父节点摘除，按 parentElement 判归属 */
+  const bodyBars = h.body.children.filter(e => /zusage-root/.test(e.className || '') && e.parentElement === h.body);
+  assert.equal(bodyBars.length, 0, 'body 上不留悬浮条: ' + bodyBars.map(b => b.getAttribute('data-zusage-slot') + '/' + b.className).join(','));
+  // React 重挂面板子树：帧级与 heavy 对账都按实际宿主 wrapper 补挂
+  bar.remove();
+  h.runFrame();
+  assert.equal(bar.parentElement, wrapper, 'track 帧对账重挂回面板内容列');
+  bar.remove();
+  h.tick();
+  assert.equal(bar.parentElement, wrapper, 'heavy 周期对账同样重挂');
+  h.window.__zusageDispose();
+});
+
 test('reinjection and repeated cleanup leave one live generation', () => {
   const h = harness(); h.setPanes(['a']); h.inject(); h.boot();
   const cleanup = h.window.__zusageDispose;
