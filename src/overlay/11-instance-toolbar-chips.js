@@ -1164,8 +1164,9 @@
       }
     }
     function restoreEnhanceBtn(alsoCancel) {
-      /* 关闭功能或销毁实例时取消在途请求并丢弃迟到回包。暂时没有锚点时只摘 DOM，
-       * 仍由 finish 的会话与草稿校验决定是否回填。 */
+      /* alsoCancel=true 仅 dispose/热更路径：实例销毁后回执无处落地，在途请求中断止损，
+       * 并置 settled 丢弃迟到回包。临时摘除（无锚/开关关）不传：请求照常完成，回包经
+       * finish 身份门 + sid/草稿守卫裁决回填（spec 承诺的「冲突保护兜底」），不清身份键。 */
       if (alsoCancel && enhanceInFlightId && !enhanceSettled) {
         pluginRequest("prompt-enhance-cancel", { requestId: enhanceInFlightId });
       }
@@ -1241,8 +1242,10 @@
       if (!state.show.git) return null;
       var scope = readPaneScope(wantedEl, pickedSid, pid);
       if (!scope || scope.identity || !scope.workspacePath) return null;
-      var v = gitViewFor(scope.workspacePath);
-      return v ? { path: scope.workspacePath, st: v.st, stale: v.stale } : null;
+      var wt = worktreeFor(scope.sid);   // specs/worktree-branch.md：受管 worktree 会话按 cwd 查询/显示（workspacePath 是项目主目录）
+      var gp = wt ? wt.cwd : scope.workspacePath;
+      var v = gitViewFor(gp);
+      return v ? { path: gp, st: v.st, stale: v.stale, wt: wt } : null;
     }
     function gitChipHtml(view) {   // view={path, st, stale}：stale 是工作区级过期标志（勿与闭包 stale() 函数混淆）
       var st = view.st, stale = view.stale;
@@ -1439,7 +1442,8 @@
       e.stopPropagation();
       if (gitRefreshRequestId) return;
       var scope = readPaneScope(wantedEl, pickedSid, pid);
-      var targetPath = scope ? scope.workspacePath : "";
+      var wt = scope ? worktreeFor(scope.sid) : null;   // specs/worktree-branch.md：刷新请求同样按覆写路径
+      var targetPath = scope ? (wt ? wt.cwd : scope.workspacePath) : "";
       if (!targetPath) return;
       this.classList.add("zu-gbusy");
       this.setAttribute("aria-busy", "true");

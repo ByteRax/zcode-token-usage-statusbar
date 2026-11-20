@@ -20,6 +20,16 @@
     gitAskedAt = now;
     return pluginRequest("git-refresh", typeof path === "string" ? { path: path } : undefined, done);
   }
+  /* 受管 worktree 会话事实（specs/worktree-branch.md）：宿主分栏 workspacePath 对 worktree
+   * 会话是项目主目录（宿主 §2.1「带 workspace 的字段只表示归属」），直接查 git 读的是主
+   * checkout；快照顶层 worktrees 按 sid 给出真实 cwd，本地 pane 用它覆写查询与显示路径。
+   * 返回 null = 非受管会话/缺帧，走原 workspacePath（行为不变）。 */
+  function worktreeFor(sid) {
+    var map = lastWorktrees;
+    if (!map || !sid) return null;
+    var wt = map[sid];
+    return wt && wt.cwd ? wt : null;
+  }
     window.__zusageGitState = function (p, st) {
       if (stale() || typeof p !== "string" || !st || typeof st !== "object") return;
       gitStateByPath[p] = st;
@@ -179,7 +189,11 @@
       if (state.show.git) for (var i = 0; i < instances.length; i++) {
         var inst = instances[i], sid = inst.getSid();
         var scope = sid && inst.getScope ? inst.getScope() : null;
-        if (scope && scope.sid === sid && !scope.identity && gitPaths.indexOf(scope.workspacePath) < 0) gitPaths.push(scope.workspacePath);
+        if (scope && scope.sid === sid && !scope.identity) {
+          var wt = worktreeFor(sid);   // specs/worktree-branch.md：受管 worktree 会话发布真实 cwd
+          var gp = wt ? wt.cwd : scope.workspacePath;
+          if (gitPaths.indexOf(gp) < 0) gitPaths.push(gp);
+        }
       }
       var changed = JSON.stringify(gitPaths) !== JSON.stringify(window.__zusageGitPaths || []);
       window.__zusageGitPaths = gitPaths;
@@ -2069,6 +2083,10 @@
       (st.op ? row(L("进行中操作", "Git operation"), gitEsc(gitOpLabel(st.op))) : "") +
       row(L("改动行数", "Diff lines"), "+" + gitNum(st.ins) + " / -" + gitNum(st.del) + L(" 行（工作区相对 HEAD 的合计口径，非净差异）", " lines (worktree vs HEAD, combined—not a net diff)")) +
       row(L("目录", "Directory"), gitEsc(st.repoPath || view.path)) +   // v96：repoPath=真实仓库绝对路径，缺省回退工作区路径
+      /* 受管 worktree 区块（specs/worktree-branch.md）：bucket 与根目录定位 worktree；「起点」
+       * 是创建记录里的检出分支（detached 默认创建时无 ref），不随后续切分支变化。 */
+      (view.wt ? row(L("受管 Worktree", "Managed worktree"), gitEsc(view.wt.bucket) + " · " + gitEsc(view.wt.root)) : "") +
+      (view.wt ? row(L("起点", "Start ref"), view.wt.ref ? gitEsc(view.wt.ref) : (view.wt.sha ? gitEsc(String(view.wt.sha).slice(0, 7)) : L("当前 HEAD（游离检出）", "current HEAD (detached)"))) : "") +
       (when ? row(L("更新于", "Updated"), when) : "") +
       '<div class="rt-note">' + L("只读本地仓库，不自动 fetch（上游比较基于本地引用）；远端会话不显示。⚙ 设置可关。",
         "Local repositories read-only, never auto-fetches (upstream compares against local refs); hidden for remote sessions. Toggle in ⚙ settings.") + "</div>";
