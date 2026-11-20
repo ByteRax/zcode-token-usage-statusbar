@@ -1,6 +1,7 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -240,14 +241,29 @@ test("updateConfig bridge rejects invalid merge types and prototype keys without
 
 test("marker merge and acknowledgement remove only loaded hashes", async (t) => {
   const f = fixture(t); const marker = path.join(f.runtime, ".plugin-restart-required");
+  // 盘检语义要求待办 digest 有真实盘上字节支撑：伪 digest 会因文件缺失被按「已被超越」剔除
+  fs.writeFileSync(path.join(f.runtime, "inject-main.cjs"), "next loader bytes");
+  const nextDigest = crypto.createHash("sha256").update("next loader bytes").digest("hex");
   await markerCommand(f.runtime, "--record-restart", { hashes: { "inject-main.cjs": "old", "plugin-updater.cjs": "same" } });
-  await markerCommand(f.runtime, "--record-restart", { hashes: { "inject-main.cjs": "new" } });
+  await markerCommand(f.runtime, "--record-restart", { hashes: { "inject-main.cjs": nextDigest } });
   let data = JSON.parse(fs.readFileSync(marker));
-  assert.deepEqual(data.hashes, { "inject-main.cjs": "new", "plugin-updater.cjs": "same" });
+  assert.deepEqual(data.hashes, { "inject-main.cjs": nextDigest, "plugin-updater.cjs": "same" });
   assert.equal((await markerCommand(f.runtime, "--ack-restart", { "inject-main.cjs": "old", "plugin-updater.cjs": "same" })).cleared, false);
-  data = JSON.parse(fs.readFileSync(marker)); assert.deepEqual(data.hashes, { "inject-main.cjs": "new" });
-  assert.equal((await markerCommand(f.runtime, "--ack-restart", { "inject-main.cjs": "new" })).cleared, true);
+  data = JSON.parse(fs.readFileSync(marker)); assert.deepEqual(data.hashes, { "inject-main.cjs": nextDigest });
+  assert.equal((await markerCommand(f.runtime, "--ack-restart", { "inject-main.cjs": nextDigest })).cleared, true);
   assert.equal(fs.existsSync(marker), false); assert.equal(fs.existsSync(path.join(f.runtime, "plugin-restart.lock")), true);
+});
+test("superseded digest on disk is dropped so a stale marker can still clear", async (t) => {
+  const f = fixture(t); const marker = path.join(f.runtime, ".plugin-restart-required");
+  // 记录后运行文件被第三方覆盖（preserved 开发部署）：digest 永加载不到，按已被超越剔除
+  const target = path.join(f.runtime, "inject-main.cjs");
+  fs.writeFileSync(target, "recorded bytes");
+  const recorded = crypto.createHash("sha256").update("recorded bytes").digest("hex");
+  await markerCommand(f.runtime, "--record-restart", { hashes: { "inject-main.cjs": recorded } });
+  fs.writeFileSync(target, "newer deploy supersedes recorded bytes");
+  const ack = await markerCommand(f.runtime, "--ack-restart", { _loadedAt: Date.now() + 1000 });
+  assert.equal(ack.cleared, true);
+  assert.equal(fs.existsSync(marker), false);
 });
 test("startup snapshot cannot acknowledge a newer marker even with matching hashes", async (t) => {
   const f = fixture(t); const loadedAt = Date.now() - 1000;
@@ -324,10 +340,13 @@ test("published pending-install still requires a post-publication process start"
 });
 test("concurrent record and stale ack never lose an unmatched notification", async (t) => {
   const f = fixture(t); const marker = path.join(f.runtime, ".plugin-restart-required");
+  // record-first 交错下 ack 会读到合并后的新条目：新 digest 需盘上字节支撑才能保留
+  fs.writeFileSync(path.join(f.runtime, "inject-main.cjs"), "next loader bytes");
+  const nextDigest = crypto.createHash("sha256").update("next loader bytes").digest("hex");
   await markerCommand(f.runtime, "--record-restart", { hashes: { "inject-main.cjs": "old" } });
   await Promise.all([
-    markerCommand(f.runtime, "--record-restart", { hashes: { "inject-main.cjs": "new" } }),
+    markerCommand(f.runtime, "--record-restart", { hashes: { "inject-main.cjs": nextDigest } }),
     markerCommand(f.runtime, "--ack-restart", { "inject-main.cjs": "old" }),
   ]);
-  assert.equal(JSON.parse(fs.readFileSync(marker)).hashes["inject-main.cjs"], "new");
+  assert.equal(JSON.parse(fs.readFileSync(marker)).hashes["inject-main.cjs"], nextDigest);
 });
