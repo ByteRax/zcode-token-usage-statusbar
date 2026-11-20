@@ -53,7 +53,7 @@ For the Web remote status bar, install [the receiver userscript](https://raw.git
 - `/uninstall-overlay` — removes the status bar, keeps the opt-out marker, keeps personal config.
 - There is no switch to disable auto-install (always on); use `/uninstall-overlay` to keep the query tools only.
 - `"answer_rate_line": false` — drop the per-answer rate line (takes effect on the next prompt).
-- `"enhance_enabled": false`: turn off **Prompt enhance button** under **⚙ → Prompt enhancement** to hide the composer button and prevent new tests.
+- `"enhance_enabled": false` — turn off **Prompt enhance button** under **⚙ → Prompt enhancement** to hide the composer button and prevent new tests.
 - `"restart_notice": false` — stop the update/pending-restart red badge on the status-bar gear and the "Plugin updates" entry (command-line output and failure guidance are unaffected).
 - `"quota_enabled": false` — stop quota queries and hide the plan-quota chip (credentials are then never read).
 - `"auto_compact_patch": false` — turn off the auto-compact context threshold injection (on by default since v188; the ⚙ switch is preferred). Patches the client engine (allow-listed per build) so the auto-compact trigger becomes a configurable percentage; turning it off restores the engine bytes. Desktop client only; the terminal CLI is unaffected.

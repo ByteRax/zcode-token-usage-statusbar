@@ -1641,11 +1641,66 @@ test('enhancement switch waits for save and keeps the last broadcast value on fa
   assert.equal(run.disabled, false);
   assert.equal(timers.size, 0);
 
+  context.stale = () => true;   // a stale closure must not settle the save at all
+  toggle.checked = false;
+  change({ target: toggle });
+  const feedbackLenAtStale = feedback.length, forgottenLenAtStale = forgotten.length;
+  requests[3].done({ ok: true });
+  assert.equal(feedback.length, feedbackLenAtStale, 'a stale closure must not surface feedback');
+  assert.equal(timers.size, 1, 'the stale closure must not clear the pending timer');
+  assert.equal(toggle.disabled, true);
+  assert.equal(forgotten.length, forgottenLenAtStale, 'the stale closure must not forget the in-flight id');
+  context.stale = () => false;
+  requests[3].done({ ok: true });   // the same receipt settles once the generation check passes
+  assert.equal(toggle.disabled, false);
+  assert.equal(timers.size, 0);
+  assert.deepEqual(forgotten.at(-1), 'save-4');
+
+  context.inactive = () => true;   // an inactive panel settles silently
+  toggle.checked = false;
+  change({ target: toggle });
+  const feedbackLenAtInactive = feedback.length;
+  requests[4].done({ ok: false });
+  assert.equal(feedback.length, feedbackLenAtInactive, 'an inactive panel suppresses feedback');
+  assert.equal(timers.size, 0);
+  assert.equal(toggle.disabled, false);
+  assert.deepEqual(forgotten.at(-1), 'save-5');
+  context.inactive = () => false;
+
   context.mobileMode = true;
   change({ target: toggle });
-  assert.equal(requests.length, 3, 'the mobile page cannot submit this setting');
+  assert.equal(requests.length, 5, 'the mobile page cannot submit this setting');
   assert.equal(toggle.disabled, true);
   assert.equal(run.disabled, true);
+});
+
+test('disposeOverlay clears a pending enhancement save timer before the regular teardown', () => {
+  const disposeSource = sliceOverlay('  function disposeOverlay() {', '  window.__zusageDispose = disposeOverlay;',
+    { file: 'src/overlay/03-deterministic-turns-and-verbs.js' });
+  const cleared = [];
+  const context = {
+    disposed: false,
+    state: { enhancePending: { enabled: false, timer: 7, id: 'save-x' } },
+    pluginRequestCallbacks: null,
+    bootTimer: 1, coordinatorTimer: 2, quotaSelectionsSig: 'x',
+    instances: [],
+    clearTimeout: id => cleared.push(['t', id]),
+    clearInterval: id => cleared.push(['i', id]),
+    pluginRequest() { return ''; },
+    cleanupRateTip() {}, cleanupGitTip() {}, closeEnhanceHistoryFull() {}, hideSubTip() {},
+    mpModalDispose: null, cleanupDeterministic() {},
+    document: { removeEventListener() {} },
+    subTipDocOver: () => {}, subTipDocOut: () => {},
+    subTip: { parentElement: null },
+    window: {},
+  };
+  vm.runInNewContext(disposeSource + '\ndisposeOverlay();', context);
+  assert.deepEqual(cleared.slice(0, 2), [['t', 7], ['t', 1]], 'the pending save timer clears first, then bootTimer');
+  assert.equal(context.state.enhancePending, null);
+  assert.equal(context.disposed, true);
+  const len = cleared.length;
+  vm.runInNewContext('disposeOverlay();', context);
+  assert.equal(cleared.length, len, 'a second dispose is a no-op');
 });
 
 test('syncPanel restores the full-path toggle and tolerates its absence', () => {
