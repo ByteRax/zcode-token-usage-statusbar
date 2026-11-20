@@ -956,8 +956,15 @@ def _inspect_deploy(asar_path):
             asset_path = target["asset"]
             original = _read(stream, nodes, base, asset_path)
             if MARKER not in original and _digest(original) != target["sha256"]:
-                return "result", {"status": "skipped-unknown", "version": version,
-                                  "detail": "asset hash mismatch for pinned version (host build drift)"}
+                # 同版本字节漂移（宿主对同版本号重 build）先走 derive_target 严格结构
+                # 推导：混淆区未轮换时四项唯一校验与表外版本同一强度，通过则按推导
+                # 指纹打桥；推导不过仍 fail-closed，detail 保留漂移与拒绝原因供诊断。
+                try:
+                    target = derive_target(version, original, asset_path, set(nodes))
+                except BridgeError as error:
+                    return "result", {"status": "skipped-unknown", "version": version,
+                                      "detail": "asset hash mismatch for pinned version (host build drift); "
+                                                "derive refused: " + str(error)}
         else:
             modules = {path: _read(stream, nodes, base, path) for path in
                        sorted(path for path in nodes if AUTO_ASSET_RE.fullmatch(path))}
@@ -999,7 +1006,21 @@ def _inspect_deploy(asar_path):
                                   "detail": "auto-derivation ambiguous across renderer assets"}
             target = derived[0]
             asset_path, original = target["asset"], modules[target["asset"]]
-    _original_module(original, target)
+    try:
+        _original_module(original, target)
+    except BridgeError:
+        # 桥在而 pinned 指纹校验不过 = 前次按推导指纹打的兜底桥（原始字节漂移）。
+        # 剥桥后结构推导命中、且按推导指纹重打的整模块逐字节等于现状（覆盖属性
+        # 串与桥块，移植自其它版本资产的桥——形状合法、names 映射错误——在此拦
+        # 截），才认定为已部署；否则维持 tampered 语义上抛。
+        if MARKER not in original:
+            raise
+        stripped = _strip_auto_bridge(original)
+        derived = derive_target(version, stripped, asset_path, set(nodes))
+        if transform_module(stripped, "patch", derived) != original:
+            raise BridgeError("Bridge marker/content tampered")
+        return "result", {"status": "present", "version": version,
+                          "detail": "bridge already deployed (derived fingerprint)"}
     modified = transform_module(original, "patch", target)
     if modified == original:
         return "result", {"status": "present", "version": version, "detail": "bridge already deployed"}
@@ -1012,8 +1033,9 @@ def ensure_deployed(asar_path):
     与 rewrite_asar（CLI/测试，只输出到工作区/临时目录）不同，本函数就是为写
     安装目录设计的：借用 patch_install 同一把 app.asar.zusage.lock 跨进程锁，
     输出临时文件在 asar 同目录后 os.replace 原子换。任何失败都不抛出——桥只是
-    实时统计的增强，绝不影响安装/更新主流程。表内版本严格按指纹；表外版本
-    先走 derive_target 的严格结构推导，校验不过按 fail-closed 跳过。受保护目录
+    实时统计的增强，绝不影响安装/更新主流程。表内版本严格按指纹，同版本字节
+    漂移（宿主重 build）先走 derive_target 结构推导兜底；表外版本同样先走
+    derive_target 的严格结构推导，校验不过按 fail-closed 跳过。受保护目录
     拿不到锁写权限时先做只读判定：确定无需写盘（present/skipped-unknown）直接
     返回真实状态，确需写入才报 skipped-error（带 permission 标记，见 issue #67/#247）。
     返回状态：
@@ -1115,15 +1137,25 @@ def _inspect_remove(asar_path):
             original = _read(stream, nodes, base, asset_path)
             if MARKER not in original:
                 return "result", {"status": "absent", "version": target["version"], "detail": "no bridge present"}
-            restored = transform_module(original, "remove")
+            try:
+                restored = transform_module(original, "remove")
+            except BridgeError:
+                # pinned 指纹校验不过的桥 = 前次按推导指纹打的兜底桥（原始字节漂移）：
+                # 剥桥后结构推导命中、且按推导指纹重打的整模块逐字节等于现状（覆盖
+                # 属性串与桥块），才放行剥离；否则维持 tampered 语义上抛。
+                restored = _strip_auto_bridge(original)
+                derived = derive_target(version, restored, asset_path, set(nodes))
+                if transform_module(restored, "patch", derived) != original:
+                    raise BridgeError("Bridge marker/content tampered")
     return "remove", (before, base, nodes, header, version, auto, asset_path, original, restored)
 
 
 def remove_deployed(asar_path):
     """卸载链对称清理：只剥离本项目的桥，其余内容不动。
 
-    表内版本按指纹逐版本识别；表外版本（自动推导补的桥）按模板剥离桥块与
-    属性串。与 ensure_deployed 同样的锁/原子替换/不抛出约定，状态 dict 同构：
+    表内版本按指纹逐版本识别（同版本字节漂移的兜底桥走剥桥+推导验证对称
+    剥离）；表外版本（自动推导补的桥）按模板剥离桥块与属性串。与
+    ensure_deployed 同样的锁/原子替换/不抛出约定，状态 dict 同构：
     常规路径的读取与判定都在锁内（锁拿不到写权限时按只读判定放行，见
     ensure_deployed），发布前复核 source fingerprint，避免用锁外旧布局写坏归档。"""
     try:

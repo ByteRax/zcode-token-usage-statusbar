@@ -61,7 +61,10 @@ const PROLOGUE_V1 = (() => {
 /* 登记表：客户端升级后引擎字节变化，必须实测新 SHA 并在此补条目（renderer_bridge
  * HOST_TARGETS 同款维护模型）；表外版本拒绝补丁并明示，绝不盲打。滚动 ANCHOR/REPLACEMENT
  * 到新版本时，旧条目必须同步改为 anchorFor/replacementFor 显式字面量——只有表首条目
- * 允许引用常量，否则旧条目会静默继承新版本锚点（tests/engine-patch.test.cjs 锁表守护）。 */
+ * 允许引用常量，否则旧条目会静默继承新版本锚点（tests/engine-patch.test.cjs 锁表守护）。
+ * sha 未登记但桌面 build 前缀匹配登记条目时，按锚点串全文件唯一命中兜底注入（锚点是
+ * 完整代码表达式，结构验证替代指纹预检，与 renderer_bridge derive 同哲学）；锚点
+ * 不在/多处仍拒绝并明示，等登记跟上。 */
 const ENGINE_TARGETS = [
   {
     build: "3.19.0",
@@ -210,15 +213,24 @@ function createEnginePatcher(opts) {
       log("patch prologue migrated: " + t2.build);
       return set("applied", null, { build: t2.build });
     }
-    const target = ENGINE_TARGETS.find((t) => t.engineSha256 === sha);
+    let target = ENGINE_TARGETS.find((t) => t.engineSha256 === sha);
+    let anchorFallback = false;
     if (!target) {
       /* issue #191：桌面 build 仍在登记表（如 3.17.2.9661 匹配 3.17.2）而引擎 sha 脱钩，
        * =引擎文件被供应商/CLI 侧单独热更，与"全新桌面版本"区分开供 ⚙ 面板明示。
-       * 前缀匹配按点分界，"3.17.20" 不得误配 "3.17.2"。fail-closed 不变，仅附注。 */
+       * 前缀匹配按点分界，"3.17.20" 不得误配 "3.17.2"。
+       * 同 build 字节漂移兜底：判定区混淆符号未轮换时锚点串全文件唯一命中，按该
+       * 条目注入——字节手术点与登记版本一致，结构验证替代指纹预检；符号已轮换
+       * （锚点不在/多处）仍 fail-closed 明示，等待登记。 */
       const dv = typeof opts.appVersion === "string" ? opts.appVersion : "";
       const drift = ENGINE_TARGETS.find((t) => t.build && (dv === t.build || dv.startsWith(t.build + ".")));
-      return set("unsupported_build", "engine sha " + sha.slice(0, 12) + " not in ENGINE_TARGETS",
-        { drifted: drift ? drift.build : null });
+      if (drift && text.split(drift.anchor).length - 1 === 1) {
+        target = drift;
+        anchorFallback = true;
+      } else {
+        return set("unsupported_build", "engine sha " + sha.slice(0, 12) + " not in ENGINE_TARGETS",
+          { drifted: drift ? drift.build : null });
+      }
     }
     if (text.includes(PROLOGUE_PREFIX)) {
       // 幂等：本补丁两处编辑同一次写盘，prologue 在而替换体不在=外来/半打补丁，不接手
@@ -245,7 +257,8 @@ function createEnginePatcher(opts) {
       if (!after.includes(PROLOGUE_PREFIX) || !after.includes(target.replacement)) return set("error", "verify_failed");
     } catch (e) { return set("error", e.message); }
     writeSentinel({ patched: true, build: target.build, engineSha256: sha });
-    log("patch applied: " + target.build + " (" + sha.slice(0, 12) + ")");
+    log((anchorFallback ? "patch applied via anchor fallback: " : "patch applied: ") +
+      target.build + " (" + sha.slice(0, 12) + ")");
     return set("applied", null, { build: target.build });
   }
 

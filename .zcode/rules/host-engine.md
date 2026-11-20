@@ -6,7 +6,7 @@
 
 ## 1. 宿主代码形态与取证
 
-- 桌面引擎是编译产物：macOS 桌面为 `/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`，混淆符号随版本轮换，无可编辑源码级文件；改宿主行为只能走 bundle 补丁（SHA 白名单 + `use strict` 后 prologue 注入，数值类改动可热生效，契约见 install-release/engine-patch 侧）。
+- 桌面引擎是编译产物：macOS 桌面为 `/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`，混淆符号随版本轮换，无可编辑源码级文件；改宿主行为只能走 bundle 补丁（SHA 白名单优先 + `use strict` 后 prologue 注入，数值类改动可热生效；sha 未登记但桌面 build 前缀匹配登记条目时按锚点串全文件唯一命中兜底注入——结构验证替代指纹预检，混淆符号轮换即拒绝，契约见 install-release/engine-patch 侧）。引擎是否更新过以 `glm/.pre-acthreshold-*` 官方备份哈希对账为准，不按文件 mtime 判断（打补丁写盘会刷新 mtime）。
 - 本机有宿主 monorepo 源码 `/Users/smzdm/Projects/AI/ZCode`（`apps/zcode-cli`）：system prompt sections 在 `packages/core/src/context/`（builder.ts 组装，契约文档 `docs/design/v2/loop/system-prompt-contract.md`）。审计 system prompt 或 grep bundle 找不到定义时，先查 monorepo 源码再回 bundle 定位。AGENTS.md 内容经 system-reminder 注入、**不进** system 块。
 
 ## 2. 宿主机制事实

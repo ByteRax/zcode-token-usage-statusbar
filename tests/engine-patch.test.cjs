@@ -126,17 +126,49 @@ test("ensure refuses engines whose sha is not in ENGINE_TARGETS (fail-closed, by
 });
 
 /* issue #191：桌面 build 仍在登记表而引擎 sha 脱钩 = 引擎文件被供应商/CLI 侧单独
- * 热更。drifted 只是给 ⚙ 面板的附注，fail-closed 判定本身不变（仍 unsupported_build）。 */
-test("unsupported_build 附 drifted：桌面 build 已登记而引擎 sha 不同（引擎被单独热更）", () => {
-  const s = setup({ fixture: Buffer.from(makeFixture().toString("utf8") + "/* drift-a */\n"), appVersion: "3.17.2.9661" });
+ * 热更/重 build。判定区混淆符号未轮换（锚点串全文件唯一命中）时按登记条目兜底
+ * 注入——结构验证替代指纹预检，与 renderer_bridge derive 同哲学；符号已轮换
+ * （锚点不在/多处）仍 unsupported_build，drifted 只是给 ⚙ 面板的附注。 */
+test("sha 脱钩但锚点唯一命中：按 build 前缀匹配的登记条目兜底注入", () => {
+  // build 用 9.9.9：3.17.2 会先命中出厂条目（其锚点不在夹具里，兜底必拒绝）
+  const s = setup({ fixture: Buffer.from(makeFixture().toString("utf8") + "/* drift-a */\n"), appVersion: "9.9.9.1" });
   try {
-    // 只登记 build 号（sha 用无关字节）：drifted 的前提是引擎 sha 不在表内
+    // 只登记 build 号（sha 用无关字节）：兜底的前提是引擎 sha 不在表内
     const t = registerTarget(Buffer.from("drift-a-marker-unrelated"));
-    t.build = "3.17.2";
-    assert.equal(s.patcher.ensure(), "unsupported_build");
-    assert.equal(s.patcher.status().drifted, "3.17.2");
-    assert.match(s.patcher.status().lastError, /not in ENGINE_TARGETS/);
+    t.build = "9.9.9";
+    assert.equal(s.patcher.ensure(), "applied");
+    const patched = fs.readFileSync(s.enginePath, "utf8");
+    assert.ok(patched.includes(PROLOGUE), "prologue 注入");
+    assert.ok(patched.includes(t.replacement), "判定点改道");
+    assert.equal(s.patcher.status().state, "applied");
+    assert.equal(s.patcher.status().build, "9.9.9");
+    // 哨兵记录打补丁前的漂移 sha（与登记表对照即知是兜底注入）；幂等走 prologue 识别
+    assert.equal(JSON.parse(fs.readFileSync(path.join(s.runtime, "engine-patch.json"), "utf8")).build, "9.9.9");
+    assert.equal(s.patcher.ensure(), "applied");
   } finally { s.cleanup(); }
+});
+
+test("sha 脱钩且锚点被轮换（不在/多处）：仍 unsupported_build 附 drifted", () => {
+  const rotated = "n=ZZe(e.bufferTokens)??YYo;return Math.max(0,t-n)";
+  const gone = setup({ fixture: makeFixture({ anchor: rotated }), appVersion: "9.9.9.1" });
+  try {
+    const t1 = registerTarget(Buffer.from("drift-gone-unrelated"));
+    t1.build = "9.9.9";
+    assert.equal(gone.patcher.ensure(), "unsupported_build");
+    assert.equal(gone.patcher.status().drifted, "9.9.9");
+    assert.match(gone.patcher.status().lastError, /not in ENGINE_TARGETS/);
+  } finally { gone.cleanup(); }
+  const dup = Buffer.from(
+    '#!/usr/bin/env node\n"use strict";var wXi=1;\n' +
+    "function q(e){let t=X(e)," + ANCHOR + "}\n" +
+    "function r(e){let t=Y(e)," + ANCHOR + "}\n/* dup */\n");
+  const many = setup({ fixture: dup, appVersion: "9.9.9.1" });
+  try {
+    const t2 = registerTarget(Buffer.from("drift-many-unrelated"));
+    t2.build = "9.9.9";
+    assert.equal(many.patcher.ensure(), "unsupported_build");
+    assert.equal(many.patcher.status().drifted, "9.9.9");
+  } finally { many.cleanup(); }
 });
 
 test("unsupported_build 不附 drifted：桌面 build 本身不在登记表（全新版本）", () => {
@@ -150,6 +182,22 @@ test("unsupported_build 不附 drifted：桌面 build 本身不在登记表（�
   } finally { s.cleanup(); }
 });
 
+test("出厂条目兜底：四段 appVersion + 判定区符号未轮换 → 按出厂登记注入", () => {
+  // issue #191 真实形态：引擎被单独热更但判定区混淆符号未轮换，出厂 3.17.2
+  // 条目（cke/jBo）直接兜底，无需自注册条目；restore 往返字节精确。
+  const cke = "n=cke(e.bufferTokens)??jBo;return Math.max(0,t-n)";
+  const s = setup({ fixture: Buffer.from(makeFixture({ anchor: cke }).toString("utf8") + "/* hot-update */\n"), appVersion: "3.17.2.9661" });
+  try {
+    assert.equal(s.patcher.ensure(), "applied");
+    const patched = fs.readFileSync(s.enginePath, "utf8");
+    assert.ok(patched.includes(PROLOGUE), "prologue 注入");
+    assert.ok(patched.includes("n=cke(e.bufferTokens)??jBo;return (globalThis." + MARK + "&&globalThis." + MARK + "(t,n))??Math.max(0,t-n)"), "判定点改道");
+    assert.equal(s.patcher.status().build, "3.17.2");
+    assert.equal(s.patcher.restore(), "off");
+    assert.deepEqual(fs.readFileSync(s.enginePath), s.original);
+  } finally { s.cleanup(); }
+});
+
 test("build 前缀匹配按点分界：3.17.20 不误配 3.17.2", () => {
   const s = setup({ fixture: Buffer.from(makeFixture().toString("utf8") + "/* drift-c */\n"), appVersion: "3.17.20.1" });
   try {
@@ -158,16 +206,26 @@ test("build 前缀匹配按点分界：3.17.20 不误配 3.17.2", () => {
     assert.equal(s.patcher.ensure(), "unsupported_build");
     assert.equal(s.patcher.status().drifted, null);
   } finally { s.cleanup(); }
+  // 中段命中（includes 变异会误配）：首段不是登记 build 即不匹配
+  const mid = setup({ fixture: Buffer.from(makeFixture().toString("utf8") + "/* drift-c2 */\n"), appVersion: "13.17.2.9661" });
+  try {
+    const t2 = registerTarget(Buffer.from("drift-c2-marker-unrelated"));
+    t2.build = "3.17.2";
+    assert.equal(mid.patcher.ensure(), "unsupported_build");
+    assert.equal(mid.patcher.status().drifted, null);
+  } finally { mid.cleanup(); }
 });
 
 test("drifted 不跨调用残留：状态离开 unsupported_build 即清空", () => {
-  const s = setup({ fixture: Buffer.from(makeFixture().toString("utf8") + "/* drift-d */\n"), appVersion: "3.17.2.9661" });
+  // 夹具用轮换符号 + build 用 9.9.9：确保第一步兜底不命中仍走 unsupported_build
+  const rotated = "n=ZZf(e.bufferTokens)??YYp;return Math.max(0,t-n)";
+  const s = setup({ fixture: makeFixture({ anchor: rotated }), appVersion: "9.9.9.1" });
   try {
     const driftBuild = registerTarget(Buffer.from("drift-marker-unrelated-bytes"));
-    driftBuild.build = "3.17.2";
+    driftBuild.build = "9.9.9";
     assert.equal(s.patcher.ensure(), "unsupported_build");
-    assert.equal(s.patcher.status().drifted, "3.17.2");
-    registerTarget(fs.readFileSync(s.enginePath));   // 引擎字节登记后可正常打补丁
+    assert.equal(s.patcher.status().drifted, "9.9.9");
+    registerTarget(fs.readFileSync(s.enginePath), rotated);   // 引擎字节登记后可正常打补丁
     assert.equal(s.patcher.ensure(), "applied");
     assert.equal(s.patcher.status().drifted, null);
   } finally { s.cleanup(); }

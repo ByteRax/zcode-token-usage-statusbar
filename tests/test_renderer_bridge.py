@@ -589,6 +589,91 @@ class DeriveTests(unittest.TestCase):
         self.assertIn("'registry': 'hf'", after.stdout)
 
 
+class PinnedDriftFallbackTests(unittest.TestCase):
+    """表内版本资产字节漂移（宿主对同版本号重 build）：derive 结构推导兜底。
+
+    登记条目钉「重 build 前」的官方字节，asar 里放漂移后的重 build——deploy 走
+    derive 兜底打桥、幂等走剥桥推导识别、卸载对称剥离，推导不过仍 fail-closed。"""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix='bridge-drift-')
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.derived = bridge.derive_target(bridge.HOST_VERSION, RICH, bridge.ASSET, set(RICH_PARTS))
+        pinned = dict(self.derived, sha256=hashlib.sha256(RICH).hexdigest())
+        pinned.pop('derived', None)
+        self.pin = patch.object(bridge, 'HOST_TARGETS', [pinned])
+        self.pin.start()
+        self.addCleanup(self.pin.stop)
+        self.drift = b'/*rebuilt*/' + RICH
+        self.target = self.root / 'app.asar'
+        archive(self.target, self.drift, bridge.HOST_VERSION, RICH_PARTS)
+
+    def test_drift_falls_back_to_derive_then_present_then_remove(self):
+        result = bridge.ensure_deployed(self.target)
+        self.assertEqual(result['status'], 'patched', result)
+        self.assertIn(bridge.MARKER, read(self.target))
+        self.assertIn(bridge.pane_attributes(self.derived), read(self.target))
+        # 幂等：兜底桥的 present 识别（pinned 校验不过时剥桥→推导验证）
+        again = bridge.ensure_deployed(self.target)
+        self.assertEqual(again['status'], 'present', again)
+        self.assertIn('derived fingerprint', again['detail'])
+        # 卸载对称：剥桥还原漂移原字节
+        removed = bridge.remove_deployed(self.target)
+        self.assertEqual(removed['status'], 'removed', removed)
+        self.assertEqual(read(self.target), self.drift)
+        self.assertEqual(bridge.ensure_deployed(self.target)['status'], 'patched')
+
+    def test_drift_with_unverifiable_shape_stays_fail_closed(self):
+        anchor = b'"data-testid":hb(WRe,e),"data-session-id":t??`draft`,'
+        broken = self.drift.replace(anchor, anchor + anchor)
+        bad = self.root / 'bad.asar'
+        archive(bad, broken, bridge.HOST_VERSION, RICH_PARTS)
+        result = bridge.ensure_deployed(bad)
+        self.assertEqual(result['status'], 'skipped-unknown', result)
+        self.assertIn('host build drift', result['detail'])
+        self.assertIn('derive refused', result['detail'])
+        self.assertEqual(read(bad), broken)
+
+    def test_unverifiable_bytes_under_bridge_stay_fail_closed(self):
+        # 剥桥成功但剩余内容不可推导（既漂移又被改坏 store 形状）：卸载与幂等
+        # 识别都 fail-closed，不写盘——钉住剥桥后必须过 derive 复核这半步。
+        self.assertEqual(bridge.ensure_deployed(self.target)['status'], 'patched')
+        patched = read(self.target)
+        tampered = patched.replace(b'getState(){return this.state}', b'')
+        bad = self.root / 'bad2.asar'
+        archive(bad, tampered, bridge.HOST_VERSION, RICH_PARTS)
+        self.assertEqual(bridge.ensure_deployed(bad)['status'], 'skipped-error')
+        self.assertEqual(bridge.remove_deployed(bad)['status'], 'skipped-error')
+        self.assertEqual(read(bad), tampered)
+
+    def test_transplanted_bridge_from_other_generation_stays_fail_closed(self):
+        # 移植桥：锚点/属性串合法、剥桥可推导，但桥块是其它代际指纹生成的字节
+        # （names 映射错误）——重打整模块比对必须拦下，幂等与卸载都拒绝。
+        self.assertEqual(bridge.ensure_deployed(self.target)['status'], 'patched')
+        patched = read(self.target)
+        start, end = patched.index(bridge.BEGIN), patched.index(bridge.END) + len(bridge.END)
+        transplanted = (patched[:start] + bridge.bridge_code(bridge.NEWEST)[1:-1] +
+                        patched[end:])
+        bad = self.root / 'bad3.asar'
+        archive(bad, transplanted, bridge.HOST_VERSION, RICH_PARTS)
+        self.assertEqual(bridge.ensure_deployed(bad)['status'], 'skipped-error')
+        self.assertEqual(bridge.remove_deployed(bad)['status'], 'skipped-error')
+        self.assertEqual(read(bad), transplanted)
+
+    def test_rebound_pane_attributes_stay_fail_closed(self):
+        # 属性串改绑（桥块合法、scope 归属映射错误）：重打整模块比对是唯一防线，
+        # 幂等与卸载都拒绝——钉住「整模块逐字节等于现状」不被降级为块级比对。
+        self.assertEqual(bridge.ensure_deployed(self.target)['status'], 'patched')
+        patched = read(self.target)
+        tampered = patched.replace(b'"data-zusage-pane-id":e,', b'"data-zusage-pane-id":t,', 1)
+        bad = self.root / 'bad4.asar'
+        archive(bad, tampered, bridge.HOST_VERSION, RICH_PARTS)
+        self.assertEqual(bridge.ensure_deployed(bad)['status'], 'skipped-error')
+        self.assertEqual(bridge.remove_deployed(bad)['status'], 'skipped-error')
+        self.assertEqual(read(bad), tampered)
+
+
 class EnsureDeployedTests(unittest.TestCase):
     """插件安装链的 in-place 部署 API：真实读写临时 asar，不碰真机安装。"""
 
