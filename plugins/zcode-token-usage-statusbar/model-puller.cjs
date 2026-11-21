@@ -2044,6 +2044,9 @@ function createModelPuller(opts) {
     const data = readProviderCfg();
     const rule = data ? findRule(data, providerId) : null;
     const direct = o.enhanceProvider && typeof o.enhanceProvider === "object" ? o.enhanceProvider : null;
+    /* 设置页「从宿主选择」直连：zcode.z.ai 路由的 host 公告携带 deviceMid（resolveEnhanceHost），
+     * 直连请求同样必须带 X-Device-Mid（review R3 复审 A 相邻 MAJOR）。 */
+    const directDeviceMid = direct && typeof direct.deviceMid === "string" ? direct.deviceMid.trim() : "";
     const planSrc = direct ? null : PLAN_SOURCES[String(providerId || "")];
     if (!direct && !planSrc && !rule) return { ok: false, kind: "provider", error: "provider not found" };
     const cfg = direct ? { access: { type: "api-key", apiKey: direct.apiKey }, api: { type: direct.protocol, baseUrl: direct.baseUrl } } : effectiveRuleConfig(rule);
@@ -2174,7 +2177,7 @@ function createModelPuller(opts) {
           }
           if (!res.ok) {
             let errorDetail = "";
-            try { errorDetail = maskSecrets(String(await readEnhanceBody(res)), legKey || apiKey).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "").slice(0, 500); } catch (e) { }   // 必须在取消响应体之前读取；正文过 maskSecrets（本腿凭据，R3-A/D）防凭据回显
+            try { errorDetail = maskSecrets(String(await readEnhanceBody(res)), legKey).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "").slice(0, 500); } catch (e) { }   // 必须在取消响应体之前读取；正文过 maskSecrets（必传本腿凭据，R3-A/D——无兜底，漏传即暴露而非静默错脱敏）
             if (res && res.body && typeof res.body.cancel === "function") {
               try { Promise.resolve(res.body.cancel()).catch(() => { }); } catch (e) { }
             }
@@ -2203,7 +2206,7 @@ function createModelPuller(opts) {
       }
       return lastFail;
     };
-    let result = await runAttempts(buildRequest(baseUrl, apiKey, zcodeSession ? zcodeSession.deviceMid : null), apiKey, 2, "primary");
+    let result = await runAttempts(buildRequest(baseUrl, apiKey, zcodeSession ? zcodeSession.deviceMid : directDeviceMid), apiKey, 2, "primary");
     if (planSrc && isBigmodelPlan && result && !result.ok && (result.kind === "path" || result.status === 401)) {
       const primaryHost = (() => { try { return new URL(baseUrl).hostname.toLowerCase(); } catch (e) { return ""; } })();
       if (/(^|\.)zcode\.z\.ai$/.test(primaryHost)) {
@@ -2233,24 +2236,25 @@ function createModelPuller(opts) {
       if (/team/.test(String(providerId))) return null;
       if (!planTokenOf(providerId)) return null;
       const isBigmodel = planSrc.fam === "bigmodel";
-      let apiKey = isBigmodel ? planEntryKeyOf(providerId) : planKeyOf(providerId);
-      if (isBigmodel && !apiKey) {
-        /* GLr 时代（specs/plan-glr-credential.md）：按路由分流——zcode.z.ai 的会话凭据
-         * （zcodejwttoken+设备号）同步可得，列表直接认；bigmodel.cn 的换发是异步网络
-         * 调用，同步列表门只认 memo 内的活 token（首次换发前不列，默认模式增强不受影响）。 */
-        const base = planBaseUrl(providerId);
-        const isZcode = /(^|\.)zcode\.z\.ai$/.test((() => { try { return new URL(base).hostname.toLowerCase(); } catch (e) { return ""; } })());
-        if (isZcode) {
-          const sess = readZcodeSessionCred();
-          if (sess) apiKey = sess.token;
-        } else {
-          apiKey = glrMemoToken();
-        }
+      const base = planBaseUrl(providerId);
+      const isZcode = isBigmodel && /(^|\.)zcode\.z\.ai$/.test((() => { try { return new URL(base).hostname.toLowerCase(); } catch (e) { return ""; } })());
+      /* zcode.z.ai 路由仅认会话 JWT（与 enhanceText 同语义，review R3 复审 A）：entry key
+       * 属 open.bigmodel.cn 端点、无设备头打 zcode 恒 400——会话不可得即公告表值路由。 */
+      let zcodeSession = null;
+      let apiKey = "";
+      if (isZcode) {
+        zcodeSession = readZcodeSessionCred();
+        if (zcodeSession) apiKey = zcodeSession.token;
+      } else {
+        apiKey = isBigmodel ? planEntryKeyOf(providerId) : planKeyOf(providerId);
+        if (isBigmodel && !apiKey) apiKey = glrMemoToken();
       }
-      if (!apiKey) return null;
+      if (!apiKey) return null;   // zcode 路由无会话即不公告（默认模式仍经 enhanceText 迁移表值路由可用）
       const entry = readV2BuiltinEntry(planSrc);
       if (!isBigmodel && entry && entry.enabled === false) return null;   // bigmodel 已由 planEntryKeyOf 判定
-      return { providerId: String(providerId), baseUrl: planBaseUrl(providerId), protocol: "anthropic-messages", apiKey: apiKey, plan: true };
+      /* deviceMid 随 host 公告：设置页「从宿主选择」直连（enhanceProvider）路径补
+       * X-Device-Mid（review R3 复审 A 相邻 MAJOR——74503d7 起直连缺头对 zcode 路由恒 400）。 */
+      return { providerId: String(providerId), baseUrl: base, protocol: "anthropic-messages", apiKey: apiKey, deviceMid: zcodeSession ? zcodeSession.deviceMid : undefined, plan: true };
     }
     const data = readProviderCfg(), rule = data ? findRule(data, providerId) : null;
     if (!rule || !modelPullerRuleAllowed(rule)) return null;

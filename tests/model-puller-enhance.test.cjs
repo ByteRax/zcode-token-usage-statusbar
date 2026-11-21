@@ -1265,6 +1265,7 @@ test("R3-RECIPE-1: enc:-shaped session JWT is never sent; fails closed to GLr/pl
     "zcodejwttoken": "enc:v1:still.cipher.text",   // 敌意/双重包裹信封
     [GLR_LOC_KEY]: "enc:loc-1",
   }));
+  writeRuntimeBuiltin(dir, "3.19.1", "https://zcode.z.ai/api/v1/zcode-plan/anthropic");   // 必须让 zcode 会话路由真被走到（review R2-B：缺此行锁空转）
   const calls = [];
   const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: async (url, requestOpts) => { calls.push({ url, opts: requestOpts }); return url === GLR_EXCHANGE_URL ? { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { enabled: true, accessToken: "glr-tok-1" } }) } : sseRes(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']); }, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: path.join(dir, "credentials.json"), decryptValue: (enc) => (enc === "enc:loc-1" ? GLR_LOC_JSON : String(enc).indexOf("enc:oauth-") === 0 ? "glr-oauth-1" : null), hostVersion: "3.19.1" });
   const r = await mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
@@ -1308,4 +1309,19 @@ test("R3: fallback leg runs a single attempt (wall-clock bound)", async () => {
   assert.equal(r.ok, false);
   assert.equal(r.kind, "path", "double failure keeps the primary diagnostic");
   assert.equal(f.calls.filter((c) => c.url.indexOf("/v1/messages") > 0).length, 2, "primary 405 (1, non-retry) + fallback 500 (1, single-attempt cap); old code retried the 500 for 3");
+});
+
+test("R3: host-source direct path carries X-Device-Mid from the announced host (adjacent-MAJOR lock)", async () => {
+  const f = glrFixture({});
+  const host = f.mp.resolveEnhanceHost("account:bigmodel-start-plan");
+  assert.equal(host.baseUrl, "https://zcode.z.ai/api/v1/zcode-plan/anthropic");
+  assert.equal(host.deviceMid, "dev-mid-1", "session host announces its device mid");
+  const r = await f.mp.enhanceText("enhance-custom", "GLM-5.3-Flash", "直连草稿", {
+    enhanceProvider: { apiKey: host.apiKey, baseUrl: host.baseUrl, protocol: host.protocol, deviceMid: host.deviceMid },
+  });
+  assert.equal(r.ok, true, "direct path works on the zcode route: " + JSON.stringify(r).slice(0, 160));
+  const msg = f.calls.find((c) => c.url.indexOf("/v1/messages") > 0);
+  assert.equal(msg.url, "https://zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages");
+  assert.equal(msg.opts.headers.Authorization, "Bearer zc-session-jwt-1");
+  assert.equal(msg.opts.headers["X-Device-Mid"], "dev-mid-1", "direct requests carry the announced device mid (was the 400 dead-end)");
 });
