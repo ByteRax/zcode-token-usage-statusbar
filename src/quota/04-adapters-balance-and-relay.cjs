@@ -785,11 +785,16 @@ function normalizeStepfun(body) {
   const pct = usedPct != null ? usedPct : ((total - remaining) / total) * 100;
   /* remaining 为 null/undefined/空串的桶不被过滤（JS 里 null >= 0 为 true），落下面
    * remaining == null 的 parse_error 按 30 分钟退避自愈，优于对在订账号误冻结 noPlan；
-   * 负 remaining（透支形状，官方文档未载）在过滤条件被剔除 → noPlan。resets_at_ms：
-   * 数字毫秒直传，非空字符串过 Date.parse 门（对齐 ollama 的单适配器内敛门——端点改版
-   * 回垃圾串不冒充重置时间）。 */
+   * total 为 null/空串（无法产出任何窗口）与负 remaining（透支形状，官方文档未载）在
+   * 过滤条件被剔除 → noPlan。resets_at_ms：数字毫秒直传；全数字字符串转 Number 恢复
+   * （官方 total/remaining 用整数字符串防精度，毫秒值可能同款——低于 1e11 视为非毫秒
+   * 垃圾串丢弃）；其余非空字符串过 Date.parse 门（对齐 ollama 的单适配器内敛门——端点
+   * 改版回垃圾串不冒充重置时间）。 */
   const resetRaw = resetOf(pick.resets_at_ms);
-  const resetsAt = typeof resetRaw === "string" && Number.isNaN(Date.parse(resetRaw)) ? null : resetRaw;
+  const resetsAt = typeof resetRaw === "string"
+    ? (/^\d+$/.test(resetRaw) ? (Number(resetRaw) >= 1e11 ? Number(resetRaw) : null)
+      : (Number.isNaN(Date.parse(resetRaw)) ? null : resetRaw))
+    : resetRaw;
   const out = { label: "StepFun", kind: "plan",
     /* resets_at_ms 是月度 Credit 重置（真重置语义才填 resetsAt）；缺失（实测 Max 快照
      * 不带该字段）不拿订阅到期冒充——到期时间单独落 plan.validEnd。 */

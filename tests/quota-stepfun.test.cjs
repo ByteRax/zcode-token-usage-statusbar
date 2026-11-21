@@ -127,6 +127,30 @@ test("stepfun: normalize — resets_at_ms lands on window; used_percent missing 
     quota: { credit_buckets: [ { type: "subscription", total: "8000000000", remaining: "5028152640", resets_at_ms: "not-a-date" } ] },
   });
   assert.equal(badResetStr.windows.monthly.resetsAt, null, "resets_at_ms 垃圾串过不了 Date.parse 门");
+
+  const isoReset = Q.normalizeStepfun({
+    plan: { state: "known", name: "x" },
+    quota: { credit_buckets: [ { type: "subscription", total: "8000000000", remaining: "5028152640", resets_at_ms: "2027-01-01T00:00:00.000Z" } ] },
+  });
+  assert.equal(isoReset.windows.monthly.resetsAt, "2027-01-01T00:00:00.000Z", "可解析日期串过门后原样透传");
+
+  const numericStrReset = Q.normalizeStepfun({
+    plan: { state: "known", name: "x" },
+    quota: { credit_buckets: [ { type: "subscription", total: "8000000000", remaining: "5028152640", resets_at_ms: "1796865309000" } ] },
+  });
+  assert.equal(numericStrReset.windows.monthly.resetsAt, 1796865309000, "全数字字符串转 Number 恢复（官方防精度写法可能同款）");
+
+  const junkNumReset = Q.normalizeStepfun({
+    plan: { state: "known", name: "x" },
+    quota: { credit_buckets: [ { type: "subscription", total: "8000000000", remaining: "5028152640", resets_at_ms: "2030" } ] },
+  });
+  assert.equal(junkNumReset.windows.monthly.resetsAt, null, "低于毫秒量级的短数字串不冒充重置时间");
+
+  const longName = Q.normalizeStepfun({
+    plan: { state: "known", name: "N".repeat(60) },
+    quota: { credit_buckets: [ { type: "subscription", total: "8000000000", remaining: "5028152640" } ] },
+  });
+  assert.equal(longName.plan.productName.length, 40, "plan.name 截 40 字");
 });
 
 test("stepfun: non-subscription bucket falls back; empty buckets → noPlan; inconsistent shape parse_error", () => {
@@ -135,6 +159,30 @@ test("stepfun: non-subscription bucket falls back; empty buckets → noPlan; inc
     quota: { credit_buckets: [ { type: "topup", total: "400000000", remaining: "100000000", used_percent: 75 } ] },
   });
   assert.equal(topup.windows.monthly.percent, 75, "无 subscription 桶时取首个有效桶兜底展示");
+
+  const subFirst = Q.normalizeStepfun({
+    plan: { state: "known", name: "x" },
+    quota: { credit_buckets: [ { type: "topup", total: "400000000", remaining: "100000000", used_percent: 75 },
+      { type: "subscription", total: "8000000000", remaining: "4000000000", used_percent: 50 } ] },
+  });
+  assert.equal(subFirst.windows.monthly.percent, 50, "subscription 桶优先于加油包桶（月窗=订阅月池）");
+
+  assert.throws(() => Q.normalizeStepfun({
+    plan: { state: "known", name: "x" },
+    quota: { credit_buckets: [ { type: "subscription", total: "8000000000", remaining: null } ] },
+  }), (e) => e.code === "parse_error", "remaining 为 null 的桶不被过滤（null >= 0 为 true），落 parse_error");
+
+  const zeroTotal = Q.normalizeStepfun({
+    plan: { state: "known", name: "x" },
+    quota: { credit_buckets: [ { type: "subscription", total: "0", remaining: "0" } ] },
+  });
+  assert.deepEqual(zeroTotal, { noPlan: true }, "total=0 桶被过滤（无法产出窗口）");
+
+  const overdraft = Q.normalizeStepfun({
+    plan: { state: "known", name: "x" },
+    quota: { credit_buckets: [ { type: "subscription", total: "8000000000", remaining: "-5" } ] },
+  });
+  assert.deepEqual(overdraft, { noPlan: true }, "负 remaining（透支形状）被过滤 → noPlan");
 
   const empty = Q.normalizeStepfun({
     plan: { state: "known", name: "x" },

@@ -20,9 +20,9 @@
 ## 3. 归一化契约（normalizeStepfun）
 
 - **额度桶**：`credit_buckets[]` 过滤 `total > 0` 且 `remaining >= 0`（整数字符串经共享 `num()` 解析；官方以整数字符串防 JS 精度损失，档位 ≤ 2e10 Credit < 2^53 按 Number 解析安全）；`type:"subscription"` 是套餐月池，无 subscription 桶时取首个有效桶兜底展示（加油包桶同构，未实测校准）。
-- **月窗**：`percent` 优先取服务端 `used_percent`（已用% 口径，`clampPct` 钳 [0,100]，0 是合法值直取），缺失按 `(total−remaining)/total` 自算（过滤保证 total > 0，无除零）；`resetsAt` 只取 `resets_at_ms`（月度 Credit 发放重置）——数字毫秒直传，非空字符串过 `Date.parse` 门（ollama 同款单适配器内敛门），缺失/null（实测 Max 快照不带该字段）落 null，**绝不拿订阅到期冒充重置时间**。
+- **月窗**：`percent` 优先取服务端 `used_percent`（已用% 口径，`clampPct` 钳 [0,100]，0 是合法值直取），缺失按 `(total−remaining)/total` 自算（过滤保证 total > 0，无除零）；`resetsAt` 只取 `resets_at_ms`（月度 Credit 发放重置）——数字毫秒直传；全数字字符串转 Number 恢复（低于 1e11 视为非毫秒垃圾串丢弃）；其余非空字符串过 `Date.parse` 门（ollama 同款单适配器内敛门），缺失/null（实测 Max 快照不带该字段）落 null，**绝不拿订阅到期冒充重置时间**。
 - **订阅到期**：`plan.subscription.expires_at_ms` 单独落 `plan.validEnd`（本地时区日历日 `yyyy-MM-dd`）；`plan.name` 截 40 字进 `productName`。
-- **fail-closed**：体/plan/quota 非对象 → `parse_error`；无有效桶（含 `credit_buckets` 缺失/空数组、负 remaining 的透支形状——官方文档未载）→ `{noPlan:true}` 冻结；`remaining > total` 或桶内 `remaining` 为 null/undefined/空串（JS `null >= 0` 为 true 不被过滤）→ `parse_error`——对在订账号按 30 分钟退避自愈，优于误冻结 noPlan。
+- **fail-closed**（形状检查只作用于产出月窗的被选中桶，其余无效桶由过滤剔除）：体/plan/quota 非对象 → `parse_error`；无有效桶（含 `credit_buckets` 缺失/空数组、`total` 为 null/空串、负 remaining 的透支形状——官方文档未载）→ `{noPlan:true}` 冻结；被选中桶 `remaining > total` 或其 `remaining` 为 null/undefined/空串（JS `null >= 0` 为 true 不被过滤）→ `parse_error`——对在订账号按 30 分钟退避自愈，优于误冻结 noPlan。
 - Credit 按订阅月发放、当期剩余到期清零不结转；分时扣减（高峰 2 倍）是服务端结算规则，不影响快照读数。
 
 ## 4. 与既有链的边界
@@ -33,4 +33,4 @@
 ## 5. 验证边界
 
 - 测试 `tests/quota-stepfun.test.cjs`：官方文档示例形状全链（Token-Plus，`resets_at_ms:null`）、真值 resetsAt 与 validEnd、used_percent 直取/自算/钳制/零值、垃圾串 resets 门、加油包兜底、noPlan 冻结经调度器、401 auth_failed、凭据三级优先、detect 负例与预设注册。
-- 真账号证据（Pro used_percent 38.5625 / Max 快照无 `resets_at_ms` / 401 / 桌面 chip「月 98%」剩余口径）来自贡献者（外部），维护者未独立复验；加油包桶与团队/组织账号未覆盖。
+- 真账号证据（Pro used_percent 37.148092（≈37.1%）/ Max 快照无 `resets_at_ms` / 401 / 桌面 chip「月 98%」剩余口径）来自贡献者（外部），维护者未独立复验；官方文档示例快照（Token-Plus，used_percent 38.5625、`resets_at_ms:null`）另有测试夹具锁定；加油包桶与团队/组织账号未覆盖。
