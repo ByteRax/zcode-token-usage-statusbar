@@ -857,7 +857,7 @@
       var acv = input && input.value != null ? String(input.value).trim() : "";
       var acMode = modeSel && modeSel.value === "tokens" ? "tokens" : "percent";
       var bad = acv !== "" && !parseAcValue(acv, acMode);
-      var msg = (bad ? (acMode === "tokens" ? L("⚠ Token 数需 ≥100k，支持 k/M 后缀（如 300k）", "⚠ Tokens must be ≥100k; k/M suffix allowed (e.g. 300k)")
+      var msg = (bad ? (acMode === "tokens" ? L("⚠ Token 数需 ≥100k，支持 k/M 后缀（如 300k）；数字低于 100k 失焦自动取 100k", "⚠ Tokens must be ≥100k; k/M suffix allowed (e.g. 300k); numbers below 100k are clamped to 100k on blur")
         : L("⚠ 百分比需在 30-99 之间", "⚠ Percent must be between 30 and 99")) : "") +
         (warn ? (bad ? "\n" : "") + warn : "");
       node.textContent = text + (msg ? "\n" + msg : "");
@@ -886,10 +886,17 @@
       var input = panel.querySelector(".zu-ac-value");
       if (!input) return;
       var value = input.value.trim();
-      /* v194→v426：按下拉模式解析（percent 30-99；tokens ≥100k 支持 k/M），非法不提交（状态行实时提示），避免非法值写进 autocompact.json */
+      /* v194→v426：按下拉模式解析（percent 30-99；tokens ≥100k 支持 k/M），非法不提交（状态行实时提示），避免非法值写进 autocompact.json。
+       * v438：tokens 模式纯数字/带 kM 后缀但低于 100k（如 65、65k）失焦自动钳到 100k 回显并提交（用户规格）；非数字仍提示不提交。 */
       var modeSel = panel.querySelector(".zu-ac-mode");
-      var parsed = parseAcValue(value, modeSel && modeSel.value === "tokens" ? "tokens" : "percent");
-      if (value !== "" && !parsed) { showSettingsFeedback(true); return; }
+      var acIsTokens = !!(modeSel && modeSel.value === "tokens");
+      var parsed = parseAcValue(value, acIsTokens ? "tokens" : "percent");
+      if (value !== "" && !parsed) {
+        if (acIsTokens && /^\d+(?:\.\d+)?[kKmM]?$/.test(value)) {
+          input.value = formatAcValue("tokens", 100000);
+          parsed = { mode: "tokens", value: 100000 };
+        } else { showSettingsFeedback(true); return; }
+      }
       showSettingsFeedback(false, true);
       /* v188：留空=跟随引擎默认（default，value 不上线）；v420：有值按解析模式提交（percent/tokens） */
       pluginRequest("autocompact-config", { mode: parsed.mode, value: parsed.mode === "default" ? undefined : parsed.value }, function (result) {
