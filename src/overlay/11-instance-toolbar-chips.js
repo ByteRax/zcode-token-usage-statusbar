@@ -1105,6 +1105,19 @@
       enhanceInFlightId = myId;
 
     }
+    /* v417：增强历史两处「设置」入口（悬停面板 footer / 全量面板 header）的实例侧执行体——
+     * panel/gear/activateSettingsSec 是本闭包私有，01 分片的文档级壳层不可直接引用（曾
+     * ReferenceError 被事件分发吞掉静默失效）。挂到入口按钮 __zuOpenEnhSettings 供壳层分发
+     * （chip.__zuOpenSub 先例），增强按钮右键菜单同路径复用本函数。 */
+    function openEnhSettings() {
+      if (inactive()) return;
+      hideEnhanceTip();
+      closeEnhanceHistoryFull();
+      if (!panel.classList.contains("open")) gear.click();
+      activateSettingsSec("enhance-provider");
+      var nav = panel.querySelector('.zu-navitem[data-sec="enhance-provider"]');
+      if (nav) nav.focus();
+    }
     function enhancePromptBtn() {
       if (inactive() || state.enhanceEnabled === false) { restoreEnhanceBtn(true); return; }
       var btn = null;
@@ -1127,11 +1140,8 @@
           b.className = "zu-enhance";
           b.addEventListener("click", onEnhanceClick);
           b.addEventListener("contextmenu", function (e) {
-            e.preventDefault(); e.stopPropagation(); hideEnhanceTip();
-            if (!panel.classList.contains("open")) gear.click();
-            activateSettingsSec("enhance-provider");
-            var nav = panel.querySelector('.zu-navitem[data-sec="enhance-provider"]');
-            if (nav) nav.focus();
+            e.preventDefault(); e.stopPropagation();
+            openEnhSettings();
           });
           /* v344 悬停 tooltip（rstTip 同款）：Esc 键盘可达契约 + focus/blur 对齐 */
           b.addEventListener("mouseenter", function () { showEnhanceTip(this); });
@@ -1142,6 +1152,8 @@
         }
         enhanceBtnCache = b;
       }
+      /* v417：钩子每次对账都刷新（复用的旧节点可能带旧代闭包，壳层分发前以 inactive() 自卫） */
+      b.__zuOpenEnhSettings = openEnhSettings;
       /* 位置兜回：紧贴锚点左侧；回退锚（用量圆环）场景额度 chip（.zu-quota）恒贴圆环，
        * 按钮落在 chip 更左侧（跳过连续 quota 段找插入点），两节点同锚互不挤位振荡。
        * 真实 DOM 的 children 是 HTMLCollection（无 indexOf），只能 length+下标遍历。 */

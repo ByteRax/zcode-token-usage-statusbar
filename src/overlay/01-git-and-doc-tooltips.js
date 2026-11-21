@@ -1554,15 +1554,18 @@
     document.body.appendChild(dlg);
     try { ok.focus(); } catch (e) { }
   }
-  /* 打开提示词增强设置分区：齿轮按钮官方完整开启路径（焦点/互斥/高度重测）+ 导航分区切换，
-   * 与增强按钮右键同款（v350 增强历史双入口设置按钮共用） */
+  /* 打开提示词增强设置分区：panel/gear/activateSettingsSec 都是 spawnInstance 闭包私有，
+   * 本层（文档级壳）直接引用会 ReferenceError 且被事件分发吞掉——v350 起两个「设置」入口
+   * 在真实页面静默失效而 VM 切片全绿（ctx 桩注入了同名绑定，v417 修）。沿入口按钮上实例侧
+   * 挂的 __zuOpenEnhSettings 钩子分发（chip.__zuOpenSub 先例）；全量历史面板的设置入口在
+   * tip 已收时用打开面板那一刻记录的入口。 */
   function openEnhanceSettings() {
+    var entry = enhanceTipFor;   // 先取入口再收 tip：hideEnhanceTip 会清 enhanceTipFor
     hideEnhanceTip();
     closeEnhanceHistoryFull();
-    if (!panel.classList.contains("open")) gear.click();
-    activateSettingsSec("enhance-provider");
-    var nav = panel.querySelector('.zu-navitem[data-sec="enhance-provider"]');
-    if (nav) nav.focus();
+    var fn = entry && typeof entry.__zuOpenEnhSettings === "function" ? entry.__zuOpenEnhSettings : null;
+    if (!fn && ehFull && typeof ehFull.__zuOpenEnhSettings === "function") fn = ehFull.__zuOpenEnhSettings;
+    if (fn) fn();
   }
   /* ---------- 查看全部历史浮层 ---------- */
   var ehFull = null, ehFullCache = null, ehFullSource = "all", ehFullQuery = "", ehFullPage = 0, ehFullPageSize = 20, ehFullSortField = "createdAt", ehFullSortDir = -1, ehFullProvider = "", ehFullModel = "", ehFullTime = "all", ehExpandedId = null;
@@ -1593,6 +1596,7 @@
       document.body.appendChild(ehFull);
     }
     ehFull.style.display = "flex";
+    if (enhanceTipFor && enhanceTipFor.__zuOpenEnhSettings) ehFull.__zuOpenEnhSettings = enhanceTipFor.__zuOpenEnhSettings;   // v417：面板内设置按钮按打开时的入口分发（此后 tip 随 mouseleave 已收）
     renderEnhanceHistoryFull(true);
     document.addEventListener("keydown", ehFullKeydown, true);
     window.addEventListener("resize", ehFullOnResize);
