@@ -170,6 +170,18 @@ function createModelPuller(opts) {
     const key = entry && entry.options && typeof entry.options.apiKey === "string" ? entry.options.apiKey.trim() : "";
     return (key && key.indexOf("enc:") !== 0 ? key : null) || planTokenOf(providerId);
   }
+  /* v2 条目明文 key 门（issue #429）：条目存在、未显式禁用、key 非空且非 enc: 才算可用。
+   * planKeyOf 不查 enabled（individual/team 维持既有「条目 key 优先、OAuth 兜底」口径），
+   * 仅 start-plan 增强的 fail-fast 门与增强宿主列表用它判定——start-plan 的 OAuth 兜底
+   * 对 messages 端点必败（v344 实测 500），照取 disabled 条目的 key 又恒 429 1113。 */
+  function planEntryKeyOf(providerId) {
+    const src = PLAN_SOURCES[String(providerId || "")];
+    if (!src || !src.v2ConfigKey || !customCfgPath) return null;
+    const entry = readV2BuiltinEntry(src);
+    if (!entry || entry.enabled === false) return null;
+    const key = entry.options && typeof entry.options.apiKey === "string" ? entry.options.apiKey.trim() : "";
+    return key && key.indexOf("enc:") !== 0 ? key : null;
+  }
   /* 拉模型列表门控（issue #336 附加发现 2）：PLAN_SOURCES 从 1 条扩到 6 条后，共享凭据的
    * team/start 条目若照单全列会出现 3 行近似重复——规则：宿主 v2 config 显式 enabled:false
    * 不列；同 v2 条目（宿主对 individual/team 共用同一 builtin key）或同 credKey 家族

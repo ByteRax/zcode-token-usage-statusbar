@@ -1068,7 +1068,9 @@
               }, 0);
           } else {
             /* kind 转可读文案；主进程不回传上游错误正文（仅 status/ kind），error 字段只承载
-             * 插件自身的原因短语 */
+             * 插件自身的原因短语。kind 优先走 kindMap（i18n 层），error 兜底承载插件/主进程
+             * 短语——issue #429 起 plan_auth/balance 不带 error 短语，靠 kindMap 本地化；
+             * 旧渲染端读新 kind 落 error 原文或 kind 串，热重载后即本地化。 */
             if (res && res.kind === "cancelled") { enhanceSetPhase("idle"); return; }   // 取消回包静默收口（正常路径已被身份门丢弃，此处兜 restore 摘除路径）
             var kindMap = {
               server: L("模型服务返回错误", "Model server error"),
@@ -1076,6 +1078,8 @@
               bad_request: L("请求被模型服务拒绝", "Rejected by model service"),
               path: L("服务端点不存在", "Endpoint not found"),
               rate: L("请求过于频繁，稍后再试", "Rate limited; try later"),
+              balance: L("套餐额度或资源包不足，无法增强", "Insufficient plan quota or resource pack"),
+              plan_auth: L("当前套餐暂不支持增强（无可用的对话凭据）", "This plan has no usable credential; enhancement unavailable"),
               auth: L("凭据无效或已过期", "Credential invalid or expired"),
               timeout: L("增强请求超时", "Enhance timed out"),
               network: L("网络请求失败", "Network request failed"),
@@ -1088,7 +1092,7 @@
               invalid_input: L("草稿长度超出范围", "Draft length out of range"),
               invalid_model: L("当前模型不可用", "Current model unavailable"),
             };
-            var reason = res && res.error ? String(res.error) : (res && res.kind && kindMap[res.kind]) || (res && res.kind) || "enhance failed";
+            var reason = (res && res.kind && kindMap[res.kind]) || (res && res.error ? String(res.error) : "") || (res && res.kind) || "enhance failed";
             enhanceWarn(L("增强失败：", "Enhance failed: ") + reason);
             enhanceSetPhase("idle");
           }

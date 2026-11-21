@@ -114,8 +114,13 @@ var PLAN_SOURCES = {
      * config 注释打 zcode.z.ai + 会话 JWT 是双重错误（网关错+凭据错 → 401/3012 WAF）；
      * zcode.z.ai 仅承载计费（billing/balance，zcodejwttoken+X-Device-Mid）。
      * 注意：纯 start-plan（无 coding plan config 条目）账号回落 OAuth 直连会被 500
-     * 拒（v344 实测），此场景需走 GLr 项目密钥发放流程，未实现前诚实报 auth。 */
+     * 拒（v344 实测），此场景需走 GLr 项目密钥发放流程，未实现前诚实报 auth。
+     * issue #429：宿主 coding-plan 条目 disabled（纯 Start Plan）时该条目 key 无资源包，
+     * 照取会恒 429 1113「余额不足或无可用资源包」——start-plan 增强只认可用 v2 条目 key
+     * （planEntryKeyOf 门）：无 key 零网络 fail-fast 报 plan_auth，增强宿主列表不列。
+     * zai 两条 start-plan 端点未实测，维持诚实尝试，不加此门。 */
     v2ConfigKey: "builtin:bigmodel-coding-plan",
+    enhanceRequiresV2Key: true,
   },
 };
 
