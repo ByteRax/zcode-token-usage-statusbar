@@ -2055,7 +2055,7 @@ function createModelPuller(opts) {
     }
     const external = o.signal && typeof o.signal.addEventListener === "function" ? o.signal : null;
     const isBigmodelPlan = !!planSrc && planSrc.fam === "bigmodel";
-    const baseUrl = String((planSrc ? planBaseUrl(providerId) : api.baseUrl) || "").trim().replace(/\/+$/, "");
+    let baseUrl = String((planSrc ? planBaseUrl(providerId) : api.baseUrl) || "").trim().replace(/\/+$/, "");
     /* zcode.z.ai 会话网关（specs/plan-glr-credential.md 补篇）：GLr accessToken 是
      * bigmodel.cn 项目域凭据，打该网关恒 401（2026-11-21 真机实测）——该路由必须用
      * zcodejwttoken（会话 JWT）+ X-Device-Mid（额度链 zcode-start 同款口径）。 */
@@ -2066,12 +2066,17 @@ function createModelPuller(opts) {
         /* GLr 时代凭据序（specs/plan-glr-credential.md）：v2 条目明文 key（3.18 宿主/旧机器）
          * → 按路由分流：zcode.z.ai 用会话 JWT+设备号；bigmodel.cn 用 GLr 换发 token
          * （3.19.x 宿主运行时解析对等）→ 均不可用诚实报 plan_auth。
-         * OAuth 直连兜底已移除——v344 实测被网关 500 code 1234 拒，绝不该作为 fallback 重现。 */
+         * OAuth 直连兜底已移除——v344 实测被网关 500 code 1234 拒，绝不该作为 fallback 重现。
+         * 会话凭据不可得时 GLr token 直接改走表值路由（bigmodel.cn）为主路由。 */
         apiKey = planEntryKeyOf(providerId);
         if (!apiKey) {
           if (isZcodeSessionRoute) {
             zcodeSession = readZcodeSessionCred();
             if (zcodeSession) apiKey = zcodeSession.token;
+            if (!apiKey) {
+              apiKey = await planGLrTokenOf(providerId, external);
+              if (apiKey) baseUrl = String((PLAN_SOURCES[String(providerId)] || {}).baseUrl || baseUrl).trim().replace(/\/+$/, "");
+            }
           } else {
             apiKey = await planGLrTokenOf(providerId, external);
           }
@@ -2089,103 +2094,128 @@ function createModelPuller(opts) {
     }
     if (!baseUrl) return { ok: false, kind: "provider", error: "no base url" };
     if (!apiKey) return { ok: false, kind: "auth", error: planSrc ? "plan token unavailable" : "no api key" };
-    let url = "", body = null;
-    const headers = { "Content-Type": "application/json", "User-Agent": "ZCode" };   // fetchModels 同款 UA：网关拒绝无 UA 请求（实测缺 UA 时 anthropic 端点 500 code 1234）
-    if (zcodeSession) headers["X-Device-Mid"] = zcodeSession.deviceMid;   // zcode.z.ai 必带头（缺头 400 code 3001，额度链同款）
-    if (isOpenCodeGoBaseUrl(baseUrl)) headers["x-opencode-session"] = randomUUID();   // OpenCode Go 路由键，缺失 400 MissingSessionID
     const userContent = enhanceUserContent(text);
-    if (apiType === "openai-chat-completions") {
-      url = baseUrl + "/chat/completions";
-      headers["Authorization"] = "Bearer " + apiKey;
-      body = { model: mid, messages: [{ role: "system", content: ENHANCE_SYSTEM_PROMPT }, { role: "user", content: userContent }], max_tokens: ENHANCE_MAX_TOKENS, stream: false };
-    } else if (apiType === "openai-responses") {
-      url = baseUrl + "/responses";
-      headers["Authorization"] = "Bearer " + apiKey;
-      body = { model: mid, input: [{ role: "system", content: ENHANCE_SYSTEM_PROMPT }, { role: "user", content: userContent }], max_output_tokens: ENHANCE_MAX_TOKENS, stream: false };
-    } else {
-      url = anthropicBaseWithV1(baseUrl) + "/messages";
-      headers["x-api-key"] = apiKey;
-      headers["anthropic-version"] = "2023-06-01";
-      headers["Authorization"] = "Bearer " + apiKey;
-      body = { model: mid, max_tokens: ENHANCE_MAX_TOKENS, system: ENHANCE_SYSTEM_PROMPT, messages: [{ role: "user", content: userContent }], stream: true };
-    }
-    let lastFail = null;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      if (external && external.aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
-      if (attempt) {
-        const aborted = await new Promise((resolve) => {
-          const t = setTimeout(() => { clean(); resolve(false); }, 1200);
-          if (t && typeof t.unref === "function") t.unref();   // 超时兜底定时器契约：不挂起主进程事件循环
-          const onAbort = () => { clean(); resolve(true); };
-          const clean = () => { clearTimeout(t); if (external) external.removeEventListener("abort", onAbort); };
-          if (external) external.addEventListener("abort", onAbort, { once: true });
-          if (external && external.aborted) onAbort();
-        });
-        if (aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
+    const buildRequest = (base, key, deviceMid) => {
+      const headers = { "Content-Type": "application/json", "User-Agent": "ZCode" };   // fetchModels 同款 UA：网关拒绝无 UA 请求（实测缺 UA 时 anthropic 端点 500 code 1234）
+      if (deviceMid) headers["X-Device-Mid"] = deviceMid;   // zcode.z.ai 必带头（缺头 400 code 3001，额度链同款）
+      if (isOpenCodeGoBaseUrl(base)) headers["x-opencode-session"] = randomUUID();   // OpenCode Go 路由键，缺失 400 MissingSessionID
+      const req = { headers: headers };
+      if (apiType === "openai-chat-completions") {
+        req.url = base + "/chat/completions";
+        headers["Authorization"] = "Bearer " + key;
+        req.body = { model: mid, messages: [{ role: "system", content: ENHANCE_SYSTEM_PROMPT }, { role: "user", content: userContent }], max_tokens: ENHANCE_MAX_TOKENS, stream: false };
+      } else if (apiType === "openai-responses") {
+        req.url = base + "/responses";
+        headers["Authorization"] = "Bearer " + key;
+        req.body = { model: mid, input: [{ role: "system", content: ENHANCE_SYSTEM_PROMPT }, { role: "user", content: userContent }], max_output_tokens: ENHANCE_MAX_TOKENS, stream: false };
+      } else {
+        req.url = anthropicBaseWithV1(base) + "/messages";
+        headers["x-api-key"] = key;
+        headers["anthropic-version"] = "2023-06-01";
+        headers["Authorization"] = "Bearer " + key;
+        req.body = { model: mid, max_tokens: ENHANCE_MAX_TOKENS, system: ENHANCE_SYSTEM_PROMPT, messages: [{ role: "user", content: userContent }], stream: true };
       }
-      const ctl = new AbortController();
-      let timedOut = false;
-      const timer = setTimeout(() => { timedOut = true; ctl.abort(); }, ENHANCE_TIMEOUT_MS);
-      if (timer && typeof timer.unref === "function") timer.unref();
-      const onExternalAbort = () => ctl.abort();
-      if (external) external.addEventListener("abort", onExternalAbort, { once: true });
-      try {
+      return req;
+    };
+    const runAttempts = async (req) => {
+      let lastFail = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
         if (external && external.aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
-        const res = await fetchImpl(url, { headers: headers, body: JSON.stringify(body), method: "POST", redirect: "error", signal: ctl.signal });
-        if (res && res.ok) {
-          let value, serverModel, usage;
-          if (apiType === "anthropic-messages") {
-            const stream = await readAnthropicStream(res);
-            value = stream.text; serverModel = stream.serverModel; usage = stream.usage;
-          } else {
-            const raw = await readEnhanceBody(res);
-            let payload;
-            try { payload = JSON.parse(raw); } catch (e) { return { ok: false, kind: "parse", error: "invalid json response" }; }
-            if (!payload || (apiType === "openai-responses" ? payload.status !== "completed" : !(payload.choices && payload.choices[0] && payload.choices[0].finish_reason === "stop")) || (Array.isArray(payload.output) && payload.output.some(item => item && item.status && item.status !== "completed"))) {
-              return { ok: false, kind: "parse", error: "incomplete completion" };
+        if (attempt) {
+          const aborted = await new Promise((resolve) => {
+            const t = setTimeout(() => { clean(); resolve(false); }, 1200);
+            if (t && typeof t.unref === "function") t.unref();   // 超时兜底定时器契约：不挂起主进程事件循环
+            const onAbort = () => { clean(); resolve(true); };
+            const clean = () => { clearTimeout(t); if (external) external.removeEventListener("abort", onAbort); };
+            if (external) external.addEventListener("abort", onAbort, { once: true });
+            if (external && external.aborted) onAbort();
+          });
+          if (aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
+        }
+        const ctl = new AbortController();
+        let timedOut = false;
+        const timer = setTimeout(() => { timedOut = true; ctl.abort(); }, ENHANCE_TIMEOUT_MS);
+        if (timer && typeof timer.unref === "function") timer.unref();
+        const onExternalAbort = () => ctl.abort();
+        if (external) external.addEventListener("abort", onExternalAbort, { once: true });
+        try {
+          if (external && external.aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
+          const res = await fetchImpl(req.url, { headers: req.headers, body: JSON.stringify(req.body), method: "POST", redirect: "error", signal: ctl.signal });
+          if (res && res.ok) {
+            let value, serverModel, usage;
+            if (apiType === "anthropic-messages") {
+              const stream = await readAnthropicStream(res);
+              value = stream.text; serverModel = stream.serverModel; usage = stream.usage;
+            } else {
+              const raw = await readEnhanceBody(res);
+              let payload;
+              try { payload = JSON.parse(raw); } catch (e) { return { ok: false, kind: "parse", error: "invalid json response" }; }
+              if (!payload || (apiType === "openai-responses" ? payload.status !== "completed" : !(payload.choices && payload.choices[0] && payload.choices[0].finish_reason === "stop")) || (Array.isArray(payload.output) && payload.output.some(item => item && item.status && item.status !== "completed"))) {
+                return { ok: false, kind: "parse", error: "incomplete completion" };
+              }
+              value = enhanceUnwrapText(payload);
+              if (typeof payload.model === "string" && payload.model) serverModel = payload.model;
+              const u = payload.usage || {};
+              if (apiType === "openai-responses" && (Number.isFinite(u.input_tokens) || Number.isFinite(u.output_tokens))) usage = { inputTokens: u.input_tokens ?? null, outputTokens: u.output_tokens ?? null, totalTokens: Number.isFinite(u.total_tokens) ? u.total_tokens : (Number.isFinite(u.input_tokens) && Number.isFinite(u.output_tokens) ? u.input_tokens + u.output_tokens : null) };
+              else if (Number.isFinite(u.prompt_tokens) || Number.isFinite(u.completion_tokens)) usage = { inputTokens: Number.isFinite(u.prompt_tokens) ? u.prompt_tokens : null, outputTokens: Number.isFinite(u.completion_tokens) ? u.completion_tokens : null, totalTokens: Number.isFinite(u.total_tokens) ? u.total_tokens : (Number.isFinite(u.prompt_tokens) && Number.isFinite(u.completion_tokens) ? u.prompt_tokens + u.completion_tokens : null) };
             }
-            value = enhanceUnwrapText(payload);
-            if (typeof payload.model === "string" && payload.model) serverModel = payload.model;
-            const u = payload.usage || {};
-            if (apiType === "openai-responses" && (Number.isFinite(u.input_tokens) || Number.isFinite(u.output_tokens))) usage = { inputTokens: u.input_tokens ?? null, outputTokens: u.output_tokens ?? null, totalTokens: Number.isFinite(u.total_tokens) ? u.total_tokens : (Number.isFinite(u.input_tokens) && Number.isFinite(u.output_tokens) ? u.input_tokens + u.output_tokens : null) };
-            else if (Number.isFinite(u.prompt_tokens) || Number.isFinite(u.completion_tokens)) usage = { inputTokens: Number.isFinite(u.prompt_tokens) ? u.prompt_tokens : null, outputTokens: Number.isFinite(u.completion_tokens) ? u.completion_tokens : null, totalTokens: Number.isFinite(u.total_tokens) ? u.total_tokens : (Number.isFinite(u.prompt_tokens) && Number.isFinite(u.completion_tokens) ? u.prompt_tokens + u.completion_tokens : null) };
+            if (external && external.aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
+            if (timedOut) throw Object.assign(new Error("timeout"), { name: "AbortError" });
+            const enhanced = stripEnhanceFences(value, text);
+            if (!enhanced) return { ok: false, kind: "empty", error: "empty completion" };
+            return { ok: true, text: enhanced, model: mid, serverModel: serverModel || mid, usage: usage || undefined };
           }
+          if (!res.ok) {
+            let errorDetail = "";
+            try { errorDetail = maskSecrets(String(await readEnhanceBody(res)), apiKey).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "").slice(0, 500); } catch (e) { }   // 必须在取消响应体之前读取；正文过 maskSecrets 防凭据回显
+            if (res && res.body && typeof res.body.cancel === "function") {
+              try { Promise.resolve(res.body.cancel()).catch(() => { }); } catch (e) { }
+            }
+            if (external && external.aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
+            if (timedOut) throw Object.assign(new Error("timeout"), { name: "AbortError" });
+            lastFail = { ok: false, kind: classifyProbeStatus(res ? res.status : 0), status: res ? res.status : 0, error: "HTTP " + (res ? res.status : 0) };
+            if (balanceEnhanceError(errorDetail)) {
+              /* issue #429：BigModel 1113「余额不足或无可用资源包」按 HTTP 429 返回，与真实
+               * 并发限流同状态码——按错误体分类为 kind "balance"，error 置空让渲染端 kindMap
+               * 给「套餐额度或资源包不足」文案，不再诱导用户当限流重试。确定性失败不重试。 */
+              lastFail.kind = "balance";
+              delete lastFail.error;
+            }
+            if (errorDetail) lastFail.detail = errorDetail;
+            log("enhance http " + lastFail.status + " (" + attempt + ")");
+            if (lastFail.kind !== "server") return lastFail;
+          }
+        } catch (e) {
           if (external && external.aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
-          if (timedOut) throw Object.assign(new Error("timeout"), { name: "AbortError" });
-          const enhanced = stripEnhanceFences(value, text);
-          if (!enhanced) return { ok: false, kind: "empty", error: "empty completion" };
-          return { ok: true, text: enhanced, model: mid, serverModel: serverModel || mid, usage: usage || undefined };
+          if (e && e.enhanceParse) return { ok: false, kind: "parse", error: "invalid or incomplete stream" };
+          lastFail = { ok: false, kind: timedOut ? "timeout" : "network", error: timedOut ? "timeout" : "request failed" };
+        } finally {
+          clearTimeout(timer);
+          if (external) external.removeEventListener("abort", onExternalAbort);
         }
-        if (!res.ok) {
-          let errorDetail = "";
-          try { errorDetail = maskSecrets(String(await readEnhanceBody(res)), apiKey).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "").slice(0, 500); } catch (e) { }   // 必须在取消响应体之前读取；正文过 maskSecrets 防凭据回显
-          if (res && res.body && typeof res.body.cancel === "function") {
-            try { Promise.resolve(res.body.cancel()).catch(() => { }); } catch (e) { }
+      }
+      return lastFail;
+    };
+    let result = await runAttempts(buildRequest(baseUrl, apiKey, zcodeSession ? zcodeSession.deviceMid : null));
+    if (planSrc && isBigmodelPlan && result && !result.ok && (result.kind === "path" || result.status === 401)) {
+      const primaryHost = (() => { try { return new URL(baseUrl).hostname.toLowerCase(); } catch (e) { return ""; } })();
+      if (/(^|\.)zcode\.z\.ai$/.test(primaryHost)) {
+        /* 双路由降级（2026-11-21 真机实测）：zcode.z.ai 对话端点的 WAF 3012 间歇出现
+         * （同形请求曾 200 也曾 405，billing 同头形正常——网关侧状态非客户端可判定）。
+         * 主路由 path/401 时改走 open.bigmodel.cn + GLr token（该端点接受项目域凭据，
+         * individual 全链实测 200；纯 start-plan 账号会得到诚实的 1113 balance 文案）。 */
+        const altBase = String((PLAN_SOURCES[String(providerId)] || {}).baseUrl || "").trim().replace(/\/+$/, "");
+        if (altBase && altBase !== baseUrl && !(external && external.aborted)) {
+          const glr = await planGLrTokenOf(providerId, external);
+          if (glr) {
+            const r2 = await runAttempts(buildRequest(altBase, glr, null));
+            if (r2 && (r2.ok || r2.kind === "balance")) return r2;   // 降级成功或给出更可行动的 balance 文案
+            return result;   // 双败：主路由的 path/401 更具诊断性
           }
-          if (external && external.aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
-          if (timedOut) throw Object.assign(new Error("timeout"), { name: "AbortError" });
-          lastFail = { ok: false, kind: classifyProbeStatus(res ? res.status : 0), status: res ? res.status : 0, error: "HTTP " + (res ? res.status : 0) };
-          if (balanceEnhanceError(errorDetail)) {
-            /* issue #429：BigModel 1113「余额不足或无可用资源包」按 HTTP 429 返回，与真实
-             * 并发限流同状态码——按错误体分类为 kind "balance"，error 置空让渲染端 kindMap
-             * 给「套餐额度或资源包不足」文案，不再诱导用户当限流重试。确定性失败不重试。 */
-            lastFail.kind = "balance";
-            delete lastFail.error;
-          }
-          if (errorDetail) lastFail.detail = errorDetail;
-          log("enhance http " + lastFail.status + " (" + attempt + ")");
-          if (lastFail.kind !== "server") return lastFail;
         }
-      } catch (e) {
-        if (external && external.aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
-        if (e && e.enhanceParse) return { ok: false, kind: "parse", error: "invalid or incomplete stream" };
-        lastFail = { ok: false, kind: timedOut ? "timeout" : "network", error: timedOut ? "timeout" : "request failed" };
-      } finally {
-        clearTimeout(timer);
-        if (external) external.removeEventListener("abort", onExternalAbort);
       }
     }
-    return lastFail;
+    return result;
   }
 
   function resolveEnhanceHost(providerId) {

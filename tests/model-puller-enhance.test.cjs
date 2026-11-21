@@ -905,6 +905,9 @@ function glrFixture(opts) {
       return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, msg: "操作成功", data: { enabled: true, accessToken: o.exchangeToken || "glr-tok-1" } }) };
     }
     if (url.indexOf("/v1/messages") > 0) {
+      const isZcode = url.indexOf("zcode.z.ai") > 0;
+      const st = isZcode ? o.zcodeMessagesStatus : o.bigmodelMessagesStatus;
+      if (st) return { ok: false, status: st, text: async () => (isZcode ? o.zcodeMessagesBody : o.bigmodelMessagesBody) || "" };
       if (o.messagesStatus) return { ok: false, status: o.messagesStatus, text: async () => o.messagesBody || "" };
       return sseRes(sse);
     }
@@ -950,14 +953,25 @@ test("GLr: exchange failures fail closed to plan_auth with zero messages traffic
     assert.equal(f.calls.filter((c) => c.url.indexOf("/v1/messages") > 0).length, 0, "no messages call after exchange failure: " + JSON.stringify(variant));
     if (variant.exchangeStatus) assert.equal(f.exchangeDrops, 1, "non-ok exchange body cancelled: " + JSON.stringify(variant));
   }
-  // zcode.z.ai 会话凭据缺失（补篇）：无 JWT 或无设备号 → plan_auth 零网络
-  for (const variant of [{ noSessionJwt: true }, { noDeviceMid: true }]) {
+  // zcode.z.ai 会话凭据缺失 + 无 location → plan_auth 零网络（无任何可换发凭据）
+  for (const variant of [{ noSessionJwt: true, noLocation: true }, { noDeviceMid: true, noLocation: true }]) {
     const f = glrFixture(variant);
     const r = await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
     assert.equal(r.ok, false, JSON.stringify(variant));
     assert.equal(r.kind, "plan_auth", JSON.stringify(variant));
     assert.equal(f.calls.length, 0, "zero network without session credential: " + JSON.stringify(variant));
   }
+  // 会话凭据缺失但 location 在：GLr 直接改走表值路由（open.bigmodel.cn）为主路由 → 200
+  const fAlt = glrFixture({ noSessionJwt: true });
+  const rAlt = await fAlt.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(rAlt.ok, true, "session-less start-plan rides GLr on open.bigmodel.cn");
+  const altMsg = fAlt.calls.find((c) => c.url.indexOf("/v1/messages") > 0);
+  assert.equal(altMsg.url, "https://open.bigmodel.cn/api/anthropic/v1/messages", "table route is primary when no session cred");
+  assert.equal(altMsg.opts.headers.Authorization, "Bearer glr-tok-1");
+  assert.equal(fAlt.calls.filter((c) => c.url.indexOf("zcode.z.ai") > 0).length, 0, "zcode.z.ai never attempted without session cred");
+  const fAlt2 = glrFixture({ noDeviceMid: true });
+  const rAlt2 = await fAlt2.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(rAlt2.ok, true, "no device mid also rides GLr table route");
 });
 
 test("GLr: individual coding plan rides runtime route too; v2 entry key still wins without exchange (3.18 parity)", async () => {
@@ -1121,6 +1135,34 @@ test("GLr: expired memo drops the sync host list entry and forces re-exchange (r
   } finally {
     Date.now = realNow;
   }
+});
+
+test("GLr: zcode.z.ai 3012 (405) falls back to open.bigmodel.cn + GLr token (dual-route)", async () => {
+  const f = glrFixture({ zcodeMessagesStatus: 405, zcodeMessagesBody: JSON.stringify({ code: 3012, msg: "This client is not supported. Please use the official ZCode client." }) });
+  const r = await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r.ok, true, "dual-route fallback succeeds: " + JSON.stringify(r).slice(0, 160));
+  assert.equal(r.text, "glr 增强");
+  const msgCalls = f.calls.filter((c) => c.url.indexOf("/v1/messages") > 0);
+  assert.equal(msgCalls.length, 2, "primary zcode then fallback bigmodel.cn");
+  assert.equal(msgCalls[0].url, "https://zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages");
+  assert.equal(msgCalls[0].opts.headers.Authorization, "Bearer zc-session-jwt-1");
+  assert.equal(msgCalls[0].opts.headers["X-Device-Mid"], "dev-mid-1");
+  assert.equal(msgCalls[1].url, "https://open.bigmodel.cn/api/anthropic/v1/messages");
+  assert.equal(msgCalls[1].opts.headers.Authorization, "Bearer glr-tok-1", "fallback rides GLr token");
+  assert.equal(msgCalls[1].opts.headers["X-Device-Mid"], undefined, "device mid is zcode.z.ai-only");
+  assert.equal(f.calls.filter((c) => c.url.indexOf("/access_tokens") > 0).length, 1, "exchange fires once for the fallback leg");
+});
+
+test("GLr: dual-route with 1113 on fallback surfaces balance; double failure keeps primary path", async () => {
+  const f = glrFixture({ zcodeMessagesStatus: 405, bigmodelMessagesStatus: 429, bigmodelMessagesBody: JSON.stringify({ error: { code: "1113", message: "[1113][余额不足或无可用资源包,请充值。]" } }) });
+  const r = await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r.ok, false);
+  assert.equal(r.kind, "balance", "fallback 1113 is the actionable outcome for pure start-plan accounts");
+  const f2 = glrFixture({ zcodeMessagesStatus: 405, bigmodelMessagesStatus: 400 });   // 400 非重试类：计数确定
+  const r2 = await f2.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r2.ok, false);
+  assert.equal(r2.kind, "path", "double failure keeps the primary diagnostic");
+  assert.equal(f2.calls.filter((c) => c.url.indexOf("/v1/messages") > 0).length, 2);
 });
 
 test("GLr: same-key envelope swap invalidates memo and re-exchanges to the new apiKeyId (review R2-B1)", async () => {
