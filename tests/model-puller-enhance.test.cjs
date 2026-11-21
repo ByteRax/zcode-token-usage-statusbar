@@ -719,6 +719,15 @@ test("bigmodel start-plan without a usable v2 entry key fails fast before any re
   assert.equal(r3.ok, false);
   assert.equal(r3.kind, "plan_auth");
   assert.equal(seen.length, 0);
+  // 4) 条目 enabled:true 但 apiKey 为空白串：同 fail-fast（第一轮 review MINOR-4）
+  fs.writeFileSync(cfg, JSON.stringify({ provider: {
+    "builtin:bigmodel-coding-plan": { options: { apiKey: "   " }, enabled: true },
+  } }));
+  seen.length = 0;
+  const r4 = await mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r4.ok, false);
+  assert.equal(r4.kind, "plan_auth");
+  assert.equal(seen.length, 0);
 });
 
 test("bigmodel 1113 balance/resource-pack errors are classified as balance, not rate (issue #429)", async () => {
@@ -743,6 +752,19 @@ test("bigmodel 1113 balance/resource-pack errors are classified as balance, not 
   assert.equal(r.error, undefined, "no generic HTTP phrase; overlay kindMap carries the localized message");
   assert.match(r.detail, /余额不足/);
   assert.equal(calls, 1, "balance failures are deterministic; no retry");
+  // 两条检测路径各自独立可用（第一轮 review MINOR-1：正则与 JSON code 分支此前只有合取被锁）
+  const textOnly = async (url) => url === MODELS_DEV_TEST_URL
+    ? { ok: false, status: 503, body: { cancel() { } } }
+    : { ok: false, status: 429, text: async () => "上游网关返回：余额不足或无可用资源包，请充值。" };
+  const mpText = M.createModelPuller({ customCfgPath: file, fetchImpl: textOnly, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: creds, decryptValue: () => "oauth-tok" });
+  const rText = await mpText.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(rText.kind, "balance", "non-JSON body hits the keyword path");
+  const codeOnly = async (url) => url === MODELS_DEV_TEST_URL
+    ? { ok: false, status: 503, body: { cancel() { } } }
+    : { ok: false, status: 429, text: async () => JSON.stringify({ error: { code: "1113", message: "insufficient balance" } }) };
+  const mpCode = M.createModelPuller({ customCfgPath: file, fetchImpl: codeOnly, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: creds, decryptValue: () => "oauth-tok" });
+  const rCode = await mpCode.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(rCode.kind, "balance", "code-only envelope without Chinese keywords hits the JSON path");
 });
 
 test("genuine rate-limit 429 without balance markers stays rate", async () => {

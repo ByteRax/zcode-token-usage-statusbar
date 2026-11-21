@@ -23963,7 +23963,11 @@
               invalid_input: L("草稿长度超出范围", "Draft length out of range"),
               invalid_model: L("当前模型不可用", "Current model unavailable"),
             };
-            var reason = (res && res.kind && kindMap[res.kind]) || (res && res.error ? String(res.error) : "") || (res && res.kind) || "enhance failed";
+            /* 主进程个别 error 短语与 kind 归并后的 kindMap 语义不同（第一轮 review）：providerId
+             * 形状校验失败的 kind invalid_input 会误显「草稿长度超出范围」——按短语先行特判 */
+            var errPhrase = res && res.error ? String(res.error) : "";
+            var reason = (errPhrase === "invalid provider" ? L("供应商身份无效，请重试", "Invalid provider identity") : "")
+              || (res && res.kind && kindMap[res.kind]) || errPhrase || (res && res.kind) || "enhance failed";
             enhanceWarn(L("增强失败：", "Enhance failed: ") + reason);
             enhanceSetPhase("idle");
           }
