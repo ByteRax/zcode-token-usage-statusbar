@@ -767,6 +767,7 @@ function agreedCapabilities(entries, id) {
    * baseUrl 共用——OAuth/换发 token 绝不发第三方（review D-1/A-15 例 hostile 探针口径）。 */
   function officialPlanHostMatch(host, suffixes) {
     host = String(host || "").toLowerCase().replace(/^\[|\]$/g, "");
+    if (!host || host.charCodeAt(0) === 46) return false;   // 空标签（".z.ai"/".bigmodel.cn"）一律拒绝（review R2-A1）
     for (let i = 0; i < suffixes.length; i++) {
       if (host === suffixes[i] || host.endsWith("." + suffixes[i])) return true;
     }

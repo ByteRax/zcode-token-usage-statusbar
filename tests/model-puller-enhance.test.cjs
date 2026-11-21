@@ -879,17 +879,22 @@ function glrFixture(opts) {
   if (o.runtimeBase !== false) writeRuntimeBuiltin(dir, o.runtimeVersion || "3.19.1", o.startPlanBase || "https://zcode.z.ai/api/v1/zcode-plan/anthropic");
   const decryptValue = (enc) => {
     if (enc === "enc:loc-1") return GLR_LOC_JSON;
+    if (enc === "enc:loc-2") return JSON.stringify({ organizationId: "org-9", projectId: "proj-8", apiKeyId: "key-8" });
     if (enc === "enc:loc-bad") return JSON.stringify({ organizationId: "org-bad", projectId: "proj-bad", apiKeyId: "key-bad" });
     if (String(enc).indexOf("enc:oauth-") === 0) return "glr-oauth-" + String(enc).slice(10);
     return null;
   };
   const calls = [];
+  let exchangeDrops = 0;   // 非 ok 换发响应的 body.cancel 计数（dropBody 卫生锁，review R2-B5）
   const sse = ['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"glr 增强"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n'];
   const impl = async (url, requestOpts) => {
     if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
     calls.push({ url, opts: requestOpts });
+    if (url.indexOf("/access_tokens") > 0 && url !== GLR_EXCHANGE_URL) {
+      return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { enabled: true, token: "glr-tok-rotated" } }) };   // 同键换信封后的新 apiKeyId（R2-B1）
+    }
     if (url === GLR_EXCHANGE_URL) {
-      if (o.exchangeStatus) return { ok: false, status: o.exchangeStatus, text: async () => o.exchangeBody || "" };
+      if (o.exchangeStatus) return { ok: false, status: o.exchangeStatus, text: async () => o.exchangeBody || "", body: { cancel() { exchangeDrops++; } } };
       if (o.exchangeDisabled) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { enabled: false, token: "x" } }) };
       if (o.exchangeBadShape) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { token: 42 } }) };
       if (o.exchangeBadCode) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 500, data: { enabled: true, token: "glr-tok-1" } }) };
@@ -903,7 +908,7 @@ function glrFixture(opts) {
     throw new Error("unexpected url " + url);
   };
   const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: path.join(dir, "credentials.json"), decryptValue, hostVersion: "3.19.1" });
-  return { mp, calls, dir, setOauthTag: (t) => { creds["oauth:bigmodel:access_token"] = "enc:oauth-" + t; fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify(creds)); } };
+  return { mp, calls, dir, get exchangeDrops() { return exchangeDrops; }, setOauthTag: (t) => { creds["oauth:bigmodel:access_token"] = "enc:oauth-" + t; fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify(creds)); }, setLocEnvelope: (env) => { creds[GLR_LOC_KEY] = env; fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify(creds)); } };
 }
 
 test("GLr: location + exchange + runtime route serve start-plan enhance without v2 config (3.19.1 parity)", async () => {
@@ -939,11 +944,12 @@ test("GLr: memo reuses token within TTL; oauth change forces re-exchange", async
 
 test("GLr: exchange failures fail closed to plan_auth with zero messages traffic", async () => {
   for (const variant of [{ exchangeStatus: 404 }, { exchangeStatus: 401 }, { exchangeDisabled: true }, { exchangeBadShape: true }, { noLocation: true }]) {
-    const { mp, calls } = glrFixture(variant);
-    const r = await mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+    const f = glrFixture(variant);
+    const r = await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
     assert.equal(r.ok, false, JSON.stringify(variant));
     assert.equal(r.kind, "plan_auth", JSON.stringify(variant));
-    assert.equal(calls.filter((c) => c.url.indexOf("/v1/messages") > 0).length, 0, "no messages call after exchange failure: " + JSON.stringify(variant));
+    assert.equal(f.calls.filter((c) => c.url.indexOf("/v1/messages") > 0).length, 0, "no messages call after exchange failure: " + JSON.stringify(variant));
+    if (variant.exchangeStatus) assert.equal(f.exchangeDrops, 1, "non-ok exchange body cancelled: " + JSON.stringify(variant));
   }
 });
 
@@ -971,7 +977,7 @@ test("GLr: runtime config missing falls back to table baseUrl; highest version d
   assert.equal(ra.ok, true);
   const ma = a.calls.find((c) => c.url.indexOf("/v1/messages") > 0);
   assert.equal(ma.url, "https://open.bigmodel.cn/api/anthropic/v1/messages");
-  const b = glrFixture({ runtimeVersion: "3.18.0", startPlanBase: "https://old.example.com/api/anthropic" });
+  const b = glrFixture({ runtimeVersion: "3.18.0", startPlanBase: "https://open.bigmodel.cn/api/anthropic" });   // 两版本都官方域：本例只锁 semver 排序（review R2-A3）
   writeRuntimeBuiltin(b.dir, "3.19.1", "https://zcode.z.ai/api/v1/zcode-plan/anthropic");
   const rb = await b.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
   assert.equal(rb.ok, true);
@@ -1088,7 +1094,7 @@ test("GLr: wrong envelope code with valid token stays plan_auth; padded token is
   assert.equal(messages.opts.headers.Authorization, "Bearer glr-tok-1", "token trimmed before use");
 });
 
-test("GLr: expired memo drops the sync host list entry (review B-5)", async () => {
+test("GLr: expired memo drops the sync host list entry and forces re-exchange (review B-5/R2-B2)", async () => {
   const f = glrFixture({});
   await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "预热换发");
   assert.equal(f.mp.listEnhanceHosts().some((h) => h.id === "account:bigmodel-start-plan"), true);
@@ -1096,9 +1102,25 @@ test("GLr: expired memo drops the sync host list entry (review B-5)", async () =
   Date.now = () => realNow() + 11 * 60 * 1000;   // 前拨 11 分钟越过 10 分钟 TTL
   try {
     assert.equal(f.mp.listEnhanceHosts().some((h) => h.id === "account:bigmodel-start-plan"), false, "expired memo must not list the host");
+    const rExpired = await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "过期后重试");
+    assert.equal(rExpired.ok, true);
+    assert.equal(f.calls.filter((c) => c.url === GLR_EXCHANGE_URL).length, 2, "expired memo re-exchanges on the enhance path too");
   } finally {
     Date.now = realNow;
   }
+});
+
+test("GLr: same-key envelope swap invalidates memo and re-exchanges to the new apiKeyId (review R2-B1)", async () => {
+  const f = glrFixture();
+  await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "第一次");
+  assert.equal(f.calls.filter((c) => c.url === GLR_EXCHANGE_URL).length, 1);
+  // 宿主同键名重发 location（换 apiKeyId）：信封串变化即失效，重换发打新 key
+  f.setLocEnvelope("enc:loc-2");
+  const r2 = await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "第二次");
+  assert.equal(r2.ok, true);
+  const exchanges = f.calls.filter((c) => c.url.indexOf("/access_tokens") > 0);
+  assert.equal(exchanges.length, 2, "envelope swap re-exchanges");
+  assert.equal(exchanges[1].url, "https://bigmodel.cn/api/biz/v1/organization/org-9/projects/proj-8/api_keys/key-8/access_tokens", "new apiKeyId rides the re-exchange");
 });
 
 test("GLr: foreign-platform runtime dirs are ignored (review B-6)", async () => {
@@ -1109,8 +1131,9 @@ test("GLr: foreign-platform runtime dirs are ignored (review B-6)", async () => 
   fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify({ "oauth:bigmodel:access_token": "enc:oauth-1", [GLR_LOC_KEY]: "enc:loc-1" }));
   const foreignDir = path.join(dir, "runtime", "provider", foreign, "9.9.9", "endpoint-zzz");
   fs.mkdirSync(foreignDir, { recursive: true });
+  /* 干扰数据用白名单内官方域（仅路径不同）：本例只锁平台前缀过滤，与白名单防线不混淆（review R2-A3） */
   fs.writeFileSync(path.join(foreignDir, "zcode-builtin.json"), JSON.stringify({ config: { providerConfigRules: { providerRules: [
-    { providerId: "account:bigmodel-individual-coding-plan", config: { api: { type: "anthropic-messages", baseUrl: "https://evil.com/api/anthropic" } } },
+    { providerId: "account:bigmodel-individual-coding-plan", config: { api: { type: "anthropic-messages", baseUrl: "https://zcode.z.ai/api/foreign-path" } } },
   ] } } }));
   writeRuntimeBuiltin(dir, "3.19.1", "https://zcode.z.ai/api/v1/zcode-plan/anthropic");
   const calls = [];
