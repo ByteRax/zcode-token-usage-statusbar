@@ -199,7 +199,8 @@ test("plan source uses anthropic endpoint + decrypted oauth token", async () => 
   assert.equal(seen[0].body.stream, true);
   assert.equal(seen[0].body.messages[0].role, "user");   // anthropic 路径 user 消息（system 在顶层）
 
-  // 无 v2 config 时回退 OAuth token
+  // 无 v2 config（GLr 时代常态）：OAuth 直连兜底已移除（v344 实测 500 code 1234）；
+  // 本夹具无 location 键 → 零网络 plan_auth（GLr 换发路径由专用用例覆盖）
   fs.rmSync(cfg);
   const seen2 = [];
   const impl2 = async (url, requestOpts) => {
@@ -208,15 +209,17 @@ test("plan source uses anthropic endpoint + decrypted oauth token", async () => 
       seen2.push({ headers: requestOpts.headers });
       return sseRes(['event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"套餐增强"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']);
     }
-    throw new Error("unexpected url " + url);
+    seen2.push({ url });
+    return sseRes(['event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"套餐增强"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']);
   };
   const mp2 = M.createModelPuller({ customCfgPath: file, fetchImpl: impl2, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: creds, decryptValue: () => "plan-oauth-token" });
   const r2 = await mp2.enhanceText(PLAN_ID, "GLM-5.3-FlashX", "写个脚本");
-  assert.equal(r2.ok, true);
-  assert.equal(seen2[0].headers.Authorization, "Bearer plan-oauth-token");   // OAuth 兜底
+  assert.equal(r2.ok, false);
+  assert.equal(r2.kind, "plan_auth");
+  assert.equal(seen2.length, 0, "OAuth token never leaves without a usable v2 key or GLr location");
 });
 
-test("planKeyOf: enc: v2 config key never leaves as plaintext; falls back to oauth or auth (issue #336 review)", async () => {
+test("planKeyOf: enc: v2 config key never leaves as plaintext; GLr era fails closed without location (issue #336 review, GLr update)", async () => {
   const file = tmpCfgPath();
   fs.writeFileSync(file, JSON.stringify({
     config: { providerConfigRules: { providerRules: [{ providerId: PLAN_ID, config: { personalModelIds: ["GLM-5.3-FlashX"] } }] } },
@@ -232,18 +235,18 @@ test("planKeyOf: enc: v2 config key never leaves as plaintext; falls back to oau
     seen.push({ url, headers: requestOpts.headers });
     return sseRes(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']);
   };
-  // enc: 密文不作明文 key → 回退 credentials.json OAuth 明文
+  // enc: 密文不作明文 key；OAuth 直连兜底已随 GLr 时代移除（v344 实测 500 code 1234）——
+  // 无 location 可换发 → plan_auth，密文与 OAuth token 都绝不外发
   const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: capturing, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: creds, decryptValue: () => "plan-oauth-token" });
   const r = await mp.enhanceText(PLAN_ID, "GLM-5.3-FlashX", "草稿");
-  assert.equal(r.ok, true);
-  assert.equal(seen[0].headers.Authorization, "Bearer plan-oauth-token");
-  assert.doesNotMatch(seen[0].headers.Authorization, /enc:/);
-  // OAuth 也解不出 → auth fail-closed 且零网络
-  seen.length = 0;
+  assert.equal(r.ok, false);
+  assert.equal(r.kind, "plan_auth");
+  assert.equal(seen.length, 0, "enc key + no location: zero network, OAuth never sent");
+  // OAuth 也解不出 → plan_auth fail-closed 且零网络（原 kind "auth" 并入 plan_auth 语义）
   const mp2 = M.createModelPuller({ customCfgPath: file, fetchImpl: capturing, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: creds, decryptValue: () => null });
   const r2 = await mp2.enhanceText(PLAN_ID, "GLM-5.3-FlashX", "草稿");
   assert.equal(r2.ok, false);
-  assert.equal(r2.kind, "auth");
+  assert.equal(r2.kind, "plan_auth");
   assert.equal(seen.length, 0, "no network without a usable credential");
 });
 test("fail-closed: http errors classified; classified error stays clean, bounded body goes to detail", async () => {
@@ -658,16 +661,17 @@ test("planListable gating: host disable hides, shared v2 entry dedupes, credKey 
   rows = (await mp.listProviders()).providers;
   assert.deepEqual(rows.map((r) => r.id), ["account:bigmodel-individual-coding-plan", "account:zai-individual-coding-plan"]);
   // 4) 增强宿主列表同样包含凭据可用的套餐源；Start Plan 与个人档分列（计费池不同），team 去重。
-  //    issue #429：无 v2 config 时 bigmodel start-plan 无可用项目 key（OAuth 兜底对 messages
-  //    必败，v344 实测）→ 不列；zai start-plan 端点未实测，维持诚实尝试照列。
+  //    GLr 时代（specs/plan-glr-credential.md）：无 v2 config 时 bigmodel 家族需换发 memo 才列
+  //    （同步列表门不发起网络），本夹具未换发 → bigmodel 两条都不列；zai 维持 OAuth 诚实尝试照列。
   const hosts = mp.listEnhanceHosts();
   const planHosts = hosts.filter((h) => h.id.startsWith('account:'));
   assert.deepEqual(planHosts.map((h) => h.id), [
-    "account:bigmodel-individual-coding-plan", "account:zai-individual-coding-plan",
+    "account:zai-individual-coding-plan",
     "account:zai-start-plan",
   ]);
   for (const h of planHosts) { assert.equal(h.protocol, "anthropic-messages"); assert.ok(h.baseUrl.startsWith("https://")); }
-  assert.equal(mp.resolveEnhanceHost("account:bigmodel-start-plan"), null);   // issue #429：无可用 v2 key 的 start-plan 不提供必败 host
+  assert.equal(mp.resolveEnhanceHost("account:bigmodel-start-plan"), null);   // issue #429：无 v2 key 且无换发 memo 的 start-plan 不提供 host
+  assert.equal(mp.resolveEnhanceHost("account:bigmodel-individual-coding-plan"), null);   // GLr 时代同门（曾靠必败 OAuth 兜底假列）
   const zaiStart = mp.resolveEnhanceHost("account:zai-start-plan");
   assert.ok(zaiStart && zaiStart.apiKey);   // zai 端点未实测，凭据可用即列出（planKeyOf 主进程内解析，不回渲染端）
   assert.equal(mp.resolveEnhanceHost("account:bigmodel-team-coding-plan"), null);   // team 与个人同凭据同端点，不重复列出
@@ -839,4 +843,175 @@ test("zai start-plan without a v2 entry still attempts with oauth (endpoint unte
   assert.equal(r.ok, true);
   assert.equal(seen[0].url, "https://api.z.ai/api/anthropic/v1/messages");
   assert.equal(seen[0].headers.Authorization, "Bearer zai-oauth-tok");
+});
+
+/* ---------- GLr 凭据换发（specs/plan-glr-credential.md）：3.19.1 宿主运行时解析对等 ----------
+ * 宿主 3.19.x 把 builtin 套餐 access 改为 zhipu-account 运行时换发（POST access_tokens，
+ * Bearer OAuth），v2/config.json 不再存在——插件的「条目 key → OAuth 兜底」双路全灭。
+ * 本组用例锁：location 扫描/解密、换发、runtime 权威路由、memo、fail-closed。 */
+
+const GLR_LOCATION_ACCOUNT = "74117772185376524";
+function glrLocationKeyName(origin, family, accountId, team, usageScene, planType) {
+  return "project-key-location:v1:" + encodeURIComponent(JSON.stringify([origin, family, accountId, team, usageScene, planType]));
+}
+const GLR_LOC_KEY = glrLocationKeyName("https://bigmodel.cn", "bigmodel", GLR_LOCATION_ACCOUNT, null, 1, "non-team");
+const GLR_LOC_JSON = JSON.stringify({ organizationId: "org-9", projectId: "proj-8", apiKeyId: "key-7" });
+const GLR_EXCHANGE_URL = "https://bigmodel.cn/api/biz/v1/organization/org-9/projects/proj-8/api_keys/key-7/access_tokens";
+const GLR_RUNTIME_DIR = process.platform === "win32" ? "windows-x86_64" : process.platform === "darwin" ? "darwin-arm64" : "linux-x86_64";
+function writeRuntimeBuiltin(dir, version, startPlanBase) {
+  const p = path.join(dir, "runtime", "provider", GLR_RUNTIME_DIR, version, "endpoint-abc", "zcode-builtin.json");
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ schemaVersion: 1, revision: 44, config: { providerConfigRules: { providerRules: [
+    { providerId: "account:bigmodel-start-plan", config: { api: { type: "anthropic-messages", baseUrl: startPlanBase } } },
+    { providerId: "account:bigmodel-individual-coding-plan", config: { api: { type: "anthropic-messages", baseUrl: "https://open.bigmodel.cn/api/anthropic" } } },
+  ] } } }));
+  return p;
+}
+function glrFixture(opts) {
+  const o = opts || {};
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+  const dir = path.dirname(file);
+  const creds = {};
+  creds["oauth:bigmodel:access_token"] = "enc:oauth-" + (o.oauthTag || "1");
+  if (!o.noLocation) creds[GLR_LOC_KEY] = "enc:loc-1";
+  fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify(creds));
+  if (o.runtimeBase !== false) writeRuntimeBuiltin(dir, o.runtimeVersion || "3.19.1", o.startPlanBase || "https://zcode.z.ai/api/v1/zcode-plan/anthropic");
+  const decryptValue = (enc) => {
+    if (enc === "enc:loc-1") return GLR_LOC_JSON;
+    if (String(enc).indexOf("enc:oauth-") === 0) return "glr-oauth-" + String(enc).slice(10);
+    return null;
+  };
+  const calls = [];
+  const sse = ['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"glr 增强"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n'];
+  const impl = async (url, requestOpts) => {
+    if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
+    calls.push({ url, opts: requestOpts });
+    if (url === GLR_EXCHANGE_URL) {
+      if (o.exchangeStatus) return { ok: false, status: o.exchangeStatus, text: async () => o.exchangeBody || "" };
+      if (o.exchangeDisabled) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { enabled: false, token: "x" } }) };
+      if (o.exchangeBadShape) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { token: 42 } }) };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { enabled: true, token: o.exchangeToken || "glr-tok-1" } }) };
+    }
+    if (url.indexOf("/v1/messages") > 0) {
+      if (o.messagesStatus) return { ok: false, status: o.messagesStatus, text: async () => o.messagesBody || "" };
+      return sseRes(sse);
+    }
+    throw new Error("unexpected url " + url);
+  };
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: path.join(dir, "credentials.json"), decryptValue, hostVersion: "3.19.1" });
+  return { mp, calls, dir, setOauthTag: (t) => { creds["oauth:bigmodel:access_token"] = "enc:oauth-" + t; fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify(creds)); } };
+}
+
+test("GLr: location + exchange + runtime route serve start-plan enhance without v2 config (3.19.1 parity)", async () => {
+  const { mp, calls } = glrFixture();
+  const r = await mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r.ok, true, "enhance should succeed via GLr token: " + JSON.stringify(r).slice(0, 200));
+  assert.equal(r.text, "glr 增强");
+  const exchange = calls.find((c) => c.url === GLR_EXCHANGE_URL);
+  assert.ok(exchange, "exchange request sent");
+  assert.equal(exchange.opts.method, "POST");
+  assert.equal(exchange.opts.headers.Authorization, "Bearer glr-oauth-1");
+  const body = JSON.parse(exchange.opts.body);
+  assert.equal(body.clientType, "zcode");
+  assert.equal(body.clientVersion, "3.19.1");
+  const messages = calls.find((c) => c.url.indexOf("/v1/messages") > 0);
+  assert.equal(messages.url, "https://zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages", "runtime config is the authoritative route for start-plan");
+  assert.equal(messages.opts.headers.Authorization, "Bearer glr-tok-1", "exchanged token rides the messages call, not OAuth");
+  assert.equal(messages.opts.headers["User-Agent"], "ZCode");
+});
+
+test("GLr: memo reuses token within TTL; oauth change forces re-exchange", async () => {
+  const f = glrFixture();
+  await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "第一次");
+  await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "第二次");
+  assert.equal(f.calls.filter((c) => c.url === GLR_EXCHANGE_URL).length, 1, "second enhance reuses memoized token");
+  f.setOauthTag("2");
+  const r3 = await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "第三次");
+  assert.equal(r3.ok, true);
+  assert.equal(f.calls.filter((c) => c.url === GLR_EXCHANGE_URL).length, 2, "oauth fingerprint change re-exchanges");
+  const second = f.calls.filter((c) => c.url === GLR_EXCHANGE_URL)[1];
+  assert.equal(second.opts.headers.Authorization, "Bearer glr-oauth-2");
+});
+
+test("GLr: exchange failures fail closed to plan_auth with zero messages traffic", async () => {
+  for (const variant of [{ exchangeStatus: 404 }, { exchangeStatus: 401 }, { exchangeDisabled: true }, { exchangeBadShape: true }, { noLocation: true }]) {
+    const { mp, calls } = glrFixture(variant);
+    const r = await mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+    assert.equal(r.ok, false, JSON.stringify(variant));
+    assert.equal(r.kind, "plan_auth", JSON.stringify(variant));
+    assert.equal(calls.filter((c) => c.url.indexOf("/v1/messages") > 0).length, 0, "no messages call after exchange failure: " + JSON.stringify(variant));
+  }
+});
+
+test("GLr: individual coding plan rides runtime route too; v2 entry key still wins without exchange (3.18 parity)", async () => {
+  const a = glrFixture();
+  const ra = await a.mp.enhanceText("account:bigmodel-individual-coding-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(ra.ok, true);
+  const ma = a.calls.find((c) => c.url.indexOf("/v1/messages") > 0);
+  assert.equal(ma.url, "https://open.bigmodel.cn/api/anthropic/v1/messages");
+  assert.equal(ma.opts.headers.Authorization, "Bearer glr-tok-1");
+  const b = glrFixture({});
+  fs.writeFileSync(path.join(b.dir, "config.json"), JSON.stringify({ provider: {
+    "builtin:bigmodel-coding-plan": { options: { apiKey: "v2-entry-key" }, enabled: true },   // v2ConfigKey 同名条目（individual/team 共用）
+  } }));
+  const rb = await b.mp.enhanceText("account:bigmodel-individual-coding-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(rb.ok, true);
+  assert.equal(b.calls.filter((c) => c.url === GLR_EXCHANGE_URL).length, 0, "v2 key short-circuits exchange");
+  const mb = b.calls.find((c) => c.url.indexOf("/v1/messages") > 0);
+  assert.equal(mb.opts.headers.Authorization, "Bearer v2-entry-key");
+});
+
+test("GLr: runtime config missing falls back to table baseUrl; highest version dir wins", async () => {
+  const a = glrFixture({ runtimeBase: false });
+  const ra = await a.mp.enhanceText("account:bigmodel-individual-coding-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(ra.ok, true);
+  const ma = a.calls.find((c) => c.url.indexOf("/v1/messages") > 0);
+  assert.equal(ma.url, "https://open.bigmodel.cn/api/anthropic/v1/messages");
+  const b = glrFixture({ runtimeVersion: "3.18.0", startPlanBase: "https://old.example.com/api/anthropic" });
+  writeRuntimeBuiltin(b.dir, "3.19.1", "https://zcode.z.ai/api/v1/zcode-plan/anthropic");
+  const rb = await b.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(rb.ok, true);
+  const mb = b.calls.find((c) => c.url.indexOf("/v1/messages") > 0);
+  assert.equal(mb.url, "https://zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages", "highest version dir wins");
+});
+
+test("GLr: exchange respects external abort", async () => {
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+  const dir = path.dirname(file);
+  fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify({ "oauth:bigmodel:access_token": "enc:oauth-1", [GLR_LOC_KEY]: "enc:loc-1" }));
+  let releaseExchange;
+  const gate = new Promise((resolve) => { releaseExchange = resolve; });
+  const ctl = new AbortController();
+  const impl = async (url, requestOpts) => {
+    if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
+    if (url === GLR_EXCHANGE_URL) {
+      await new Promise((resolve, reject) => {
+        const sig = requestOpts.signal;
+        if (sig.aborted) return reject(Object.assign(new Error("Aborted"), { name: "AbortError" }));
+        sig.addEventListener("abort", () => reject(Object.assign(new Error("Aborted"), { name: "AbortError" })), { once: true });
+        gate.then(() => resolve({ ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { enabled: true, token: "late" } }) }));
+      });
+      return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { enabled: true, token: "late" } }) };
+    }
+    throw new Error("unexpected " + url);
+  };
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: path.join(dir, "credentials.json"), decryptValue: (enc) => (enc === "enc:loc-1" ? GLR_LOC_JSON : String(enc).indexOf("enc:oauth-") === 0 ? "glr-oauth-1" : null), hostVersion: "3.19.1" });
+  const p = mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本", { signal: ctl.signal });
+  await new Promise((r) => setTimeout(r, 30));
+  ctl.abort();
+  const r = await p;
+  assert.equal(r.kind, "cancelled");
+  releaseExchange();
+});
+
+test("GLr: host list gains bigmodel sources only after a memoized exchange", async () => {
+  const f = glrFixture({});
+  const before = f.mp.listEnhanceHosts().filter((h) => h.id.indexOf("bigmodel") >= 0).map((h) => h.id);
+  assert.equal(before.length, 0, "no bigmodel host before any GLr exchange: " + JSON.stringify(before));
+  await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "预热换发");
+  const after = f.mp.listEnhanceHosts().filter((h) => h.id === "account:bigmodel-start-plan");
+  assert.equal(after.length, 1, "start-plan host appears after memoized exchange");
+  assert.equal(after[0].protocol, "anthropic-messages");
 });

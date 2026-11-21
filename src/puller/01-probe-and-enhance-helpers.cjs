@@ -312,3 +312,40 @@ function agreedCapabilities(entries, id) {
       return !!(err && String(err.code) === "1113");
     } catch (e) { return false; }
   }
+  /* ---------- GLr 凭据换发（specs/plan-glr-credential.md，宿主 3.19.x ProjectAccessTokenClient
+   * 同款协议）：credentials.json 的 location 键承载 org/project/apiKey 三元组，键名形如
+   * project-key-location:v1:<encodeURIComponent(JSON 数组)>，数组=[origin, family, accountId,
+   * team, usageScene, planType]。origin 校验限定 bigmodel.cn 本域——OAuth token 绝不发第三方。 */
+  function parseProjectLocationKeyName(keyName) {
+    const name = String(keyName || "");
+    if (name.indexOf("project-key-location:v1:") !== 0) return null;
+    let arr = null, origin = null;
+    try {
+      arr = JSON.parse(decodeURIComponent(name.slice("project-key-location:v1:".length)));
+      if (!Array.isArray(arr) || arr.length < 6) return null;
+      origin = new URL(String(arr[0] || ""));
+    } catch (e) { return null; }
+    const host = origin.hostname.toLowerCase();
+    if (origin.protocol !== "https:" || !(host === "bigmodel.cn" || host.endsWith(".bigmodel.cn"))) return null;
+    const family = typeof arr[1] === "string" ? arr[1] : "";
+    if (!family) return null;
+    return { origin: origin.origin, family: family, accountId: String(arr[2] || ""), team: arr[3] && typeof arr[3] === "object" ? arr[3] : null, usageScene: arr[4], planType: arr[5] };
+  }
+  function glrExchangeUrl(origin, loc) {
+    return origin + "/api/biz/v1/organization/" + encodeURIComponent(loc.organizationId)
+      + "/projects/" + encodeURIComponent(loc.projectId)
+      + "/api_keys/" + encodeURIComponent(loc.apiKeyId) + "/access_tokens";
+  }
+  /* 换发响应信封：{code:200|0|"200"|"0", data:{enabled, token}}（宿主同款形状）；
+   * enabled===false 或 token 非非空字符串一律按失败。 */
+  function parseGlrExchangePayload(text) {
+    let obj = null;
+    try { obj = JSON.parse(String(text || "")); } catch (e) { return null; }
+    if (!obj || typeof obj !== "object") return null;
+    const code = obj.code;
+    if (!(code === 200 || code === 0 || code === "200" || code === "0")) return null;
+    const data = obj.data && typeof obj.data === "object" ? obj.data : null;
+    if (!data || data.enabled === false) return null;
+    const token = typeof data.token === "string" ? data.token.trim() : "";
+    return token || null;
+  }
