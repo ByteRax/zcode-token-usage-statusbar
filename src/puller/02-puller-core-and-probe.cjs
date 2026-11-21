@@ -262,6 +262,30 @@ function createModelPuller(opts) {
     if (!src) return "";
     return runtimePlanRoute(providerId) || src.baseUrl;
   }
+  /* zcode.z.ai 路由的会话凭据（specs/plan-glr-credential.md 补篇，2026-11-21 真机实测）：
+   * GLr accessToken 是 bigmodel.cn 项目域凭据，打 zcode.z.ai 恒 401——该网关认
+   * zcodejwttoken（会话 JWT，额度链 zcode-start 同款，OAuth/access_token 实测 401）
+   * + X-Device-Mid 必带头（缺头实测 400 code 3001）。凭据与设备号都只在内存。
+   * 返回 {token, deviceMid} 或 null（fail-closed）。 */
+  function readZcodeSessionCred() {
+    if (!credentialsPath || !decryptValue) return null;
+    let raw = null;
+    try { raw = JSON.parse(fs.readFileSync(credentialsPath, "utf8")); } catch (e) { return null; }
+    const enc = raw && typeof raw === "object" ? raw["zcodejwttoken"] : null;
+    if (typeof enc !== "string" || !enc) return null;
+    let token = decryptValue(enc);
+    if (typeof token !== "string" || !token.trim() || token.indexOf("enc:") === 0) return null;
+    let deviceMid = "";
+    const dir = path.dirname(credentialsPath);
+    for (const name of ["telemetry-state.json", "onboarding-record.json"]) {
+      let d = null;
+      try { d = JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")); } catch (e) { }
+      const v = d && typeof d === "object" ? d.deviceMid : null;
+      if (typeof v === "string" && v.trim()) { deviceMid = v.trim(); break; }
+    }
+    if (!deviceMid) return null;   // 缺设备号必被服务端 3001 拒：fail-closed 不发请求（额度链同款）
+    return { token: token.trim(), deviceMid: deviceMid };
+  }
   /* GLr 换发（异步，仅 bigmodel 家族增强路径使用）：location 键扫描 → 信封解密 →
    * POST access_tokens 换 token。location 缺失/解密失败/形状不符/换发失败一律 null
    * （enhanceText 回 plan_auth）；外部 signal 贯穿，超时 15s 自理。memo 键=OAuth 摘要
