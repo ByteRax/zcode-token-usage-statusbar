@@ -759,6 +759,15 @@ test("bigmodel 1113 balance/resource-pack errors are classified as balance, not 
   const mpText = M.createModelPuller({ customCfgPath: file, fetchImpl: textOnly, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: creds, decryptValue: () => "oauth-tok" });
   const rText = await mpText.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
   assert.equal(rText.kind, "balance", "non-JSON body hits the keyword path");
+  // 正则两个交替支各自独立锁（第二轮 review：单短语错误体不因另一支存在而漏锁）
+  const mkSinglePhrase = (phrase) => async (url) => url === MODELS_DEV_TEST_URL
+    ? { ok: false, status: 503, body: { cancel() { } } }
+    : { ok: false, status: 429, text: async () => phrase };
+  for (const phrase of ["无可用资源包", "余额不足"]) {
+    const mpSingle = M.createModelPuller({ customCfgPath: file, fetchImpl: mkSinglePhrase(phrase), modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: creds, decryptValue: () => "oauth-tok" });
+    const rSingle = await mpSingle.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+    assert.equal(rSingle.kind, "balance", "single-phrase body " + phrase + " still classifies as balance");
+  }
   const codeOnly = async (url) => url === MODELS_DEV_TEST_URL
     ? { ok: false, status: 503, body: { cancel() { } } }
     : { ok: false, status: 429, text: async () => JSON.stringify({ error: { code: "1113", message: "insufficient balance" } }) };
