@@ -298,3 +298,17 @@ function agreedCapabilities(entries, id) {
       return maskSecrets(Buffer.concat(chunks).toString("utf8"), secret);
     } catch (e) { return ""; }
   }
+  /* BigModel 余额/资源包类错误识别（issue #429）：1113「余额不足或无可用资源包」按 HTTP 429
+   * 返回，与真实并发限流同状态码——按响应体区分归 kind "balance"，渲染端给独立文案，不再
+   * 诱导用户当限流重试。输入是已过 maskSecrets 的脱敏摘录（BigModel 错误信封无凭据形状，
+   * 脱敏不改 JSON）；JSON 解析失败回退文案关键词。 */
+  function balanceEnhanceError(detail) {
+    const text = String(detail || "");
+    if (!text) return false;
+    if (/余额不足|无可用资源包/.test(text)) return true;
+    try {
+      const obj = JSON.parse(text);
+      const err = obj && typeof obj === "object" && obj.error && typeof obj.error === "object" ? obj.error : null;
+      return !!(err && String(err.code) === "1113");
+    } catch (e) { return false; }
+  }

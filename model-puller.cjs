@@ -114,8 +114,13 @@ var PLAN_SOURCES = {
      * config 注释打 zcode.z.ai + 会话 JWT 是双重错误（网关错+凭据错 → 401/3012 WAF）；
      * zcode.z.ai 仅承载计费（billing/balance，zcodejwttoken+X-Device-Mid）。
      * 注意：纯 start-plan（无 coding plan config 条目）账号回落 OAuth 直连会被 500
-     * 拒（v344 实测），此场景需走 GLr 项目密钥发放流程，未实现前诚实报 auth。 */
+     * 拒（v344 实测），此场景需走 GLr 项目密钥发放流程，未实现前诚实报 auth。
+     * issue #429：宿主 coding-plan 条目 disabled（纯 Start Plan）时该条目 key 无资源包，
+     * 照取会恒 429 1113「余额不足或无可用资源包」——start-plan 增强只认可用 v2 条目 key
+     * （planEntryKeyOf 门）：无 key 零网络 fail-fast 报 plan_auth，增强宿主列表不列。
+     * zai 两条 start-plan 端点未实测，维持诚实尝试，不加此门。 */
     v2ConfigKey: "builtin:bigmodel-coding-plan",
+    enhanceRequiresV2Key: true,
   },
 };
 
@@ -743,6 +748,20 @@ function agreedCapabilities(entries, id) {
       return maskSecrets(Buffer.concat(chunks).toString("utf8"), secret);
     } catch (e) { return ""; }
   }
+  /* BigModel 余额/资源包类错误识别（issue #429）：1113「余额不足或无可用资源包」按 HTTP 429
+   * 返回，与真实并发限流同状态码——按响应体区分归 kind "balance"，渲染端给独立文案，不再
+   * 诱导用户当限流重试。输入是已过 maskSecrets 的脱敏摘录（BigModel 错误信封无凭据形状，
+   * 脱敏不改 JSON）；JSON 解析失败回退文案关键词。 */
+  function balanceEnhanceError(detail) {
+    const text = String(detail || "");
+    if (!text) return false;
+    if (/余额不足|无可用资源包/.test(text)) return true;
+    try {
+      const obj = JSON.parse(text);
+      const err = obj && typeof obj === "object" && obj.error && typeof obj.error === "object" ? obj.error : null;
+      return !!(err && String(err.code) === "1113");
+    } catch (e) { return false; }
+  }
 
 function createModelPuller(opts) {
   const o = opts || {};
@@ -914,6 +933,18 @@ function createModelPuller(opts) {
     const entry = readV2BuiltinEntry(src);
     const key = entry && entry.options && typeof entry.options.apiKey === "string" ? entry.options.apiKey.trim() : "";
     return (key && key.indexOf("enc:") !== 0 ? key : null) || planTokenOf(providerId);
+  }
+  /* v2 条目明文 key 门（issue #429）：条目存在、未显式禁用、key 非空且非 enc: 才算可用。
+   * planKeyOf 不查 enabled（individual/team 维持既有「条目 key 优先、OAuth 兜底」口径），
+   * 仅 start-plan 增强的 fail-fast 门与增强宿主列表用它判定——start-plan 的 OAuth 兜底
+   * 对 messages 端点必败（v344 实测 500），照取 disabled 条目的 key 又恒 429 1113。 */
+  function planEntryKeyOf(providerId) {
+    const src = PLAN_SOURCES[String(providerId || "")];
+    if (!src || !src.v2ConfigKey || !customCfgPath) return null;
+    const entry = readV2BuiltinEntry(src);
+    if (!entry || entry.enabled === false) return null;
+    const key = entry.options && typeof entry.options.apiKey === "string" ? entry.options.apiKey.trim() : "";
+    return key && key.indexOf("enc:") !== 0 ? key : null;
   }
   /* 拉模型列表门控（issue #336 附加发现 2）：PLAN_SOURCES 从 1 条扩到 6 条后，共享凭据的
    * team/start 条目若照单全列会出现 3 行近似重复——规则：宿主 v2 config 显式 enabled:false
@@ -1796,7 +1827,20 @@ function createModelPuller(opts) {
       return { ok: false, kind: "unsupported", error: "unsupported api type: " + (apiType || "(empty)") };
     }
     const baseUrl = String((planSrc ? planSrc.baseUrl : api.baseUrl) || "").trim().replace(/\/+$/, "");
-    const apiKey = planSrc ? planKeyOf(providerId) : String(access.apiKey || "").trim();
+    let apiKey = "";
+    if (planSrc) {
+      if (planSrc.enhanceRequiresV2Key && !planEntryKeyOf(providerId)) {
+        /* issue #429：start-plan 增强的唯一可用凭据=宿主写入 v2 config 的项目 key
+         * （OAuth 直连 messages 被网关 500 拒，v344 实测；spec「未实现前诚实报 auth」落地）。
+         * 条目缺失/disabled/key 不可用（纯 Start Plan、宿主关闭 coding plan）不再发必败
+         * 请求（disabled 条目 key 无资源包时恒 429 1113），诚实报 plan_auth；
+         * zai 家族端点未实测，维持 planKeyOf 诚实尝试。 */
+        return { ok: false, kind: "plan_auth", error: "plan conversation key unavailable" };
+      }
+      apiKey = planKeyOf(providerId);
+    } else {
+      apiKey = String(access.apiKey || "").trim();
+    }
     if (!baseUrl) return { ok: false, kind: "provider", error: "no base url" };
     if (!apiKey) return { ok: false, kind: "auth", error: planSrc ? "plan token unavailable" : "no api key" };
     let url = "", body = null;
@@ -1875,6 +1919,13 @@ function createModelPuller(opts) {
           if (external && external.aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
           if (timedOut) throw Object.assign(new Error("timeout"), { name: "AbortError" });
           lastFail = { ok: false, kind: classifyProbeStatus(res ? res.status : 0), status: res ? res.status : 0, error: "HTTP " + (res ? res.status : 0) };
+          if (balanceEnhanceError(errorDetail)) {
+            /* issue #429：BigModel 1113「余额不足或无可用资源包」按 HTTP 429 返回，与真实
+             * 并发限流同状态码——按错误体分类为 kind "balance"，error 置空让渲染端 kindMap
+             * 给「套餐额度或资源包不足」文案，不再诱导用户当限流重试。确定性失败不重试。 */
+            lastFail.kind = "balance";
+            delete lastFail.error;
+          }
           if (errorDetail) lastFail.detail = errorDetail;
           log("enhance http " + lastFail.status + " (" + attempt + ")");
           if (lastFail.kind !== "server") return lastFail;
@@ -1897,6 +1948,9 @@ function createModelPuller(opts) {
       // 不沿用 planListable 的同族去重——增强选套餐是计费池选择，Start Plan 与个人档需分列；仅跳过 team（与个人同凭据同端点的纯重复）。
       if (/team/.test(String(providerId))) return null;
       if (!planTokenOf(providerId)) return null;
+      /* issue #429：start-plan 增强唯一可用凭据=宿主 v2 项目 key（OAuth 兜底对 messages
+       * 必败，v344 实测）——无可用 key 不提供必败 host；zai 家族维持诚实尝试。 */
+      if (planSrc.enhanceRequiresV2Key && !planEntryKeyOf(providerId)) return null;
       const entry = readV2BuiltinEntry(planSrc);
       if (entry && entry.enabled === false) return null;
       const apiKey = planKeyOf(providerId);

@@ -296,8 +296,9 @@
      * → v414 更新日志卡预取时序防御（3.19.1 实机 coordErr）：syncUpdate 至 updNotePrefetch 首拍早于 updNoteState 模块级赋值（issue #55 同款「var 只提升声明，读到 undefined 拖垮实例创建」），红点亮起才走得到该分支——spawn 半途夭折、主条整条不挂（.zusage-root 缺席、insts 退化 auto= 兜底）。修复：updNoteEnsure 懒初始化兜底 + 预取调用点 try 包裹记 __zusageDiag.updNoteErr（与 acPanelErr/quotaSrcErr/notesErr 同款），预取异常不参与实例存亡；红点不亮路径零行为变化。
      * → v415 速度 Tooltip V3 左卡 live 徽标移除（用户裁定）：标题行不再展示「实时估算中」及思考/工具等 statusText 临时态（.zu-sv3-sub 徽标结构与样式删除），速度含义恒为统计口径；wire memo 键随之去 live.statusText（实时态走字不再触发整卡重拼），spd3RebuildOr 第 5 参与 spd3LeftHTML 第 2 参保留签名兼容不消费；状态条 pill 本身的思考/生成状态词不变。
      * → v416 审查收口批（近两日改动 10 路复盘复审）：week 单模型柱状槽位卡 slotDay 修正为 true（v392 自 today 单模型移植时误带 false，日桶悬停卡区间恢复「全天/截至」口径、大字标签恢复综合日均）；统计卡响应式 full 档容差 24px 提到 32px（卡根外层 .tip 自带 28px padding+border，原容差使 full 档在真实 DOM 恒不可达）；v414 补充防御——updNoteState 模块级赋值改保留 buildPanel 期懒初始化对象，首拍预取结果不再被覆盖弃收后重发；台账 v414 行裸箭头改文字衔接（pre-publish 台账解析按「箭头+空格」切段，裸箭头会被切成无版本段打断发布门）。
+     * → v417 增强失败诚实分类（issue #429，外部实测报告）：纯 Start Plan 账号增强恒报「HTTP 429」实为上游 1113「余额不足或无可用资源包」——model-puller planKeyOf 取宿主 v2 coding-plan 条目明文 key 不查条目 enabled，条目 disabled 且 key 无资源包时发必败请求。修复：①enhanceText 对 bigmodel start-plan（PLAN_SOURCES 新增 enhanceRequiresV2Key）在无可用 v2 条目 key（缺失、disabled、enc: 密文、空）时零网络 fail-fast 回 kind "plan_auth"（spec「未实现前诚实报 auth」落地；OAuth 兜底直连 messages 被网关 500 拒，v344 实测），resolveEnhanceHost 同门不提供必败 host；②上游错误体含 1113 或「余额不足/无可用资源包」文案归 kind "balance"（error 置空、detail 保留脱敏正文），不再与真实并发限流共用「HTTP 429」文案诱导重试；③渲染端 kindMap 补 balance、plan_auth 文案且 reason 解析改 kind 优先（i18n 层，error 兜底承载短语；旧渲染端读新 kind 落 error 原文，热重载后本地化），设置页 EP 测试内部映射补 plan_auth 短语；zai 两条 start-plan 端点未实测维持诚实尝试不加门。
      */
-    var VERSION = "v416";
+    var VERSION = "v417";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */

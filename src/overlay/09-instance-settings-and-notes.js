@@ -1625,7 +1625,10 @@
             "unsupported platform": L("当前平台暂不支持该操作。", "Not supported on this platform."),
             "cancelled": L("操作已取消。", "Cancelled."),
             "disabled": L("增强功能已关闭。", "Prompt enhancement is disabled."),
-            "model downgraded": L("已按要求拒绝降级：服务端返回了不同的模型", "Fallback rejected as requested: the server served a different model")
+            "model downgraded": L("已按要求拒绝降级：服务端返回了不同的模型", "Fallback rejected as requested: the server served a different model"),
+            /* issue #429：start-plan 无可用 v2 项目 key 的 fail-fast 短语本地化（balance 类
+             * 失败 error 置空、detail 携带脱敏上游正文，走下方 detail 分支展示） */
+            "plan conversation key unavailable": L("当前套餐暂不支持增强（无可用的对话凭据）。", "This plan has no usable conversation credential; enhancement is unavailable.")
           };
           epTest.failed = true;
           if (internal[raw]) epTest.status = internal[raw] + (detail ? "：" + detail : "");

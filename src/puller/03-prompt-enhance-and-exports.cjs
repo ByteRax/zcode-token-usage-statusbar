@@ -25,7 +25,20 @@
       return { ok: false, kind: "unsupported", error: "unsupported api type: " + (apiType || "(empty)") };
     }
     const baseUrl = String((planSrc ? planSrc.baseUrl : api.baseUrl) || "").trim().replace(/\/+$/, "");
-    const apiKey = planSrc ? planKeyOf(providerId) : String(access.apiKey || "").trim();
+    let apiKey = "";
+    if (planSrc) {
+      if (planSrc.enhanceRequiresV2Key && !planEntryKeyOf(providerId)) {
+        /* issue #429：start-plan 增强的唯一可用凭据=宿主写入 v2 config 的项目 key
+         * （OAuth 直连 messages 被网关 500 拒，v344 实测；spec「未实现前诚实报 auth」落地）。
+         * 条目缺失/disabled/key 不可用（纯 Start Plan、宿主关闭 coding plan）不再发必败
+         * 请求（disabled 条目 key 无资源包时恒 429 1113），诚实报 plan_auth；
+         * zai 家族端点未实测，维持 planKeyOf 诚实尝试。 */
+        return { ok: false, kind: "plan_auth", error: "plan conversation key unavailable" };
+      }
+      apiKey = planKeyOf(providerId);
+    } else {
+      apiKey = String(access.apiKey || "").trim();
+    }
     if (!baseUrl) return { ok: false, kind: "provider", error: "no base url" };
     if (!apiKey) return { ok: false, kind: "auth", error: planSrc ? "plan token unavailable" : "no api key" };
     let url = "", body = null;
@@ -104,6 +117,13 @@
           if (external && external.aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
           if (timedOut) throw Object.assign(new Error("timeout"), { name: "AbortError" });
           lastFail = { ok: false, kind: classifyProbeStatus(res ? res.status : 0), status: res ? res.status : 0, error: "HTTP " + (res ? res.status : 0) };
+          if (balanceEnhanceError(errorDetail)) {
+            /* issue #429：BigModel 1113「余额不足或无可用资源包」按 HTTP 429 返回，与真实
+             * 并发限流同状态码——按错误体分类为 kind "balance"，error 置空让渲染端 kindMap
+             * 给「套餐额度或资源包不足」文案，不再诱导用户当限流重试。确定性失败不重试。 */
+            lastFail.kind = "balance";
+            delete lastFail.error;
+          }
           if (errorDetail) lastFail.detail = errorDetail;
           log("enhance http " + lastFail.status + " (" + attempt + ")");
           if (lastFail.kind !== "server") return lastFail;
@@ -126,6 +146,9 @@
       // 不沿用 planListable 的同族去重——增强选套餐是计费池选择，Start Plan 与个人档需分列；仅跳过 team（与个人同凭据同端点的纯重复）。
       if (/team/.test(String(providerId))) return null;
       if (!planTokenOf(providerId)) return null;
+      /* issue #429：start-plan 增强唯一可用凭据=宿主 v2 项目 key（OAuth 兜底对 messages
+       * 必败，v344 实测）——无可用 key 不提供必败 host；zai 家族维持诚实尝试。 */
+      if (planSrc.enhanceRequiresV2Key && !planEntryKeyOf(providerId)) return null;
       const entry = readV2BuiltinEntry(planSrc);
       if (entry && entry.enabled === false) return null;
       const apiKey = planKeyOf(providerId);

@@ -308,6 +308,30 @@ test('enhance disabled: button not mounted even when payload present', () => {
   assert.equal(h.enhOf(ui.wrap), undefined);
 });
 
+test('plan_auth and balance kinds surface localized kindMap text; invalid provider phrase wins over kind map (issue #429 review)', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '草稿' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  // kind 优先走 kindMap：plan_auth/balance 不带可读短语时按 kind 本地化（error 兜底为旧渲染端兼容路径）
+  enh.listeners.get('click')[0]();
+  let req = h.takeRequests().find(r => r.action === 'prompt-enhance');
+  h.respond(req.requestId, { ok: false, kind: 'plan_auth', error: 'plan conversation key unavailable' });
+  assert.match(enh.getAttribute('aria-label'), /增强失败：\s*当前套餐暂不支持增强/);
+  enh.listeners.get('click')[0]();
+  req = h.takeRequests().find(r => r.action === 'prompt-enhance');
+  h.respond(req.requestId, { ok: false, kind: 'balance' });
+  assert.match(enh.getAttribute('aria-label'), /增强失败：\s*套餐额度或资源包不足/);
+  // error 短语与 kind 归并语义冲突时短语特判优先：invalid provider 不显「草稿长度超出范围」
+  enh.listeners.get('click')[0]();
+  req = h.takeRequests().find(r => r.action === 'prompt-enhance');
+  h.respond(req.requestId, { ok: false, kind: 'invalid_input', error: 'invalid provider' });
+  assert.match(enh.getAttribute('aria-label'), /增强失败：\s*供应商身份无效/);
+  assert.doesNotMatch(enh.getAttribute('aria-label'), /草稿长度超出范围/);
+});
+
 test('unknown action fallback: stale main process never hangs the button', () => {
   const h = harness();
   const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '草稿' });

@@ -590,13 +590,13 @@ test("bigmodel start-plan: enhance rides open.bigmodel.cn with the host-provisio
   assert.equal(seen[0].url, "https://open.bigmodel.cn/api/anthropic/v1/messages");   // 推理与 coding plan 同端点（zcode.z.ai 只计费）
   assert.equal(seen[0].headers.Authorization, "Bearer zcode-api-key-id.secret");   // 宿主发放的项目密钥（id.secret）
   assert.equal(seen[0].body.model, "GLM-5.3-Flash");
-  // 无任何凭据（纯 start-plan 且无项目密钥）→ fail-closed auth，零网络
+  // 无任何凭据（纯 start-plan 且无项目密钥）→ fail-closed plan_auth，零网络（issue #429：spec「未实现前诚实报 auth」落地）
   fs.rmSync(path.join(path.dirname(file), "config.json"));
   const mp2 = M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: creds, decryptValue: () => null });
   seen.length = 0;
   const r2 = await mp2.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
   assert.equal(r2.ok, false);
-  assert.equal(r2.kind, "auth");
+  assert.equal(r2.kind, "plan_auth");
   assert.equal(seen.length, 0, "zero network without any usable credential");
 });
 
@@ -657,15 +657,186 @@ test("planListable gating: host disable hides, shared v2 entry dedupes, credKey 
   mp = mk(null);
   rows = (await mp.listProviders()).providers;
   assert.deepEqual(rows.map((r) => r.id), ["account:bigmodel-individual-coding-plan", "account:zai-individual-coding-plan"]);
-  // 4) 增强宿主列表同样包含凭据可用的套餐源；Start Plan 与个人档分列（计费池不同），team 去重
+  // 4) 增强宿主列表同样包含凭据可用的套餐源；Start Plan 与个人档分列（计费池不同），team 去重。
+  //    issue #429：无 v2 config 时 bigmodel start-plan 无可用项目 key（OAuth 兜底对 messages
+  //    必败，v344 实测）→ 不列；zai start-plan 端点未实测，维持诚实尝试照列。
   const hosts = mp.listEnhanceHosts();
   const planHosts = hosts.filter((h) => h.id.startsWith('account:'));
   assert.deepEqual(planHosts.map((h) => h.id), [
     "account:bigmodel-individual-coding-plan", "account:zai-individual-coding-plan",
-    "account:zai-start-plan", "account:bigmodel-start-plan",
+    "account:zai-start-plan",
   ]);
   for (const h of planHosts) { assert.equal(h.protocol, "anthropic-messages"); assert.ok(h.baseUrl.startsWith("https://")); }
-  const resolved = mp.resolveEnhanceHost("account:bigmodel-start-plan");
-  assert.equal(resolved.plan, true); assert.ok(resolved.apiKey);   // planKeyOf 主进程内解析，不回渲染端
+  assert.equal(mp.resolveEnhanceHost("account:bigmodel-start-plan"), null);   // issue #429：无可用 v2 key 的 start-plan 不提供必败 host
+  const zaiStart = mp.resolveEnhanceHost("account:zai-start-plan");
+  assert.ok(zaiStart && zaiStart.apiKey);   // zai 端点未实测，凭据可用即列出（planKeyOf 主进程内解析，不回渲染端）
   assert.equal(mp.resolveEnhanceHost("account:bigmodel-team-coding-plan"), null);   // team 与个人同凭据同端点，不重复列出
+});
+
+/* ---------- issue #429：纯 Start Plan 增强链凭据错配的诚实收口 ----------
+ * 报告者实测：宿主 v2 config 的 builtin:bigmodel-coding-plan 条目 enabled:false 且项目 key
+ * 无资源包 → planKeyOf 照取该 key → open.bigmodel.cn 恒 429 1113「余额不足或无可用资源包」，
+ * 插件归一显示「HTTP 429」诱导用户当并发限流重试。修复两件事：
+ * ① start-plan 无可用 v2 条目 key（缺失/disabled/enc:/空）时零网络 fail-fast 回 plan_auth
+ *   （spec「未实现前诚实报 auth」落地；OAuth 兜底直连 messages 被网关 500 拒，v344 实测）；
+ * ② 上游 1113/余额不足类错误体分类为 kind "balance"，不再与真实并发限流共用「HTTP 429」。 */
+
+test("bigmodel start-plan without a usable v2 entry key fails fast before any request (issue #429)", async () => {
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+  const creds = path.join(path.dirname(file), "credentials.json");
+  fs.writeFileSync(creds, JSON.stringify({ "oauth:bigmodel:access_token": "enc:bm" }));
+  const cfg = path.join(path.dirname(file), "config.json");
+  const seen = [];
+  const impl = async (url, requestOpts) => {
+    if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
+    seen.push(url);
+    return sseRes(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"不应到达"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']);
+  };
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: creds, decryptValue: () => "oauth-tok" });
+  // 1) 报告者场景：coding-plan 条目存在但 enabled:false，key 无资源包——不发必败请求
+  fs.writeFileSync(cfg, JSON.stringify({ provider: {
+    "builtin:bigmodel-coding-plan": { options: { apiKey: "no-pack-key", baseURL: "https://open.bigmodel.cn/api/anthropic" }, enabled: false },
+  } }));
+  const r1 = await mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r1.ok, false);
+  assert.equal(r1.kind, "plan_auth");
+  assert.equal(r1.error, "plan conversation key unavailable");
+  assert.equal(seen.length, 0, "disabled entry must not reach the network");
+  // 2) 条目缺失（纯 start-plan 无 coding plan 条目）且 OAuth 可用：同样 fail-fast
+  fs.rmSync(cfg);
+  seen.length = 0;
+  const r2 = await mp.enhanceText("builtin:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r2.ok, false);
+  assert.equal(r2.kind, "plan_auth");
+  assert.equal(seen.length, 0, "OAuth fallback is gateway-doomed for start-plan; fail fast");
+  // 3) 条目 key 为 enc: 密文：同 fail-fast（密文不作明文外发，issue #336 review 口径）
+  fs.writeFileSync(cfg, JSON.stringify({ provider: {
+    "builtin:bigmodel-coding-plan": { options: { apiKey: "enc:v2:env:aa:bb.cc" }, enabled: true },
+  } }));
+  seen.length = 0;
+  const r3 = await mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r3.ok, false);
+  assert.equal(r3.kind, "plan_auth");
+  assert.equal(seen.length, 0);
+  // 4) 条目 enabled:true 但 apiKey 为空白串：同 fail-fast（第一轮 review MINOR-4）
+  fs.writeFileSync(cfg, JSON.stringify({ provider: {
+    "builtin:bigmodel-coding-plan": { options: { apiKey: "   " }, enabled: true },
+  } }));
+  seen.length = 0;
+  const r4 = await mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r4.ok, false);
+  assert.equal(r4.kind, "plan_auth");
+  assert.equal(seen.length, 0);
+});
+
+test("bigmodel 1113 balance/resource-pack errors are classified as balance, not rate (issue #429)", async () => {
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+  const creds = path.join(path.dirname(file), "credentials.json");
+  fs.writeFileSync(creds, JSON.stringify({ "oauth:bigmodel:access_token": "enc:bm" }));
+  fs.writeFileSync(path.join(path.dirname(file), "config.json"), JSON.stringify({ provider: {
+    "builtin:bigmodel-coding-plan": { options: { apiKey: "zcode-api-key-id.secret" }, enabled: true },
+  } }));
+  let calls = 0;
+  const impl = async (url, requestOpts) => {
+    if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
+    calls++;
+    return { ok: false, status: 429, text: async () => JSON.stringify({ error: { type: "rate_limit_error", code: "1113", message: "[1113][余额不足或无可用资源包,请充值。]" }, request_id: "2026112112145981791bf98b284d31" }) };
+  };
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: creds, decryptValue: () => "oauth-tok" });
+  const r = await mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r.ok, false);
+  assert.equal(r.kind, "balance");
+  assert.equal(r.status, 429);
+  assert.equal(r.error, undefined, "no generic HTTP phrase; overlay kindMap carries the localized message");
+  assert.match(r.detail, /余额不足/);
+  assert.equal(calls, 1, "balance failures are deterministic; no retry");
+  // 两条检测路径各自独立可用（第一轮 review MINOR-1：正则与 JSON code 分支此前只有合取被锁）
+  const textOnly = async (url) => url === MODELS_DEV_TEST_URL
+    ? { ok: false, status: 503, body: { cancel() { } } }
+    : { ok: false, status: 429, text: async () => "上游网关返回：余额不足或无可用资源包，请充值。" };
+  const mpText = M.createModelPuller({ customCfgPath: file, fetchImpl: textOnly, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: creds, decryptValue: () => "oauth-tok" });
+  const rText = await mpText.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(rText.kind, "balance", "non-JSON body hits the keyword path");
+  // 正则两个交替支各自独立锁（第二轮 review：单短语错误体不因另一支存在而漏锁）
+  const mkSinglePhrase = (phrase) => async (url) => url === MODELS_DEV_TEST_URL
+    ? { ok: false, status: 503, body: { cancel() { } } }
+    : { ok: false, status: 429, text: async () => phrase };
+  for (const phrase of ["无可用资源包", "余额不足"]) {
+    const mpSingle = M.createModelPuller({ customCfgPath: file, fetchImpl: mkSinglePhrase(phrase), modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: creds, decryptValue: () => "oauth-tok" });
+    const rSingle = await mpSingle.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+    assert.equal(rSingle.kind, "balance", "single-phrase body " + phrase + " still classifies as balance");
+  }
+  const codeOnly = async (url) => url === MODELS_DEV_TEST_URL
+    ? { ok: false, status: 503, body: { cancel() { } } }
+    : { ok: false, status: 429, text: async () => JSON.stringify({ error: { code: "1113", message: "insufficient balance" } }) };
+  const mpCode = M.createModelPuller({ customCfgPath: file, fetchImpl: codeOnly, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: creds, decryptValue: () => "oauth-tok" });
+  const rCode = await mpCode.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(rCode.kind, "balance", "code-only envelope without Chinese keywords hits the JSON path");
+});
+
+test("genuine rate-limit 429 without balance markers stays rate", async () => {
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+  const creds = path.join(path.dirname(file), "credentials.json");
+  fs.writeFileSync(creds, JSON.stringify({ "oauth:bigmodel:access_token": "enc:bm" }));
+  fs.writeFileSync(path.join(path.dirname(file), "config.json"), JSON.stringify({ provider: {
+    "builtin:bigmodel-coding-plan": { options: { apiKey: "zcode-api-key-id.secret" }, enabled: true },
+  } }));
+  const impl = async (url, requestOpts) => {
+    if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
+    return { ok: false, status: 429, text: async () => JSON.stringify({ error: { code: "1302", message: "[1302]请求过于频繁，请稍后再试" } }) };
+  };
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: creds, decryptValue: () => "oauth-tok" });
+  const r = await mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r.ok, false);
+  assert.equal(r.kind, "rate");
+  assert.equal(r.error, "HTTP 429");
+  assert.match(r.detail, /请求过于频繁/);
+});
+
+test("enhance host gating: start-plan requires the v2 entry key; zai start-plan keeps honest attempt (issue #429)", () => {
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify({ config: { providerConfigRules: { providerRules: [] } } }));
+  const creds = path.join(path.dirname(file), "credentials.json");
+  fs.writeFileSync(creds, JSON.stringify({ "oauth:bigmodel:access_token": "enc:bm", "oauth:zai:access_token": "enc:zai" }));
+  const cfg = path.join(path.dirname(file), "config.json");
+  const impl = async (url) => url === MODELS_DEV_TEST_URL ? { ok: false, status: 503, body: { cancel() { } } } : { ok: true, status: 200, body: { getReader: () => ({ read: async () => ({ done: true }) }) }, text: async () => "[]" };
+  const mk = (cfgObj) => {
+    fs.writeFileSync(cfg, JSON.stringify(cfgObj));
+    return M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: creds, decryptValue: () => "tok" });
+  };
+  // 条目 disabled：bigmodel start-plan 不再作为增强 host 提供（OAuth 兜底必败）
+  let mp = mk({ provider: { "builtin:bigmodel-coding-plan": { options: { apiKey: "k" }, enabled: false } } });
+  assert.equal(mp.resolveEnhanceHost("account:bigmodel-start-plan"), null);
+  // 条目缺失：同上，且增强宿主列表不列 start-plan（zai 照列）
+  mp = mk({ provider: {} });
+  assert.equal(mp.resolveEnhanceHost("account:bigmodel-start-plan"), null);
+  const hosts = mp.listEnhanceHosts().filter((h) => h.id.startsWith("account:"));
+  assert.equal(hosts.some((h) => h.id === "account:bigmodel-start-plan"), false);
+  assert.equal(hosts.some((h) => h.id === "account:zai-start-plan"), true, "zai start-plan endpoint untested; keep the honest attempt");
+  // 条目可用：照常提供
+  mp = mk({ provider: { "builtin:bigmodel-coding-plan": { options: { apiKey: "k" }, enabled: true } } });
+  const resolved = mp.resolveEnhanceHost("account:bigmodel-start-plan");
+  assert.equal(resolved.plan, true);
+  assert.equal(resolved.apiKey, "k");
+});
+
+test("zai start-plan without a v2 entry still attempts with oauth (endpoint untested; honest attempt)", async () => {
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+  const creds = path.join(path.dirname(file), "credentials.json");
+  fs.writeFileSync(creds, JSON.stringify({ "oauth:zai:access_token": "enc:zai" }));
+  const seen = [];
+  const impl = async (url, requestOpts) => {
+    if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
+    seen.push({ url, headers: requestOpts.headers });
+    return sseRes(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"zai 尝试"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']);
+  };
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: creds, decryptValue: () => "zai-oauth-tok" });
+  const r = await mp.enhanceText("account:zai-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r.ok, true);
+  assert.equal(seen[0].url, "https://api.z.ai/api/anthropic/v1/messages");
+  assert.equal(seen[0].headers.Authorization, "Bearer zai-oauth-tok");
 });

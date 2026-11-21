@@ -102,6 +102,11 @@ test('internal status codes are localized instead of shown as interface errors',
   assert.equal(h.fields['.zu-ep-test-status'].textContent, '已保存配置已变化，请重新打开设置后再试。');
   assert.equal(h.fields['.zu-ep-test-status'].textContent.indexOf('enhance '), -1);
 });
+test('plan_auth fail-fast phrase is localized in the EP test area (issue #429)', () => {
+  const h = harness(); h.api.state.draft = 'draft'; h.api.start();
+  h.callbacks.r1({ ok: false, error: 'plan conversation key unavailable' });
+  assert.equal(h.fields['.zu-ep-test-status'].textContent, '当前套餐暂不支持增强（无可用的对话凭据）。');
+});
 test('cancel sends existing abort action and ignores a stale callback', () => {
   const h = harness(); h.api.state.draft = 'draft'; h.api.start(); const stale = h.callbacks.r1;
   h.api.stop('cancelled'); assert.equal(h.requests[1].action, 'prompt-enhance-cancel'); assert.equal(h.requests[1].opts.requestId, 'r1');
