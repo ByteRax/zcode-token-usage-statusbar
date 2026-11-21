@@ -687,6 +687,42 @@ class EnsureDeployedTests(unittest.TestCase):
         self.pin.start()
         self.addCleanup(self.pin.stop)
 
+    def test_ensure_present_short_circuits_without_lock(self):
+        # 锁窗口纪律：只读短路在锁外——桥已在位时绝不触碰目标锁（只读检查若被
+        # 移回锁内，多窗口并发 SessionStart 会重新整段互卡）
+        self.assertEqual(bridge.ensure_deployed(self.target)["status"], "patched")
+        import runtime_lock
+        with patch.object(runtime_lock, "file_lock",
+                          side_effect=AssertionError("lock forbidden on present")):
+            self.assertEqual(bridge.ensure_deployed(self.target)["status"], "present")
+
+    def test_ensure_builds_outside_lock_and_replaces_inside(self):
+        # 构建段（mkstemp 落 stage）在锁外、提交在短锁内：顺序记录锁定结构
+        import contextlib
+        import runtime_lock
+        order = []
+        real_lock = runtime_lock.file_lock
+
+        @contextlib.contextmanager
+        def lock(lock_path):
+            order.append("lock")
+            try:
+                yield
+            finally:
+                order.append("unlock")
+
+        real_mkstemp = asar.bounded_mkstemp
+
+        def mkstemp(*args, **kwargs):
+            order.append("build")
+            return real_mkstemp(*args, **kwargs)
+
+        with patch.object(runtime_lock, "file_lock", lock), \
+                patch.object(asar, "bounded_mkstemp", side_effect=mkstemp):
+            self.assertEqual(bridge.ensure_deployed(self.target)["status"], "patched")
+        self.assertLess(order.index("build"), order.index("lock"))
+        self.assertEqual(order[-1], "unlock")
+
     def test_patch_present_remove_absent_lifecycle(self):
         # 就地替换不得把安装目录 asar 的权限降成 mkstemp 的 0600
         self.target.chmod(0o644)

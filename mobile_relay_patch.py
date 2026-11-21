@@ -361,6 +361,30 @@ def _sweep_stale_stages(directory):
             pass
 
 
+def _pending_paths(asar_path):
+    """既有待替换包路径，随目标名动态拼接（app.asar → app.asar.zusage.tmp/.json）。
+
+    patch_install.set_target 的 TMP/meta 恒为字面量 `app.asar.zusage.tmp`（生产目标
+    恒为 app.asar，两者恰好同名）；对改名目标（`--asar` 高级路径）二者会分叉，此时
+    本函数的锁内复查只认动态名，patch_install 侧发布的 pending 由其发布端锁内互斥
+    兜底，不依赖此处探测。"""
+    pending = Path(asar_path).with_name(Path(asar_path).name + ".zusage.tmp")
+    return pending, pending.with_name(pending.name + ".json")
+
+
+def _pending_exists(asar_path):
+    """既有待替换包探测：存在（或探测不到而无法排除）一律按让位处理。"""
+    for candidate in _pending_paths(asar_path):
+        try:
+            candidate.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return True
+        return True
+    return False
+
+
 def ensure_deployed(asar_path, _locked=False, _cli_safe=False):
     """安装/更新链专用：确认目标 asar 带 stash 注入，没有则就地补打。
 
@@ -368,78 +392,100 @@ def ensure_deployed(asar_path, _locked=False, _cli_safe=False):
     app.asar.zusage.lock 跨进程锁、同目录 stage + os.replace 原子替换、
     任何失败只报告不抛出（本注入是 mobile-relay 的增强，绝不影响安装主流程）。
     replace-failed 时移交 stage 给待替换链（调用方转存或删除）。
+
+    锁窗口纪律：读档、变换与 stage 写盘全程在锁外完成（读 asar 不需要锁），
+    目标锁只包「既有 pending 复查 + 发布前指纹重验 + os.replace」的亚秒级提交
+    ——多窗口并发 SessionStart 抢同一把锁时不再整段空转（2026-11-21 实证锁内
+    重写 200MB+ asar 致每轮 10s 超时、排定全部失败）。构建期间目标被并发改写
+    时按指纹不符整体重试一次。`_locked` 仅为旧签名兼容：仍传 True 的调用方
+    在自己的锁内跑本函数会退化回长持锁，正确性不受影响，新调用方不要传。
     """
-    stage = None
-    stream = None
-    try:
-        from runtime_lock import file_lock
-        asar_path = Path(asar_path)
-        with (nullcontext() if _locked else file_lock(asar_path.with_name(asar_path.name + ".zusage.lock"))):
+    for attempt in range(2):
+        stage = None
+        stream = None
+        try:
+            from runtime_lock import file_lock
+            asar_path = Path(asar_path)
+            # —— 锁外：读档、变换、构建完整 stage ——
             before = asar.source_fingerprint(asar_path)
             stream, base, nodes, header, package, original, target = _load(asar_path)
             version = package.get("version")
             modified = transform_module(original, "apply", target)
-            stream.close()   # Windows：replace 前必须释放源句柄
+            stream.close()   # Windows：句柄尽早释放
             stream = None
             if modified == original:
                 return {"status": "present", "version": version, "detail": "stash already deployed"}
             if not _cli_safe:
-                _sweep_stale_stages(asar_path.parent)
+                _sweep_stale_stages(asar_path.parent)   # 只清过期残留，锁外并发安全
             fd, name = asar.bounded_mkstemp(prefix=".mobile-relay-", dir=str(asar_path.parent))
             stage = Path(name)
             with os.fdopen(fd, "wb") as dest, asar_path.open("rb") as rstream:
                 _rewrite_to(rstream, base, nodes, header, ASSET, original, modified, dest)
                 dest.flush()
                 os.fsync(dest.fileno())
-            if asar.source_fingerprint(asar_path) != before:
-                raise RelayPatchError("Source archive changed")
-            os.chmod(stage, stat.S_IMODE(asar_path.stat().st_mode))
-            try:
-                os.replace(stage, asar_path)
-            except OSError as error:
-                handover = {"status": "replace-failed", "version": version,
-                            "detail": str(error), "stage": str(stage), "source": before}
-                stage = None   # 已移交，finally 不得清理
-                return handover
+            # —— 短锁：pending 复查 + 指纹重验 + 原子替换 ——
+            with (nullcontext() if _locked else file_lock(asar_path.with_name(asar_path.name + ".zusage.lock"))):
+                if _pending_exists(asar_path):
+                    return {"status": "deferred", "detail": "existing pending operation"}
+                if asar.source_fingerprint(asar_path) != before:
+                    if attempt:
+                        return {"status": "skipped-error", "version": None,
+                                "detail": "source archive kept changing during build"}
+                    continue   # 丢弃本轮 stage（finally 清理），基于新内容重建
+                os.chmod(stage, stat.S_IMODE(asar_path.stat().st_mode))
+                try:
+                    os.replace(stage, asar_path)
+                except OSError as error:
+                    handover = {"status": "replace-failed", "version": version,
+                                "detail": str(error), "stage": str(stage), "source": before}
+                    stage = None   # 已移交，finally 不得清理
+                    return handover
             stage = None
-        return {"status": "patched", "version": target.get("version"),
-                "detail": "derived stash deployed" if target.get("derived") else "stash deployed"}
-    except PermissionError as error:
-        return {"status": "skipped-error", "version": None, "detail": str(error), "permission": True}
-    except Exception as error:  # 旁路增强：任何异常都只报告
-        return {"status": "skipped-error", "version": None, "detail": str(error)}
-    finally:
-        if stream is not None:
-            stream.close()
-        if _cli_safe and stage is not None:
-            try:
-                stage.unlink(missing_ok=True)
-            except OSError:
-                pass
+            return {"status": "patched", "version": target.get("version"),
+                    "detail": "derived stash deployed" if target.get("derived") else "stash deployed"}
+        except TimeoutError as error:
+            return {"status": "deferred", "version": None, "detail": str(error)}
+        except asar.PendingTmpError as error:
+            # 锁外读档/取指纹撞上并发发布窗口（source_fingerprint 的 hash 前后 stamp
+            # 校验失败）：与短锁指纹重验同语义重试一轮，二次仍撞才 skipped-error
+            if attempt:
+                return {"status": "skipped-error", "version": None, "detail": str(error)}
+            continue
+        except PermissionError as error:
+            return {"status": "skipped-error", "version": None, "detail": str(error), "permission": True}
+        except Exception as error:  # 旁路增强：任何异常都只报告
+            return {"status": "skipped-error", "version": None, "detail": str(error)}
+        finally:
+            if stream is not None:
+                stream.close()
+            if stage is not None:
+                try:
+                    stage.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
 
 def apply_cli(asar_path):
-    """Apply under the target lock without consuming any existing pending state."""
-    from runtime_lock import file_lock
+    """Apply without consuming any existing pending state（锁外构建 + 短锁提交）。"""
     path = Path(asar_path)
-    pending = path.with_name("app.asar.zusage.tmp")
     try:
-        with file_lock(path.with_name(path.name + ".zusage.lock")):
-            for candidate in (pending, pending.with_name(pending.name + ".json")):
-                try:
-                    candidate.lstat()
-                except FileNotFoundError:
-                    continue
-                return {"status": "deferred", "detail": "existing pending operation"}
-            result = ensure_deployed(path, _locked=True, _cli_safe=True)
-            if result.get("status") == "replace-failed":
-                try:
-                    Path(result["stage"]).unlink(missing_ok=True)
-                except OSError as error:
-                    return {"status": "deferred", "detail": f"stage cleanup failed: {error}"}
-                return {"status": "deferred", "version": result.get("version"),
-                        "detail": result.get("detail")}
-            return result
+        # 锁外快查只是快速路径：既有 pending 的硬保证在 ensure_deployed 短锁内复查。
+        pending, pending_meta = _pending_paths(path)
+        for candidate in (pending, pending_meta):
+            try:
+                candidate.lstat()
+            except FileNotFoundError:
+                continue
+            return {"status": "deferred", "detail": "existing pending operation"}
+        result = ensure_deployed(path, _cli_safe=True)
+        if result.get("status") == "replace-failed":
+            try:
+                Path(result["stage"]).unlink(missing_ok=True)
+            except OSError as error:
+                return {"status": "deferred", "detail": f"stage cleanup failed: {error}"}
+            return {"status": "deferred", "version": result.get("version"),
+                    "detail": result.get("detail")}
+        return result
     except TimeoutError as error:
         return {"status": "deferred", "detail": str(error)}
     except OSError as error:

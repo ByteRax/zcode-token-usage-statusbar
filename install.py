@@ -512,10 +512,12 @@ def _publish_mobile_pending(pi, result):
 def ensure_mobile_relay_stash(pi):
     from mobile_relay_patch import ensure_deployed
     try:
-        with pi._target_lock():
-            if any(path.exists() or path.is_symlink() for path in (pi.TMP, pi.TMP_META)):
-                return {"status": "deferred", "detail": "existing pending operation"}
-            result = ensure_deployed(pi.ASAR, _locked=True)
+        # 锁外快查只是快速路径（省一次无谓构建）；既有 pending 的硬保证在
+        # ensure_deployed 短锁内复查——外层长持锁会让构建退化回锁内重写整包，
+        # 多窗口并发下实测每轮 10s 超时空转（2026-11-21）。
+        if any(path.exists() or path.is_symlink() for path in (pi.TMP, pi.TMP_META)):
+            return {"status": "deferred", "detail": "existing pending operation"}
+        result = ensure_deployed(pi.ASAR)
         if result.get("status") != "replace-failed":
             return result
         return _publish_mobile_pending(pi, result)

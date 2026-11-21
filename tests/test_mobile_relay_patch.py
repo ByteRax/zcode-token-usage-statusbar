@@ -349,8 +349,9 @@ class CliApplyTests(unittest.TestCase):
             with self.subTest(conflict=conflict), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 path = archive(root / "custom.asar", SYNTHETIC_BODY)
-                pending = root / "app.asar.zusage.tmp"
-                sidecar = root / "app.asar.zusage.tmp.json"
+                # pending 名跟随目标 asar 名（patch_install 的 TMP 常量同款动态拼接）
+                pending = root / "custom.asar.zusage.tmp"
+                sidecar = root / "custom.asar.zusage.tmp.json"
                 if conflict in ("tmp", "both"):
                     pending.write_bytes(b"user pending bytes")
                 if conflict in ("sidecar", "both"):
@@ -368,27 +369,33 @@ class CliApplyTests(unittest.TestCase):
                 self.assertEqual(list(root.glob(".mobile-relay-*")), [])
 
     def test_apply_checks_pending_while_holding_target_lock(self):
+        # 锁窗口改造后锁外快查只是快速路径；硬保证是短锁提交段内必有一次 pending
+        # 复查——检查与 os.replace 之间无锁外竞态窗口
         import contextlib
         import runtime_lock
         with tempfile.TemporaryDirectory() as tmp:
             path = archive(Path(tmp) / "app.asar", SYNTHETIC_BODY)
-            locked = []
+            checks = []
             @contextlib.contextmanager
             def lock(lock_path):
                 self.assertEqual(lock_path, path.with_name(path.name + ".zusage.lock"))
-                locked.append(True)
+                checks.append("lock")
                 try:
                     yield
                 finally:
-                    locked.pop()
+                    checks.append("unlock")
             original_lstat = Path.lstat
             def lstat(candidate, *args, **kwargs):
-                if candidate.name in ("app.asar.zusage.tmp", "app.asar.zusage.tmp.json"):
-                    self.assertTrue(locked)
+                if (candidate.name in ("app.asar.zusage.tmp", "app.asar.zusage.tmp.json")
+                        and checks):
+                    checks.append("pending-check")
                 return original_lstat(candidate, *args, **kwargs)
             with mock.patch.object(runtime_lock, "file_lock", lock), mock.patch.object(Path, "lstat", lstat):
                 self.assertEqual(mrp.main(["apply", "--asar", str(path)]), 0)
             self.assertEqual(mrp.check_deployed(path)["status"], "patched")
+            lock_start = checks.index("lock")
+            lock_end = checks.index("unlock", lock_start)
+            self.assertIn("pending-check", checks[lock_start:lock_end])
 
     def test_pending_appearing_at_lock_acquisition_blocks_apply(self):
         import contextlib
@@ -448,6 +455,87 @@ class EnsureDeployedTests(unittest.TestCase):
                 nodes = dict(asar.iter_files(header))
                 self.assertEqual(mrp._read(stream, nodes, base, "/out/main/index.js"),
                                  SYNTHETIC_BODY + TAIL)
+
+    def _make_target(self, root, body=None):
+        return pts.make_asar(Path(root) / "app.asar", files={
+            "out/main/index.js": (body or SYNTHETIC_BODY) + TAIL,   # 已带 patch_install 尾缀
+            "package.json": __import__("json").dumps(PKG).encode(),
+        })
+
+    def test_ensure_defers_when_pending_exists_at_commit(self):
+        # 短锁提交前的硬保证复查：既有待替换包存在时让位并清掉自己的 stage，绝不覆盖
+        with tempfile.TemporaryDirectory() as tmp:
+            src = self._make_target(tmp)
+            before = src.read_bytes()
+            src.with_name(src.name + ".zusage.tmp").write_bytes(b"pending")
+            result = mrp.ensure_deployed(src)
+            self.assertEqual(result["status"], "deferred")
+            self.assertEqual(result["detail"], "existing pending operation")
+            self.assertEqual(src.read_bytes(), before)   # 目标未被改写
+            self.assertFalse(mrp.check_deployed(src)["stash"])
+
+    def test_ensure_rebuilds_when_source_changes_during_build(self):
+        # 锁窗口纪律：锁外构建期间目标被并发改写 → 短锁指纹重验拒绝 → 整体重试一次，
+        # 第二轮基于新内容构建并成功；锁内只剩亚秒级提交
+        with tempfile.TemporaryDirectory() as tmp:
+            src = self._make_target(tmp)
+            real_fingerprint = mrp.asar.source_fingerprint
+            calls = {"n": 0}
+
+            def fingerprint_with_concurrent_write(path):
+                value = real_fingerprint(path)
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    # 第一次计数后（锁外 before 已取）模拟另一进程收尾/改写目标
+                    self._make_target(Path(path).parent, body=SYNTHETIC_BODY + b" // drift")
+                return value
+
+            with mock.patch.object(mrp.asar, "source_fingerprint",
+                                   side_effect=fingerprint_with_concurrent_write):
+                result = mrp.ensure_deployed(src)
+            self.assertEqual(result["status"], "patched")
+            self.assertEqual(calls["n"], 4)   # before → 重验拒 → 重建 before → 重验过
+            self.assertEqual(mrp.check_deployed(src)["status"], "patched")
+
+    def test_pending_probe_oserror_still_defers(self):
+        # _pending_exists 的 fail-closed 分支：探测不到而无法排除（非
+        # FileNotFoundError 的 OSError）一律按存在让位，绝不冒进覆盖
+        with tempfile.TemporaryDirectory() as tmp:
+            src = self._make_target(tmp)
+            before = src.read_bytes()
+            original_lstat = Path.lstat
+
+            def lstat(candidate, *args, **kwargs):
+                if candidate.name.endswith(".zusage.tmp"):
+                    raise NotADirectoryError(20, "probe failed")
+                return original_lstat(candidate, *args, **kwargs)
+
+            with mock.patch.object(Path, "lstat", lstat):
+                result = mrp.ensure_deployed(src)
+            self.assertEqual(result["status"], "deferred")
+            self.assertEqual(result["detail"], "existing pending operation")
+            self.assertEqual(src.read_bytes(), before)
+
+    def test_ensure_retries_once_on_concurrent_publish_window(self):
+        # 锁外取指纹撞上并发发布窗口（source_fingerprint 的 stamp 校验抛
+        # PendingTmpError）：与短锁指纹重验同语义重试一轮，二次正常即成功
+        with tempfile.TemporaryDirectory() as tmp:
+            src = self._make_target(tmp)
+            real_fingerprint = mrp.asar.source_fingerprint
+            calls = {"n": 0}
+
+            def fingerprint_with_publish_window(path):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise mrp.asar.PendingTmpError("file replaced while hashing")
+                return real_fingerprint(path)
+
+            with mock.patch.object(mrp.asar, "source_fingerprint",
+                                   side_effect=fingerprint_with_publish_window):
+                result = mrp.ensure_deployed(src)
+            self.assertEqual(result["status"], "patched")
+            self.assertEqual(calls["n"], 3)   # 首取抛 → 重建取 → 短锁重验
+            self.assertEqual(mrp.check_deployed(src)["status"], "patched")
 
     def test_check_upgrade_and_remove_legacy_archive(self):
         with tempfile.TemporaryDirectory() as tmp:

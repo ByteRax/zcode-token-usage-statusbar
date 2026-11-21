@@ -1036,9 +1036,10 @@ def ensure_deployed(asar_path):
     输出临时文件在 asar 同目录后 os.replace 原子换。任何失败都不抛出——桥只是
     实时统计的增强，绝不影响安装/更新主流程。表内版本严格按指纹，同版本字节
     漂移（宿主重 build）先走 derive_target 结构推导兜底；表外版本同样先走
-    derive_target 的严格结构推导，校验不过按 fail-closed 跳过。受保护目录
-    拿不到锁写权限时先做只读判定：确定无需写盘（present/skipped-unknown）直接
-    返回真实状态，确需写入才报 skipped-error（带 permission 标记，见 issue #67/#247）。
+    derive_target 的严格结构推导，校验不过按 fail-closed 跳过。只读判定在锁外
+    完成：确定无需写盘（present/skipped-unknown）不碰锁直接返回真实状态；确需
+    写入而目录不可写（受保护目录）才报 skipped-error（带 permission 标记，见
+    issue #67/#247）。
     返回状态：
       {"status": "patched"|"present"|"skipped-unknown"|"skipped-error",
        "version": <客户端版本>, "detail": <说明>}
@@ -1046,41 +1047,36 @@ def ensure_deployed(asar_path):
     或目标目录 ACL 只读）：此时返回 replace-failed，stage 是已构建完整的带桥
     包、source 是发布前 asar 的指纹；调用方应转存待替换链
     （patch_install.publish_external_pending）或删除 stage，不能留在原地。
+
+    锁窗口纪律（与 mobile relay 补装同款）：读档、推导与 stage 写盘全程在锁外
+    完成（读 asar 不需要锁），目标锁只包「发布前指纹重验 + os.replace」的亚秒级
+    提交——多窗口并发 SessionStart 抢同一把锁时不再整段空转；构建期间目标被并发
+    改写时按指纹不符整体重试一次，二次仍变按 skipped-error 报告。
     """
-    try:
-        from runtime_lock import file_lock
-        asar_path = Path(asar_path)
-        with contextlib.ExitStack() as stack:
-            try:
-                stack.enter_context(file_lock(asar_path.with_name(asar_path.name + ".zusage.lock")))
-            except PermissionError as lock_error:
-                # 受保护目录（Program Files / /opt 等）下普通用户拿不到同目录锁文件写权限：
-                # 先只读判定——若桥已在位（present）或版本未登记（skipped-unknown），
-                # 无需任何写操作，直接返回真实状态，避免提权安装后每次普通会话误报
-                # skipped-error 或吞掉未登记版本的兼容性提醒（issue #67/#247）。
-                # 检查自身失败（坏 asar、读档异常）无法证明无需写盘，按锁失败原语义
-                # 上报，保住 permission 标记供提权指引，不降级为无标记的通用错误。
-                try:
-                    kind, payload = _inspect_deploy(asar_path)
-                except Exception:
-                    raise lock_error
-                if kind == "result":
-                    return payload
-                raise lock_error
-            _sweep_stale_stages(asar_path.parent)
+    for attempt in range(2):
+        stage = None
+        try:
+            from runtime_lock import file_lock
+            asar_path = Path(asar_path)
+            # —— 锁外：过期残留清扫、只读检查、构建完整 stage ——
+            _sweep_stale_stages(asar_path.parent)   # 只清过期残留，锁外并发安全
             kind, payload = _inspect_deploy(asar_path)
             if kind == "result":
                 return payload
             before, base, nodes, header, version, auto, derived, asset_path, original, modified = payload
             fd, name = asar.bounded_mkstemp(prefix=".zusage-bridge-", dir=str(asar_path.parent))
             stage = Path(name)
-            try:
-                with os.fdopen(fd, "wb") as dest, asar_path.open("rb") as stream:
-                    _rewrite_to(stream, base, nodes, header, asset_path, original, modified, dest)
-                    dest.flush()
-                    os.fsync(dest.fileno())
+            with os.fdopen(fd, "wb") as dest, asar_path.open("rb") as stream:
+                _rewrite_to(stream, base, nodes, header, asset_path, original, modified, dest)
+                dest.flush()
+                os.fsync(dest.fileno())
+            # —— 短锁：指纹重验 + 原子替换 ——
+            with file_lock(asar_path.with_name(asar_path.name + ".zusage.lock")):
                 if asar.source_fingerprint(asar_path) != before:
-                    raise BridgeError("Source archive changed")
+                    if attempt:
+                        return {"status": "skipped-error", "version": version,
+                                "detail": "target archive kept changing during build"}
+                    continue   # 丢弃本轮 stage（finally 清理），基于新内容重建
                 os.chmod(stage, stat.S_IMODE(asar_path.stat().st_mode))
                 try:
                     os.replace(stage, asar_path)
@@ -1091,24 +1087,31 @@ def ensure_deployed(asar_path):
                                 "detail": str(error), "stage": str(stage), "source": before}
                     stage = None   # 已移交：finally 不得清理
                     return handover
-                stage = None
-            finally:
-                if stage is not None:
-                    try:
-                        stage.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-        return {"status": "patched", "version": version,
-                "detail": ("auto-derived bridge deployed" if auto else
-                           ("bridge deployed (derived fingerprint)" if derived
-                            else "bridge deployed"))}
-    except PermissionError as error:
-        # 权限不足要单独可辨：Windows 的 os.access 看不见 ACL（目录恒报可写），
-        # 调用方只能按本标记给用户提权指引（issue #67 场景 1）
-        return {"status": "skipped-error", "version": None, "detail": str(error),
-                "permission": True}
-    except Exception as error:  # 安装链的旁路增强：任何异常都只报告
-        return {"status": "skipped-error", "version": None, "detail": str(error)}
+            stage = None
+            return {"status": "patched", "version": version,
+                    "detail": ("auto-derived bridge deployed" if auto else
+                               ("bridge deployed (derived fingerprint)" if derived
+                                else "bridge deployed"))}
+        except asar.PendingTmpError as error:
+            # 锁外只读判定/取指纹撞上并发发布窗口（source_fingerprint 的 stamp 校验
+            # 失败）：与短锁指纹重验同语义重试一轮，二次仍撞才 skipped-error。
+            # version 固定 None：抛点可能在 payload 解包前，此时尚未绑定
+            if attempt:
+                return {"status": "skipped-error", "version": None, "detail": str(error)}
+            continue
+        except PermissionError as error:
+            # 权限不足要单独可辨：Windows 的 os.access 看不见 ACL（目录恒报可写），
+            # 调用方只能按本标记给用户提权指引（issue #67 场景 1）
+            return {"status": "skipped-error", "version": None, "detail": str(error),
+                    "permission": True}
+        except Exception as error:  # 安装链的旁路增强：任何异常都只报告
+            return {"status": "skipped-error", "version": None, "detail": str(error)}
+        finally:
+            if stage is not None:
+                try:
+                    stage.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
 
 def _inspect_remove(asar_path):

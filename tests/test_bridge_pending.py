@@ -787,18 +787,22 @@ class SudoHintWindowsTests(unittest.TestCase):
             self.assertEqual(bridge.remove_deployed(asar_path)["status"], "skipped-unknown")
 
     def test_lock_denied_with_failing_readonly_inspect_keeps_permission_flag(self):
-        # 锁失败后只读检查自身出错（坏 asar、读档异常）时，无法证明无需写盘：
-        # 按锁失败原语义上报 skipped-error 并保留 permission 标记供提权指引，
-        # 不得落入无标记的通用错误分支（issue #67 场景 1）。
+        # 权限信号不被吞（issue #67 场景 1）。锁窗口改造后 ensure 的只读判定前移到
+        # 锁外：判定自身 PermissionError（读拒/TCC/ACL）保留 permission 标记供提权
+        # 指引；解析类失败（坏 asar）与权限无关，不得虚报。remove 链仍在锁内判定，
+        # 锁拒绝 + 只读检查失败按原语义上抛保标记。
         import runtime_lock
         asar_path = self.root / "app.asar"
-        with mock.patch.object(runtime_lock, "file_lock",
-                               side_effect=PermissionError(5, "lock denied")), \
-                mock.patch.object(bridge, "_inspect_deploy",
-                                  side_effect=bridge.BridgeError("bad archive")):
+        with mock.patch.object(bridge, "_inspect_deploy",
+                               side_effect=PermissionError(5, "read denied")):
             denied = bridge.ensure_deployed(asar_path)
         self.assertEqual(denied["status"], "skipped-error")
         self.assertIs(denied.get("permission"), True)
+        with mock.patch.object(bridge, "_inspect_deploy",
+                               side_effect=bridge.BridgeError("bad archive")):
+            bad = bridge.ensure_deployed(asar_path)
+        self.assertEqual(bad["status"], "skipped-error")
+        self.assertNotIn("permission", bad)
         with mock.patch.object(runtime_lock, "file_lock",
                                side_effect=PermissionError(5, "lock denied")), \
                 mock.patch.object(bridge, "_inspect_remove",
