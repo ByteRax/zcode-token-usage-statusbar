@@ -12,6 +12,7 @@
 - **定位（location）**：credentials.json 键 `project-key-location:v1:` + `encodeURIComponent(JSON.stringify([origin, family, accountId, team, 1, "non-team"]))`（本机实测：`[ "https://bigmodel.cn", "bigmodel", "<accountId>", null, 1, "non-team" ]`）；值=`{organizationId, projectId, apiKeyId}` 的 JSON 经 credentials.json 同款信封加密（`enc:v1/v2`）。accountId 直接取自键名，**不需要**解析 `oauth:bigmodel:user_info`。
 - **发现链**（location 缺失时宿主走 getCustomerInfo → 选 org/project → 列/建 `zcode-api-key`）：**插件不实现**——location 缺失说明宿主从未给该账号发放过 coding key，增强无凭据可用，fail-closed 报 plan_auth 与现状一致。
 - **路由**（权威来源=`<v2>/runtime/provider/<platform>/<hostVersion>/endpoint-*/zcode-builtin.json` 的 `account:*` 条目 `api.baseUrl`，3.19.1 实测）：`account:bigmodel-start-plan → https://zcode.z.ai/api/v1/zcode-plan/anthropic`、`account:bigmodel-individual-coding-plan`/`team → https://open.bigmodel.cn/api/anthropic`。start-plan 在 open.bigmodel.cn 用项目 key 虽曾 200（v344，raw key），但换发 token 的权威端点以 runtime 配置为准。
+- **zcode.z.ai 会话网关的鉴权分流（2026-11-21 真机实测补篇）**：GLr accessToken 是 bigmodel.cn 项目域凭据，打 zcode.z.ai 恒 401——该路由改用 credentials.json 的 `zcodejwttoken`（会话 JWT）+ `X-Device-Mid` 必带头（同目录 telemetry-state.json/onboarding-record.json 的 deviceMid，缺头实测 400 code 3001；额度链 zcode-start 适配器同款口径，OAuth/access_token 打 zcode.z.ai 实测 401）。bigmodel.cn 路由维持 GLr token。凭据序：可用 v2 条目 key → 路由分流（zcode.z.ai=会话 JWT；其它=GLr）→ plan_auth。
 
 ## 插件实现契约（model-puller）
 

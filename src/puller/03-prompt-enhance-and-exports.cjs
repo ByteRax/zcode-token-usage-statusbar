@@ -27,15 +27,26 @@
     const external = o.signal && typeof o.signal.addEventListener === "function" ? o.signal : null;
     const isBigmodelPlan = !!planSrc && planSrc.fam === "bigmodel";
     const baseUrl = String((planSrc ? planBaseUrl(providerId) : api.baseUrl) || "").trim().replace(/\/+$/, "");
-    let apiKey = "";
+    /* zcode.z.ai 会话网关（specs/plan-glr-credential.md 补篇）：GLr accessToken 是
+     * bigmodel.cn 项目域凭据，打该网关恒 401（2026-11-21 真机实测）——该路由必须用
+     * zcodejwttoken（会话 JWT）+ X-Device-Mid（额度链 zcode-start 同款口径）。 */
+    const isZcodeSessionRoute = !!planSrc && /(^|\.)zcode\.z\.ai$/.test((() => { try { return new URL(baseUrl).hostname.toLowerCase(); } catch (e) { return ""; } })());
+    let apiKey = "", zcodeSession = null;
     if (planSrc) {
       if (isBigmodelPlan) {
         /* GLr 时代凭据序（specs/plan-glr-credential.md）：v2 条目明文 key（3.18 宿主/旧机器）
-         * → GLr 换发 token（3.19.x 宿主运行时解析对等）→ 均不可用诚实报 plan_auth。
-         * OAuth 直连兜底已移除——v344 实测被网关 500 code 1234 拒（#429 报告者机器的
-         * 「HTTP 429」1234 详情即此路径），绝不该作为 fallback 重现。 */
+         * → 按路由分流：zcode.z.ai 用会话 JWT+设备号；bigmodel.cn 用 GLr 换发 token
+         * （3.19.x 宿主运行时解析对等）→ 均不可用诚实报 plan_auth。
+         * OAuth 直连兜底已移除——v344 实测被网关 500 code 1234 拒，绝不该作为 fallback 重现。 */
         apiKey = planEntryKeyOf(providerId);
-        if (!apiKey) apiKey = await planGLrTokenOf(providerId, external);
+        if (!apiKey) {
+          if (isZcodeSessionRoute) {
+            zcodeSession = readZcodeSessionCred();
+            if (zcodeSession) apiKey = zcodeSession.token;
+          } else {
+            apiKey = await planGLrTokenOf(providerId, external);
+          }
+        }
         if (!apiKey) {
           if (external && external.aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
           return { ok: false, kind: "plan_auth", error: "plan conversation key unavailable" };
@@ -51,6 +62,7 @@
     if (!apiKey) return { ok: false, kind: "auth", error: planSrc ? "plan token unavailable" : "no api key" };
     let url = "", body = null;
     const headers = { "Content-Type": "application/json", "User-Agent": "ZCode" };   // fetchModels 同款 UA：网关拒绝无 UA 请求（实测缺 UA 时 anthropic 端点 500 code 1234）
+    if (zcodeSession) headers["X-Device-Mid"] = zcodeSession.deviceMid;   // zcode.z.ai 必带头（缺头 400 code 3001，额度链同款）
     if (isOpenCodeGoBaseUrl(baseUrl)) headers["x-opencode-session"] = randomUUID();   // OpenCode Go 路由键，缺失 400 MissingSessionID
     const userContent = enhanceUserContent(text);
     if (apiType === "openai-chat-completions") {
@@ -156,9 +168,17 @@
       const isBigmodel = planSrc.fam === "bigmodel";
       let apiKey = isBigmodel ? planEntryKeyOf(providerId) : planKeyOf(providerId);
       if (isBigmodel && !apiKey) {
-        /* GLr 时代（specs/plan-glr-credential.md）：换发是异步网络调用，同步列表门只认
-         * memo 内的活 token——首次增强换发前列表不含该源，默认模式增强（主路径）不受影响。 */
-        apiKey = glrMemoToken();
+        /* GLr 时代（specs/plan-glr-credential.md）：按路由分流——zcode.z.ai 的会话凭据
+         * （zcodejwttoken+设备号）同步可得，列表直接认；bigmodel.cn 的换发是异步网络
+         * 调用，同步列表门只认 memo 内的活 token（首次换发前不列，默认模式增强不受影响）。 */
+        const base = planBaseUrl(providerId);
+        const isZcode = /(^|\.)zcode\.z\.ai$/.test((() => { try { return new URL(base).hostname.toLowerCase(); } catch (e) { return ""; } })());
+        if (isZcode) {
+          const sess = readZcodeSessionCred();
+          if (sess) apiKey = sess.token;
+        } else {
+          apiKey = glrMemoToken();
+        }
       }
       if (!apiKey) return null;
       const entry = readV2BuiltinEntry(planSrc);

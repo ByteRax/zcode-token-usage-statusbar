@@ -875,12 +875,15 @@ function glrFixture(opts) {
   const creds = {};
   creds["oauth:bigmodel:access_token"] = "enc:oauth-" + (o.oauthTag || "1");
   if (!o.noLocation) creds[GLR_LOC_KEY] = "enc:loc-1";
+  if (!o.noSessionJwt) creds["zcodejwttoken"] = "enc:session-jwt-1";   // zcode.z.ai 路由的会话凭据（补篇）
   fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify(creds));
+  if (!o.noDeviceMid) fs.writeFileSync(path.join(dir, "telemetry-state.json"), JSON.stringify({ deviceMid: "dev-mid-1" }));
   if (o.runtimeBase !== false) writeRuntimeBuiltin(dir, o.runtimeVersion || "3.19.1", o.startPlanBase || "https://zcode.z.ai/api/v1/zcode-plan/anthropic");
   const decryptValue = (enc) => {
     if (enc === "enc:loc-1") return GLR_LOC_JSON;
     if (enc === "enc:loc-2") return JSON.stringify({ organizationId: "org-9", projectId: "proj-8", apiKeyId: "key-8" });
     if (enc === "enc:loc-bad") return JSON.stringify({ organizationId: "org-bad", projectId: "proj-bad", apiKeyId: "key-bad" });
+    if (enc === "enc:session-jwt-1") return "zc-session-jwt-1";
     if (String(enc).indexOf("enc:oauth-") === 0) return "glr-oauth-" + String(enc).slice(10);
     return null;
   };
@@ -911,31 +914,27 @@ function glrFixture(opts) {
   return { mp, calls, dir, get exchangeDrops() { return exchangeDrops; }, setOauthTag: (t) => { creds["oauth:bigmodel:access_token"] = "enc:oauth-" + t; fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify(creds)); }, setLocEnvelope: (env) => { creds[GLR_LOC_KEY] = env; fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify(creds)); } };
 }
 
-test("GLr: location + exchange + runtime route serve start-plan enhance without v2 config (3.19.1 parity)", async () => {
+test("GLr: start-plan zcode.z.ai route rides session JWT + device mid; exchange never fires for that route", async () => {
   const { mp, calls } = glrFixture();
   const r = await mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
-  assert.equal(r.ok, true, "enhance should succeed via GLr token: " + JSON.stringify(r).slice(0, 200));
+  assert.equal(r.ok, true, "enhance should succeed via session JWT: " + JSON.stringify(r).slice(0, 200));
   assert.equal(r.text, "glr 增强");
-  const exchange = calls.find((c) => c.url === GLR_EXCHANGE_URL);
-  assert.ok(exchange, "exchange request sent");
-  assert.equal(exchange.opts.method, "POST");
-  assert.equal(exchange.opts.headers.Authorization, "Bearer glr-oauth-1");
-  const body = JSON.parse(exchange.opts.body);
-  assert.equal(body.clientType, "zcode");
-  assert.equal(body.clientVersion, "3.19.1");
+  assert.equal(calls.filter((c) => c.url.indexOf("/access_tokens") > 0).length, 0, "GLr exchange not used for zcode.z.ai route (its token is bigmodel.cn-scoped, 401s there)");
   const messages = calls.find((c) => c.url.indexOf("/v1/messages") > 0);
   assert.equal(messages.url, "https://zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages", "runtime config is the authoritative route for start-plan");
-  assert.equal(messages.opts.headers.Authorization, "Bearer glr-tok-1", "exchanged token rides the messages call, not OAuth");
+  assert.equal(messages.opts.headers.Authorization, "Bearer zc-session-jwt-1", "session JWT auth (GLr/OAuth tokens 401 on zcode.z.ai)");
+  assert.equal(messages.opts.headers["X-Device-Mid"], "dev-mid-1", "device mid is mandatory on zcode.z.ai");
   assert.equal(messages.opts.headers["User-Agent"], "ZCode");
+  assert.equal(messages.opts.headers["anthropic-version"], "2023-06-01");
 });
 
 test("GLr: memo reuses token within TTL; oauth change forces re-exchange", async () => {
   const f = glrFixture();
-  await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "第一次");
-  await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "第二次");
+  await f.mp.enhanceText("account:bigmodel-individual-coding-plan", "GLM-5.3-Flash", "第一次");
+  await f.mp.enhanceText("account:bigmodel-individual-coding-plan", "GLM-5.3-Flash", "第二次");
   assert.equal(f.calls.filter((c) => c.url === GLR_EXCHANGE_URL).length, 1, "second enhance reuses memoized token");
   f.setOauthTag("2");
-  const r3 = await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "第三次");
+  const r3 = await f.mp.enhanceText("account:bigmodel-individual-coding-plan", "GLM-5.3-Flash", "第三次");
   assert.equal(r3.ok, true);
   assert.equal(f.calls.filter((c) => c.url === GLR_EXCHANGE_URL).length, 2, "oauth fingerprint change re-exchanges");
   const second = f.calls.filter((c) => c.url === GLR_EXCHANGE_URL)[1];
@@ -945,11 +944,19 @@ test("GLr: memo reuses token within TTL; oauth change forces re-exchange", async
 test("GLr: exchange failures fail closed to plan_auth with zero messages traffic", async () => {
   for (const variant of [{ exchangeStatus: 404 }, { exchangeStatus: 401 }, { exchangeDisabled: true }, { exchangeBadShape: true }, { noLocation: true }]) {
     const f = glrFixture(variant);
-    const r = await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+    const r = await f.mp.enhanceText("account:bigmodel-individual-coding-plan", "GLM-5.3-Flash", "写个脚本");
     assert.equal(r.ok, false, JSON.stringify(variant));
     assert.equal(r.kind, "plan_auth", JSON.stringify(variant));
     assert.equal(f.calls.filter((c) => c.url.indexOf("/v1/messages") > 0).length, 0, "no messages call after exchange failure: " + JSON.stringify(variant));
     if (variant.exchangeStatus) assert.equal(f.exchangeDrops, 1, "non-ok exchange body cancelled: " + JSON.stringify(variant));
+  }
+  // zcode.z.ai 会话凭据缺失（补篇）：无 JWT 或无设备号 → plan_auth 零网络
+  for (const variant of [{ noSessionJwt: true }, { noDeviceMid: true }]) {
+    const f = glrFixture(variant);
+    const r = await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+    assert.equal(r.ok, false, JSON.stringify(variant));
+    assert.equal(r.kind, "plan_auth", JSON.stringify(variant));
+    assert.equal(f.calls.length, 0, "zero network without session credential: " + JSON.stringify(variant));
   }
 });
 
@@ -1015,14 +1022,19 @@ test("GLr: exchange respects external abort", async () => {
   releaseExchange();
 });
 
-test("GLr: host list gains bigmodel sources only after a memoized exchange", async () => {
+test("GLr: host list gates by route — zcode.z.ai sync via session JWT, bigmodel.cn after memoized exchange", async () => {
   const f = glrFixture({});
   const before = f.mp.listEnhanceHosts().filter((h) => h.id.indexOf("bigmodel") >= 0).map((h) => h.id);
-  assert.equal(before.length, 0, "no bigmodel host before any GLr exchange: " + JSON.stringify(before));
-  await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "预热换发");
-  const after = f.mp.listEnhanceHosts().filter((h) => h.id === "account:bigmodel-start-plan");
-  assert.equal(after.length, 1, "start-plan host appears after memoized exchange");
-  assert.equal(after[0].protocol, "anthropic-messages");
+  assert.deepEqual(before, ["account:bigmodel-start-plan"], "zcode.z.ai route is sync-gated by session JWT+device mid");
+  await f.mp.enhanceText("account:bigmodel-individual-coding-plan", "GLM-5.3-Flash", "预热换发");
+  const after = f.mp.listEnhanceHosts().filter((h) => h.id.indexOf("bigmodel") >= 0).map((h) => h.id);
+  assert.deepEqual(after, ["account:bigmodel-individual-coding-plan", "account:bigmodel-start-plan"], "individual appears after memoized exchange");
+  const resolved = f.mp.resolveEnhanceHost("account:bigmodel-start-plan");
+  assert.equal(resolved.plan, true);
+  assert.equal(resolved.apiKey, "zc-session-jwt-1");   // 会话 JWT 进 host（主进程内，不回渲染端）
+  // 无设备号：会话凭据不完整 → start-plan 不列（缺 X-Device-Mid 必被 3001 拒）
+  fs.rmSync(path.join(f.dir, "telemetry-state.json"));
+  assert.equal(f.mp.resolveEnhanceHost("account:bigmodel-start-plan"), null);
 });
 
 /* ---------- 第一轮 review 收口（A/B/D 三路 MINOR）：安全性质回归锁与边角 ---------- */
@@ -1036,7 +1048,7 @@ test("GLr security: hostile origin in location key name is rejected with zero ne
     fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify({ "oauth:bigmodel:access_token": "enc:oauth-1", [evilKey]: "enc:loc-1" }));
     const calls = [];
     const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: async (url, requestOpts) => { calls.push({ url, opts: requestOpts }); return sseRes(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']); }, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: path.join(dir, "credentials.json"), decryptValue: (enc) => (enc === "enc:loc-1" ? GLR_LOC_JSON : String(enc).indexOf("enc:oauth-") === 0 ? "glr-oauth-1" : null), hostVersion: "3.19.1" });
-    const r = await mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+    const r = await mp.enhanceText("account:bigmodel-individual-coding-plan", "GLM-5.3-Flash", "写个脚本");
     assert.equal(r.ok, false, evil);
     assert.equal(r.kind, "plan_auth", evil);
     assert.equal(calls.length, 0, "zero outbound requests for hostile origin " + evil);
@@ -1061,7 +1073,7 @@ test("GLr security: family/team/usageScene filters each reject decoy keys (revie
     }));
     const calls = [];
     const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: async (url, requestOpts) => { calls.push({ url, opts: requestOpts }); return url === GLR_EXCHANGE_URL ? { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { enabled: true, token: "glr-tok-1" } }) } : sseRes(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']); }, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: path.join(dir, "credentials.json"), decryptValue: (enc) => (enc === "enc:loc-1" ? GLR_LOC_JSON : enc === "enc:loc-bad" ? JSON.stringify({ organizationId: "org-bad", projectId: "proj-bad", apiKeyId: "key-bad" }) : String(enc).indexOf("enc:oauth-") === 0 ? "glr-oauth-1" : null), hostVersion: "3.19.1" });
-    const r = await mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+    const r = await mp.enhanceText("account:bigmodel-individual-coding-plan", "GLM-5.3-Flash", "写个脚本");
     assert.equal(r.ok, true, name);
     const exchange = calls.find((c) => c.url.indexOf("/access_tokens") > 0);
     assert.equal(exchange.url, GLR_EXCHANGE_URL, "decoy " + name + " must not be consumed");
@@ -1076,19 +1088,19 @@ test("GLr security: family/team/usageScene filters each reject decoy keys (revie
   }));
   const calls = [];
   const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: async (url, requestOpts) => { calls.push({ url }); return sseRes(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']); }, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: path.join(dir, "credentials.json"), decryptValue: (enc) => (enc === "enc:loc-1" ? GLR_LOC_JSON : String(enc).indexOf("enc:oauth-") === 0 ? "glr-oauth-1" : null), hostVersion: "3.19.1" });
-  const r = await mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  const r = await mp.enhanceText("account:bigmodel-individual-coding-plan", "GLM-5.3-Flash", "写个脚本");
   assert.equal(r.kind, "plan_auth");
   assert.equal(calls.length, 0, "string-team key must not be exchanged");
 });
 
 test("GLr: wrong envelope code with valid token stays plan_auth; padded token is trimmed (review B-3/B-4)", async () => {
   const bad = glrFixture({ exchangeBadCode: true });
-  const rBad = await bad.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  const rBad = await bad.mp.enhanceText("account:bigmodel-individual-coding-plan", "GLM-5.3-Flash", "写个脚本");
   assert.equal(rBad.ok, false);
   assert.equal(rBad.kind, "plan_auth");
   assert.equal(bad.calls.filter((c) => c.url.indexOf("/v1/messages") > 0).length, 0);
   const padded = glrFixture({ exchangeTokenPadded: true });
-  const rPad = await padded.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  const rPad = await padded.mp.enhanceText("account:bigmodel-individual-coding-plan", "GLM-5.3-Flash", "写个脚本");
   assert.equal(rPad.ok, true);
   const messages = padded.calls.find((c) => c.url.indexOf("/v1/messages") > 0);
   assert.equal(messages.opts.headers.Authorization, "Bearer glr-tok-1", "token trimmed before use");
@@ -1096,13 +1108,14 @@ test("GLr: wrong envelope code with valid token stays plan_auth; padded token is
 
 test("GLr: expired memo drops the sync host list entry and forces re-exchange (review B-5/R2-B2)", async () => {
   const f = glrFixture({});
-  await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "预热换发");
-  assert.equal(f.mp.listEnhanceHosts().some((h) => h.id === "account:bigmodel-start-plan"), true);
+  await f.mp.enhanceText("account:bigmodel-individual-coding-plan", "GLM-5.3-Flash", "预热换发");
+  assert.equal(f.mp.listEnhanceHosts().some((h) => h.id === "account:bigmodel-individual-coding-plan"), true);
   const realNow = Date.now;
   Date.now = () => realNow() + 11 * 60 * 1000;   // 前拨 11 分钟越过 10 分钟 TTL
   try {
-    assert.equal(f.mp.listEnhanceHosts().some((h) => h.id === "account:bigmodel-start-plan"), false, "expired memo must not list the host");
-    const rExpired = await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "过期后重试");
+    assert.equal(f.mp.listEnhanceHosts().some((h) => h.id === "account:bigmodel-individual-coding-plan"), false, "expired memo must not list the host");
+    assert.equal(f.mp.listEnhanceHosts().some((h) => h.id === "account:bigmodel-start-plan"), true, "start-plan rides session JWT, unaffected by exchange memo TTL");
+    const rExpired = await f.mp.enhanceText("account:bigmodel-individual-coding-plan", "GLM-5.3-Flash", "过期后重试");
     assert.equal(rExpired.ok, true);
     assert.equal(f.calls.filter((c) => c.url === GLR_EXCHANGE_URL).length, 2, "expired memo re-exchanges on the enhance path too");
   } finally {
@@ -1112,11 +1125,11 @@ test("GLr: expired memo drops the sync host list entry and forces re-exchange (r
 
 test("GLr: same-key envelope swap invalidates memo and re-exchanges to the new apiKeyId (review R2-B1)", async () => {
   const f = glrFixture();
-  await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "第一次");
+  await f.mp.enhanceText("account:bigmodel-individual-coding-plan", "GLM-5.3-Flash", "第一次");
   assert.equal(f.calls.filter((c) => c.url === GLR_EXCHANGE_URL).length, 1);
   // 宿主同键名重发 location（换 apiKeyId）：信封串变化即失效，重换发打新 key
   f.setLocEnvelope("enc:loc-2");
-  const r2 = await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "第二次");
+  const r2 = await f.mp.enhanceText("account:bigmodel-individual-coding-plan", "GLM-5.3-Flash", "第二次");
   assert.equal(r2.ok, true);
   const exchanges = f.calls.filter((c) => c.url.indexOf("/access_tokens") > 0);
   assert.equal(exchanges.length, 2, "envelope swap re-exchanges");
