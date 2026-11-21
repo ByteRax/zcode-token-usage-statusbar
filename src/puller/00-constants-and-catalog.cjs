@@ -109,18 +109,15 @@ var PLAN_SOURCES = {
     credKey: "oauth:bigmodel:access_token",
     /* issue #336 终案（2026-11-14 实测 200 ×3 头形）：start-plan 推理与 coding plan 同走
      * open.bigmodel.cn/api/anthropic，凭据=宿主在 bigmodel 账号下发放的**项目 API key**
-     * （名字 zcode-api-key，usageScene=CODING_PLAN，id.secret 形态）——宿主已写入
+     * （名字 zcode-api-key，usageScene=CODING_PLAN，id.secret 形态）——3.18 宿主曾写入
      * v2 config 的 builtin:bigmodel-coding-plan 条目（本机三头形实测 200）。此前按旧
-     * config 注释打 zcode.z.ai + 会话 JWT 是双重错误（网关错+凭据错 → 401/3012 WAF）；
-     * zcode.z.ai 仅承载计费（billing/balance，zcodejwttoken+X-Device-Mid）。
-     * 注意：纯 start-plan（无 coding plan config 条目）账号回落 OAuth 直连会被 500
-     * 拒（v344 实测），此场景需走 GLr 项目密钥发放流程，未实现前诚实报 auth。
-     * issue #429：宿主 coding-plan 条目 disabled（纯 Start Plan）时该条目 key 无资源包，
-     * 照取会恒 429 1113「余额不足或无可用资源包」——start-plan 增强只认可用 v2 条目 key
-     * （planEntryKeyOf 门）：无 key 零网络 fail-fast 报 plan_auth，增强宿主列表不列。
-     * zai 两条 start-plan 端点未实测，维持诚实尝试，不加此门。 */
+     * config 注释打 zcode.z.ai + 会话 JWT 是双重错误（网关错+凭据错 → 401/3012 WAF）。
+     * 3.19.x 起（specs/plan-glr-credential.md）：宿主 builtin 套餐改 zhipu-account 运行时
+     * 内存换发（GLr），v2 config.json 不再存在；表值 baseUrl 仅供 runtime 配置缺读时兜底，
+     * 3.19.1 runtime 权威路由把 start-plan 指向 zcode.z.ai/api/v1/zcode-plan/anthropic。
+     * issue #429：disabled 条目的 key 无资源包会恒 429 1113，照取必败；GLr 换发实现后
+     * bigmodel 家族凭据序=条目 key → GLr token → plan_auth（OAuth 直连兜底已移除）。 */
     v2ConfigKey: "builtin:bigmodel-coding-plan",
-    enhanceRequiresV2Key: true,
   },
 };
 

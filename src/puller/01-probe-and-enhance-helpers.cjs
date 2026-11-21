@@ -312,3 +312,62 @@ function agreedCapabilities(entries, id) {
       return !!(err && String(err.code) === "1113");
     } catch (e) { return false; }
   }
+  /* ---------- GLr 凭据换发（specs/plan-glr-credential.md，宿主 3.19.x ProjectAccessTokenClient
+   * 同款协议）：credentials.json 的 location 键承载 org/project/apiKey 三元组，键名形如
+   * project-key-location:v1:<encodeURIComponent(JSON 数组)>，数组=[origin, family, accountId,
+   * team, usageScene, planType]。origin 校验限定 bigmodel.cn 本域——OAuth token 绝不发第三方。 */
+  /* 官方域后缀匹配（https + 域名后缀，大小写归一）：GLr location origin 与 runtime 路由
+   * baseUrl 共用——OAuth/换发 token 绝不发第三方（review D-1/A-15 例 hostile 探针口径）。 */
+  function officialPlanHostMatch(host, suffixes) {
+    host = String(host || "").toLowerCase().replace(/^\[|\]$/g, "");
+    if (!host || host.charCodeAt(0) === 46) return false;   // 空标签（".z.ai"/".bigmodel.cn"）一律拒绝（review R2-A1）
+    for (let i = 0; i < suffixes.length; i++) {
+      if (host === suffixes[i] || host.endsWith("." + suffixes[i])) return true;
+    }
+    return false;
+  }
+  /* runtime 配置 baseUrl 收编白名单：宿主托管的 runtime builtin 配置可被同权限进程改写，
+   * 换发 token 与用户草稿会发往该路由——非家族官方域（bigmodel.cn/zcode.z.ai/z.ai 及
+   * 子域）一律拒绝，调用方回退表值（review D-1 纵深防御）。返回归一 origin+path。 */
+  function officialPlanBaseUrl(value) {
+    let u = null;
+    try { u = new URL(String(value || "").trim()); } catch (e) { return null; }
+    if (u.protocol !== "https:") return null;
+    if (!officialPlanHostMatch(u.hostname, ["bigmodel.cn", "zcode.z.ai", "z.ai"])) return null;
+    return u.origin + u.pathname.replace(/\/+$/, "");
+  }
+  function parseProjectLocationKeyName(keyName) {
+    const name = String(keyName || "");
+    if (name.indexOf("project-key-location:v1:") !== 0) return null;
+    let arr = null, origin = null;
+    try {
+      arr = JSON.parse(decodeURIComponent(name.slice("project-key-location:v1:".length)));
+      if (!Array.isArray(arr) || arr.length < 6) return null;
+      origin = new URL(String(arr[0] || ""));
+    } catch (e) { return null; }
+    if (origin.protocol !== "https:" || !officialPlanHostMatch(origin.hostname, ["bigmodel.cn"])) return null;
+    const family = typeof arr[1] === "string" ? arr[1] : "";
+    if (!family) return null;
+    /* team 仅 null/undefined 视为非团队：契约外形状（字符串等）一律不匹配个人 location
+     * （review A-5/D-3：防御纵深，防契约漂移时拿个人凭据对团队定位换发） */
+    const team = arr[3] === null || arr[3] === undefined ? null : (arr[3] && typeof arr[3] === "object" ? arr[3] : "invalid");
+    return { origin: origin.origin, family: family, accountId: String(arr[2] || ""), team: team, usageScene: arr[4], planType: arr[5] };
+  }
+  function glrExchangeUrl(origin, loc) {
+    return origin + "/api/biz/v1/organization/" + encodeURIComponent(loc.organizationId)
+      + "/projects/" + encodeURIComponent(loc.projectId)
+      + "/api_keys/" + encodeURIComponent(loc.apiKeyId) + "/access_tokens";
+  }
+  /* 换发响应信封：{code:200|0|"200"|"0", data:{enabled, token}}（宿主同款形状）；
+   * enabled===false 或 token 非非空字符串一律按失败。 */
+  function parseGlrExchangePayload(text) {
+    let obj = null;
+    try { obj = JSON.parse(String(text || "")); } catch (e) { return null; }
+    if (!obj || typeof obj !== "object") return null;
+    const code = obj.code;
+    if (!(code === 200 || code === 0 || code === "200" || code === "0")) return null;
+    const data = obj.data && typeof obj.data === "object" ? obj.data : null;
+    if (!data || data.enabled === false) return null;
+    const token = typeof data.token === "string" ? data.token.trim() : "";
+    return token || null;
+  }

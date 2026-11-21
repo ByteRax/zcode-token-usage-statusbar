@@ -109,18 +109,15 @@ var PLAN_SOURCES = {
     credKey: "oauth:bigmodel:access_token",
     /* issue #336 终案（2026-11-14 实测 200 ×3 头形）：start-plan 推理与 coding plan 同走
      * open.bigmodel.cn/api/anthropic，凭据=宿主在 bigmodel 账号下发放的**项目 API key**
-     * （名字 zcode-api-key，usageScene=CODING_PLAN，id.secret 形态）——宿主已写入
+     * （名字 zcode-api-key，usageScene=CODING_PLAN，id.secret 形态）——3.18 宿主曾写入
      * v2 config 的 builtin:bigmodel-coding-plan 条目（本机三头形实测 200）。此前按旧
-     * config 注释打 zcode.z.ai + 会话 JWT 是双重错误（网关错+凭据错 → 401/3012 WAF）；
-     * zcode.z.ai 仅承载计费（billing/balance，zcodejwttoken+X-Device-Mid）。
-     * 注意：纯 start-plan（无 coding plan config 条目）账号回落 OAuth 直连会被 500
-     * 拒（v344 实测），此场景需走 GLr 项目密钥发放流程，未实现前诚实报 auth。
-     * issue #429：宿主 coding-plan 条目 disabled（纯 Start Plan）时该条目 key 无资源包，
-     * 照取会恒 429 1113「余额不足或无可用资源包」——start-plan 增强只认可用 v2 条目 key
-     * （planEntryKeyOf 门）：无 key 零网络 fail-fast 报 plan_auth，增强宿主列表不列。
-     * zai 两条 start-plan 端点未实测，维持诚实尝试，不加此门。 */
+     * config 注释打 zcode.z.ai + 会话 JWT 是双重错误（网关错+凭据错 → 401/3012 WAF）。
+     * 3.19.x 起（specs/plan-glr-credential.md）：宿主 builtin 套餐改 zhipu-account 运行时
+     * 内存换发（GLr），v2 config.json 不再存在；表值 baseUrl 仅供 runtime 配置缺读时兜底，
+     * 3.19.1 runtime 权威路由把 start-plan 指向 zcode.z.ai/api/v1/zcode-plan/anthropic。
+     * issue #429：disabled 条目的 key 无资源包会恒 429 1113，照取必败；GLr 换发实现后
+     * bigmodel 家族凭据序=条目 key → GLr token → plan_auth（OAuth 直连兜底已移除）。 */
     v2ConfigKey: "builtin:bigmodel-coding-plan",
-    enhanceRequiresV2Key: true,
   },
 };
 
@@ -762,6 +759,65 @@ function agreedCapabilities(entries, id) {
       return !!(err && String(err.code) === "1113");
     } catch (e) { return false; }
   }
+  /* ---------- GLr 凭据换发（specs/plan-glr-credential.md，宿主 3.19.x ProjectAccessTokenClient
+   * 同款协议）：credentials.json 的 location 键承载 org/project/apiKey 三元组，键名形如
+   * project-key-location:v1:<encodeURIComponent(JSON 数组)>，数组=[origin, family, accountId,
+   * team, usageScene, planType]。origin 校验限定 bigmodel.cn 本域——OAuth token 绝不发第三方。 */
+  /* 官方域后缀匹配（https + 域名后缀，大小写归一）：GLr location origin 与 runtime 路由
+   * baseUrl 共用——OAuth/换发 token 绝不发第三方（review D-1/A-15 例 hostile 探针口径）。 */
+  function officialPlanHostMatch(host, suffixes) {
+    host = String(host || "").toLowerCase().replace(/^\[|\]$/g, "");
+    if (!host || host.charCodeAt(0) === 46) return false;   // 空标签（".z.ai"/".bigmodel.cn"）一律拒绝（review R2-A1）
+    for (let i = 0; i < suffixes.length; i++) {
+      if (host === suffixes[i] || host.endsWith("." + suffixes[i])) return true;
+    }
+    return false;
+  }
+  /* runtime 配置 baseUrl 收编白名单：宿主托管的 runtime builtin 配置可被同权限进程改写，
+   * 换发 token 与用户草稿会发往该路由——非家族官方域（bigmodel.cn/zcode.z.ai/z.ai 及
+   * 子域）一律拒绝，调用方回退表值（review D-1 纵深防御）。返回归一 origin+path。 */
+  function officialPlanBaseUrl(value) {
+    let u = null;
+    try { u = new URL(String(value || "").trim()); } catch (e) { return null; }
+    if (u.protocol !== "https:") return null;
+    if (!officialPlanHostMatch(u.hostname, ["bigmodel.cn", "zcode.z.ai", "z.ai"])) return null;
+    return u.origin + u.pathname.replace(/\/+$/, "");
+  }
+  function parseProjectLocationKeyName(keyName) {
+    const name = String(keyName || "");
+    if (name.indexOf("project-key-location:v1:") !== 0) return null;
+    let arr = null, origin = null;
+    try {
+      arr = JSON.parse(decodeURIComponent(name.slice("project-key-location:v1:".length)));
+      if (!Array.isArray(arr) || arr.length < 6) return null;
+      origin = new URL(String(arr[0] || ""));
+    } catch (e) { return null; }
+    if (origin.protocol !== "https:" || !officialPlanHostMatch(origin.hostname, ["bigmodel.cn"])) return null;
+    const family = typeof arr[1] === "string" ? arr[1] : "";
+    if (!family) return null;
+    /* team 仅 null/undefined 视为非团队：契约外形状（字符串等）一律不匹配个人 location
+     * （review A-5/D-3：防御纵深，防契约漂移时拿个人凭据对团队定位换发） */
+    const team = arr[3] === null || arr[3] === undefined ? null : (arr[3] && typeof arr[3] === "object" ? arr[3] : "invalid");
+    return { origin: origin.origin, family: family, accountId: String(arr[2] || ""), team: team, usageScene: arr[4], planType: arr[5] };
+  }
+  function glrExchangeUrl(origin, loc) {
+    return origin + "/api/biz/v1/organization/" + encodeURIComponent(loc.organizationId)
+      + "/projects/" + encodeURIComponent(loc.projectId)
+      + "/api_keys/" + encodeURIComponent(loc.apiKeyId) + "/access_tokens";
+  }
+  /* 换发响应信封：{code:200|0|"200"|"0", data:{enabled, token}}（宿主同款形状）；
+   * enabled===false 或 token 非非空字符串一律按失败。 */
+  function parseGlrExchangePayload(text) {
+    let obj = null;
+    try { obj = JSON.parse(String(text || "")); } catch (e) { return null; }
+    if (!obj || typeof obj !== "object") return null;
+    const code = obj.code;
+    if (!(code === 200 || code === 0 || code === "200" || code === "0")) return null;
+    const data = obj.data && typeof obj.data === "object" ? obj.data : null;
+    if (!data || data.enabled === false) return null;
+    const token = typeof data.token === "string" ? data.token.trim() : "";
+    return token || null;
+  }
 
 function createModelPuller(opts) {
   const o = opts || {};
@@ -783,6 +839,15 @@ function createModelPuller(opts) {
   const credentialsPath = String(o.credentialsPath || "");   // 宿主 OAuth 凭据（套餐源）
   const decryptValue = typeof o.decryptValue === "function" ? o.decryptValue : null;   // 注入解密（主进程内存解密）
   const credEnv = o.env && typeof o.env === "object" ? o.env : process.env;   // v1 信封派生钥环境（生产缺省 process.env，同注入闭包口径）
+  /* 宿主 appVersion：GLr 换发体 clientVersion（specs/plan-glr-credential.md）。本文件由
+   * inject-main 在 Electron 主进程 require，可直接取 app.getVersion()；测试/独立链无
+   * electron 模块 → catch 兜空，body 省略该字段。opts.hostVersion 仅供测试注入覆写。 */
+  const hostVersion = String(o.hostVersion || (function () {
+    try {
+      const { app } = require("electron");
+      return app && typeof app.getVersion === "function" ? String(app.getVersion()) : "";
+    } catch (e) { return ""; }
+  })());
   let disposed = false;
   let applyBusy = false;   // 读-改-写竞态闸：UI 正常路径不会并发，这里防异常路径双写互相覆盖
   let catalogCache = null;   // {at, entries}：目录全量约数百 KB，成功后进程内复用
@@ -936,8 +1001,8 @@ function createModelPuller(opts) {
   }
   /* v2 条目明文 key 门（issue #429）：条目存在、未显式禁用、key 非空且非 enc: 才算可用。
    * planKeyOf 不查 enabled（individual/team 维持既有「条目 key 优先、OAuth 兜底」口径），
-   * 仅 start-plan 增强的 fail-fast 门与增强宿主列表用它判定——start-plan 的 OAuth 兜底
-   * 对 messages 端点必败（v344 实测 500），照取 disabled 条目的 key 又恒 429 1113。 */
+   * 增强链用它作 3.18 宿主（v2 config.json 在）的首选凭据——3.19.x 宿主已不再落盘该文件
+   * （specs/plan-glr-credential.md），GLr 换发接管。 */
   function planEntryKeyOf(providerId) {
     const src = PLAN_SOURCES[String(providerId || "")];
     if (!src || !src.v2ConfigKey || !customCfgPath) return null;
@@ -945,6 +1010,141 @@ function createModelPuller(opts) {
     if (!entry || entry.enabled === false) return null;
     const key = entry.options && typeof entry.options.apiKey === "string" ? entry.options.apiKey.trim() : "";
     return key && key.indexOf("enc:") !== 0 ? key : null;
+  }
+  /* ---------- GLr 凭据换发（specs/plan-glr-credential.md）：宿主 3.19.x 对 builtin 套餐
+   * （access.type=zhipu-account）运行时内存换发——OAuth token 换短期 access token，
+   * v2/config.json 不再存在，插件的 OAuth 直连兜底（v344 实测 500 code 1234）随之失效。
+   * 换发 token 只在内存（10 分钟 memo，凭据指纹变化即失效），绝不落盘/进日志/回渲染端。 */
+  const GLR_MEMO_TTL_MS = 10 * 60 * 1000;
+  const GLR_EXCHANGE_TIMEOUT_MS = 15000;
+  const GLR_PLATFORM_PREFIX = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform;
+  const glrMemo = { fp: "", token: "", at: 0 };
+  function glrMemoToken() {
+    return glrMemo.token && Date.now() - glrMemo.at < GLR_MEMO_TTL_MS ? glrMemo.token : null;
+  }
+  /* runtime builtin 配置（<v2>/runtime/provider/<平台>/<宿主版本>/endpoint-<hash>/zcode-builtin.json）：
+   * 宿主 3.19.x 的权威套餐路由（start-plan → zcode.z.ai，individual/team → open.bigmodel.cn）。
+   * 全量 stat stamp 缓存；多版本目录取最高 semver，先扫高版本先到先得；单文件损坏跳过。
+   * 读不到（旧宿主/结构变化）返回 null，调用方回退 PLAN_SOURCES.baseUrl。 */
+  let runtimeRouteCache = null;
+  function runtimePlanRoute(providerId) {
+    if (!customCfgPath) return null;
+    const root = path.join(path.dirname(customCfgPath), "runtime", "provider");
+    const candidates = [];
+    let stamp = "";
+    try {
+      for (const plat of fs.readdirSync(root)) {
+        if (String(plat).indexOf(GLR_PLATFORM_PREFIX) !== 0) continue;
+        const platDir = path.join(root, plat);
+        let versions = null;
+        try { versions = fs.readdirSync(platDir); } catch (e) { continue; }
+        for (const ver of versions) {
+          const m = /^(\d+)\.(\d+)\.(\d+)/.exec(String(ver));
+          if (!m) continue;
+          const epDir = path.join(platDir, ver);
+          let eps = null;
+          try { eps = fs.readdirSync(epDir); } catch (e) { continue; }
+          for (const ep of eps) {
+            if (String(ep).indexOf("endpoint-") !== 0) continue;
+            const file = path.join(epDir, ep, "zcode-builtin.json");
+            let st = null;
+            try { st = fs.statSync(file); } catch (e2) { continue; }
+            if (!st.isFile()) continue;
+            /* stamp 含 ino/dev：与 readTemplateRules 同纪律，防 Windows 同毫秒同名重建的
+             * 文件隧道化钉死旧路由（review A-2/D-4d） */
+            stamp += file + ":" + st.mtimeMs + ":" + st.ctimeMs + ":" + st.birthtimeMs + ":" + st.size + ":" + st.ino + ":" + st.dev + "|";
+            candidates.push({ rank: (+m[1]) * 1e6 + (+m[2]) * 1e3 + (+m[3]), file: file });
+          }
+        }
+      }
+    } catch (e) { return null; }
+    if (!candidates.length) return null;
+    if (runtimeRouteCache && runtimeRouteCache.stamp === stamp) return runtimeRouteCache.byId[String(providerId || "")] || null;
+    candidates.sort((a, b) => b.rank - a.rank);
+    const byId = Object.create(null);
+    for (const cand of candidates) {
+      try {
+        const d = JSON.parse(fs.readFileSync(cand.file, "utf8"));
+        const rules = (((d || {}).config || {}).providerConfigRules || {}).providerRules;
+        if (!Array.isArray(rules)) continue;
+        for (const r of rules) {
+          const pid = r && typeof r === "object" ? String(r.providerId || "") : "";
+          const base = r && r.config && r.config.api && typeof r.config.api.baseUrl === "string" ? officialPlanBaseUrl(r.config.api.baseUrl) : null;
+          if (pid && base && !byId[pid]) byId[pid] = base;   // 非家族官方域一律不收（review D-1：换发 token 与草稿只发白名单域）
+        }
+      } catch (e) { }
+    }
+    runtimeRouteCache = { stamp: stamp, byId: byId };
+    return byId[String(providerId || "")] || null;
+  }
+  function planBaseUrl(providerId) {
+    const src = PLAN_SOURCES[String(providerId || "")];
+    if (!src) return "";
+    return runtimePlanRoute(providerId) || src.baseUrl;
+  }
+  /* GLr 换发（异步，仅 bigmodel 家族增强路径使用）：location 键扫描 → 信封解密 →
+   * POST access_tokens 换 token。location 缺失/解密失败/形状不符/换发失败一律 null
+   * （enhanceText 回 plan_auth）；外部 signal 贯穿，超时 15s 自理。memo 键=OAuth 摘要
+   * + location 键名——凭据或定位变化即失效。OAuth token 只发 bigmodel.cn 本域
+   * （origin 已在 parseProjectLocationKeyName 校验）。 */
+  async function planGLrTokenOf(providerId, externalSignal) {
+    const src = PLAN_SOURCES[String(providerId || "")];
+    if (!src || src.fam !== "bigmodel" || !credentialsPath || !decryptValue) return null;
+    const oauth = planTokenOf(providerId);
+    if (!oauth) return null;
+    let raw = null;
+    try { raw = JSON.parse(fs.readFileSync(credentialsPath, "utf8")); } catch (e) { return null; }
+    if (!raw || typeof raw !== "object") return null;
+    const locKey = Object.keys(raw).find((k) => {
+      const p = parseProjectLocationKeyName(k);
+      return !!p && p.family === "bigmodel" && p.team === null && p.usageScene === 1;
+    });
+    if (!locKey) return null;
+    /* 指纹含信封串：宿主同键名重发 location（换 apiKeyId）时旧 memo 立即失效
+     * （review A-1：仅键名不足以覆盖「同键换值」） */
+    const fp = createHash("sha256").update(oauth + "|" + locKey + "|" + String(raw[locKey] || "")).digest("hex");
+    if (glrMemo.fp === fp && Date.now() - glrMemo.at < GLR_MEMO_TTL_MS) return glrMemo.token || null;
+    let loc = null;
+    try {
+      const env = typeof raw[locKey] === "string" ? raw[locKey] : "";
+      if (!env) return null;
+      let val = decryptValue(env);
+      if (typeof val !== "string" || val.indexOf("enc:") === 0) return null;
+      loc = JSON.parse(val);
+    } catch (e) { return null; }
+    if (!loc || typeof loc !== "object") return null;
+    const organizationId = typeof loc.organizationId === "string" ? loc.organizationId.trim() : "";
+    const projectId = typeof loc.projectId === "string" ? loc.projectId.trim() : "";
+    const apiKeyId = typeof loc.apiKeyId === "string" ? loc.apiKeyId.trim() : "";
+    if (!organizationId || !projectId || !apiKeyId) return null;
+    const origin = parseProjectLocationKeyName(locKey).origin;
+    const body = { clientType: "zcode" };
+    if (hostVersion) body.clientVersion = hostVersion;
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), GLR_EXCHANGE_TIMEOUT_MS);
+    if (timer && typeof timer.unref === "function") timer.unref();   // 超时兜底定时器契约
+    const onAbort = () => ctl.abort();
+    if (externalSignal && typeof externalSignal.addEventListener === "function") externalSignal.addEventListener("abort", onAbort, { once: true });
+    try {
+      const res = await fetchImpl(glrExchangeUrl(origin, { organizationId: organizationId, projectId: projectId, apiKeyId: apiKeyId }), {
+        method: "POST",
+        headers: { "Authorization": "Bearer " + oauth, "Content-Type": "application/json", "User-Agent": "ZCode" },
+        body: JSON.stringify(body), signal: ctl.signal, redirect: "error",
+      });
+      if (!res || !res.ok) { dropBody(res); return null; }   // 404=location 失效、401/403=token 失效、5xx——一律 fail-closed；非 ok 体显式取消（undici 连接卫生，review A-3）
+      let text = "";
+      try { text = await readEnhanceBody(res); } catch (e) { return null; }
+      if (text.length > 65536) return null;
+      const token = parseGlrExchangePayload(text);
+      if (!token) return null;
+      glrMemo.fp = fp; glrMemo.token = token; glrMemo.at = Date.now();
+      return token;
+    } catch (e) {
+      return null;
+    } finally {
+      clearTimeout(timer);
+      if (externalSignal && typeof externalSignal.removeEventListener === "function") externalSignal.removeEventListener("abort", onAbort);
+    }
   }
   /* 拉模型列表门控（issue #336 附加发现 2）：PLAN_SOURCES 从 1 条扩到 6 条后，共享凭据的
    * team/start 条目若照单全列会出现 3 行近似重复——规则：宿主 v2 config 显式 enabled:false
@@ -1826,18 +2026,26 @@ function createModelPuller(opts) {
     if (!planSrc && apiType !== "openai-chat-completions" && apiType !== "openai-responses" && apiType !== "anthropic-messages") {
       return { ok: false, kind: "unsupported", error: "unsupported api type: " + (apiType || "(empty)") };
     }
-    const baseUrl = String((planSrc ? planSrc.baseUrl : api.baseUrl) || "").trim().replace(/\/+$/, "");
+    const external = o.signal && typeof o.signal.addEventListener === "function" ? o.signal : null;
+    const isBigmodelPlan = !!planSrc && planSrc.fam === "bigmodel";
+    const baseUrl = String((planSrc ? planBaseUrl(providerId) : api.baseUrl) || "").trim().replace(/\/+$/, "");
     let apiKey = "";
     if (planSrc) {
-      if (planSrc.enhanceRequiresV2Key && !planEntryKeyOf(providerId)) {
-        /* issue #429：start-plan 增强的唯一可用凭据=宿主写入 v2 config 的项目 key
-         * （OAuth 直连 messages 被网关 500 拒，v344 实测；spec「未实现前诚实报 auth」落地）。
-         * 条目缺失/disabled/key 不可用（纯 Start Plan、宿主关闭 coding plan）不再发必败
-         * 请求（disabled 条目 key 无资源包时恒 429 1113），诚实报 plan_auth；
-         * zai 家族端点未实测，维持 planKeyOf 诚实尝试。 */
-        return { ok: false, kind: "plan_auth", error: "plan conversation key unavailable" };
+      if (isBigmodelPlan) {
+        /* GLr 时代凭据序（specs/plan-glr-credential.md）：v2 条目明文 key（3.18 宿主/旧机器）
+         * → GLr 换发 token（3.19.x 宿主运行时解析对等）→ 均不可用诚实报 plan_auth。
+         * OAuth 直连兜底已移除——v344 实测被网关 500 code 1234 拒（#429 报告者机器的
+         * 「HTTP 429」1234 详情即此路径），绝不该作为 fallback 重现。 */
+        apiKey = planEntryKeyOf(providerId);
+        if (!apiKey) apiKey = await planGLrTokenOf(providerId, external);
+        if (!apiKey) {
+          if (external && external.aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
+          return { ok: false, kind: "plan_auth", error: "plan conversation key unavailable" };
+        }
+      } else {
+        /* zai 家族端点未实测，维持 planKeyOf（条目 key 优先、OAuth 兜底）诚实尝试。 */
+        apiKey = planKeyOf(providerId);
       }
-      apiKey = planKeyOf(providerId);
     } else {
       apiKey = String(access.apiKey || "").trim();
     }
@@ -1862,7 +2070,6 @@ function createModelPuller(opts) {
       headers["Authorization"] = "Bearer " + apiKey;
       body = { model: mid, max_tokens: ENHANCE_MAX_TOKENS, system: ENHANCE_SYSTEM_PROMPT, messages: [{ role: "user", content: userContent }], stream: true };
     }
-    const external = o.signal && typeof o.signal.addEventListener === "function" ? o.signal : null;
     let lastFail = null;
     for (let attempt = 0; attempt < 2; attempt++) {
       if (external && external.aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
@@ -1944,17 +2151,21 @@ function createModelPuller(opts) {
 
   function resolveEnhanceHost(providerId) {
     const planSrc = PLAN_SOURCES[String(providerId || "")];
-    if (planSrc) {   // 套餐源（BigModel/Start Plan 等）：凭据 planKeyOf 主进程内解析，协议恒 anthropic。
+    if (planSrc) {   // 套餐源（BigModel/Start Plan 等）：凭据主进程内解析，协议恒 anthropic。
       // 不沿用 planListable 的同族去重——增强选套餐是计费池选择，Start Plan 与个人档需分列；仅跳过 team（与个人同凭据同端点的纯重复）。
       if (/team/.test(String(providerId))) return null;
       if (!planTokenOf(providerId)) return null;
-      /* issue #429：start-plan 增强唯一可用凭据=宿主 v2 项目 key（OAuth 兜底对 messages
-       * 必败，v344 实测）——无可用 key 不提供必败 host；zai 家族维持诚实尝试。 */
-      if (planSrc.enhanceRequiresV2Key && !planEntryKeyOf(providerId)) return null;
+      const isBigmodel = planSrc.fam === "bigmodel";
+      let apiKey = isBigmodel ? planEntryKeyOf(providerId) : planKeyOf(providerId);
+      if (isBigmodel && !apiKey) {
+        /* GLr 时代（specs/plan-glr-credential.md）：换发是异步网络调用，同步列表门只认
+         * memo 内的活 token——首次增强换发前列表不含该源，默认模式增强（主路径）不受影响。 */
+        apiKey = glrMemoToken();
+      }
+      if (!apiKey) return null;
       const entry = readV2BuiltinEntry(planSrc);
-      if (entry && entry.enabled === false) return null;
-      const apiKey = planKeyOf(providerId);
-      return apiKey ? { providerId: String(providerId), baseUrl: planSrc.baseUrl, protocol: "anthropic-messages", apiKey: apiKey, plan: true } : null;
+      if (!isBigmodel && entry && entry.enabled === false) return null;   // bigmodel 已由 planEntryKeyOf 判定
+      return { providerId: String(providerId), baseUrl: planBaseUrl(providerId), protocol: "anthropic-messages", apiKey: apiKey, plan: true };
     }
     const data = readProviderCfg(), rule = data ? findRule(data, providerId) : null;
     if (!rule || !modelPullerRuleAllowed(rule)) return null;

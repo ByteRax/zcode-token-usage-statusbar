@@ -24,18 +24,26 @@
     if (!planSrc && apiType !== "openai-chat-completions" && apiType !== "openai-responses" && apiType !== "anthropic-messages") {
       return { ok: false, kind: "unsupported", error: "unsupported api type: " + (apiType || "(empty)") };
     }
-    const baseUrl = String((planSrc ? planSrc.baseUrl : api.baseUrl) || "").trim().replace(/\/+$/, "");
+    const external = o.signal && typeof o.signal.addEventListener === "function" ? o.signal : null;
+    const isBigmodelPlan = !!planSrc && planSrc.fam === "bigmodel";
+    const baseUrl = String((planSrc ? planBaseUrl(providerId) : api.baseUrl) || "").trim().replace(/\/+$/, "");
     let apiKey = "";
     if (planSrc) {
-      if (planSrc.enhanceRequiresV2Key && !planEntryKeyOf(providerId)) {
-        /* issue #429：start-plan 增强的唯一可用凭据=宿主写入 v2 config 的项目 key
-         * （OAuth 直连 messages 被网关 500 拒，v344 实测；spec「未实现前诚实报 auth」落地）。
-         * 条目缺失/disabled/key 不可用（纯 Start Plan、宿主关闭 coding plan）不再发必败
-         * 请求（disabled 条目 key 无资源包时恒 429 1113），诚实报 plan_auth；
-         * zai 家族端点未实测，维持 planKeyOf 诚实尝试。 */
-        return { ok: false, kind: "plan_auth", error: "plan conversation key unavailable" };
+      if (isBigmodelPlan) {
+        /* GLr 时代凭据序（specs/plan-glr-credential.md）：v2 条目明文 key（3.18 宿主/旧机器）
+         * → GLr 换发 token（3.19.x 宿主运行时解析对等）→ 均不可用诚实报 plan_auth。
+         * OAuth 直连兜底已移除——v344 实测被网关 500 code 1234 拒（#429 报告者机器的
+         * 「HTTP 429」1234 详情即此路径），绝不该作为 fallback 重现。 */
+        apiKey = planEntryKeyOf(providerId);
+        if (!apiKey) apiKey = await planGLrTokenOf(providerId, external);
+        if (!apiKey) {
+          if (external && external.aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
+          return { ok: false, kind: "plan_auth", error: "plan conversation key unavailable" };
+        }
+      } else {
+        /* zai 家族端点未实测，维持 planKeyOf（条目 key 优先、OAuth 兜底）诚实尝试。 */
+        apiKey = planKeyOf(providerId);
       }
-      apiKey = planKeyOf(providerId);
     } else {
       apiKey = String(access.apiKey || "").trim();
     }
@@ -60,7 +68,6 @@
       headers["Authorization"] = "Bearer " + apiKey;
       body = { model: mid, max_tokens: ENHANCE_MAX_TOKENS, system: ENHANCE_SYSTEM_PROMPT, messages: [{ role: "user", content: userContent }], stream: true };
     }
-    const external = o.signal && typeof o.signal.addEventListener === "function" ? o.signal : null;
     let lastFail = null;
     for (let attempt = 0; attempt < 2; attempt++) {
       if (external && external.aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
@@ -142,17 +149,21 @@
 
   function resolveEnhanceHost(providerId) {
     const planSrc = PLAN_SOURCES[String(providerId || "")];
-    if (planSrc) {   // 套餐源（BigModel/Start Plan 等）：凭据 planKeyOf 主进程内解析，协议恒 anthropic。
+    if (planSrc) {   // 套餐源（BigModel/Start Plan 等）：凭据主进程内解析，协议恒 anthropic。
       // 不沿用 planListable 的同族去重——增强选套餐是计费池选择，Start Plan 与个人档需分列；仅跳过 team（与个人同凭据同端点的纯重复）。
       if (/team/.test(String(providerId))) return null;
       if (!planTokenOf(providerId)) return null;
-      /* issue #429：start-plan 增强唯一可用凭据=宿主 v2 项目 key（OAuth 兜底对 messages
-       * 必败，v344 实测）——无可用 key 不提供必败 host；zai 家族维持诚实尝试。 */
-      if (planSrc.enhanceRequiresV2Key && !planEntryKeyOf(providerId)) return null;
+      const isBigmodel = planSrc.fam === "bigmodel";
+      let apiKey = isBigmodel ? planEntryKeyOf(providerId) : planKeyOf(providerId);
+      if (isBigmodel && !apiKey) {
+        /* GLr 时代（specs/plan-glr-credential.md）：换发是异步网络调用，同步列表门只认
+         * memo 内的活 token——首次增强换发前列表不含该源，默认模式增强（主路径）不受影响。 */
+        apiKey = glrMemoToken();
+      }
+      if (!apiKey) return null;
       const entry = readV2BuiltinEntry(planSrc);
-      if (entry && entry.enabled === false) return null;
-      const apiKey = planKeyOf(providerId);
-      return apiKey ? { providerId: String(providerId), baseUrl: planSrc.baseUrl, protocol: "anthropic-messages", apiKey: apiKey, plan: true } : null;
+      if (!isBigmodel && entry && entry.enabled === false) return null;   // bigmodel 已由 planEntryKeyOf 判定
+      return { providerId: String(providerId), baseUrl: planBaseUrl(providerId), protocol: "anthropic-messages", apiKey: apiKey, plan: true };
     }
     const data = readProviderCfg(), rule = data ? findRule(data, providerId) : null;
     if (!rule || !modelPullerRuleAllowed(rule)) return null;
