@@ -25,8 +25,6 @@ function harness(records, opts = {}) {
   const docListeners = { add: [], remove: [] };
   let confirms = opts.confirm !== false;
   const confirmCalls = [];
-  const gearClicks = { n: 0 };
-  const settingsCalls = [];
   const clip = { texts: [] };
   const enhanceTip = elStub(env);
   const ctx = {
@@ -34,9 +32,8 @@ function harness(records, opts = {}) {
     EH_ICON: { history: '<i>h</i>', close: '<i>x</i>', search: '<i>s</i>', trash: '<i>t</i>', copy: '<i>c</i>', check: '<i>ok</i>', doc: '<i>d</i>', spark: '<i>p</i>', empty: '<i>e</i>', gear: '<i>g</i>' },
     state: {},
     enhanceTip,
-    panel: { classList: { contains: () => false }, querySelector: () => null },
-    gear: { click: () => { gearClicks.n++; } },
-    activateSettingsSec: sec => settingsCalls.push(sec),
+    /* v417 起：panel/gear/activateSettingsSec 是 spawnInstance 闭包私有，切片内不再有裸引用——
+     * 曾在 ctx 注入同名桩掩盖真实页面 ReferenceError（设置按钮静默失效），桩已撤。 */
     /* 悬停面板状态在切片起点之前声明（01 分片更靠前处），切片外补桩供 hideEnhanceTip/ehRender 引用 */
     ehHideTimer: 0, ehCache: null, ehError: false, ehLoading: false, ehCacheAt: 0, enhanceTipFor: null,
     document: {
@@ -59,7 +56,7 @@ function harness(records, opts = {}) {
   /* 切片内 function zuConfirm 声明会覆盖运行前赋的桩（声明提升），必须在 run 后覆写 */
   ctx.zuConfirm = (t, d, okText, onOk) => { confirmCalls.push({ t, d, okText, onOk }); if (confirms) onOk(); };
   ctx.openFull();
-  return { ctx, requests, winListeners, docListeners, clip, confirmCalls, gearClicks, settingsCalls, enhanceTip, setConfirm: v => { confirms = v; } };
+  return { ctx, requests, winListeners, docListeners, clip, confirmCalls, enhanceTip, setConfirm: v => { confirms = v; } };
 }
 const rec = (id, over = {}) => Object.assign({
   id, source: 'chat', providerName: 'account:bigmodel-start-plan', modelId: 'glm-5.3-flashx',
@@ -240,10 +237,16 @@ test('sort header click toggles order and updates aria-sort (th is not a button)
   assert.equal(first[1], '100', 'ascending puts the smaller token count first');
 });
 
-test('full panel header has a settings button that opens the enhance-provider settings', () => {
+test('full panel header settings button dispatches via the entry hook recorded at open time', () => {
   const h = harness([rec('r1')]);
   assert.ok(h.ctx.ehFull._html.includes('zu-eh-cfg'), 'settings button present in header');
   assert.ok(h.ctx.ehFull._html.includes('data-ehset'));
+  let calls = 0;
+  const entry = { isConnected: true, __zuOpenEnhSettings: () => { calls++; } };
+  h.ctx.enhanceTipFor = entry;
+  h.ctx.openFull();   // 从 tip 打开全量面板：此刻记录入口钩子
+  assert.equal(h.ctx.ehFull.__zuOpenEnhSettings, entry.__zuOpenEnhSettings, 'hook recorded at open time');
+  h.ctx.enhanceTipFor = null;   // mouseleave 后 tip 已收的真实时序
   const btn = {
     hasAttribute: a => a === 'data-ehset',
     classList: { contains: () => false },
@@ -251,9 +254,28 @@ test('full panel header has a settings button that opens the enhance-provider se
     innerHTML: ''
   };
   h.ctx.ehFull.onclick({ target: { closest: s => (s === 'button' ? btn : null) }, stopPropagation() {} });
-  assert.deepEqual(h.settingsCalls, ['enhance-provider'], 'activates the enhance-provider section');
-  assert.equal(h.gearClicks.n, 1, 'opens the settings panel via the official gear path');
+  assert.equal(calls, 1, 'entry hook invoked exactly once');
   assert.equal(h.ctx.ehFull.style.display, 'none', 'full panel closes when settings open');
+});
+
+test('hover tip settings entry dispatches via the entry hook and hides the tip', () => {
+  const h = harness([rec('r1')]);
+  let calls = 0;
+  h.ctx.enhanceTipFor = { isConnected: true, __zuOpenEnhSettings: () => { calls++; } };
+  h.ctx.openEnhanceSettings();
+  assert.equal(calls, 1, 'owner instance hook invoked');
+  assert.equal(h.enhanceTip.style.display, 'none', 'hover tip hides');
+  assert.equal(h.ctx.enhanceTipFor, null, 'tip association cleared');
+});
+
+test('v417 回归锁：壳层 openEnhanceSettings 不得直接引用实例闭包私有的 panel/gear/activateSettingsSec', () => {
+  /* 真实页面 ReferenceError 被事件分发吞掉而切片 ctx 桩全绿的盲区（v350 起按钮静默失效）——
+   * 源码级断言禁止再引入裸引用，分发必须经入口按钮 __zuOpenEnhSettings 钩子。 */
+  const fn = source.slice(source.indexOf('function openEnhanceSettings'), source.indexOf('/* ---------- 查看全部历史浮层'));
+  assert.ok(fn.includes('__zuOpenEnhSettings'), 'dispatches through the entry hook');
+  assert.doesNotMatch(fn, /gear\.click/);
+  assert.doesNotMatch(fn, /panel\.classList/);
+  assert.doesNotMatch(fn, /activateSettingsSec\(/);
 });
 
 test('hover tip footer renders a settings entry', () => {

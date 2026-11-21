@@ -36,6 +36,8 @@ test('contract: renderer slices keep enhance button wiring anchors', () => {
   assert.match(source, /b\.__zuEnhTip = label;/);   // 文案包随相位同步
   assert.doesNotMatch(source, /b\.title = label/);   // 禁原生 title（防与自绘 tooltip 双显）
   assert.match(source, /"enhance failed: "\.slice|Enhancing…|增强中…/);
+  assert.match(source, /b\.__zuOpenEnhSettings = openEnhSettings;/);   // v417：增强历史壳层「设置」入口经实例钩子分发（壳层无闭包私有 panel/gear，曾 ReferenceError 静默失效）
+  assert.match(source, /function openEnhSettings\(\) \{/);   // 实例侧执行体（右键同路径复用）
 });
 
 test('contract: inject-main whitelist routes prompt-enhance with fail-closed gate', () => {
@@ -109,6 +111,8 @@ class Element {
   hasAttribute(k) { return Object.prototype.hasOwnProperty.call(this.dataset, k); }
   getAttribute(k) { return this.dataset[k] !== undefined ? this.dataset[k] : null; }
   getBoundingClientRect() { return { top: 600, bottom: 650, left: 20, right: 520, width: 500, height: 50 }; }
+  focus() {}   // v417：openEnhSettings 末尾 nav.focus()（querySelector class 兜底返回空元素）
+  click() { (this.listeners.get('click') || []).slice().forEach(fn => fn({ preventDefault() {}, stopPropagation() {} })); }   // v417：gear.click() 官方开启路径
 }
 
 function harness({ enhanceOn = true } = {}) {
@@ -242,6 +246,18 @@ test('button mounts directly left of the model chip and survives heavy ticks', (
   assert.equal(ui.wrap.children.indexOf(enh), ui.wrap.children.indexOf(ui.modelChip) - 1);
   h.tick();
   assert.equal(h.enhOf(ui.wrap), enh);   // 幂等：一个实例，不重插
+});
+
+test('v417: contextmenu lands on the enhance-provider section and the entry carries the shell hook', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: 'x' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  assert.equal(typeof enh.__zuOpenEnhSettings, 'function', 'entry exposes the shell-dispatch hook');
+  enh.listeners.get('contextmenu')[0]({ preventDefault() {}, stopPropagation() {} });
+  assert.equal(h.window.enhanceTest.state().settingsSec, 'enhance-provider', 'opens the enhance-provider section');
 });
 
 test('click sends prompt-enhance with live selection; reply replaces draft and returns to idle', () => {
