@@ -763,6 +763,25 @@ function agreedCapabilities(entries, id) {
    * 同款协议）：credentials.json 的 location 键承载 org/project/apiKey 三元组，键名形如
    * project-key-location:v1:<encodeURIComponent(JSON 数组)>，数组=[origin, family, accountId,
    * team, usageScene, planType]。origin 校验限定 bigmodel.cn 本域——OAuth token 绝不发第三方。 */
+  /* 官方域后缀匹配（https + 域名后缀，大小写归一）：GLr location origin 与 runtime 路由
+   * baseUrl 共用——OAuth/换发 token 绝不发第三方（review D-1/A-15 例 hostile 探针口径）。 */
+  function officialPlanHostMatch(host, suffixes) {
+    host = String(host || "").toLowerCase().replace(/^\[|\]$/g, "");
+    for (let i = 0; i < suffixes.length; i++) {
+      if (host === suffixes[i] || host.endsWith("." + suffixes[i])) return true;
+    }
+    return false;
+  }
+  /* runtime 配置 baseUrl 收编白名单：宿主托管的 runtime builtin 配置可被同权限进程改写，
+   * 换发 token 与用户草稿会发往该路由——非家族官方域（bigmodel.cn/zcode.z.ai/z.ai 及
+   * 子域）一律拒绝，调用方回退表值（review D-1 纵深防御）。返回归一 origin+path。 */
+  function officialPlanBaseUrl(value) {
+    let u = null;
+    try { u = new URL(String(value || "").trim()); } catch (e) { return null; }
+    if (u.protocol !== "https:") return null;
+    if (!officialPlanHostMatch(u.hostname, ["bigmodel.cn", "zcode.z.ai", "z.ai"])) return null;
+    return u.origin + u.pathname.replace(/\/+$/, "");
+  }
   function parseProjectLocationKeyName(keyName) {
     const name = String(keyName || "");
     if (name.indexOf("project-key-location:v1:") !== 0) return null;
@@ -772,11 +791,13 @@ function agreedCapabilities(entries, id) {
       if (!Array.isArray(arr) || arr.length < 6) return null;
       origin = new URL(String(arr[0] || ""));
     } catch (e) { return null; }
-    const host = origin.hostname.toLowerCase();
-    if (origin.protocol !== "https:" || !(host === "bigmodel.cn" || host.endsWith(".bigmodel.cn"))) return null;
+    if (origin.protocol !== "https:" || !officialPlanHostMatch(origin.hostname, ["bigmodel.cn"])) return null;
     const family = typeof arr[1] === "string" ? arr[1] : "";
     if (!family) return null;
-    return { origin: origin.origin, family: family, accountId: String(arr[2] || ""), team: arr[3] && typeof arr[3] === "object" ? arr[3] : null, usageScene: arr[4], planType: arr[5] };
+    /* team 仅 null/undefined 视为非团队：契约外形状（字符串等）一律不匹配个人 location
+     * （review A-5/D-3：防御纵深，防契约漂移时拿个人凭据对团队定位换发） */
+    const team = arr[3] === null || arr[3] === undefined ? null : (arr[3] && typeof arr[3] === "object" ? arr[3] : "invalid");
+    return { origin: origin.origin, family: family, accountId: String(arr[2] || ""), team: team, usageScene: arr[4], planType: arr[5] };
   }
   function glrExchangeUrl(origin, loc) {
     return origin + "/api/biz/v1/organization/" + encodeURIComponent(loc.organizationId)
@@ -1028,7 +1049,9 @@ function createModelPuller(opts) {
             let st = null;
             try { st = fs.statSync(file); } catch (e2) { continue; }
             if (!st.isFile()) continue;
-            stamp += file + ":" + st.mtimeMs + ":" + st.size + "|";
+            /* stamp 含 ino/dev：与 readTemplateRules 同纪律，防 Windows 同毫秒同名重建的
+             * 文件隧道化钉死旧路由（review A-2/D-4d） */
+            stamp += file + ":" + st.mtimeMs + ":" + st.ctimeMs + ":" + st.birthtimeMs + ":" + st.size + ":" + st.ino + ":" + st.dev + "|";
             candidates.push({ rank: (+m[1]) * 1e6 + (+m[2]) * 1e3 + (+m[3]), file: file });
           }
         }
@@ -1045,8 +1068,8 @@ function createModelPuller(opts) {
         if (!Array.isArray(rules)) continue;
         for (const r of rules) {
           const pid = r && typeof r === "object" ? String(r.providerId || "") : "";
-          const base = r && r.config && r.config.api && typeof r.config.api.baseUrl === "string" ? r.config.api.baseUrl.trim().replace(/\/+$/, "") : "";
-          if (pid && base && !byId[pid]) byId[pid] = base;
+          const base = r && r.config && r.config.api && typeof r.config.api.baseUrl === "string" ? officialPlanBaseUrl(r.config.api.baseUrl) : null;
+          if (pid && base && !byId[pid]) byId[pid] = base;   // 非家族官方域一律不收（review D-1：换发 token 与草稿只发白名单域）
         }
       } catch (e) { }
     }
@@ -1076,7 +1099,9 @@ function createModelPuller(opts) {
       return !!p && p.family === "bigmodel" && p.team === null && p.usageScene === 1;
     });
     if (!locKey) return null;
-    const fp = createHash("sha256").update(oauth + "|" + locKey).digest("hex");
+    /* 指纹含信封串：宿主同键名重发 location（换 apiKeyId）时旧 memo 立即失效
+     * （review A-1：仅键名不足以覆盖「同键换值」） */
+    const fp = createHash("sha256").update(oauth + "|" + locKey + "|" + String(raw[locKey] || "")).digest("hex");
     if (glrMemo.fp === fp && Date.now() - glrMemo.at < GLR_MEMO_TTL_MS) return glrMemo.token || null;
     let loc = null;
     try {
@@ -1105,7 +1130,7 @@ function createModelPuller(opts) {
         headers: { "Authorization": "Bearer " + oauth, "Content-Type": "application/json", "User-Agent": "ZCode" },
         body: JSON.stringify(body), signal: ctl.signal, redirect: "error",
       });
-      if (!res || !res.ok) return null;   // 404=location 失效、401/403=token 失效、5xx——一律 fail-closed
+      if (!res || !res.ok) { dropBody(res); return null; }   // 404=location 失效、401/403=token 失效、5xx——一律 fail-closed；非 ok 体显式取消（undici 连接卫生，review A-3）
       let text = "";
       try { text = await readEnhanceBody(res); } catch (e) { return null; }
       if (text.length > 65536) return null;

@@ -879,6 +879,7 @@ function glrFixture(opts) {
   if (o.runtimeBase !== false) writeRuntimeBuiltin(dir, o.runtimeVersion || "3.19.1", o.startPlanBase || "https://zcode.z.ai/api/v1/zcode-plan/anthropic");
   const decryptValue = (enc) => {
     if (enc === "enc:loc-1") return GLR_LOC_JSON;
+    if (enc === "enc:loc-bad") return JSON.stringify({ organizationId: "org-bad", projectId: "proj-bad", apiKeyId: "key-bad" });
     if (String(enc).indexOf("enc:oauth-") === 0) return "glr-oauth-" + String(enc).slice(10);
     return null;
   };
@@ -891,6 +892,8 @@ function glrFixture(opts) {
       if (o.exchangeStatus) return { ok: false, status: o.exchangeStatus, text: async () => o.exchangeBody || "" };
       if (o.exchangeDisabled) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { enabled: false, token: "x" } }) };
       if (o.exchangeBadShape) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { token: 42 } }) };
+      if (o.exchangeBadCode) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 500, data: { enabled: true, token: "glr-tok-1" } }) };
+      if (o.exchangeTokenPadded) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { enabled: true, token: "  glr-tok-1  " } }) };
       return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { enabled: true, token: o.exchangeToken || "glr-tok-1" } }) };
     }
     if (url.indexOf("/v1/messages") > 0) {
@@ -1014,4 +1017,125 @@ test("GLr: host list gains bigmodel sources only after a memoized exchange", asy
   const after = f.mp.listEnhanceHosts().filter((h) => h.id === "account:bigmodel-start-plan");
   assert.equal(after.length, 1, "start-plan host appears after memoized exchange");
   assert.equal(after[0].protocol, "anthropic-messages");
+});
+
+/* ---------- 第一轮 review 收口（A/B/D 三路 MINOR）：安全性质回归锁与边角 ---------- */
+
+test("GLr security: hostile origin in location key name is rejected with zero network (review D-1/B-2)", async () => {
+  for (const evil of ["https://evil.com", "https://bigmodel.cn.evil.com", "https://evil.com/bigmodel.cn", "https://bigmodel.cn@evil.com", "http://bigmodel.cn"]) {
+    const file = tmpCfgPath();
+    fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+    const dir = path.dirname(file);
+    const evilKey = glrLocationKeyName(evil, "bigmodel", GLR_LOCATION_ACCOUNT, null, 1, "non-team");
+    fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify({ "oauth:bigmodel:access_token": "enc:oauth-1", [evilKey]: "enc:loc-1" }));
+    const calls = [];
+    const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: async (url, requestOpts) => { calls.push({ url, opts: requestOpts }); return sseRes(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']); }, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: path.join(dir, "credentials.json"), decryptValue: (enc) => (enc === "enc:loc-1" ? GLR_LOC_JSON : String(enc).indexOf("enc:oauth-") === 0 ? "glr-oauth-1" : null), hostVersion: "3.19.1" });
+    const r = await mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+    assert.equal(r.ok, false, evil);
+    assert.equal(r.kind, "plan_auth", evil);
+    assert.equal(calls.length, 0, "zero outbound requests for hostile origin " + evil);
+  }
+});
+
+test("GLr security: family/team/usageScene filters each reject decoy keys (review B-1/A-5/D-3)", async () => {
+  const decoys = {
+    family: glrLocationKeyName("https://bigmodel.cn", "othermodel", "999", null, 1, "non-team"),
+    teamString: glrLocationKeyName("https://bigmodel.cn", "bigmodel", "999", "solo", 1, "non-team"),
+    usageScene: glrLocationKeyName("https://bigmodel.cn", "bigmodel", "999", null, 2, "non-team"),
+  };
+  // 干扰键在前 + 解出不同三元组：若任一过滤被删，换发会打 org-bad 而非 org-9
+  for (const [name, decoyKey] of Object.entries(decoys)) {
+    const file = tmpCfgPath();
+    fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+    const dir = path.dirname(file);
+    fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify({
+      [decoyKey]: "enc:loc-bad",
+      [GLR_LOC_KEY]: "enc:loc-1",
+      "oauth:bigmodel:access_token": "enc:oauth-1",
+    }));
+    const calls = [];
+    const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: async (url, requestOpts) => { calls.push({ url, opts: requestOpts }); return url === GLR_EXCHANGE_URL ? { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { enabled: true, token: "glr-tok-1" } }) } : sseRes(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']); }, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: path.join(dir, "credentials.json"), decryptValue: (enc) => (enc === "enc:loc-1" ? GLR_LOC_JSON : enc === "enc:loc-bad" ? JSON.stringify({ organizationId: "org-bad", projectId: "proj-bad", apiKeyId: "key-bad" }) : String(enc).indexOf("enc:oauth-") === 0 ? "glr-oauth-1" : null), hostVersion: "3.19.1" });
+    const r = await mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+    assert.equal(r.ok, true, name);
+    const exchange = calls.find((c) => c.url.indexOf("/access_tokens") > 0);
+    assert.equal(exchange.url, GLR_EXCHANGE_URL, "decoy " + name + " must not be consumed");
+  }
+  // 仅 team 字符串键、无合规键：不消费、零网络（防御纵深，A-5/D-3）
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+  const dir = path.dirname(file);
+  fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify({
+    [decoys.teamString]: "enc:loc-1",
+    "oauth:bigmodel:access_token": "enc:oauth-1",
+  }));
+  const calls = [];
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: async (url, requestOpts) => { calls.push({ url }); return sseRes(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']); }, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: path.join(dir, "credentials.json"), decryptValue: (enc) => (enc === "enc:loc-1" ? GLR_LOC_JSON : String(enc).indexOf("enc:oauth-") === 0 ? "glr-oauth-1" : null), hostVersion: "3.19.1" });
+  const r = await mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r.kind, "plan_auth");
+  assert.equal(calls.length, 0, "string-team key must not be exchanged");
+});
+
+test("GLr: wrong envelope code with valid token stays plan_auth; padded token is trimmed (review B-3/B-4)", async () => {
+  const bad = glrFixture({ exchangeBadCode: true });
+  const rBad = await bad.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(rBad.ok, false);
+  assert.equal(rBad.kind, "plan_auth");
+  assert.equal(bad.calls.filter((c) => c.url.indexOf("/v1/messages") > 0).length, 0);
+  const padded = glrFixture({ exchangeTokenPadded: true });
+  const rPad = await padded.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(rPad.ok, true);
+  const messages = padded.calls.find((c) => c.url.indexOf("/v1/messages") > 0);
+  assert.equal(messages.opts.headers.Authorization, "Bearer glr-tok-1", "token trimmed before use");
+});
+
+test("GLr: expired memo drops the sync host list entry (review B-5)", async () => {
+  const f = glrFixture({});
+  await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "预热换发");
+  assert.equal(f.mp.listEnhanceHosts().some((h) => h.id === "account:bigmodel-start-plan"), true);
+  const realNow = Date.now;
+  Date.now = () => realNow() + 11 * 60 * 1000;   // 前拨 11 分钟越过 10 分钟 TTL
+  try {
+    assert.equal(f.mp.listEnhanceHosts().some((h) => h.id === "account:bigmodel-start-plan"), false, "expired memo must not list the host");
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("GLr: foreign-platform runtime dirs are ignored (review B-6)", async () => {
+  const foreign = GLR_RUNTIME_DIR === "windows-x86_64" ? "linux-x86_64" : "windows-x86_64";
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+  const dir = path.dirname(file);
+  fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify({ "oauth:bigmodel:access_token": "enc:oauth-1", [GLR_LOC_KEY]: "enc:loc-1" }));
+  const foreignDir = path.join(dir, "runtime", "provider", foreign, "9.9.9", "endpoint-zzz");
+  fs.mkdirSync(foreignDir, { recursive: true });
+  fs.writeFileSync(path.join(foreignDir, "zcode-builtin.json"), JSON.stringify({ config: { providerConfigRules: { providerRules: [
+    { providerId: "account:bigmodel-individual-coding-plan", config: { api: { type: "anthropic-messages", baseUrl: "https://evil.com/api/anthropic" } } },
+  ] } } }));
+  writeRuntimeBuiltin(dir, "3.19.1", "https://zcode.z.ai/api/v1/zcode-plan/anthropic");
+  const calls = [];
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: async (url, requestOpts) => { calls.push({ url, opts: requestOpts }); return url === GLR_EXCHANGE_URL ? { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { enabled: true, token: "glr-tok-1" } }) } : sseRes(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']); }, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: path.join(dir, "credentials.json"), decryptValue: (enc) => (enc === "enc:loc-1" ? GLR_LOC_JSON : String(enc).indexOf("enc:oauth-") === 0 ? "glr-oauth-1" : null), hostVersion: "3.19.1" });
+  const r = await mp.enhanceText("account:bigmodel-individual-coding-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r.ok, true);
+  const messages = calls.find((c) => c.url.indexOf("/v1/messages") > 0);
+  assert.equal(messages.url, "https://open.bigmodel.cn/api/anthropic/v1/messages", "own-platform dir wins; foreign dir ignored");
+});
+
+test("GLr security: runtime route baseUrl outside official domains falls back to table value (review D-1)", async () => {
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+  const dir = path.dirname(file);
+  fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify({ "oauth:bigmodel:access_token": "enc:oauth-1", [GLR_LOC_KEY]: "enc:loc-1" }));
+  const badDir = path.join(dir, "runtime", "provider", GLR_RUNTIME_DIR, "3.19.1", "endpoint-abc");
+  fs.mkdirSync(badDir, { recursive: true });
+  fs.writeFileSync(path.join(badDir, "zcode-builtin.json"), JSON.stringify({ config: { providerConfigRules: { providerRules: [
+    { providerId: "account:bigmodel-individual-coding-plan", config: { api: { type: "anthropic-messages", baseUrl: "https://evil.com/api/anthropic" } } },
+  ] } } }));
+  const calls = [];
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: async (url, requestOpts) => { calls.push({ url, opts: requestOpts }); return url === GLR_EXCHANGE_URL ? { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { enabled: true, token: "glr-tok-1" } }) } : sseRes(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']); }, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: path.join(dir, "credentials.json"), decryptValue: (enc) => (enc === "enc:loc-1" ? GLR_LOC_JSON : String(enc).indexOf("enc:oauth-") === 0 ? "glr-oauth-1" : null), hostVersion: "3.19.1" });
+  const r = await mp.enhanceText("account:bigmodel-individual-coding-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r.ok, true);
+  const messages = calls.find((c) => c.url.indexOf("/v1/messages") > 0);
+  assert.equal(messages.url, "https://open.bigmodel.cn/api/anthropic/v1/messages", "evil runtime route rejected; table fallback used");
+  assert.ok(!calls.some((c) => c.url.indexOf("evil.com") >= 0), "no request ever leaves to evil.com");
 });

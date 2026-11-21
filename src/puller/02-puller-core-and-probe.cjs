@@ -230,7 +230,9 @@ function createModelPuller(opts) {
             let st = null;
             try { st = fs.statSync(file); } catch (e2) { continue; }
             if (!st.isFile()) continue;
-            stamp += file + ":" + st.mtimeMs + ":" + st.size + "|";
+            /* stamp 含 ino/dev：与 readTemplateRules 同纪律，防 Windows 同毫秒同名重建的
+             * 文件隧道化钉死旧路由（review A-2/D-4d） */
+            stamp += file + ":" + st.mtimeMs + ":" + st.ctimeMs + ":" + st.birthtimeMs + ":" + st.size + ":" + st.ino + ":" + st.dev + "|";
             candidates.push({ rank: (+m[1]) * 1e6 + (+m[2]) * 1e3 + (+m[3]), file: file });
           }
         }
@@ -247,8 +249,8 @@ function createModelPuller(opts) {
         if (!Array.isArray(rules)) continue;
         for (const r of rules) {
           const pid = r && typeof r === "object" ? String(r.providerId || "") : "";
-          const base = r && r.config && r.config.api && typeof r.config.api.baseUrl === "string" ? r.config.api.baseUrl.trim().replace(/\/+$/, "") : "";
-          if (pid && base && !byId[pid]) byId[pid] = base;
+          const base = r && r.config && r.config.api && typeof r.config.api.baseUrl === "string" ? officialPlanBaseUrl(r.config.api.baseUrl) : null;
+          if (pid && base && !byId[pid]) byId[pid] = base;   // 非家族官方域一律不收（review D-1：换发 token 与草稿只发白名单域）
         }
       } catch (e) { }
     }
@@ -278,7 +280,9 @@ function createModelPuller(opts) {
       return !!p && p.family === "bigmodel" && p.team === null && p.usageScene === 1;
     });
     if (!locKey) return null;
-    const fp = createHash("sha256").update(oauth + "|" + locKey).digest("hex");
+    /* 指纹含信封串：宿主同键名重发 location（换 apiKeyId）时旧 memo 立即失效
+     * （review A-1：仅键名不足以覆盖「同键换值」） */
+    const fp = createHash("sha256").update(oauth + "|" + locKey + "|" + String(raw[locKey] || "")).digest("hex");
     if (glrMemo.fp === fp && Date.now() - glrMemo.at < GLR_MEMO_TTL_MS) return glrMemo.token || null;
     let loc = null;
     try {
@@ -307,7 +311,7 @@ function createModelPuller(opts) {
         headers: { "Authorization": "Bearer " + oauth, "Content-Type": "application/json", "User-Agent": "ZCode" },
         body: JSON.stringify(body), signal: ctl.signal, redirect: "error",
       });
-      if (!res || !res.ok) return null;   // 404=location 失效、401/403=token 失效、5xx——一律 fail-closed
+      if (!res || !res.ok) { dropBody(res); return null; }   // 404=location 失效、401/403=token 失效、5xx——一律 fail-closed；非 ok 体显式取消（undici 连接卫生，review A-3）
       let text = "";
       try { text = await readEnhanceBody(res); } catch (e) { return null; }
       if (text.length > 65536) return null;
