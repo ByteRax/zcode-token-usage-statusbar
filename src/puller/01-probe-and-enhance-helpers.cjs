@@ -358,8 +358,10 @@ function agreedCapabilities(entries, id) {
       + "/projects/" + encodeURIComponent(loc.projectId)
       + "/api_keys/" + encodeURIComponent(loc.apiKeyId) + "/access_tokens";
   }
-  /* 换发响应信封：{code:200|0|"200"|"0", data:{enabled, token}}（宿主同款形状）；
-   * enabled===false 或 token 非非空字符串一律按失败。 */
+  /* 换发响应信封：{code:200|0|"200"|"0", msg, data:{enabled, accessToken}}——wire 字段是
+   * accessToken（2026-11-21 真实端点实测："操作成功"信封；#431 误把宿主缓存内层的 token
+   * 字段名当 wire 形状，真机上恒 parse 失败回 plan_auth）；兼容 token 别名。
+   * enabled===false 或凭据非非空字符串一律按失败。 */
   function parseGlrExchangePayload(text) {
     let obj = null;
     try { obj = JSON.parse(String(text || "")); } catch (e) { return null; }
@@ -368,6 +370,7 @@ function agreedCapabilities(entries, id) {
     if (!(code === 200 || code === 0 || code === "200" || code === "0")) return null;
     const data = obj.data && typeof obj.data === "object" ? obj.data : null;
     if (!data || data.enabled === false) return null;
-    const token = typeof data.token === "string" ? data.token.trim() : "";
+    const token = typeof data.accessToken === "string" && data.accessToken.trim() ? data.accessToken.trim()
+      : typeof data.token === "string" ? data.token.trim() : "";
     return token || null;
   }

@@ -895,11 +895,11 @@ function glrFixture(opts) {
     }
     if (url === GLR_EXCHANGE_URL) {
       if (o.exchangeStatus) return { ok: false, status: o.exchangeStatus, text: async () => o.exchangeBody || "", body: { cancel() { exchangeDrops++; } } };
-      if (o.exchangeDisabled) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { enabled: false, token: "x" } }) };
-      if (o.exchangeBadShape) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { token: 42 } }) };
-      if (o.exchangeBadCode) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 500, data: { enabled: true, token: "glr-tok-1" } }) };
+      if (o.exchangeDisabled) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, msg: "操作成功", data: { enabled: false, accessToken: "x" } }) };
+      if (o.exchangeBadShape) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { accessToken: 42 } }) };
+      if (o.exchangeBadCode) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 500, data: { enabled: true, accessToken: "glr-tok-1" } }) };
       if (o.exchangeTokenPadded) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { enabled: true, token: "  glr-tok-1  " } }) };
-      return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { enabled: true, token: o.exchangeToken || "glr-tok-1" } }) };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, msg: "操作成功", data: { enabled: true, accessToken: o.exchangeToken || "glr-tok-1" } }) };
     }
     if (url.indexOf("/v1/messages") > 0) {
       if (o.messagesStatus) return { ok: false, status: o.messagesStatus, text: async () => o.messagesBody || "" };
