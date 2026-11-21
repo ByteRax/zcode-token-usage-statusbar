@@ -115,15 +115,15 @@ function loadPump(respond = () => ({}), children = {}) {
 
 /* 父目录 status 的 notrepo 夹具：exit 128 + fatal 文案（gitFailure 据此判 notrepo 触发子仓发现） */
 const NOTREPO = { error: { code: 128 }, stderr: "fatal: not a git repository (or any of the parent directories): .git" };
-/* 按 cwd 分发 status 夹具：值为 porcelain 字符串（成功）或 { error }（失败）；非 status 命令回短统计 */
+/* 按 cwd 分发 status 夹具：值为 porcelain 字符串（成功）或 { error }（失败）；非 status 命令回 numstat（v425） */
 function statusRespond(map) {
   return args => {
     if (args.includes("status")) {
       const hit = map[args[1]];
       if (hit !== undefined) return typeof hit === "string" ? { stdout: hit } : hit;
-      return { stdout: "## main\n" };
+      return { stdout: "## main\x00" };
     }
-    return { stdout: " 2 files changed, 5 insertions(+), 1 deletion(-)\n" };
+    return { stdout: "5\t1\tf.txt\n" };
   };
 }
 
@@ -131,7 +131,7 @@ function statusRespond(map) {
 
 test("parseGitPorcelain: MM 部分暂存一行只计 1 个 changed，不等于 staged+unstaged 之和", async () => {
   const { api } = loadPump();
-  const r = api.parseGitPorcelain("## main\nMM a.py\n");
+  const r = api.parseGitPorcelain("## main\x00MM a.py\x00");
   assert.equal(r.staged, 1);
   assert.equal(r.unstaged, 1);
   assert.equal(r.changed, 1, "MM 是一行变更，changed 不重复计 staged+unstaged");
@@ -140,19 +140,19 @@ test("parseGitPorcelain: MM 部分暂存一行只计 1 个 changed，不等于 s
 
 test("parseGitPorcelain: DD 冲突计入 changed，?? 不计入，干净输出 changed=0", async () => {
   const { api } = loadPump();
-  const d = api.parseGitPorcelain("## main\nDD e.py\n");
+  const d = api.parseGitPorcelain("## main\x00DD e.py\x00");
   assert.equal(d.conflicts, 1);
   assert.equal(d.changed, 1, "DD 冲突行计入 changed");
-  const u = api.parseGitPorcelain("## main\n?? new.py\n");
+  const u = api.parseGitPorcelain("## main\x00?? new.py\x00");
   assert.equal(u.untracked, 1);
   assert.equal(u.changed, 0, "未跟踪行不计入 changed");
-  const clean = api.parseGitPorcelain("## main...origin/main [ahead 1]\n");
+  const clean = api.parseGitPorcelain("## main...origin/main [ahead 1]\x00");
   assert.equal(clean.changed, 0);
 });
 
 test("parseGitPorcelain: 混合行集合的 changed 总数按行数统计", async () => {
   const { api } = loadPump();
-  const r = api.parseGitPorcelain("## main\nMM a\nM  b\n M c\nDD d\nAU e\n?? f\n!! g\nR  h\nA  i\n D j\n");
+  const r = api.parseGitPorcelain("## main\x00MM a\x00M  b\x00 M c\x00DD d\x00AU e\x00?? f\x00R  newh\x00oldh\x00A  i\x00 D j\x00");
   // changed 行：MM / M / " M" / DD / AU / R / A / " D" 共 8；?? 与 !! 不计
   assert.deepEqual([r.staged, r.unstaged, r.untracked, r.conflicts, r.changed], [4, 3, 1, 2, 8]);
 });
@@ -219,8 +219,8 @@ test("discoverChildRepos: 33 个仓库截断为 32 个并计 more:1", async () =
 test("queryGitStatus: 2 个子仓聚合 kind multi，每仓恰 1 条 status 且全程 0 条 diff", async () => {
   const { api, execs } = loadPump(statusRespond({
     "/fixture/parent": NOTREPO,
-    "/fixture/parent/alpha": "## main...origin/main [ahead 2, behind 1]\nMM a.py\n?? c\n",
-    "/fixture/parent/beta": "## feat/x\n M b\n",
+    "/fixture/parent/alpha": "## main...origin/main [ahead 2, behind 1]\x00MM a.py\x00?? c\x00",
+    "/fixture/parent/beta": "## feat/x\x00 M b\x00",
   }), { "/fixture/parent": [{ name: "alpha", git: true }, { name: "beta", git: true }] });
   const st = await api.queryGitStatus("/fixture/parent");
   assert.equal(st.ok, true);
@@ -247,7 +247,7 @@ test("queryGitStatus: 2 个子仓聚合 kind multi，每仓恰 1 条 status 且�
 test("queryGitStatus: 3 仓中 1 仓超时 1 仓损坏，整体仍 ok 且失败项只记 err", async () => {
   const { api } = loadPump(statusRespond({
     "/fixture/parent": NOTREPO,
-    "/fixture/parent/alpha": "## main\n",
+    "/fixture/parent/alpha": "## main\x00",
     "/fixture/parent/broken": { error: { code: 128 }, stderr: "fatal: not a git repository (or any of the parent directories): .git" },
     "/fixture/parent/slow": { error: { killed: true } },
   }), { "/fixture/parent": [{ name: "alpha", git: true }, { name: "broken", git: true }, { name: "slow", git: true }] });
@@ -275,10 +275,10 @@ test("queryGitStatus: 失败子仓携带最近成功快照并标 stale（渲染�
     if (!args.includes("status")) return { stdout: "" };
     if (args[1] === "/fixture/parent") return NOTREPO;
     if (args[1] === "/fixture/parent/beta") {
-      if (slowFirst) { slowFirst = false; return { stdout: "## dev\n M b\n" }; }
+      if (slowFirst) { slowFirst = false; return { stdout: "## dev\x00 M b\x00" }; }
       return { error: { killed: true } };   // 第二轮起超时
     }
-    return { stdout: "## main\n" };
+    return { stdout: "## main\x00" };
   }, children);
   const ok1 = await h.api.queryGitStatus("/fixture/parent");
   assert.equal(ok1.kind, "multi");
@@ -302,10 +302,10 @@ test("queryGitStatus: 恰 1 个子仓走完整单仓管线并附子仓 repoPath"
   assert.ok(!("repos" in st), "单仓形状无 repos");
   assert.deepEqual([st.branch, st.ins, st.del], ["main", 5, 1], "diff HEAD 短统计已合并");
   assert.deepEqual(execs.map(e => [...e.args]), [
-    ["-C", "/fixture/parent", "-c", "core.quotepath=false", "status", "--porcelain", "--branch"],
-    ["-C", "/fixture/parent/alpha", "-c", "core.quotepath=false", "status", "--porcelain", "--branch"],
-    ["-C", "/fixture/parent/alpha", "diff", "HEAD", "--shortstat"],
-  ], "status + diff HEAD 两条命令都执行");
+    ["-C", "/fixture/parent", "-c", "core.quotepath=false", "status", "--porcelain", "--branch", "-z"],
+    ["-C", "/fixture/parent/alpha", "-c", "core.quotepath=false", "status", "--porcelain", "--branch", "-z"],
+    ["-C", "/fixture/parent/alpha", "-c", "core.quotepath=false", "diff", "HEAD", "--numstat", "-z"],
+  ], "status + diff HEAD（v425 numstat）两条命令都执行");
 });
 
 test("queryGitStatus: 0 个子仓维持 notrepo 语义", async () => {
@@ -323,7 +323,7 @@ test("queryGitStatus: workspace 自身是仓库直接单仓形状，repoPath 等
   assert.equal(st.repoPath, "/fixture/repo");
   assert.ok(!("kind" in st) && !("repos" in st), "不触发子仓聚合");
   assert.deepEqual(execs.map(e => [...e.args.filter(a => a !== "-C" && a !== "/fixture/repo")]),
-    [["-c", "core.quotepath=false", "status", "--porcelain", "--branch"], ["diff", "HEAD", "--shortstat"]], "现有单仓管线原样（quotepath 随 v416 关闭）");
+    [["-c", "core.quotepath=false", "status", "--porcelain", "--branch", "-z"], ["-c", "core.quotepath=false", "diff", "HEAD", "--numstat", "-z"]], "现有单仓管线原样（v433 numstat -z；quotepath 两命令都开）");
 });
 
 /* ---------- 上限语义与 gitTick 集成 ---------- */
@@ -373,7 +373,7 @@ test("父目录 status 非 notrepo 失败（timeout）不触发子仓发现", as
   const children = { "/fixture/parent": [{ name: "alpha", git: true }, { name: "beta", git: true }] };
   const h = loadPump(args => {
     if (!args.includes("status")) return { stdout: "" };
-    return args[1] === "/fixture/parent" ? { error: { killed: true } } : { stdout: "## main\n" };
+    return args[1] === "/fixture/parent" ? { error: { killed: true } } : { stdout: "## main\x00" };
   }, children);
   const st = await h.api.queryGitStatus("/fixture/parent");
   assert.deepEqual([st.ok, st.reason], [false, "timeout"]);
@@ -385,7 +385,7 @@ test("恰 32 仓不截断：more=0（cap 边界单侧）", async () => {
   for (let i = 0; i < 32; i++) kids.push({ name: "r" + String(i + 1).padStart(2, "0"), git: true });
   const h = loadPump(args => {
     if (!args.includes("status")) return { stdout: "" };
-    return args[1] === "/fixture/parent" ? NOTREPO : { stdout: "## main\n" };
+    return args[1] === "/fixture/parent" ? NOTREPO : { stdout: "## main\x00" };
   }, { "/fixture/parent": kids });
   const st = await h.api.queryGitStatus("/fixture/parent");
   assert.equal(st.kind, "multi");
@@ -402,7 +402,7 @@ test("detectGitOp：触发器文件→操作码，am 以 applying 文件与 reba
   ] };
   const h = loadPump(args => {
     if (!args.includes("status")) return { stdout: "" };
-    return args[1] === "/fixture/parent" ? NOTREPO : { stdout: "## main\n" };
+    return args[1] === "/fixture/parent" ? NOTREPO : { stdout: "## main\x00" };
   }, children);
   assert.equal(await h.api.detectGitOp("/fixture/parent/r-am"), "am", "applying 存在 → am（非 rebase）");
   assert.equal(await h.api.detectGitOp("/fixture/parent/r-rebase"), "rebase");

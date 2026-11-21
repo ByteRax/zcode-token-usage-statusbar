@@ -966,7 +966,8 @@ test('buildPanel shows the 万/亿 toggle only in Chinese and restores its check
   assert.match(context.panel.innerHTML, /<input type="checkbox" class="zu-cn-num">/);
   assert.match(context.panel.innerHTML, /中文单位（万\/亿）/);
   assert.ok(context.panel.innerHTML.indexOf('zu-cn-num') > context.panel.innerHTML.indexOf('zu-ctxov'));
-  assert.ok(context.panel.innerHTML.indexOf('zu-cn-num') < context.panel.innerHTML.indexOf('zu-settings-langs'));
+  assert.ok(context.panel.innerHTML.indexOf('zu-settings-langs') < context.panel.innerHTML.indexOf('状态条样式'));   // 语言选择上移「显示」区顶部、「状态条样式」标题之前
+  assert.ok(context.panel.innerHTML.indexOf('zu-settings-langs') < context.panel.innerHTML.indexOf('zu-cn-num'));   // 且先于通用区各行
   assert.equal(cnBox.checked, true);
   context.state.cnNum = 0;
   vm.runInNewContext('buildPanel();', context);
@@ -1515,7 +1516,7 @@ test('buildPanel shows the full-path toggle in both languages and restores its c
   assert.match(context.panel.innerHTML, /<input type="checkbox" class="zu-pp-enable">/);
   assert.match(context.panel.innerHTML, /项目完整路径/);
   assert.ok(context.panel.innerHTML.indexOf('zu-pp-enable') > context.panel.innerHTML.indexOf('zu-cn-num'));
-  assert.ok(context.panel.innerHTML.indexOf('zu-pp-enable') < context.panel.innerHTML.indexOf('zu-settings-langs'));
+  assert.ok(context.panel.innerHTML.indexOf('zu-settings-langs') < context.panel.innerHTML.indexOf('zu-pp-enable'));   // 语言选择已上移「显示」区，先于通用区各行
   assert.equal(ppBox.checked, true);
   context.state.projPath = 0;
   vm.runInNewContext('buildPanel();', context);

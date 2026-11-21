@@ -135,6 +135,69 @@ test("notes rendering escapes HTML and never emits scripts, images or dangerous 
   assert.ok(!html.includes('data-href="https://x.example/' + "y".repeat(700) + '"'), "超长链接不渲染为可点链接");
 });
 
+/* ---------- v419 Markdown 升级：嵌套列表/任务清单/表格/删除线 ---------- */
+test("nested lists, task lists, tables and strikethrough render per the GFM subset", () => {
+  const ctx = makeContext();
+  const md = [
+    "- 顶层",
+    "  - 二级",
+    "    - 三级",
+    "- 顶层乙",
+    "",
+    "1. 步骤一",
+    "2. 步骤二",
+    "",
+    "- [x] 已完成",
+    "- [ ] 未完成",
+    "- [x]无空格不算任务",
+    "",
+    "| 功能 | 状态 | 说明 |",
+    "| :--- | ---: | :---: |",
+    "| 表格 | 完成 | 支持 \\| 转义 |",
+    "| <script>x</script> | [b](javascript:alert(1)) | [ok](https://x.y/z) |",
+    "",
+    "~~删除线~~ 与 单~波~ 不变",
+    "",
+    "**粗 *斜* 粗**",
+    "",
+    "| 只有表头行没有分隔行 | 不是表格 |",
+  ].join("\n");
+  const html = ctx.notesHtml(md, true).html;
+  // 嵌套列表：li 内嵌 ul，三级成树；回落后的顶层乙仍是根级兄弟
+  assert.match(html, /<ul><li>顶层<ul><li>二级<ul><li>三级<\/li><\/ul><\/li><\/ul><\/li><li>顶层乙<\/li><\/ul>/);
+  assert.match(html, /<ol><li>步骤一<\/li><li>步骤二<\/li><\/ol>/);
+  // 任务清单：checkbox 取代字面 [x]/[ ]；无空格的 [x]前缀仍按普通文本
+  assert.match(html, /<input type="checkbox" disabled checked>已完成<\/li>/);
+  assert.match(html, /<input type="checkbox" disabled>未完成<\/li>/);
+  assert.ok(!html.includes("[x] 已完成") && !html.includes("[ ] 未完成"), "任务标记不得按字面残留");
+  assert.match(html, /<li>\[x\]无空格不算任务<\/li>/);
+  // 表格：thead/tbody、对齐样式贯穿整列、\| 转义
+  assert.match(html, /<table><thead><tr><th style="text-align:left">功能<\/th><th style="text-align:right">状态<\/th><th style="text-align:center">说明<\/th><\/tr><\/thead><tbody><tr><td style="text-align:left">表格<\/td><td style="text-align:right">完成<\/td><td style="text-align:center">支持 \| 转义<\/td><\/tr>/);
+  // 表格单元格走同一转义/链接白名单
+  assert.match(html, /&lt;script&gt;x&lt;\/script&gt;/);
+  assert.ok(!html.includes('data-href="javascript:'), "单元格内 javascript 链接必须被丢弃");
+  assert.match(html, /<td style="text-align:center"><button type="button" class="zu-notes-lnk" data-href="https:\/\/x\.y\/z">ok<\/button><\/td>/);
+  // 删除线只认双波浪
+  assert.match(html, /<del>删除线<\/del>/);
+  assert.match(html, /单~波~/);
+  // 加粗内嵌斜体
+  assert.match(html, /<strong>粗 <em>斜<\/em> 粗<\/strong>/);
+  // 无分隔行不成表
+  assert.ok(!html.includes("<th>只有表头行"), "缺分隔行的管道行不得成表");
+});
+
+test("markdown upgrade keeps hostile inputs bounded (bold/strike/pipe floods)", () => {
+  const ctx = makeContext();
+  /* 管道表在前（~~ 洪流以 ~~~ 起头会成围栏吞掉后续行，故置尾；全部仍须即时完成且无脚本） */
+  const floods = "| a | a |\n| - | - |\n| " + "x|".repeat(4000) + "\n" + "[x]".repeat(4000) + "\n" +
+    "**" + "*".repeat(4000) + "\n" + "~~" + "~".repeat(4000) + "\n";
+  const t0 = Date.now();
+  const out = ctx.notesHtml(floods, true);
+  assert.ok(Date.now() - t0 < 2000, "洪水输入必须即时完成");
+  assert.ok(!/<script/i.test(out.html));
+  assert.match(out.html, /<th>a<\/th>/);   // 无对齐冒号的朴素分隔行也成表（结构存在）
+});
+
 test("collapsed preview keeps attention sections visible and never silently drops content", () => {
   const ctx = makeContext();
   const long = "## 更新内容\n\n" + Array.from({ length: 120 }, (_, i) => "- 变更条目 " + i).join("\n") +
@@ -500,7 +563,7 @@ test("v413 wiring: boot sweep, cleanup chain, tip shell, prefetch hook and gear 
   assert.ok(/function showUpdNoteTip[\s\S]{0,300}cancelUpdNoteHide\(\)/.test(tips), "show 路径未取消在途收起（重入闪烁）");
   assert.ok(tips.includes("Math.max(8, Math.min(Math.round(r.right - tw)"), "tip 左缘 8px 视口钳边缺失");
   const dom = read("06-instance-dom-and-styles.js");
-  assert.ok(dom.includes('var VERSION = "v418"'), "VERSION 未升 v417");
+  assert.ok(dom.includes('var VERSION = "v437"'), "VERSION 未升 v435");
   assert.ok(dom.includes(".zusage-upd-note-tip .zu-un-body"), "tip 作用域样式缺失");
   const notes = read("09-instance-settings-and-notes.js");
   assert.ok(notes.includes('typeof pluginRequest === "function") updNotePrefetch()'), "syncUpdate 预取钩子缺失");

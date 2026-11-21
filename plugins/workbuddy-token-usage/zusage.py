@@ -1263,6 +1263,76 @@ def _worktree_facts_safe(con, sids):
         return None
 
 
+def _session_compactions(con, sids):
+    """v421：会话压缩边界表（快照顶层 compactions，{sid: [{ts,b,a,cr,cw,out,dur,alt}]}）——
+    宿主时间线「上下文已压缩」分隔线统计标注的数据源。model_usage 的 query_source='compact'
+    行=宿主压缩总结请求，成功一次即时间线上一条 success 分隔线，按 started_at 序与 DOM 里
+    第 k 条分隔线一一对应（数组序即压缩序号，消费端「第 N 次」由此直读）。ts=compact 行
+    完成时刻（分隔线变 success 的秒级近似）；b/a=压缩前末条 / 压缩后首条已完成 main_turn
+    的 input（input>0 守卫剔除零值空行，2026-11-21 实测压缩点紧邻存在 input=0 的 completed
+    行）。与宿主 marker 载荷的 tokensBefore/tokensAfter 同义但口径为插件 ctx 口径（a 含
+    system+工具模式），渲染端不冒充宿主数字。cr/cw=压缩后首请求的缓存读取/创建——压缩冲掉
+    前缀缓存，该请求的缓存构成即「压缩后首请求付出多少未缓存输入」的直接读数，命中率由
+    消费端按 cr/a 计算。v428：out/dur=compact 行自身 output_tokens（摘要写入长度）与
+    completed_at−started_at（压缩耗时，完成时刻缺失时 0，消费端省略）；alt=压缩执行模型
+    与压缩后首请求模型不同才带的模型名（多模型会话的「由 X 执行」，同模型/无法比对省略）。
+    无 compact 行的会话不进映射；查询走 model_usage_query_source_idx，每帧成本可忽略。"""
+    out = {}
+    for sid in sids:
+        rows = con.execute(
+            """select started_at, completed_at, coalesce(output_tokens,0), coalesce(model_id,'')
+               from model_usage
+               where session_id=? and query_source='compact' and status='completed'
+               order by started_at limit 24""",
+            (sid,),
+        ).fetchall()
+        if not rows:
+            continue
+        recs = []
+        for started_at, completed_at, c_out, c_model in rows:
+            done_at = completed_at or started_at or 0
+            rec = {"ts": done_at, "out": c_out or 0,
+                   "dur": max(0, int(done_at - (started_at or 0)))}
+            before = con.execute(
+                """select input_tokens from model_usage
+                   where session_id=? and status='completed' and input_tokens>0
+                     and (query_source is null or query_source='main_turn') and started_at<?
+                   order by started_at desc limit 1""",
+                (sid, started_at),
+            ).fetchone()
+            after = con.execute(
+                """select input_tokens, coalesce(cache_read_input_tokens,0),
+                          coalesce(cache_creation_input_tokens,0), coalesce(model_id,'')
+                   from model_usage
+                   where session_id=? and status='completed' and input_tokens>0
+                     and (query_source is null or query_source='main_turn') and started_at>?
+                   order by started_at limit 1""",
+                (sid, done_at),   # v433：completed_at 缺失时随 done_at 用 started_at 兜底（防窗口塌陷到 >0）
+            ).fetchone()
+            if before and before[0]:
+                rec["b"] = before[0]
+            if after and after[0]:
+                rec["a"] = after[0]
+                rec["cr"] = after[1]
+                rec["cw"] = after[2]
+                if c_model and after[3] and c_model != after[3]:
+                    rec["alt"] = c_model
+            recs.append(rec)
+        out[sid] = recs
+    return out or None
+
+
+def _session_compactions_safe(con, sids):
+    """同 _worktree_facts_safe 口径：任何异常静默省略，不拖垮整帧。"""
+    if con is None or not sids:
+        return None
+    try:
+        return _session_compactions(con, sids)
+    except (sqlite3.Error, TypeError, ValueError, KeyError, IndexError, OverflowError,
+            AttributeError, OSError):
+        return None
+
+
 def range_usage(con, start_ms, end_ms):
     # 末尾三列（reasoning/retry/cache_write）是 v30/v31 追加，CLI 老代码按索引 0-4 取值不受影响
     return con.execute(
@@ -3659,7 +3729,8 @@ def _provider_fallback_uncached(con):
 
 
 def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=False,
-             include_all_projects=False, include_speed_days=False, include_worktree=False):
+             include_all_projects=False, include_speed_days=False, include_worktree=False,
+             include_compactions=False):
     """单次快照：最新会话 + 最近 6+6 会话池 + 今日。
     force_sid：各窗口当前会话 id，逗号分隔（泵按窗口汇总上报：主进程 IPC 映射的焦点会话 +
     overlay localStorage 键兜底），全部强制纳入快照——不在 6+6 池里的会话（新开的、久远的）
@@ -3676,6 +3747,9 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
     完全一致，失败降级 None 不拖垮整帧。
     include_worktree（specs/worktree-branch.md）：同门控产出 force_sid 中受管 worktree 会话的
     路径与创建记录（挂顶层 worktrees，~百字节级）；分支名不在此读，主进程 git 轮询按覆写路径实时给出。
+    include_compactions（v421）：同门控产出最新会话与 force_sid 各会话的压缩边界表
+    （挂顶层 compactions，{sid: [{ts,b,a,cr,cw}]}，~百字节级，无 compact 行的会话省略）；
+    宿主「上下文已压缩」分隔线统计标注的数据源，语义见 _session_compactions。
     连接所有权归调用方：serve 模式下查询期出错会就地 close（调用方下次探活重建），
     finally 不重复关闭。"""
     cfg = load_config()
@@ -3847,6 +3921,11 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
         # 失败按无字段降级，不拖垮整帧（与 provider_fallback 同款口径）
         all_proj = _all_projects_usage_safe(con) if include_all_projects else None
         wt_facts = _worktree_facts_safe(con, force_sids) if include_worktree else None
+        # v421：压缩边界表候选=最新会话 + force_sid（去重保序）——时间线标注只关心
+        # 当前各窗口正在显示的会话，与 worktrees 的候选集合同型。
+        cmp_map = (_session_compactions_safe(
+            con, list(dict.fromkeys(([latest_sid] if latest_sid else []) + list(force_sids))))
+            if include_compactions else None)
         return {
             # 宿主与能力声明（v241）：消费端据此选择可用指标，不再靠字段缺失猜数据源；
             # 旧消费端忽略未知键，不影响既有渲染。
@@ -3913,6 +3992,9 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
             # 受管 worktree 会话路径与创建记录（specs/worktree-branch.md）：桌面链顶层可选
             # 字段；无命中/降级省略（不是 null），渲染端判空回退现状
             **({"worktrees": wt_facts} if wt_facts is not None else {}),
+            # v421 压缩边界表（specs/… 无独立规格，语义注释见 _session_compactions）：
+            # 桌面快照链顶层可选字段；无命中/降级省略（不是 null），渲染端判空不标注
+            **({"compactions": cmp_map} if cmp_map else {}),
             "remote_enabled": bool(setup),        # 是否存在可用远端目标（区分"没配"与"配了没查到"）
             "known_sids": known_sids,
             "context_window": base["context_window"],
@@ -4654,7 +4736,8 @@ def serve():
                                       include_speed_history=not lean,
                                       include_all_projects=not lean,
                                       include_speed_days=not lean,
-                                      include_worktree=not lean), separators=(",", ":"))
+                                      include_worktree=not lean,
+                                      include_compactions=not lean), separators=(",", ":"))
         except Exception as e:
             out = json.dumps({"error": str(e)[:200]})   # 单次查询失败不杀常驻进程
             _drop()   # 异常路径下连接状态未知：弃用，下轮重建
@@ -4735,7 +4818,8 @@ def main(argv):
             print(json.dumps(snapshot(force_sid, routes, include_speed_history=desktop,
                                       include_all_projects=desktop,
                                       include_speed_days=desktop,
-                                      include_worktree=desktop), separators=(",", ":")))   # v384 同上
+                                      include_worktree=desktop,
+                                      include_compactions=desktop), separators=(",", ":")))   # v384 同上
             return 0
         if cmd == "serve":
             serve()

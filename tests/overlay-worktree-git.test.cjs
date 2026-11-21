@@ -100,7 +100,7 @@ test('gitTipHTML: worktree 区块全量信息（短标识/根目录仅 monorepo/
   assert.ok(!html.includes('受管 Worktree'), '无 wt 字段不渲染区块（普通会话）');
 });
 
-test('gitTipHTML: 变更文件小节（状态标签/冲突红/帽尾提示/转义/无明细隐藏）', () => {
+test('gitTipHTML: 变更文件小节（v425 类型图标/±N/冲突红/帽尾提示/转义/无明细隐藏）', () => {
   const sandbox = {
     L: (cn) => cn,
     cnUnits: () => false,
@@ -115,13 +115,17 @@ test('gitTipHTML: 变更文件小节（状态标签/冲突红/帽尾提示/转�
     files: [{ p: 'src/a.py', s: 'modified' }, { p: 'new.md', s: 'untracked' }, { p: 'c.py', s: 'conflict' },
             { p: 'del.js', s: 'deleted' }, { p: 'o.txt -> n.txt', s: 'renamed' }, { p: 'add.py', s: 'added' }], ft: 9 } });
   assert.match(html, /<b>变更文件<\/b><span>9 项（列前 6 条）<\/span>/, '头部：真实总数+截断说明');
-  assert.match(html, /<b class="zu-gf">改<\/b><span>src\/a.py<\/span>/, 'modified 标签+路径');
-  assert.match(html, /<b class="zu-gf">新<\/b><span>new\.md<\/span>/, 'untracked 标签');
-  assert.match(html, /<b class="zu-gf zu-gf-c">冲突<\/b><span>c\.py<\/span>/, 'conflict 红色标签');
-  assert.match(html, /<b class="zu-gf">删<\/b>/, 'deleted 标签');
-  assert.match(html, /<b class="zu-gf">移<\/b><span>o\.txt -&gt; n\.txt<\/span>/, 'rename 路径原样（> 经 gitEsc 转义）');
-  assert.match(html, /<b class="zu-gf">新<\/b><span>add\.py<\/span>/, 'added 并入「新」标签');
+  assert.match(html, /<b class="zu-gf-ico" title="改"><svg[^]*?<\/svg><\/b><span class="zu-gf-p">src\/a\.py<\/span>/, 'v425：类型图标（title 保状态词）+路径段');
+  assert.match(html, />PY</, '扩展名小字按路径尾段');
+  assert.match(html, />TXT</, 'rename 图标按新名扩展（o.txt -> n.txt 尾段 n.txt）');
+  assert.match(html, /<span class="zu-gf-p">o\.txt -&gt; n\.txt<\/span>/, 'rename 路径原样（> 经 gitEsc 转义）');
+  assert.match(html, /fill="#d9534f"\/><text[^>]*fill="#ffffff"/, 'conflict 深红底白字徽标');
+  assert.equal((html.match(/class="zu-gf-num"/g) || []).length, 0, '无 add/del 的条目行尾省略（旧快照/多仓形状兼容）');
   assert.match(html, /另有 3 项未列出/, '帽尾提示');
+  const numHtml = gitTipHTML({ path: '/repo', st: { ...stBase,
+    files: [{ p: 'src/a.js', s: 'modified', add: 49, del: 0 }, { p: 'b.md', s: 'untracked' }], ft: 2 } });
+  assert.match(numHtml, /<span class="zu-gf-num"><span class="zu-gf-add">\+49<\/span> <span class="zu-gf-del">-0<\/span><\/span>/, '每文件 ±N 行尾（宿主弹层同布局）');
+  assert.equal((numHtml.match(/class="zu-gf-num"/g) || []).length, 1, '未跟踪无数值不渲染计数');
   const esc = gitTipHTML({ path: '/repo', st: { ...stBase,
     files: [{ p: '<script>x</script>', s: 'modified' }], ft: 1 } });
   assert.ok(!esc.includes('<script>x</script>'), '路径过 gitEsc');

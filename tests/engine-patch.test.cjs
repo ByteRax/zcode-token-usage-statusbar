@@ -9,7 +9,7 @@ const path = require("path");
 const vm = require("vm");
 
 const ep = require("../engine-patch.cjs");
-const { createEnginePatcher, ENGINE_TARGETS, PROLOGUE, PROLOGUE_V1, PROLOGUE_PREFIX, ANCHOR, REPLACEMENT, MARK, insertPrologue, resolveEnginePath, buildPatchedSource } = ep;
+const { createEnginePatcher, ENGINE_TARGETS, PROLOGUE, PROLOGUE_V1, PROLOGUE_V2, PROLOGUE_PREFIX, ANCHOR, REPLACEMENT, MARK, insertPrologue, resolveEnginePath, buildPatchedSource } = ep;
 
 function sha256hex(buf) { return require("crypto").createHash("sha256").update(buf).digest("hex"); }
 
@@ -318,6 +318,34 @@ test("ensure migrates an engine patched with the legacy prologue in place (v194 
   } finally { s.cleanup(); }
 });
 
+test("ensure migrates a v194-era patched engine in place (v420 tokens floor swap)", () => {
+  const s = setup();
+  try {
+    registerTarget(s.original);
+    /* v194-v419 装机形态：percent 新段 + tokens 地板 1000（PROLOGUE_V2） */
+    const legacy = buildPatchedSource(s.original.toString("utf8"), { anchor: ANCHOR, replacement: REPLACEMENT, prologue: PROLOGUE_V2 });
+    assert.ok(legacy && !legacy.error);
+    fs.writeFileSync(s.enginePath, legacy.output);
+    assert.equal(s.patcher.ensure(), "applied");
+    const after = fs.readFileSync(s.enginePath, "utf8");
+    assert.ok(after.includes(PROLOGUE), "hook 本体已换装 100k 地板版");
+    assert.ok(!after.includes(PROLOGUE_V2), "旧本体不残留");
+    assert.ok(after.includes(REPLACEMENT), "锚点替换体保持不变");
+    assert.equal(s.patcher.ensure(), "applied", "迁移后幂等");
+  } finally { s.cleanup(); }
+});
+
+test("restore handles a v194-era patched engine", () => {
+  const s = setup();
+  try {
+    registerTarget(s.original);
+    const legacy = buildPatchedSource(s.original.toString("utf8"), { anchor: ANCHOR, replacement: REPLACEMENT, prologue: PROLOGUE_V2 });
+    fs.writeFileSync(s.enginePath, legacy.output);
+    assert.equal(s.patcher.restore(), "off");
+    assert.deepEqual(fs.readFileSync(s.enginePath), s.original, "V2 装机也能还原到原版字节");
+  } finally { s.cleanup(); }
+});
+
 test("restore handles an engine patched with the legacy prologue", () => {
   const s = setup();
   try {
@@ -389,8 +417,9 @@ test("writeConfig normalizes modes, rejects invalid input, and writes atomically
     assert.deepEqual(s.patcher.writeConfig("percent", 30), { enabled: true, thresholdPercent: 30 });
     assert.deepEqual(s.patcher.writeConfig("percent", 99), { enabled: true, thresholdPercent: 99 });
     assert.deepEqual(s.patcher.writeConfig("tokens", 120000), { enabled: true, thresholdTokens: 120000 });
+    assert.deepEqual(s.patcher.writeConfig("tokens", 100000), { enabled: true, thresholdTokens: 100000 }, "v420 下限边界");
     assert.deepEqual(s.patcher.writeConfig("buffer", 5000), { enabled: true, bufferTokens: 5000 });
-    for (const [mode, value] of [["percent", 29], ["percent", 120], ["tokens", 999], ["buffer", -1], ["evil", 1]]) {   // v194：百分比下限 30
+    for (const [mode, value] of [["percent", 29], ["percent", 120], ["tokens", 999], ["tokens", 99999], ["buffer", -1], ["evil", 1]]) {   // v194：百分比下限 30；v420：tokens 下限 100k
       assert.throws(() => s.patcher.writeConfig(mode, value), undefined, mode + " " + value + " 应拒绝");
     }
     assert.deepEqual(s.patcher.readConfig(), { enabled: true, bufferTokens: 5000 });
@@ -463,7 +492,7 @@ test("hook: tokens/buffer semantics and the 1% floor against compact loops", () 
     const hook = runHook(env.root);
     const EFF = 179000;
     env.write({ thresholdTokens: 500 });
-    assert.equal(hook(EFF), Math.floor(EFF * 0.01), "低于 tokens 下限且触发 1% 地板（防每轮压缩→rapid-refill 熔断）");
+    assert.equal(hook(EFF), 100000, "v420：低于 100k 下限钳到 100000（历史手写小值不再放行）");
     env.write({ thresholdTokens: 100000 });
     assert.equal(hook(EFF), 100000, "正常 token 阈值原样生效");
     env.write({ thresholdTokens: 999999 });

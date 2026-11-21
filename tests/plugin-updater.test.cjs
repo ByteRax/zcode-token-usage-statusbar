@@ -577,6 +577,18 @@ test("current sync report marker is not re-recorded by legacy fallback", async (
   await u.tick(); assert.equal(JSON.parse(fs.readFileSync(marker)).createdAt, 1);
   assert.equal(u.status().restartRequired, true);
 });
+test("legacy fallback cold list matches overlay_install cold_files (8 always + opt-out trio)", async (t) => {
+  for (const name of ["inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "sysmon-client.cjs"]) {
+    const f = fixture(t); f.set({ changed: [name] });
+    await f.updater.tick(); assert.equal(f.updater.status().restartRequired, true, name);
+  }
+  for (const name of ["usage_mcp.py", "turn-stats.js", "mobile-relay.cjs"]) {
+    const f = fixture(t); f.set({ changed: [name] });
+    await f.updater.tick(); assert.equal(f.updater.status().restartRequired, false, name);
+  }
+  const hotOff = fixture(t, { hot_reload: false }); hotOff.set({ changed: ["mobile-relay.cjs"] });
+  await hotOff.updater.tick(); assert.equal(hotOff.updater.status().restartRequired, true);
+});
 test("marker write failure leaves pending intent for retry and never clears reminder", async (t) => {
   const f = fixture(t); const marker = path.join(f.runtime, ".plugin-restart-required");
   fs.mkdirSync(marker); f.set({ changed: ["inject-main.cjs"] });

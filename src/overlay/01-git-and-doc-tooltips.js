@@ -1,6 +1,7 @@
   /* ---------- Git 状态 chip 数据通道（v96）：主进程旁路 git 查询 → 按工作区路径缓存 ----------
-   * 主进程每 10s 取各窗口 window.__zusageGitPaths 并集逐路径查询，结果推 window.__zusageGitState；
-   * 渲染端只缓存与分发，实例按自身 scope.workspacePath 取用。失败不清空最近成功态（标 stale），
+   * 主进程对各窗声明的路径并集建 fs.watch，事件 60s 尾随防抖后逐路径查询（v420 起对齐宿主原生
+   * Git 胶囊刷新时机，弃 10s 轮询），结果推 window.__zusageGitState；路径集变化由渲染端立即请求
+   * 首查。渲染端只缓存与分发，实例按自身 scope.workspacePath 取用。失败不清空最近成功态（标 stale），
    * 只有明确「非仓库 / 无 git」才视为无数据不挂载。 */
   var gitStateByPath = {}, gitLastGood = {}, gitAskedAt = 0;
   var GIT_ASK_MIN_MS = 5000;
@@ -179,10 +180,10 @@
       publishGitPaths();
     } catch (e) { }
   }
-  /* v96：Git chip 关注的本地工作区路径集 → window.__zusageGitPaths（主进程每 10s 取并集查询）。
+  /* v96：Git chip 关注的本地工作区路径集 → window.__zusageGitPaths（主进程 fs.watch 监听后查询）。
    * identity 为空才是本地；远端 pane 不上报（主进程不替宿主跨机跑 git）；开关关闭为空集。
-   * 每次 render 都经 refreshWants 到这里：路径集变化立即请求首查，否则按快照节奏节流重查
-   * （快照到达 = 刚有请求落库，模型可能刚改过文件）。 */
+   * 每次 render 都经 refreshWants 到这里：只在路径集变化时立即请求首查（v420 起，后续更新由
+   * 主进程 fs.watch 60s 防抖驱动，不再做快照节奏的节流重查）。 */
   function publishGitPaths() {
     try {
       var gitPaths = [];
@@ -197,7 +198,7 @@
       }
       var changed = JSON.stringify(gitPaths) !== JSON.stringify(window.__zusageGitPaths || []);
       window.__zusageGitPaths = gitPaths;
-      askGitRefresh(changed);
+      if (changed) askGitRefresh(true);   // 仅路径集变化立即首查；更新由主进程 fs.watch 60s 防抖驱动（v420）
     } catch (e) { }
   }
 
@@ -2103,8 +2104,35 @@
   }
   /* 进行中 Git 操作的展示名（主进程 fs 探针 detectGitOp 的代码 → 双语标签；am 主栏短标签「补丁」） */
   var GIT_OP_LABELS = { rebase: ["变基", "rebase"], merge: ["合并", "merge"], "cherry-pick": ["拣选", "cherry-pick"], revert: ["还原", "revert"], bisect: ["二分", "bisect"], am: ["补丁", "patch"] };
-  /* v411 逐文件状态标签（inject-main fileLabel 代码 → 双语短标；conflict 走红色 zu-gf-c） */
+  /* v411 逐文件状态标签（inject-main fileLabel 代码 → 双语短标；v425 起列首标签让位文件类型
+   * 图标，本表保留作图标 title 与语义来源；conflict 图标整体转红保留警示） */
   var GIT_FILE_LABELS = { conflict: ["冲突", "conflict"], untracked: ["新", "new"], deleted: ["删", "del"], renamed: ["移", "ren"], added: ["新", "new"], modified: ["改", "mod"] };
+  /* v426 图标重制（v425 线条文件页+小字在 14px 下糊成一片，用户实拍反馈）：参照宿主 JS 徽标
+   * 的实心圆角方块+粗体扩展名——实底填充保证小尺寸可读，文字色按填充亮度自动取深/白
+   * （Json/Js/Md 等浅底配深字，Py/Ts/Png 等深底配白字）；冲突专用深红底白字压过类型色
+   * （原 zu-gf-c 语义）。扩展名取路径尾段（rename 天然按新名），超 3 字符截断，无扩展名
+   * 纯灰块。仍不引用宿主 material-icons 资产（注入环境无该目录会裂图）。 */
+  var GIT_EXT_COLORS = { js: "#e8c66a", cjs: "#e8c66a", mjs: "#e8c66a", jsx: "#e8c66a", ts: "#61afcc", tsx: "#61afcc",
+    py: "#5f9ed6", md: "#7aa2f7", markdown: "#7aa2f7", txt: "#9aa5b1", json: "#cbcb41", yml: "#a6a6a6", yaml: "#a6a6a6",
+    toml: "#a6a6a6", ini: "#a6a6a6", conf: "#a6a6a6", cfg: "#a6a6a6", css: "#c66cad", scss: "#c66cad", less: "#c66cad",
+    html: "#d1712f", htm: "#d1712f", rs: "#dea584", go: "#53b4c8", java: "#b07219", c: "#8aa4c8", h: "#8aa4c8",
+    cpp: "#8aa4c8", hpp: "#8aa4c8", cc: "#8aa4c8", sh: "#89c06a", bash: "#89c06a", zsh: "#89c06a", rb: "#d06b5c",
+    php: "#8993c4", sql: "#d98f4e", svg: "#a074c4", png: "#a074c4", jpg: "#a074c4", jpeg: "#a074c4", gif: "#a074c4",
+    webp: "#a074c4", ico: "#a074c4", lock: "#7d8590" };
+  function gitFileIcon(p, s) {
+    var m = /\.([A-Za-z0-9]+)\s*$/.exec(String(p));
+    var ext = m ? m[1].toLowerCase() : "";
+    var c = s === "conflict" ? "#d9534f" : (GIT_EXT_COLORS[ext] || "#98a0a8");
+    var t = ext.slice(0, 3).toUpperCase();
+    var n = parseInt(c.slice(1), 16);
+    var lum = 0.299 * (n >> 16 & 255) + 0.587 * (n >> 8 & 255) + 0.114 * (n & 255);
+    var tc = lum > 162 ? "#24292f" : "#ffffff";
+    var fs = t.length <= 2 ? 7 : 5.6;
+    return '<svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">' +
+      '<rect x="0.5" y="0.5" width="15" height="15" rx="3.2" fill="' + c + '"/>' +
+      (t ? '<text x="8" y="' + (t.length <= 2 ? 11.4 : 10.8) + '" text-anchor="middle" font-size="' + fs + '" font-weight="700" fill="' + tc + '" font-family="system-ui,sans-serif">' + t + "</text>" : "") +
+      "</svg>";
+  }
   function gitOpLabel(code) { var m = GIT_OP_LABELS[code]; return m ? L(m[0], m[1]) : code; }
   /* v96 multi：多仓库聚合口径（chip/aria/tooltip 共用）——总数、脏仓数（成功仓 changed>0 或
    * untracked>0）、改动/未跟踪文件求和、失败仓数、任一成功仓有冲突；聚合数由渲染端算，主进程不提供。 */
@@ -2161,10 +2189,15 @@
     ".zusage-git-tip .zu-gsep{opacity:.6}" +
     ".zusage-git-tip .zu-gdiv{color:var(--color-tooltip-tag-foreground,#afafb2);opacity:.85}" +
     ".zusage-git-tip .zu-git-rows{max-height:60vh;overflow-y:auto;overscroll-behavior:contain}" +
-    ".zusage-git-tip b.zu-gf{flex:0 0 auto;min-width:3.6em;color:#f0e6a0;font-weight:600}" +
-    ".zusage-git-tip b.zu-gf.zu-gf-c{color:#f09696}" +
-    ".zusage-git-tip[data-zusage-light] b.zu-gf{color:#946200}" +
-    ".zusage-git-tip[data-zusage-light] b.zu-gf.zu-gf-c{color:#d20f39}" +
+    /* v425 文件行三段式：类型图标（固定 16px 槽）+ 路径（可收缩断行）+ 行尾 ±N（镜像 chip
+     * ins/del 配色，浅色档走 data-zusage-light 覆盖） */
+    ".zusage-git-tip b.zu-gf-ico{flex:0 0 auto;min-width:16px;display:flex;align-items:center;font-weight:400}" +
+    ".zusage-git-tip .zu-gf-p{flex:1 1 auto;min-width:0}" +
+    ".zusage-git-tip .zu-gf-num{flex:0 0 auto;margin-left:8px;white-space:nowrap;font-variant-numeric:tabular-nums}" +
+    ".zusage-git-tip .zu-gf-add{color:#aae6aa}" +
+    ".zusage-git-tip .zu-gf-del{color:#f09696}" +
+    ".zusage-git-tip[data-zusage-light] .zu-gf-add{color:#2da587}" +
+    ".zusage-git-tip[data-zusage-light] .zu-gf-del{color:#d20f39}" +
     ".zusage-git-tip[data-zusage-light] .rt-h,.zusage-git-tip[data-zusage-light] .rt-row b,.zusage-git-tip[data-zusage-light] b.zu-gname{color:var(--color-tooltip-foreground,#2e3440)}" +
     ".zusage-git-tip[data-zusage-light] .c-mod,.zusage-git-tip[data-zusage-light] .c-unt,.zusage-git-tip[data-zusage-light] .c-warn{color:#946200}" +
     ".zusage-git-tip[data-zusage-light] .zu-gconf{color:#d20f39}" +
@@ -2193,18 +2226,21 @@
       (view.wt && view.wt.sourceRoot ? row(L("主仓库", "Source repo"), gitEsc(view.wt.sourceRoot)) : "") +
       (view.wt ? row(L("起点", "Start ref"), view.wt.ref ? gitEsc(view.wt.ref) : (view.wt.sha ? gitEsc(String(view.wt.sha).slice(0, 7)) : L("当前 HEAD（游离检出）", "current HEAD (detached)"))) : "") +
       (view.wt && view.wt.created ? row(L("创建于", "Created"), gitTimeStr(view.wt.created)) : "") +
-      /* v411 变更文件清单：单仓查询收逐文件明细（帽 60，ft=真实总数），多仓聚合不收 */
+      /* v411 变更文件清单：单仓查询收逐文件明细（帽 60，ft=真实总数），多仓聚合不收。
+       * v425：列首状态文字改文件类型图标（title 保留状态语义），行尾追加每文件 ±N 行数
+       * （numstat 命中才有；未跟踪/二进制无数值行尾省略，与宿主弹层同布局）。 */
       (st.files && st.files.length ?
         '<div class="rt-row"><b>' + L("变更文件", "Changed files") + '</b><span>' + gitNum(st.ft) + L(" 项", " entries") + (st.ft > st.files.length ? L("（列前 " + st.files.length + " 条）", " (showing first " + st.files.length + ")") : "") + '</span></div>' +
         '<div class="zu-git-rows">' + st.files.map(function (f) {
           var lbl = GIT_FILE_LABELS[f.s] || GIT_FILE_LABELS.modified;
-          return '<div class="rt-row"><b class="zu-gf' + (f.s === "conflict" ? " zu-gf-c" : "") + '">' + L(lbl[0], lbl[1]) + '</b><span>' + gitEsc(f.p) + '</span></div>';
+          var nums = f.add != null ? '<span class="zu-gf-num"><span class="zu-gf-add">+' + gitNum(f.add) + '</span> <span class="zu-gf-del">-' + gitNum(f.del) + "</span></span>" : "";
+          return '<div class="rt-row"><b class="zu-gf-ico" title="' + L(lbl[0], lbl[1]) + '">' + gitFileIcon(f.p, f.s) + '</b><span class="zu-gf-p">' + gitEsc(f.p) + '</span>' + nums + '</div>';
         }).join("") +
-        (st.ft > st.files.length ? '<div class="rt-row"><b class="zu-gf"></b><span class="c-warn">' + L("…另有 " + gitNum(st.ft - st.files.length) + " 项未列出", "… " + gitNum(st.ft - st.files.length) + " more not listed") + '</span></div>' : "") +
+        (st.ft > st.files.length ? '<div class="rt-row"><b class="zu-gf-ico"></b><span class="c-warn">' + L("…另有 " + gitNum(st.ft - st.files.length) + " 项未列出", "… " + gitNum(st.ft - st.files.length) + " more not listed") + '</span></div>' : "") +
         '</div>' : "") +
       (when ? row(L("更新于", "Updated"), when) : "") +
-      '<div class="rt-note">' + L("只读本地仓库，不自动 fetch（上游比较基于本地引用）；远端会话不显示。⚙ 设置可关。",
-        "Local repositories read-only, never auto-fetches (upstream compares against local refs); hidden for remote sessions. Toggle in ⚙ settings.") + "</div>";
+      '<div class="rt-note">' + L("只读本地仓库，不自动 fetch（上游比较基于本地引用）；远端会话不显示。点击 chip 可打开宿主原生 Git 面板（宿主无原生胶囊时为立即刷新）。⚙ 设置可关。",
+        "Local repositories read-only, never auto-fetches (upstream compares against local refs); hidden for remote sessions. Click the chip to open the native Git panel (falls back to an instant refresh when the native capsule is absent). Toggle in ⚙ settings.") + "</div>";
   }
   /* v96 multi tooltip：概览（标题 / 有改动仓库与非零冲突·操作·失败 / 覆盖行）→ 逐仓全量列表
    * （优先级：冲突 0 < 失败或过期 1 < 操作中 2 < 有改动 3 < 上游差异 4 < 干净 5；同级码点序，
@@ -2274,7 +2310,7 @@
     h += '<div class="zu-git-rows">' + rows + "</div>";
     h += row(L("工作目录", "Work dir"), gitEsc(view.path) + L("，下含 " + agg.total + " 个仓库", " · " + agg.total + " repos"));
     var when = gitTimeStr(st.ts);
-    h += when ? row(L("更新于", "Updated"), when + L(" · 每 10 秒及每轮回复后自动刷新，点击 chip 立即刷新", " · auto-refreshes every 10s and after each reply; click chip to refresh now")) : "";
+    h += when ? row(L("更新于", "Updated"), when + L(" · 工作区文件变更后约 1 分钟内自动刷新，点击 chip 立即刷新", " · auto-refreshes within ~1 min after workspace changes; click chip to refresh now")) : "";
     return h + '<div class="rt-note">' + L("口径：改=已跟踪变更条目（含增删改名与冲突文件），新=未跟踪条目（目录折叠计 1，文件与目录混合计数）。仓库列表全量展开，超出屏幕可滚动。",
       "Units: mod = tracked-change entries (add/delete/rename/conflict), new = untracked entries (collapsed dirs count as 1). The repo list is fully expanded and scrolls when taller than the screen.") + "</div>";
   }
@@ -2283,7 +2319,7 @@
     if (stale() || !view || !chip.isConnected) { hideGitTip(); return; }
     /* 内容签名不变就跳过重建：enhanceGitChip 每 600ms 对账、每次推送都会走到这里，
      * 无条件重写 innerHTML 会打断滚动条拖拽并与滚轮滚动互抢（卡顿根因）；数据本身
-     * 10 秒才变一次， hover 期间几乎总是跳过。浅色档与位置每帧照常同步。 */
+     * 低频变化（fs watch 防抖驱动）， hover 期间几乎总是跳过。浅色档与位置每帧照常同步。 */
     var html = gitTipHTML(view);
     if (gitTip.__zuTipSig !== html) {
       var keep = 0;   // 重建时保持列表滚动位置（不重置阅读位置）
@@ -2312,7 +2348,11 @@
   /* 鼠标从 chip 移入 tooltip 的宽限桥：延迟收起，移入即取消（支持移入悬浮内容继续阅读）；
    * Esc 关闭后 gitTipFor 已空，普通数据刷新不会重新弹出（只有再次悬停 chip 才会）。 */
   var gitTipHideTimer = 0;
-  function hideGitTipSoon() { clearTimeout(gitTipHideTimer); gitTipHideTimer = setTimeout(hideGitTip, 200); }
+  function hideGitTipSoon() {
+    if (state.devKeepTip) return;   // 开发者常驻开关：不自动收，仅 Escape 手动关
+    clearTimeout(gitTipHideTimer);
+    gitTipHideTimer = setTimeout(hideGitTip, 200);
+  }
   function onGitTipEnter() { clearTimeout(gitTipHideTimer); }
   function onGitKeydown(e) { if (e && e.key === "Escape") hideGitTip(); }
   function onRefreshKeydown(e) {
@@ -2322,7 +2362,7 @@
   function onRefreshKeyup(e) { if (e.key === " ") { e.preventDefault(); this.click(); } }
   window.addEventListener("keydown", onGitKeydown, true);
   gitTip.addEventListener("mouseenter", onGitTipEnter);
-  gitTip.addEventListener("mouseleave", hideGitTip);
+  gitTip.addEventListener("mouseleave", function () { if (!state.devKeepTip) hideGitTip(); });   // v424 开发者常驻不自动收（移出弹层本体同契约）
   /* chip 固定在 composer 工具行，消息流滚动不移动它，无需 rateTip 那样的 scroll 收起；离开/失焦即收 */
   function cleanupGitTip() {
     window.removeEventListener("keydown", onGitKeydown, true);

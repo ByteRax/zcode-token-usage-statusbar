@@ -991,6 +991,7 @@
         if (typeof syncSysmonChip === "function") syncSysmonChip();   /* v356：系统状态 chip compact 短路同点（公共尾部到不了） */
         renderWorkflowCards();   // v332：工作流 run 卡 chip 数据点 reapply（compact 只藏条面，会话流 chip 照常）
         renderRunningSubagentItems();   // v333：状态面板 Agents 行速率 chip 数据点 reapply
+        syncCompactionRows();   // v421：压缩分隔线标注数据点 reapply（compact 只藏条面，会话流标注照常）
         return;
       }
       var h = html(view);
@@ -1068,6 +1069,7 @@
       if (typeof sysmonWantRecalc === "function") sysmonWantRecalc();   // v356：条面格可见性在本拍可能变化（开关/主题/scope 切换），签名不变零开销
       renderWorkflowCards();   // v332：工作流 run 卡 chip 数据点 reapply（DOM 对账由 heavy 兜）
       renderRunningSubagentItems();   // v333：状态面板 Agents 行速率 chip 数据点 reapply（DOM 对账由 heavy 兜）
+      syncCompactionRows();   // v421：压缩分隔线标注数据点 reapply（新记录/换会话/语言切换在此收敛；DOM 对账由 heavy 兜）
     }
 
 
@@ -1597,7 +1599,7 @@
       if (tpsTipFor) hideTpsTip();
       if (rstTipFor) hideRstTip();
       if (subTipFor) hideSubTip();
-      if (gitTipFor) hideGitTip();
+      if (gitTipFor && !state.devKeepTip) hideGitTip();   // v423 开发者常驻不自动收（Escape 仍关）
       if (fxTip.style.display === "block") hideFxTip();
       if (spdLegendTip.style.display === "block") spdLegendTipHide();
     }

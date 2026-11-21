@@ -298,8 +298,25 @@
      * → v416 审查收口批（近两日改动 10 路复盘复审）：week 单模型柱状槽位卡 slotDay 修正为 true（v392 自 today 单模型移植时误带 false，日桶悬停卡区间恢复「全天/截至」口径、大字标签恢复综合日均）；统计卡响应式 full 档容差 24px 提到 32px（卡根外层 .tip 自带 28px padding+border，原容差使 full 档在真实 DOM 恒不可达）；v414 补充防御——updNoteState 模块级赋值改保留 buildPanel 期懒初始化对象，首拍预取结果不再被覆盖弃收后重发；台账 v414 行裸箭头改文字衔接（pre-publish 台账解析按「箭头+空格」切段，裸箭头会被切成无版本段打断发布门）。
      * → v417 增强失败诚实分类（issue #429，外部实测报告）：纯 Start Plan 账号增强恒报「HTTP 429」实为上游 1113「余额不足或无可用资源包」——model-puller planKeyOf 取宿主 v2 coding-plan 条目明文 key 不查条目 enabled，条目 disabled 且 key 无资源包时发必败请求。修复：①enhanceText 对 bigmodel start-plan（PLAN_SOURCES 新增 enhanceRequiresV2Key）在无可用 v2 条目 key（缺失、disabled、enc: 密文、空）时零网络 fail-fast 回 kind "plan_auth"（spec「未实现前诚实报 auth」落地；OAuth 兜底直连 messages 被网关 500 拒，v344 实测），resolveEnhanceHost 同门不提供必败 host；②上游错误体含 1113 或「余额不足/无可用资源包」文案归 kind "balance"（error 置空、detail 保留脱敏正文），不再与真实并发限流共用「HTTP 429」文案诱导重试；③渲染端 kindMap 补 balance、plan_auth 文案且 reason 解析改 kind 优先（i18n 层，error 兜底承载短语；旧渲染端读新 kind 落 error 原文，热重载后本地化），设置页 EP 测试内部映射补 plan_auth 短语；zai 两条 start-plan 端点未实测维持诚实尝试不加门。
      * → v418 增强历史「设置」入口修复（CDP 活体实报，并行线收编重排）：悬停面板 footer 与全量面板 header 的设置按钮自 v350 起在真实页面静默失效——openEnhanceSettings 在 01 分片文档级壳层直接引用 spawnInstance 闭包私有的 panel、gear、activateSettingsSec，ReferenceError 被事件分发吞掉，而 VM 切片 ctx 桩注入了同名绑定致用例全绿。修复：实例侧新增 openEnhSettings（增强按钮右键菜单同路径收编复用），经入口按钮 __zuOpenEnhSettings 钩子分发（chip.__zuOpenSub 先例，复用旧节点每拍刷新钩子并以 inactive() 自卫）；壳层先取入口再收 tip，全量面板打开时记录入口供面板内按钮兜底。
+     * → v419 更新日志 Markdown 渲染升级（GFM 子集，对齐宿主 streamdown 形态；宿主解析器为打包内部模块不可复用，行为对齐自实现）：09 分片 notesInline 加删除线（~~双波浪）与加粗内嵌斜体（**内允许单 *）；notesBlocks 加嵌套列表（相对首项缩进每 2 空格一级、缩进上限天然钳 3 层、跳级就地上移不丢条目）、任务清单（[ ]/[x] 渲染禁用 checkbox 不再显字面）、GFM 管道表格（表头+分隔行才成表、\| 转义、对齐 :--/:--:/--:、单元格补齐截断到表头列数、行钳 200、收到空行或无管道行）；两作用域（.zu-settings .zu-notes-body 与 .zusage-upd-note-tip .zu-un-body）补 del/嵌套列表/checkbox/表格样式；安全基线不变（HTML 转义、图片禁用、https 链接双验、64KB 钳制、ReDoS 防线），_下划线强调有意不支持。
+     * → v420 自动压缩阈值 Token 数模式入 ⚙（引擎 thresholdTokens 协议 v179 起既有，此前仅手改 autocompact.json 生效）：09 分片新增 parseAcValue 双域解析（模式并入数值：30-99 裸数字=percent、≥100000 且 k/K/M 后缀如 300k=tokens、100-999 与非法后缀=null、留空=default）+ formatAcValue 回显规整（整除千位显示 k），syncAutoCompactInputs tokens 模式回显（修复手写配置被面板空值保存抹成 default 的不一致）、sendAutoCompactConfig 按解析模式提交；06 分片数值行文案双模式化；engine-patch.cjs tokens 地板 1000→100000（hook 钳制+writeConfig 拒绝同限）并滚动 legacy——PROLOGUE_V1 推导补 tokens 段替换对（历史值 1000 保真）、新增 PROLOGUE_V2（v194 装机面 percent 新段+tokens 1000）入 ensure 原位换装与 restore 识别，已装机补丁下轮 ensure 静默换装（引擎子进程下个 spawn 起用）。
+     * → v421 Git chip 与宿主原生胶囊对齐（刷新时机 + 点击弹层，specs/git-chip-host-sync.md）：①inject-main 弃 10s 轮询改为 fs.watch + 60s 尾随防抖（宿主 useGitAutoRefresh 同值同型：工作区非 Linux 递归 + rev-parse --absolute-git-dir/--git-common-dir 解析的 .git 元数据目录恒递归；事件重置计时器、静默满 60s 全路径一轮；watcher 随路径并集增删，创建失败仅记日志不回退轮询），渲染端 publishGitPaths 只在路径集变化时立即首查、取消快照驱动的 5s 节流重查（askGitRefresh 签名与点击回退链保留）；②chip 点击优先在 pane 节点内查可见的宿主原生胶囊（[data-status-capsule="git"]），命中即派发 pointerdown→mousedown→pointerup→mouseup→click 合成序列唤起原生 Radix 弹层（不刷新不 busy），未命中（干净仓库宿主隐藏胶囊/旧宿主无结构/胶囊不可见）回退原立即刷新链；tooltip 尾注与多仓「更新于」口径文案同步改写。inject-main 为冷文件需完全重启。
+     * → v422 Git chip 弹层定位迁移（v421 CDP 真机验收后用户要求）：chip 唤起的原生胶囊弹层默认锚在胶囊上（Radix popper wrapper 内联 transform 定位，强改会被其定位引擎覆盖回），开层后对 wrapper 设独立 translate 属性——与 transform 叠乘、Radix 不写该属性、无覆盖拉锯——把弹层迁到 chip 正上方（水平居中于 chip、底缘距 chip 顶 8px、视口四缘钳 8px）；0–800ms 五档重试等 Radix 异步挂载、令牌去重防连点竞争；胶囊自身点击（非 chip 路径）不迁移保持原生定位；已知外观差异=视觉箭头仍指向胶囊位置。
+     * → v423 gitTip 纳入 devKeepTip 契约（用户要求，与增强历史/更新日志 tooltip 同款「不自动收，仅 Escape 手动关」）：hideGitTipSoon（mouseleave 200ms 宽限入口）、chip blur、外点清扫 tipOutsideDown 的 gitTip 分支三处自动收路径加 state.devKeepTip 门；Escape（chip 级窗口捕获 + 全局 tipGlobalEsc）、点击 chip 唤起原生弹层的显式收起、实例销毁/还原生命周期清理不受门；悬停中数据刷新链照旧（enhanceGitChip 内 gitTipFor 命中即 showGitTip 跟随）。
+     * → v424 gitTip devKeepTip 漏网补门（v423 真机复测用户报告「鼠标移动后仍关闭」）：v423 只堵了 chip 侧三处，本批补齐剩余自动收路径——①弹层本体 mouseleave（移出 tooltip 即收，正是用户命中路径）；②enhanceGitChip 的 chip 断连重建分支（React 重渲染工具行时旧 chip 离场即收，常驻下弹层滞留待重悬停刷新）；③响应式 hidden 摘除分支。restoreGitChip/cleanupGitTip 生命周期链保持无条件收（作用域失效/开关关闭/热更清理必须收）；Escape 契约不变。
+     * → v425 逐文件行对齐宿主弹层形态（用户规格：宿主每行带类型图标与 ±N 行数）：①inject-main 单仓管线 diff HEAD 从 --shortstat 换 --numstat（总量求和口径等价、零新增子进程），parseNumstat 产出每文件 {ins,del} 映射（rename 按 numstat「old => new」/porcelain「old -> new」后段对齐；二进制 -\t- 计 0；无提交仓库回退两段 numstat 逐路径合并），parseGitPorcelain 第三参命中即给文件条目附 add/del（未跟踪天然无数值）；numstat 与 status 都带 core.quotepath=false（中文路径才对得上）；②渲染端「变更文件」行改三段式：列首状态文字（改/新/删…）让位按扩展名的文件类型图标（自带单色 SVG 文件页+扩展名小字，不用宿主 material-icons 资产防注入环境裂图；冲突整标转红、title 保留状态词），行尾追加 ±N（颜色镜像 chip ins/del 双主题）；多仓聚合不收明细不受影响。
+     * → v426 压缩阈值模式下拉（用户规格：双域隐式约定改显式选择器）：数值行左侧加 .zu-ac-mode 下拉（百分比（%）/Token 数 两项，order:2 在 .zu-ac-value 改 order:3 之前）；09 分片 parseAcValue 加 mode 参数（percent→30-99、tokens→≥100k 且保留 k/M 后缀，值域判定由下拉驱动不再两域猜测）、syncAutoCompactInputs 按 acModeOf 反推回显 select+输入框、sendAutoCompactConfig 读 select 模式提交、状态行校验与提示文案分模式；select change 只重校验不提交（切模式时旧值非法即提示，input change 才写 autocompact.json）。
+     * → v427 压缩分隔线标注改换行版式（用户规格：行尾平拼丑）：11 分片 compSuffixHtml 由单行「· 」串改三行 <br> 版式（日期／变化与减少／缓存四项，缺样本整行省略）；宿主中央 pill 是 inline-flex 行向（icon+label 一行），平拼第三个 flex 项被 min-w-0 收缩把 label 和数字任意折断——只给 pill 补内联 flex-wrap:wrap（React 无 style 属性不回收），标注 span flex:0 0 100% 独占一行换到 label 下方居中、整块 nowrap 防窄窗折断句中；摘除时还原 pill flex-wrap。（补记：压缩标注基础批——zusage `_session_compactions` compactions 快照链、⚙ `zusage3.cmpAnn` 开关与 `syncCompactionRows` 对账数据点——与版式批同树上库，此前无独立条目）
+     * → v428 文件类型图标重制（v425 线条文件页+5.2px 小字在真实 14px 行高下糊成一片，用户实拍反馈「看不清」）：参照宿主 JS 徽标形态改实心圆角方块+粗体扩展名大写小字——实底填充保证小尺寸可读，文字色按填充亮度（Rec.601 加权，阈值 162）自动取深(#24292f)/白，冲突专用深红底 #d9534f 白字压过类型色；扩展名截 3 字符（2 字符 7px/3 字符 5.6px），无扩展名纯灰块；仍不引用宿主 material-icons 资产。
+     * → v430 压缩阈值模式下拉与输入框垂直居中（用户截图实报；v429 的 .zu-ac-mode align-self:center 已部署即被 harness 实测推翻——label 行高由长说明文字撑起，center 对齐的是整行中心而非输入框，select 跑进说明区）：控件包内层行 .zu-ac-pair{order:2;display:flex;align-items:center;gap:6px}，.zu-ac-mode/.zu-ac-value 去外层 order 与 align-self 改由 pair 承担，两控件固有高度差异在 pair 内相互居中，不依赖硬编码行高（大字号适配安全）。
+     * → v431 压缩标注扩列 ①②③④⑥（用户点名）：zusage._session_compactions 增 out/dur/alt（compact 行 output_tokens=摘要长度、completed−started=耗时、执行模型≠压缩后首请求模型才带 alt）；11 分片 compSuffixHtml 改四行——L1 日期+第 N 次+距上次（序数=数组序，间隔走宿主同款两段时长格式，05 分片 formatWorkDuration 同算法本地化 cmpDur）、L2 水位%前缀（用户规格 69%(187,409)→37%(100,122)，窗口复用 ctxOv>nativeCtxVal>快照 context_window 优先级、未知退纯数字）、L4 摘要/耗时/由 X 执行逐项省略。
+     * → v432 阈值模式下拉样式对齐项目先例（用户规格「参考项目中的」；v431 被并行压缩标注扩列批占用顺延）：复刻增强历史筛选 .zu-eh-filter 配方——主题令牌边框 var(--color-border)/底 var(--color-input)/圆角 6px/自绘 chevron 箭头（同款 data-URI SVG right 10px center）/appearance:none 去原生外观/字号 calc(ui-font-size - 1px)/focus 边框 brand 色；padding 4px 26px 4px 10px 高度与同行输入框协调（箭头区右 26px）。
+     * → v434 压缩标注 L4 措辞（用户规格「摘要」→「压缩消耗」；v433 被并行 11 分片 esc 转义批注占用顺延）：out 是压缩请求自身的消耗产出，旧词易误读为摘要正文长度；en 同步 Summary→Compaction cost，耗时/执行模型不动。
+     * → v435 收口审查修复批（四路并行 review 后集中修复；渲染端随本批 overlay 热重载，inject-main 为冷文件需完全重启）：①inject-main git 链 status/numstat 双双 -z 化——非 -z 的 porcelain 引号路径与 numstat rename 箭头/花括号串会让含空格文件名整类丢每文件 ±N 且可撞键污染映射（实证修复，解析改 NUL 分段：porcelain rename=新名段+旧名段、numstat rename=空路径段信号+旧名+新名）；②防抖 tick 撞在途 tick 由静默丢弃改置 gitRefreshPending 补跑（轮询已删，丢弃成本是下次事件+60s）；③watcher 运行期错误把路径摘出登记表待下轮 tick 重建（原死 watcher 永久占位冻结该路径自动刷新）；④在途解析引入 gitWantPaths 校验防孤儿 watcher；⑤before-quit 补 gitWatchTimer/gitWatchers 归属清理；⑥11 分片 compSuffixHtml 的 r.alt（DB model_id）过 esc 转义；⑦onGitClick 头部重复 preventDefault/stopPropagation 去重；⑧zusage after 子查询 completed_at 缺失随 done_at 用 started_at 兜底（防窗口塌陷取错压缩后首条）；⑨测试：inject-git-status/-multi fixtures 全面转 -z、补跨 pane capsule 守卫用例、compactions 非 main_turn 竞争用例与 test_session_compactions 包路径导入、compaction-rows 补 alt 恶意样本断言；⑩文档：rules §6 命令清单、user-guide 图标±N/压缩标注/常驻说明、README 三语 Token 阈值、spec 无自愈与 stale-offset 边界句。
+     * → v436 压缩阈值行两处易用性（用户规格）：①数值控件组贴行右缘——.zu-ac-pair 是 span 被 label>span{flex:1} 拉伸占满整行使控件停在中部，改 flex:0 0 auto+margin-left:auto 缩为内容宽并推到行末（输入框居最右）；②模式下拉切换数值自动换算（percent↔tokens 双向）——acConvertOnModeSwitch 按当前会话上下文窗口（lastBand.cw，acWarningText 同源，取不到按 1,000,000 兜底）换算：percent×cw→tokens（65%→650k）、tokens÷cw→percent（300k→30%），仅本侧合法值才换算（空/非法保持原样交状态行提示），结果钳对侧合法域（tokens≥100k、percent 30-99），只改显示不提交（input change 落盘，v426 语义不变）；说明行补换算依据句；09 分片换算调用 try 包裹记 acPanelErr（同 ：210 先例）。**换算时序契约（真机实报回归）：委托分支必须先 syncAutoCompactInputs 再 acConvertOnModeSwitch——sync 会把输入框回写为已保存配置的回显，先换算会被抹回原值（65→切 Token 数仍显 65）；集成序列回归锁在 tests/overlay-autocompact.test.cjs v436 用例尾段**。
+     * → v437 压缩标注缓存行去除（爸爸点名）：L3「未缓存输入/缓存读取/缓存创建/缓存命中率」整行不渲染，四行版式回三行（v428 形态减一行）；zusage 侧 cr/cw 字段保留（未来费用/首答估算仍需未缓存口径），仅前端不渲染。
      */
-    var VERSION = "v418";
+    var VERSION = "v437";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -977,6 +994,8 @@
       ".zu-settings .zu-notes-meta{color:var(--color-foreground-subtle,#6f7989);font-size:calc(var(--ui-font-size,14px) - 2px);margin-top:3px;overflow-wrap:anywhere}" +
       ".zu-settings .zu-notes-body{margin-top:8px;font-size:calc(var(--ui-font-size,14px) - 1px);color:var(--color-foreground,#c6cdd9);line-height:1.65;overflow-wrap:anywhere;min-width:0}" +
       ".zu-settings .zu-notes-body p{margin:4px 0}" +
+      /* list-style 显式声明：宿主 Tailwind preflight 重置 ul/ol 为 none，命中注入元素致圆点消失（真机实报） */
+      ".zu-settings .zu-notes-body ul{list-style:disc outside}.zu-settings .zu-notes-body ol{list-style:decimal outside}" +
       ".zu-settings .zu-notes-body ul,.zu-settings .zu-notes-body ol{margin:4px 0;padding-left:1.5em}" +
       ".zu-settings .zu-notes-body blockquote{margin:4px 0;padding:2px 10px;border-left:3px solid var(--color-border,rgba(255,255,255,.14));color:var(--color-foreground-subtle,#8d95a5)}" +
       ".zu-settings .zu-notes-body pre{background:var(--color-input,rgba(0,0,0,.25));border:1px solid var(--color-border,rgba(255,255,255,.1));border-radius:8px;padding:8px 10px;overflow-x:auto;font-family:var(--font-mono,Consolas,Menlo,'Microsoft YaHei UI',monospace);font-size:calc(var(--ui-font-size,14px) - 2px)}" +
@@ -1000,6 +1019,16 @@
       ".zu-settings .zu-notes-hist-ver{flex:0 0 auto;font-family:var(--font-mono,Consolas,Menlo,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums}" +
       ".zu-settings .zu-notes-hist-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-foreground-subtle,#8d95a5)}" +
       ".zu-settings .zu-notes-hist-note{color:var(--color-foreground-subtle,#6f7989);font-size:calc(var(--ui-font-size,14px) - 2px);padding:2px 6px}" +
+      /* v419 Markdown 升级：删除线/嵌套列表/任务清单/表格（面板作用域）。任务 checkbox
+       * 显式恢复原生形态——对抗 .zu-settings input[type=checkbox] 全局开关自绘（28px 胶囊
+       * +::before 圆点+disabled 半透明），正文清单语义是复选框不是设置开关 */
+      ".zu-settings .zu-notes-body del{color:var(--color-foreground-subtle,#6f7989)}" +
+      ".zu-settings .zu-notes-body ul ul,.zu-settings .zu-notes-body ol ol,.zu-settings .zu-notes-body ul ol,.zu-settings .zu-notes-body ol ul{margin:2px 0}" +
+      ".zu-settings .zu-notes-body li input[type=checkbox]{appearance:auto;-webkit-appearance:auto;order:0;position:static;flex:0 0 auto;width:auto;height:auto;margin:0 5px 0 -1px;border:0;border-radius:0;background:none;opacity:1;vertical-align:-1px;accent-color:var(--color-brand,#57c7ff)}" +
+      ".zu-settings .zu-notes-body li input[type=checkbox]::before{content:none}" +
+      ".zu-settings .zu-notes-body table{border-collapse:collapse;margin:6px 0;max-width:100%;display:block;overflow-x:auto}" +
+      ".zu-settings .zu-notes-body th,.zu-settings .zu-notes-body td{border:1px solid var(--color-border,rgba(255,255,255,.12));padding:3px 8px}" +
+      ".zu-settings .zu-notes-body th{font-weight:600;color:var(--color-foreground,#eef2f8);background:var(--color-hover,rgba(255,255,255,.05))}" +
       /* v413 齿轮悬停更新日志卡：宿主 UpdateReleaseNotesTooltip 同款形态（384px、标题+日期行、正文内滚）。
        * .zu-notes-* 子元素规则是 .zu-settings 作用域的 tip 副本（不动既有行，避免扰动面板断言）；
        * 色值走 --color-tooltip-* 族变量随亮暗自适应，无需成套 .zu-light 字面覆盖。 */
@@ -1009,6 +1038,7 @@
       ".zusage-upd-note-tip .zu-un-body{flex:1 1 auto;min-height:0;overflow-y:auto;padding:10px 14px;font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.65;color:var(--color-tooltip-foreground,#fafafa);overflow-wrap:anywhere;scrollbar-width:thin}" +
       ".zusage-upd-note-tip .zu-un-note{color:var(--color-tooltip-tag-foreground,rgba(250,250,250,.55))}" +
       ".zusage-upd-note-tip .zu-un-body p{margin:4px 0}" +
+      ".zusage-upd-note-tip .zu-un-body ul{list-style:disc outside}.zusage-upd-note-tip .zu-un-body ol{list-style:decimal outside}" +
       ".zusage-upd-note-tip .zu-un-body ul,.zusage-upd-note-tip .zu-un-body ol{margin:4px 0;padding-left:1.5em}" +
       ".zusage-upd-note-tip .zu-un-body blockquote{margin:4px 0;padding:2px 10px;border-left:3px solid var(--color-border,rgba(255,255,255,.14));color:var(--color-tooltip-tag-foreground,rgba(250,250,250,.55))}" +
       ".zusage-upd-note-tip .zu-un-body pre{background:var(--color-input,rgba(0,0,0,.25));border:1px solid var(--color-border,rgba(255,255,255,.1));border-radius:8px;padding:8px 10px;overflow-x:auto;font-family:var(--font-mono,Consolas,Menlo,'Microsoft YaHei UI',monospace);font-size:calc(var(--ui-font-size,14px) - 2px)}" +
@@ -1021,6 +1051,13 @@
       ".zusage-upd-note-tip .zu-notes-h3{font-size:var(--ui-font-size,14px)}" +
       ".zusage-upd-note-tip .zu-notes-lnk{background:none;border:0;padding:0;font:inherit;color:var(--color-brand,#57c7ff);text-decoration:underline;cursor:pointer;overflow-wrap:anywhere;text-align:left}" +
       ".zusage-upd-note-tip .zu-notes-attn{border:1px solid color-mix(in srgb,#d97706 45%,transparent);background:color-mix(in srgb,#d97706 8%,transparent);border-radius:8px;padding:6px 10px;margin:6px 0}" +
+      /* v419 Markdown 升级：删除线/嵌套列表/任务清单/表格（tip 作用域副本，色值走 --color-tooltip-* 族） */
+      ".zusage-upd-note-tip .zu-un-body del{color:var(--color-tooltip-tag-foreground,rgba(250,250,250,.55))}" +
+      ".zusage-upd-note-tip .zu-un-body ul ul,.zusage-upd-note-tip .zu-un-body ol ol,.zusage-upd-note-tip .zu-un-body ul ol,.zusage-upd-note-tip .zu-un-body ol ul{margin:2px 0}" +
+      ".zusage-upd-note-tip .zu-un-body li input[type=checkbox]{margin:0 5px 0 -1px;vertical-align:-1px;accent-color:var(--color-brand,#57c7ff)}" +
+      ".zusage-upd-note-tip .zu-un-body table{border-collapse:collapse;margin:6px 0;max-width:100%;display:block;overflow-x:auto}" +
+      ".zusage-upd-note-tip .zu-un-body th,.zusage-upd-note-tip .zu-un-body td{border:1px solid var(--color-border,rgba(255,255,255,.14));padding:3px 8px}" +
+      ".zusage-upd-note-tip .zu-un-body th{font-weight:600;color:var(--color-tooltip-foreground,#fafafa);background:var(--color-hover,rgba(255,255,255,.05))}" +
       ".panel.zu-settings{box-sizing:border-box;min-width:0;max-width:none;" +
       "max-height:min(90vh,var(--zu-settings-height,90vh));padding:0;gap:0;overflow:hidden;line-height:1.5}" +
       ".zu-settings .zu-settings-head{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:12px;" +
@@ -1174,7 +1211,10 @@
       ".zu-settings input:focus-visible,.zu-settings button:focus-visible{outline:2px solid var(--color-input-border-focused,var(--color-brand,#57c7ff))!important;outline-offset:2px}" +
       ".zu-settings input:disabled{opacity:.4;cursor:default}" +
       ".zu-settings .zu-ctxov{order:2;box-sizing:border-box;width:120px;min-width:0;padding:5px 7px}" +
-      ".zu-settings .zu-ac-value{order:2;box-sizing:border-box;width:120px;min-width:0;padding:5px 7px}" +
+      /* v436：pair 贴行右缘——对抗 label>span{flex:1}（pair 是 span 会被拉伸占满整行，控件组停在中部） */
+      ".zu-settings .zu-ac-pair{order:2;display:flex;align-items:center;gap:6px;min-width:0;flex:0 0 auto;margin-left:auto}" +
+      ".zu-settings .zu-ac-mode{box-sizing:border-box;flex:0 0 auto;padding:4px 26px 4px 10px;background:var(--color-input,transparent) url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239aa3b2' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E\") no-repeat right 10px center;border:1px solid var(--color-border,#666);border-radius:6px;color:var(--color-foreground,inherit);font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px);cursor:pointer;appearance:none;-webkit-appearance:none}.zu-settings .zu-ac-mode:focus{outline:none;border-color:var(--color-primary,var(--color-brand,#888))}" +
+      ".zu-settings .zu-ac-value{box-sizing:border-box;width:120px;min-width:0;padding:5px 7px}" +
       ".zu-settings .zu-ac-status{font-size:12px;line-height:1.5;opacity:.75;white-space:pre-wrap;word-break:break-word;padding:2px 14px 8px}" +
       ".zu-settings .zu-ac-status.zu-ac-warn{opacity:1;color:#d97706}" +
       ".zu-settings .zu-settings-langs,.zu-settings .zu-theme-options{display:flex;gap:8px;padding:10px 12px}" +
@@ -2275,6 +2315,9 @@
       '<div class="zu-settings-layout">' + navHtml() +
       '<div class="zu-settings-body" tabindex="0" role="region" aria-label="' + L("状态条设置选项", "Status bar settings options") + '">' +
       '<section class="zu-settings-section" data-sec="display"' + secOpen("display") + '><div class="cap">' + L("状态条显示", "Display items") + '</div><div class="zu-settings-card">' +
+      '<div class="zu-theme-title">' + L("状态语言", "Status language") + '</div>' +
+      '<div class="zu-settings-langs"><label><input type="radio" name="zu-lang" value="zh"><span>中文</span></label>' +
+      '<label><input type="radio" name="zu-lang" value="en"><span>English</span></label></div>' +
       '<div class="zu-theme-title">' + L("状态条样式", "Status bar style") + '</div>' +
       '<div class="zu-theme-options" role="radiogroup" aria-label="' + L("状态条样式", "Status bar style") + '">' +
       '<label><input type="radio" class="zu-theme-choice" name="zu-theme-' + slot + '" value="default"><span>' + L("默认", "Default") + '</span></label>' +
@@ -2305,15 +2348,14 @@
       /* v179 自动压缩阈值注入 → v188 按验收反馈简化：只留百分比（留空=跟随引擎默认），
          开关默认开（主进程 auto_compact_patch 缺省开）；标题带「上下文」限定。 */
       settingRow('<input type="checkbox" class="zu-ac-enable">', L("自动压缩上下文阈值注入", "Auto-compact context threshold injection"), L("给客户端引擎打补丁，把「到达阈值自动压缩上下文」的触发点改为可配置（引擎内置约在窗口 83% 处）。默认开启；补丁按引擎版本白名单注入，不支持的版本自动跳过并提示，关闭开关即还原引擎。开关对新会话生效；下方数值改完即生效（留空=跟随引擎默认）。只影响桌面客户端内置引擎，终端 CLI 不受影响。", "Patches the client engine so the auto-compact trigger point becomes configurable (the built-in engine fires around 83% of the window). On by default; patching is allow-listed per engine build, unsupported builds are skipped with a notice, and turning the switch off restores the engine. New sessions pick up the patch; the value below applies immediately (leave empty to follow the engine default). Only the desktop client's built-in engine is affected; the terminal CLI is not.")) +
-      settingRow('<input type="text" class="zu-ac-value" inputmode="numeric" aria-label="' + L("压缩上下文阈值数值", "Context compaction threshold value") + '" placeholder="' + L("留空=跟随引擎默认", "Empty = engine default") + '">', L("压缩上下文阈值数值（%）", "Context compaction threshold value (%)"), L("压缩触发点占总窗口的百分比，取 30-99；留空=跟随引擎默认。任何形式都会被钳到不早于有效窗口的 1%，避免连环压缩。", "Compaction trigger as a percentage of the full context window, 30-99; leave empty to follow the engine default. Any form is clamped to no earlier than 1% of the effective window to prevent compaction loops.")) +
+      settingRow('<span class="zu-ac-pair"><select class="zu-ac-mode" aria-label="' + L("阈值模式", "Threshold mode") + '"><option value="percent">' + L("百分比（%）", "Percent (%)") + '</option><option value="tokens">' + L("Token 数", "Tokens") + '</option></select><input type="text" class="zu-ac-value" inputmode="numeric" aria-label="' + L("压缩上下文阈值数值", "Context compaction threshold value") + '" placeholder="' + L("留空=跟随引擎默认", "Empty = engine default") + '"></span>', L("压缩上下文阈值", "Context compaction threshold"), L("百分比取 30-99（占总窗口）；Token 数取 ≥100k，支持 k/M 后缀（如 300k=300,000 token，窗口更小的模型不会提前压缩）；留空=跟随引擎默认。任何形式都会被钳到不早于有效窗口的 1%，避免连环压缩。切换模式按当前会话窗口自动换算（未知按 100 万）。", "Percent: 30-99 of the full window. Tokens: at least 100k, k/M suffix allowed (e.g. 300k = 300,000 tokens; models with smaller windows won't compact early). Empty = engine default. Any form is clamped to no earlier than 1% of the effective window to prevent compaction loops. Switching modes converts the value using the current session window (1,000,000 if unknown).")) +
       '<div class="zu-ac-status" role="status"></div>' +
       /* 万/亿开关只在中文界面出现（英文始终 K/M/B，见 fmt），因此文案不走 L() */
       (state.lang === "en" ? "" : settingRow('<input type="checkbox" class="zu-cn-num">', "中文单位（万/亿）", "token 数量以万/亿显示，默认开启")) +
       settingRow('<input type="checkbox" class="zu-force-kmb">', L("强制 K/M/B 单位", "Force K/M/B units"), L("token 数量使用 K/M/B，默认关闭；不影响请求数和 Git 计数。", "Use K/M/B for token amounts; off by default. Request and Git counts are unaffected.")) +
       settingRow('<input type="checkbox" class="zu-pp-enable">', L("项目完整路径", "Full project paths"), L("「编辑项目」弹窗的源文件夹在名称下方显示完整路径；长路径自动换行，多文件夹逐行显示。点击文件夹行会用系统文件管理器打开该目录（macOS Finder / Windows 资源管理器；远程项目的路径在本机无意义，不响应）。默认开启。", "Shows the full path below each folder name in the Edit Project dialog; long paths wrap, one block per folder. Click a folder row to open it in your file manager (Finder on macOS, Explorer on Windows; remote project paths are skipped). On by default.")) +
       settingRow('<input type="checkbox" class="zu-cmdk-widen">', L("命令中心加宽", "Wider command center"), L("把宿主 ⌘K 搜索弹框（命令中心、任务搜索等）放宽到窗口宽度的 80%、高度的 80%；小窗口保持原生尺寸。关闭后恢复原生尺寸。默认开启。", "Widens the host ⌘K search dialogs (command center, task search, …) to 80% of the window width and height; small windows keep the native size. Turning it off restores the native size. On by default.")) +
-      '<div class="zu-settings-langs"><label><input type="radio" name="zu-lang" value="zh"><span>中文</span></label>' +
-      '<label><input type="radio" name="zu-lang" value="en"><span>English</span></label></div></div></section>' +
+      '</div></section>' +
       (typeof zuRotatorSectionHtml === "function" ? zuRotatorSectionHtml(secOpen("rotator") === "") : "") +
       '<section class="zu-settings-section" data-sec="enhance-provider"' + secOpen("enhance-provider") + '><div class="cap">' + L("提示词增强", "Prompt enhancement") + '</div>' +
       '<div class="zu-settings-card">' +
@@ -2337,6 +2379,7 @@
       '<div class="zu-ep-footer"><span class="zu-ep-status" role="status"></span><button type="button" class="zu-ep-reload zu-ep-secondary" hidden>' + L("重新载入已保存配置", "Reload saved settings") + '</button><button type="button" class="zu-ep-save zu-ep-primary">' + L("保存配置", "Save settings") + '</button></div></div></section>' +
       '<section class="zu-settings-section" data-sec="stats"' + secOpen("stats") + '><div class="cap">' + L("回答统计", "Reply statistics") + '</div><div class="zu-settings-card">' +
       settingRow('<input type="checkbox" class="zu-rate-line">', L("回答末尾追加统计行", "Append stats to each reply"), L("切换后立即重扫：关闭会撤下插件生成的统计行，开启会补回可用记录。下一次提问沿用该设置；历史正文和已缓存统计行不重算。", "Rescans immediately: off removes plugin-generated lines; on restores available records. Applies to the next prompt; historical text and cached statistics are not recalculated.")) +
+      settingRow('<input type="checkbox" class="zu-cmp-ann">', L("压缩分隔线统计", "Compaction divider stats"), L("切换后立即生效：关闭会摘除时间线「上下文已压缩」分隔线上的统计标注，开启会按本地记录补回。下一次提问沿用该设置；历史分隔线与本地库不重算。", "Takes effect immediately: off removes the stats appended to the timeline's compaction dividers; on restores them from local records. Applies to the next prompt; historical dividers and the local database are not recalculated.")) +
       '</div></section>' +
       '<section class="zu-settings-section" data-sec="quota"' + secOpen("quota") + '><div class="cap">' + L("套餐额度", "Plan quota") + '</div><div class="zu-settings-card">' +
       settingRow('<input type="checkbox" class="zu-quota-enable">', L("显示套餐额度", "Show plan quota"), L("在输入框上下文按钮左侧显示当前登录账号编码套餐的已用比例与重置时间（含 Start Plan 免费档池的已用比例与到期时间；账号级套餐池，不是单个模型独享）。默认开启，关闭即停查询。点击 chip 立即刷新。", "Shows the signed-in account's coding-plan usage and reset time left of the context button (plus the Start Plan free tier's usage and expiry; account-level pool, not per model). On by default; turning it off stops the queries. Click the chip to refresh.")) +
@@ -2405,6 +2448,8 @@
       if (costBox) costBox.checked = !!state.cost;
       var cwBox = panel.querySelector(".zu-cmdk-widen");
       if (cwBox) cwBox.checked = !!state.cmdkW;
+      var cmpAnnBox = panel.querySelector(".zu-cmp-ann");
+      if (cmpAnnBox) cmpAnnBox.checked = !!state.cmpAnn;
       var tipClickBox = panel.querySelector(".zu-tip-click");
       if (tipClickBox) tipClickBox.checked = !!state.tipClick;
       var qrBox = panel.querySelector(".zu-quota-remain");

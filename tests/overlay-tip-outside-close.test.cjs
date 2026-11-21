@@ -41,12 +41,13 @@ function runOutside({
   inactive = false, modal = null, panelOpen = false,
   tipFor = null, quotaTipFor = null, rateTipFor = null, tpsTipFor = null,
   rstTipFor = null, subTipFor = null, gitTipFor = null, sysTipFor = null,
-  fxOpen = false, legendOpen = false, sysOpen = false,
+  fxOpen = false, legendOpen = false, sysOpen = false, devKeep = 0,
   targetIn = null,   /* 'tip'|'bar'|'panel'|'fx'|'legend'|'tps'|'rst'|'sub'|'git'|'quota'|'rate'|'sys'|null(空白) */
 } = {}) {
   const calls = { hideTip: [], quota: 0, rate: 0, tps: 0, rst: 0, sub: 0, git: 0, fx: 0, legend: 0 };
   const ctx = {
     inactive: () => inactive,
+    state: { devKeepTip: devKeep },   /* v424：gitTip 外点分支读 devKeepTip 门 */
     target: stubTarget({ modal }),
     tipFor, quotaTipFor, rateTipFor, tpsTipFor, rstTipFor, subTipFor, gitTipFor, sysTipFor,
     bar: stubEl('bar'),
@@ -165,6 +166,9 @@ test('chip tooltip 外点一并收，本体内部按压保持', () => {
      * 本体误判外点收起的回归不红） */
     assert.equal(runOutside({ [field]: {}, targetIn: key }).calls[key], 0, `${key} 本体内按压保持`);
   }
+  /* v424：devKeepTip 常驻下 gitTip 外点豁免（其余 chip 浮层不受门，逐一锁定差异） */
+  assert.equal(runOutside({ gitTipFor: {}, devKeep: 1 }).calls.git, 0, 'devKeepTip：git tooltip 外点不收');
+  assert.equal(runOutside({ quotaTipFor: {}, devKeep: 1 }).calls.quota, 1, 'devKeepTip：额度 tooltip 外点照收（门仅 git）');
 });
 
 test('费用说明/档位说明浮层：外点收、内部按压保持', () => {

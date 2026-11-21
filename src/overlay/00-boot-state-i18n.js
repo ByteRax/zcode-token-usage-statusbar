@@ -83,7 +83,7 @@
   } catch (e) { }
 
   /* ---------- 共享状态（多实例一致）：显示项/语言/上下文覆盖/最近一次数据 ---------- */
-  var LS = { show: "zusage3.show", devKeepTip: "zusage3.devKeepTip", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum", sec: "zusage3.sec", rstCdh: "zusage3.rstCdh", projPath: "zusage3.projPath", theme: "zusage3.theme", ctxEnh: "zusage3.ctxEnh", cmdkW: "zusage3.cmdkW", updSeen: "zusage3.updSeen", forceKmb: "zusage3.forceKmb", ctxCpt: "zusage3.ctxCpt", cost: "zusage3.cost", barJust: "zusage3.barJust", barOrder: "zusage3.barOrder", barPriority: "zusage3.barPriority", autoCompact: "zusage3.autoCompact", tipClick: "zusage3.tipClick", quotaRemain: "zusage3.quotaRemain", sysmonCfg: "zusage3.sysmonCfg" };
+  var LS = { show: "zusage3.show", devKeepTip: "zusage3.devKeepTip", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum", sec: "zusage3.sec", rstCdh: "zusage3.rstCdh", projPath: "zusage3.projPath", theme: "zusage3.theme", ctxEnh: "zusage3.ctxEnh", cmdkW: "zusage3.cmdkW", cmpAnn: "zusage3.cmpAnn", updSeen: "zusage3.updSeen", forceKmb: "zusage3.forceKmb", ctxCpt: "zusage3.ctxCpt", cost: "zusage3.cost", barJust: "zusage3.barJust", barOrder: "zusage3.barOrder", barPriority: "zusage3.barPriority", autoCompact: "zusage3.autoCompact", tipClick: "zusage3.tipClick", quotaRemain: "zusage3.quotaRemain", sysmonCfg: "zusage3.sysmonCfg" };
   /* 状态条排序与优先级只作用于条面八个项目，不改变工具行 Git/额度等宿主按钮。 */
   var ZU_BAR_KEYS = ["speed", "turn", "win", "today", "proj", "tools", "sub", "sysmon"];
   /* 缺省优先级按「状态栏显示升级」设计稿：速度/本轮=高、会话/今日/项目=普通、工具/子代理=低。
@@ -585,6 +585,9 @@
     cost: 1,
     /* v146 宿主命令中心（⌘K 搜索弹框）加宽开关：缺省开启，仅显式 "0" 关闭；纯展示偏好存 localStorage */
     cmdkW: 1,
+    /* v421 压缩分隔线统计标注开关（⚙ 回答统计分区）：缺省开启，仅显式 "0" 关闭；纯渲染端
+       展示偏好存 localStorage——关闭只摘除时间线分隔线上的标注，不停止 compactions 查询链 */
+    cmpAnn: 1,
     /* v173 强制 K/M/B 单位：缺省关闭，仅显式 "1" 开启；开启后 token 数量（条面/tooltip/
        回答末尾统计行）一律 K/M/B，不受界面语言与「中文单位」开关影响；独立持久化 */
     forceKmb: 0,
@@ -709,6 +712,7 @@
     if (ls(LS.ctxCpt, "") === "0") state.ctxCpt = 0;
     if (ls(LS.cost, "") === "0") state.cost = 0;
     if (ls(LS.cmdkW, "") === "0") state.cmdkW = 0;
+    if (ls(LS.cmpAnn, "") === "0") state.cmpAnn = 0;
     if (ls(LS.forceKmb, "") === "1") state.forceKmb = 1;
     if (ls(LS.tipClick, "") === "1") state.tipClick = 1;
     if (ls(LS.devKeepTip, "") === "1") state.devKeepTip = 1;
@@ -734,6 +738,7 @@
     lsSet(LS.ctxCpt, state.ctxCpt ? "1" : "0");
     lsSet(LS.cost, state.cost ? "1" : "0");
     lsSet(LS.cmdkW, state.cmdkW ? "1" : "0");
+    lsSet(LS.cmpAnn, state.cmpAnn ? "1" : "0");
     lsSet(LS.tipClick, state.tipClick ? "1" : "0");
     lsSet(LS.quotaRemain, state.quotaRemain ? "1" : "0");
     lsSet(LS.devKeepTip, state.devKeepTip ? "1" : "0");
@@ -766,6 +771,12 @@
    * 缺帧沿用自己的上一份；publishGitPaths/gitChipView 用 cwd 覆写 Git chip 的查询与显示路径。 */
   var lastWorktrees = (typeof window !== "undefined" && window.__zusageWorktrees) || null;
   if (mobileMode) lastWorktrees = null;
+  /* v421 会话压缩边界表（zusage 快照顶层 compactions，sid → [{ts,b,a,cr,cw}]）：宿主时间线
+   * 「上下文已压缩」分隔线统计标注的数据源。压缩记录只增不改（历史事实），粘性回填与
+   * 轮表同款——常驻 serve 回退一次性 json 的缺字段帧沿用上一份，标注不闪失；
+   * 换会话由消费端按 sid 取键，键缺失即不标注（诚实降级）。 */
+  var lastCompactions = (typeof window !== "undefined" && window.__zusageCmpSticky) || null;
+  if (mobileMode) lastCompactions = null;
   function renderAll(rebuildPanels) {
     if (rateTipFor) showRateTip(rateTipFor);
     for (var i = 0; i < instances.length; i++) {
@@ -953,6 +964,12 @@
     if (!isMobile && d.worktrees && typeof d.worktrees === "object") {
       lastWorktrees = d.worktrees;
       try { window.__zusageWorktrees = d.worktrees; } catch (_) { }
+    }
+    /* v421 压缩边界表：同 worktrees 捕获位（尾部 render 循环之前），标注函数直接读
+     * lastCompactions，不要求每帧都在场。 */
+    if (!isMobile && d.compactions && typeof d.compactions === "object") {
+      lastCompactions = d.compactions;
+      try { window.__zusageCmpSticky = lastCompactions; } catch (_) { }
     }
     state.data = d;
     for (var i = 0; i < instances.length; i++) {

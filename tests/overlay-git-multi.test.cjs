@@ -465,7 +465,7 @@ test('interaction wiring: Esc close, hover bridge into tooltip, scroll position 
   assert.match(source, /window\.addEventListener\("keydown", onGitKeydown, true\)/, 'Esc 关闭');
   assert.match(source, /function hideGitTipSoon\(\)/, '鼠标移入悬浮内容的宽限桥');
   assert.match(source, /gitTip\.addEventListener\("mouseenter", onGitTipEnter\)/);
-  assert.match(source, /gitTip\.addEventListener\("mouseleave", hideGitTip\)/);
+  assert.match(source, /gitTip\.addEventListener\("mouseleave", function \(\) \{ if \(!state\.devKeepTip\) hideGitTip\(\); \}\)/, 'tip mouseleave 关闭；v424 devKeepTip 常驻时豁免');
   assert.match(source, /chip\.addEventListener\("mouseleave", hideGitTipSoon\)/);
   assert.match(source, /var keep = 0;/, '自动刷新保持滚动位置');
   assert.match(source, /rowsEl\.scrollTop = keep/, '重渲染后恢复滚动位置');

@@ -382,15 +382,17 @@
       var t = Date.parse(String(iso || ""));
       return isFinite(t) ? new Date(t).toLocaleDateString(state.lang === "en" ? "en-US" : "zh-CN") : "";
     }
-    /* ---------- 受限 Markdown：转义优先的行级子集（发布说明够用）----------
-     * 只支持 标题/列表/引用/分隔线/围栏代码/行内代码/粗斜体/链接/裸 URL；HTML 一律按文本
-     * 显示，图片默认禁用（只留 alt 文本不发请求），链接仅 https 且带上限，点击走 openExternal。 */
+    /* ---------- 受限 Markdown：转义优先的 GFM 子集（对齐宿主更新日志渲染形态）----------
+     * 支持 标题/嵌套列表(缩进上限已天然钳 3 层)/任务清单/GFM 管道表格/引用/分隔线/围栏代码/
+     * 行内代码/粗斜体(粗内可套斜)/删除线(~~双波浪，宿主 singleTilde:false 同款)/链接/裸 URL；
+     * HTML 一律按文本显示（宿主对 markdown 格式同款），图片默认禁用（只留 alt 文本不发请求），
+     * 链接仅 https 且带上限，点击走 openExternal。_下划线强调不支持（避免 snake_case 误判）。 */
     function notesSafeLinkUrl(u) {
       return typeof u === "string" && u.length <= 600 && /^https:\/\/\S+$/.test(u) ? u : "";   // 与点击侧同款大小写敏感：HTTPS:// 渲染为文本，不产出死链按钮
     }
     function notesInline(text) {
       var out = "", last = 0, m;
-      var re = /(`+)([\s\S]*?)\1|!\[([^\]]*)\]\(([^)\s]{1,600})\)|\[([^\]]{0,200})\]\(([^)\s]{1,600})\)|\*\*([^*\n]{1,300}?)\*\*|\*([^*\s][^*\n]{0,300}?)\*|(https:\/\/[^\s<>()\[\]{}"“”‘’]{4,400})/g;
+      var re = /(`+)([\s\S]*?)\1|!\[([^\]]*)\]\(([^)\s]{1,600})\)|\[([^\]]{0,200})\]\(([^)\s]{1,600})\)|\*\*((?:[^*\n]|\*(?!\*)){1,300}?)\*\*|\*([^*\s][^*\n]{0,300}?)\*|~~([^~\n]{1,300}?)~~|(https:\/\/[^\s<>()\[\]{}"“”‘’]{4,400})/g;
       while ((m = re.exec(text))) {
         out += mEsc(text.slice(last, m.index));
         if (m[1] !== undefined) out += "<code>" + mEsc(m[2]) + "</code>";
@@ -401,21 +403,49 @@
             : mEsc(m[5]) + "（" + mEsc(m[6]) + "）";
         } else if (m[7] !== undefined) out += "<strong>" + notesInline(m[7]) + "</strong>";
         else if (m[8] !== undefined) out += "<em>" + notesInline(m[8]) + "</em>";
+        else if (m[9] !== undefined) out += "<del>" + notesInline(m[9]) + "</del>";
         else {
-          var bare = notesSafeLinkUrl(m[9]);
-          out += bare ? '<button type="button" class="zu-notes-lnk" data-href="' + mEsc(bare) + '">' + mEsc(bare) + "</button>" : mEsc(m[9]);
+          var bare = notesSafeLinkUrl(m[10]);
+          out += bare ? '<button type="button" class="zu-notes-lnk" data-href="' + mEsc(bare) + '">' + mEsc(bare) + "</button>" : mEsc(m[10]);
         }
         last = re.lastIndex;
       }
       return out + mEsc(text.slice(last));
     }
+    /* 表格行拆格：首尾管道只作边界符，\| 转义为字面竖线 */
+    function notesSplitRow(line) {
+      var s = String(line).trim(), cells = [], cur = "";
+      if (s.charAt(0) === "|") s = s.slice(1);
+      if (!/\\\|$/.test(s) && s.charAt(s.length - 1) === "|") s = s.slice(0, -1);
+      for (var i = 0; i < s.length; i++) {
+        var c = s.charAt(i);
+        if (c === "\\" && s.charAt(i + 1) === "|") { cur += "|"; i++; continue; }
+        if (c === "|") { cells.push(cur.trim()); cur = ""; continue; }
+        cur += c;
+      }
+      cells.push(cur.trim());
+      return cells;
+    }
+    /* 分隔行 → 对齐数组（:-- left / :--: center / --: right / --- ""）；列数与表头不符即非表格 */
+    function notesSepAlign(line, cols) {
+      var cells = notesSplitRow(line), align = [];
+      if (cells.length !== cols) return null;
+      for (var i = 0; i < cells.length; i++) {
+        if (!/^:?-+:?$/.test(cells[i])) return null;
+        var l = cells[i].charAt(0) === ":", r = cells[i].charAt(cells[i].length - 1) === ":";
+        align.push(l && r ? "center" : r ? "right" : l ? "left" : "");
+      }
+      return align;
+    }
     function notesBlocks(md) {
       var lines = String(md || "").replace(/\r\n?/g, "\n").split("\n");
       var blocks = [], para = null, list = null, quote = null, code = null, codeText = null;
       function closePara() { if (para) { blocks.push({ type: "p", text: para.join("\n") }); para = null; } }
-      function closeList() { if (list) { blocks.push(list); list = null; } }
+      function closeList() { if (list) { blocks.push({ type: "list", ordered: list.levels[0].ordered, items: list.levels[0].items }); list = null; } }
       function closeQuote() { if (quote) { blocks.push({ type: "quote", text: quote.join("\n") }); quote = null; } }
       function closeAll() { closePara(); closeList(); closeQuote(); }
+      /* 分隔行：≥2 列（每列至少一个 -），单列表与 `---` 分隔线/集合语义冲突不收 */
+      var reSep = /^\s{0,3}\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$/;
       for (var i = 0; i < lines.length; i++) {
         var line = lines[i];
         if (code !== null) {
@@ -428,13 +458,46 @@
         var heading = /^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
         if (heading) { closeAll(); blocks.push({ type: "h", level: Math.min(3, heading[1].length), text: heading[2] }); continue; }
         if (/^\s{0,3}(?:-\s*){3,}$/.test(line) || /^\s{0,3}(?:\*\s*){3,}$/.test(line) || /^\s{0,3}(?:_\s*){3,}$/.test(line)) { closeAll(); blocks.push({ type: "hr" }); continue; }
-        var item = /^\s{0,6}(?:[-*+]|\d{1,3}[.)])\s+(.*)$/.exec(line);
+        /* GFM 表格：表头行含管道 + 次行为合法分隔行才成表；表体收到空行或首个无管道行为止，
+         * 单元格补齐/截断到表头列数（列钳即表头列数，行钳 200），其余行交回主循环重处理 */
+        if (line.indexOf("|") >= 0 && i + 1 < lines.length && reSep.test(lines[i + 1])) {
+          var head = notesSplitRow(line), align = notesSepAlign(lines[i + 1], head.length);
+          if (align) {
+            closeAll();
+            var rows = [];
+            for (i += 2; i < lines.length && rows.length < 200; i++) {
+              if (/^\s*$/.test(lines[i]) || lines[i].indexOf("|") < 0) break;
+              var cells = notesSplitRow(lines[i]);
+              for (var c = cells.length; c < head.length; c++) cells.push("");
+              if (cells.length > head.length) cells = cells.slice(0, head.length);
+              rows.push(cells);
+            }
+            blocks.push({ type: "table", head: head, rows: rows, align: align });
+            i--;   // 抵消外层 ++，让终止行回到主循环
+            continue;
+          }
+        }
+        var item = /^(\s{0,12})(?:[-*+]|\d{1,3}[.)])\s+(.*)$/.exec(line);
         if (item) {
           closePara(); closeQuote();
-          var ordered = /^\s{0,6}\d/.test(line);
-          if (list && list.ordered !== ordered) closeList();
-          if (!list) list = { type: "list", ordered: ordered, items: [] };
-          list.items.push(item[1]);
+          var ordered = /^\s{0,12}\d/.test(line);
+          if (list && list.levels[0].ordered !== ordered) closeList();
+          if (!list) list = { base: -1, levels: [null, null, null] };
+          if (list.base < 0) list.base = item[1].length;
+          /* 层级按相对首项缩进每 2 空格一级；缩进捕获上限 12 ⇒ 天然 ≤3 层，无需额外钳制 */
+          var lvl = Math.min(2, Math.max(0, Math.floor((item[1].length - list.base) / 2)));
+          while (lvl > 0 && !list.levels[lvl - 1]) lvl--;   // 跳级无父挂靠就地上移，绝不丢条目
+          var txt = item[2], task = /^\[([xX ])\]\s+/.exec(txt);
+          var it = { text: task ? txt.slice(task[0].length) : txt, task: task ? task[1] !== " " : null, children: null };
+          if (lvl === 0) {
+            if (!list.levels[0]) list.levels[0] = { ordered: ordered, items: [] };
+            list.levels[0].items.push(it);
+          } else {
+            var pArr = list.levels[lvl - 1].items, parent = pArr[pArr.length - 1];
+            if (!parent.children) parent.children = { ordered: ordered, items: [] };
+            list.levels[lvl] = parent.children;   // 回落再嵌套时挂到当前父项， siblings 各自成树
+            parent.children.items.push(it);
+          }
           continue;
         }
         var q = /^\s{0,3}>\s?(.*)$/.exec(line);
@@ -446,12 +509,30 @@
       closeAll();
       return blocks;
     }
+    function notesListHtml(node, depth) {
+      var out = node.ordered ? "<ol>" : "<ul>";
+      for (var i = 0; i < node.items.length; i++) {
+        var it = node.items[i];
+        out += "<li>" + (it.task === null ? "" : '<input type="checkbox" disabled' + (it.task ? " checked" : "") + ">") + notesInline(it.text);
+        if (it.children && depth < 3) out += notesListHtml(it.children, depth + 1);
+        out += "</li>";
+      }
+      return out + (node.ordered ? "</ol>" : "</ul>");
+    }
+    function notesCellAttr(al) { return al ? ' style="text-align:' + al + '"' : ""; }
     function notesBlockHtml(b) {
       if (b.type === "h") return '<div class="zu-notes-h zu-notes-h' + b.level + '">' + notesInline(b.text) + "</div>";
-      if (b.type === "list") {
-        var out = b.ordered ? "<ol>" : "<ul>";
-        for (var i = 0; i < b.items.length; i++) out += "<li>" + notesInline(b.items[i]) + "</li>";
-        return out + (b.ordered ? "</ol>" : "</ul>");
+      if (b.type === "list") return notesListHtml(b, 1);
+      if (b.type === "table") {
+        var out = "<table><thead><tr>", c;
+        for (c = 0; c < b.head.length; c++) out += "<th" + notesCellAttr(b.align[c]) + ">" + notesInline(b.head[c]) + "</th>";
+        out += "</tr></thead><tbody>";
+        for (var r = 0; r < b.rows.length; r++) {
+          out += "<tr>";
+          for (c = 0; c < b.rows[r].length; c++) out += "<td" + notesCellAttr(b.align[c]) + ">" + notesInline(b.rows[r][c]) + "</td>";
+          out += "</tr>";
+        }
+        return out + "</tbody></table>";
       }
       if (b.type === "quote") return "<blockquote>" + notesInline(b.text).replace(/\n/g, "<br>") + "</blockquote>";
       if (b.type === "pre") return "<pre><code>" + mEsc(b.text) + "</code></pre>";
@@ -479,11 +560,17 @@
       for (var i = 0; i < sec.blocks.length; i++) out += notesBlockHtml(sec.blocks[i]);
       return out;
     }
+    function notesListLen(items) {
+      var n = 0;
+      for (var i = 0; i < items.length; i++) n += String(items[i].text || "").length + (items[i].children ? notesListLen(items[i].children.items) : 0);
+      return n;
+    }
     function notesSectionLen(sec) {
       var n = String(sec.title || "").length;
       for (var i = 0; i < sec.blocks.length; i++) {
         var b = sec.blocks[i];
-        n += String(b.text || "").length + (b.items ? b.items.join("").length : 0);
+        n += String(b.text || "").length + (b.items ? notesListLen(b.items) : 0) +
+          (b.head ? b.head.join("").length + b.rows.join("").length : 0);
       }
       return n;
     }
@@ -688,6 +775,40 @@
       if (notesHistoryState === "" && !histPanel.hidden) requestNotesList(false);
     }
     /* ---------- v179 自动压缩阈值（⚙ 面板渲染与提交的单一出口） ---------- */
+    /* v426：模式由 .zu-ac-mode 下拉显式选择（v420 双域隐式约定废弃），解析按下拉值驱动——
+     * percent=30-99 整数；tokens=≥100000，保留 k/K/M 后缀（如 300k）；留空=default；
+     * 其余（含另一模式的合法值）=null。writeConfig/引擎 hook 同限，此处拦截只为不把非法值发出去。 */
+    function parseAcValue(raw, mode) {
+      var s = String(raw == null ? "" : raw).trim();
+      if (s === "") return { mode: "default", value: "" };
+      if (mode !== "tokens") {
+        var p = Math.round(Number(s));
+        return isFinite(p) && p >= 30 && p <= 99 ? { mode: "percent", value: p } : null;
+      }
+      var m = s.match(/^(\d+(?:\.\d+)?)([kKmM])$/);
+      var n = Math.round(m ? parseFloat(m[1]) * (m[2].toLowerCase() === "k" ? 1000 : 1000000) : Number(s));
+      return isFinite(n) && n >= 100000 ? { mode: "tokens", value: n } : null;
+    }
+    /* v420：tokens 模式回显规整形式（整除千位显示 k 后缀，如 300000→300k） */
+    function formatAcValue(mode, value) {
+      var n = Number(value);
+      if (mode !== "tokens" || !isFinite(n)) return String(value);
+      return n >= 1000 && n % 1000 === 0 ? (n / 1000) + "k" : String(n);
+    }
+    /* v436：切模式时数值跟随换算（percent↔tokens 双向），基准=当前会话上下文窗口
+     * （lastBand.cw，与 acWarningText 同源），取不到按 1,000,000 兜底。仅本侧合法值
+     * 才换算（空/非法保持原样，交状态行校验提示），结果钳进对侧合法域
+     * （tokens≥100k、percent 30-99）。只改输入框显示，不提交——仍由 input change 落盘。 */
+    function acConvertOnModeSwitch(sel) {
+      var input = panel.querySelector(".zu-ac-value");
+      if (!input || document.activeElement === input) return;
+      var toMode = sel.value === "tokens" ? "tokens" : "percent";
+      var parsed = parseAcValue(input.value, toMode === "tokens" ? "percent" : "tokens");
+      if (!parsed || parsed.mode === "default") return;   // 空=default：切模式保持留空语义，不伪造数值
+      var cw = lastBand && isFinite(lastBand.cw) && lastBand.cw > 0 ? lastBand.cw : 1000000;
+      var n = toMode === "tokens" ? Math.round(cw * parsed.value / 100) : Math.round(parsed.value / cw * 100);
+      input.value = formatAcValue(toMode, toMode === "tokens" ? Math.max(100000, n) : Math.min(99, Math.max(30, n)));
+    }
     function acModeOf(cfg) {
       if (!cfg || typeof cfg !== "object") return { mode: "default", value: "" };
       if (cfg.enabled === false) return { mode: "disabled", value: "" };
@@ -697,9 +818,11 @@
       return { mode: "default", value: "" };
     }
     function syncAutoCompactInputs() {
-      var input = panel.querySelector(".zu-ac-value");   // v188：模式并入数值——留空=跟随引擎默认
+      var input = panel.querySelector(".zu-ac-value");   // v188：留空=跟随引擎默认；v420：tokens 回显（300k 规整形式）
+      var modeSel = panel.querySelector(".zu-ac-mode");   // v426：模式下拉（percent/tokens）
       var cur = acModeOf(state.enginePatch && state.enginePatch.config);
-      if (input && document.activeElement !== input) input.value = cur.mode === "percent" ? cur.value : "";
+      if (input && document.activeElement !== input) input.value = cur.mode === "percent" || cur.mode === "tokens" ? formatAcValue(cur.mode, cur.value) : "";
+      if (modeSel && document.activeElement !== modeSel) modeSel.value = cur.mode === "tokens" ? "tokens" : "percent";   // default/disabled/buffer 显示 percent（buffer 协议保留不暴露）
       /* v190：注入开关关闭时数值行没有意义，整行隐藏 */
       var acRow = input && input.closest ? input.closest("label") : null;
       if (acRow) acRow.hidden = !!(state.enginePatch && state.enginePatch.enabled === false) || state.enginePatch == null;
@@ -730,10 +853,12 @@
           (ep.lastError && ep.state !== "applied" && !drift ? " · " + ep.lastError : "");
       }
       var warn = acWarningText();
-      /* v194：数值行实时校验——超出 30-99 或非数字在状态行提示，提交侧同步拒绝 */
+      /* v194→v426：数值行实时校验按 .zu-ac-mode 下拉模式——percent 30-99、tokens ≥100k（支持 k/M 后缀），非法在状态行提示，提交侧同步拒绝 */
       var acv = input && input.value != null ? String(input.value).trim() : "";
-      var bad = acv !== "" && (!isFinite(Number(acv)) || Number(acv) < 30 || Number(acv) > 99);
-      var msg = (bad ? L("⚠ 阈值数值需在 30-99 之间", "⚠ Threshold must be between 30 and 99") : "") +
+      var acMode = modeSel && modeSel.value === "tokens" ? "tokens" : "percent";
+      var bad = acv !== "" && !parseAcValue(acv, acMode);
+      var msg = (bad ? (acMode === "tokens" ? L("⚠ Token 数需 ≥100k，支持 k/M 后缀（如 300k）", "⚠ Tokens must be ≥100k; k/M suffix allowed (e.g. 300k)")
+        : L("⚠ 百分比需在 30-99 之间", "⚠ Percent must be between 30 and 99")) : "") +
         (warn ? (bad ? "\n" : "") + warn : "");
       node.textContent = text + (msg ? "\n" + msg : "");
       node.classList.toggle("zu-ac-warn", !!(warn || bad));
@@ -761,12 +886,13 @@
       var input = panel.querySelector(".zu-ac-value");
       if (!input) return;
       var value = input.value.trim();
-      /* v194：30-99 之外的数值不提交（状态行实时提示），避免非法值写进 autocompact.json */
-      var acn = Number(value);
-      if (value !== "" && (!isFinite(acn) || acn < 30 || acn > 99)) { showSettingsFeedback(true); return; }
+      /* v194→v426：按下拉模式解析（percent 30-99；tokens ≥100k 支持 k/M），非法不提交（状态行实时提示），避免非法值写进 autocompact.json */
+      var modeSel = panel.querySelector(".zu-ac-mode");
+      var parsed = parseAcValue(value, modeSel && modeSel.value === "tokens" ? "tokens" : "percent");
+      if (value !== "" && !parsed) { showSettingsFeedback(true); return; }
       showSettingsFeedback(false, true);
-      /* v188：留空=跟随引擎默认（default），有值=百分比（percent） */
-      pluginRequest("autocompact-config", { mode: value === "" ? "default" : "percent", value: value === "" ? undefined : Number(value) }, function (result) {
+      /* v188：留空=跟随引擎默认（default，value 不上线）；v420：有值按解析模式提交（percent/tokens） */
+      pluginRequest("autocompact-config", { mode: parsed.mode, value: parsed.mode === "default" ? undefined : parsed.value }, function (result) {
         if (inactive()) return;
         if (result.ok) {
           if (result.config) { if (!state.enginePatch) state.enginePatch = { enabled: false, state: "off" }; state.enginePatch.config = result.config; }
@@ -1883,6 +2009,8 @@
       if (costBox) costBox.checked = !!state.cost;
       var cwBox = panel.querySelector(".zu-cmdk-widen");
       if (cwBox) cwBox.checked = !!state.cmdkW;
+      var cmpAnnBox = panel.querySelector(".zu-cmp-ann");
+      if (cmpAnnBox) cmpAnnBox.checked = !!state.cmpAnn;
       var tipClickBox = panel.querySelector(".zu-tip-click");
       if (tipClickBox) tipClickBox.checked = !!state.tipClick;
       var devKeepTipBox = panel.querySelector(".zu-dev-keep-tip");
@@ -2743,6 +2871,14 @@
         applyCmdkW();
         return;
       }
+      if (t2.classList.contains("zu-cmp-ann")) {
+        /* v421：压缩分隔线统计标注开关（⚙ 回答统计分区，缺省开）——纯展示偏好即时生效，
+         * 关=摘除本 pane 标注、开=按内存记录补回（syncCompactionRows 幂等），无需重建 */
+        state.cmpAnn = t2.checked ? 1 : 0;
+        persist();
+        syncCompactionRows();
+        return;
+      }
       if (t2.classList.contains("zu-tip-click")) {
         /* v249：纯渲染偏好，即时生效（下一次 mousemove/click 即按新模式判定） */
         state.tipClick = t2.checked ? 1 : 0;
@@ -2776,6 +2912,14 @@
         /* v179→v188：数值变化即提交（留空=跟随引擎默认；主进程归一白名单后写
            autocompact.json，引擎 hook 每轮决策读——下一轮即生效，无需重启） */
         sendAutoCompactConfig();
+        return;
+      }
+      if (t2.classList.contains("zu-ac-mode")) {
+        /* v426→v436：切模式先重校验并回显已保存真值，再按当前窗口换算数值（空/非法保持原样），
+         * 仍不提交——改值后由 input change 落盘。换算必须在 sync 之后：sync 会把输入框回写为
+         * 已保存配置的回显（真机实报：先换算会被 sync 抹回原值，65→切 Token 数仍显 65）。 */
+        syncAutoCompactInputs();
+        try { acConvertOnModeSwitch(t2); } catch (eAcCvt) { try { window.__zusageDiag.acPanelErr = String((eAcCvt && eAcCvt.stack) || eAcCvt); } catch (_) { } }
         return;
       }
       if (t2.type === "checkbox") {
