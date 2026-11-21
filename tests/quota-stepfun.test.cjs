@@ -146,6 +146,12 @@ test("stepfun: normalize — resets_at_ms lands on window; used_percent missing 
   });
   assert.equal(junkNumReset.windows.monthly.resetsAt, null, "低于毫秒量级的短数字串不冒充重置时间");
 
+  const hugeNumReset = Q.normalizeStepfun({
+    plan: { state: "known", name: "x" },
+    quota: { credit_buckets: [ { type: "subscription", total: "8000000000", remaining: "5028152640", resets_at_ms: "9".repeat(400) } ] },
+  });
+  assert.equal(hugeNumReset.windows.monthly.resetsAt, null, "超长数字串 Number 得 Infinity，isFinite 拦截");
+
   const longName = Q.normalizeStepfun({
     plan: { state: "known", name: "N".repeat(60) },
     quota: { credit_buckets: [ { type: "subscription", total: "8000000000", remaining: "5028152640" } ] },

@@ -791,10 +791,15 @@ function normalizeStepfun(body) {
    * 垃圾串丢弃）；其余非空字符串过 Date.parse 门（对齐 ollama 的单适配器内敛门——端点
    * 改版回垃圾串不冒充重置时间）。 */
   const resetRaw = resetOf(pick.resets_at_ms);
-  const resetsAt = typeof resetRaw === "string"
-    ? (/^\d+$/.test(resetRaw) ? (Number(resetRaw) >= 1e11 ? Number(resetRaw) : null)
-      : (Number.isNaN(Date.parse(resetRaw)) ? null : resetRaw))
-    : resetRaw;
+  let resetsAt = resetRaw;
+  if (typeof resetRaw === "string") {
+    if (/^\d+$/.test(resetRaw)) {
+      const n = Number(resetRaw);   // 全数字字符串转 Number 恢复；isFinite 拦超长串的 Infinity
+      resetsAt = Number.isFinite(n) && n >= 1e11 ? n : null;
+    } else {
+      resetsAt = Number.isNaN(Date.parse(resetRaw)) ? null : resetRaw;
+    }
+  }
   const out = { label: "StepFun", kind: "plan",
     /* resets_at_ms 是月度 Credit 重置（真重置语义才填 resetsAt）；缺失（实测 Max 快照
      * 不带该字段）不拿订阅到期冒充——到期时间单独落 plan.validEnd。 */
