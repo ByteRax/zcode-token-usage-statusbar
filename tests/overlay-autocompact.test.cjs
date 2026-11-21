@@ -336,6 +336,29 @@ test("v426：模式下拉回显、分模式校验与提交", () => {
   assert.equal(JSON.stringify(sent), '{"action":"autocompact-config","extra":{"mode":"percent","value":85}}', "percent 模式直提数字");
 });
 
+test("v438：tokens 模式低于 100k 失焦自动钳 100k 回显并提交；非数字与 percent 非法仍提示不提交", () => {
+  const clamp = (value, mode) => {
+    let sent = null;
+    const k = runHelpers({ state: { enginePatch: { enabled: true, state: "applied", config: { enabled: true } } } });
+    /* v438 复审（M3 存活变异）：桩不同步回执——回执回调末尾 syncAutoCompactInputs 会按主进程
+     * 真值回写 "100k"，掩盖钳制分支的即时回显；去掉 done 后 shown 断言才真正锁 v438 行为 */
+    k.sandbox.pluginRequest = (action, extra) => { sent = { action, extra }; };
+    k.sandbox.showSettingsFeedback = () => { };
+    k.sandbox.inactive = () => false;
+    k.node(".zu-ac-mode").value = mode;
+    k.node(".zu-ac-value").value = value;
+    k.sandbox.sendAutoCompactConfig();
+    return { sent, shown: k.node(".zu-ac-value").value };
+  };
+  const bare = clamp("65", "tokens");
+  assert.equal(JSON.stringify(bare.sent), '{"action":"autocompact-config","extra":{"mode":"tokens","value":100000}}', "裸数字 65 钳 100000 提交");
+  assert.equal(bare.shown, "100k", "输入框回显规整 100k");
+  assert.equal(clamp("65k", "tokens").sent.extra.value, 100000, "65k 同样钳 100k");
+  assert.equal(clamp("99999", "tokens").sent.extra.value, 100000, "99999 钳 100k");
+  assert.equal(clamp("abc", "tokens").sent, null, "非数字不钳不提交");
+  assert.equal(clamp("5", "percent").sent, null, "percent 模式非法不钳（域窄保持提示）");
+});
+
 test("v190：注入开关关闭（或主进程未加载）时数值行整行隐藏", () => {
   const off = runHelpers({ state: { enginePatch: { enabled: false, state: "off" } } });
   off.sandbox.syncAutoCompactInputs();
