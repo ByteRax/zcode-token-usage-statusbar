@@ -1,7 +1,7 @@
 /* 额度客户端（主进程热换模块）v3：多厂商适配器 + 多源调度器。
  * 阶段 3（浮层 v96 线）：BigModel/Z.ai 内置套餐（解密宿主 OAuth 凭据直查 monitor 端点）
  * 之外，新增零配置官方域适配器（MiniMax/Kimi/CommandCode/DeepSeek/OpenRouter/SiliconFlow/
- * Anthropic OAuth/OpenCode Go/R4 Coder/千问/Ollama Cloud）与显式配置适配器（Cline/MiMo
+ * Anthropic OAuth/OpenCode Go/R4 Coder/千问/Ollama Cloud/StepFun）与显式配置适配器（Cline/MiMo
  * Cookie/火山 AK-SK/SCNet 账本）；清单仅为沿革，现行注册表以 ADAPTERS 为准。
  *
  * 调度语义：enabled 源全量低频刷新（供 tooltip 分家列全），chip 主显跟随本 pane 会话的

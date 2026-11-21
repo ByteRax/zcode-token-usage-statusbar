@@ -1,7 +1,7 @@
 /* 额度客户端（主进程热换模块）v3：多厂商适配器 + 多源调度器。
  * 阶段 3（浮层 v96 线）：BigModel/Z.ai 内置套餐（解密宿主 OAuth 凭据直查 monitor 端点）
  * 之外，新增零配置官方域适配器（MiniMax/Kimi/CommandCode/DeepSeek/OpenRouter/SiliconFlow/
- * Anthropic OAuth/OpenCode Go/R4 Coder/千问/Ollama Cloud）与显式配置适配器（Cline/MiMo
+ * Anthropic OAuth/OpenCode Go/R4 Coder/千问/Ollama Cloud/StepFun）与显式配置适配器（Cline/MiMo
  * Cookie/火山 AK-SK/SCNet 账本）；清单仅为沿革，现行注册表以 ADAPTERS 为准。
  *
  * 调度语义：enabled 源全量低频刷新（供 tooltip 分家列全），chip 主显跟随本 pane 会话的
@@ -2416,10 +2416,17 @@ function normalizeStepfun(body) {
   if (total == null || remaining == null || remaining > total) throw qErr("parse_error", "stepfun bucket shape invalid");
   const usedPct = num(pick.used_percent);
   const pct = usedPct != null ? usedPct : ((total - remaining) / total) * 100;
+  /* remaining 为 null/undefined/空串的桶不被过滤（JS 里 null >= 0 为 true），落下面
+   * remaining == null 的 parse_error 按 30 分钟退避自愈，优于对在订账号误冻结 noPlan；
+   * 负 remaining（透支形状，官方文档未载）在过滤条件被剔除 → noPlan。resets_at_ms：
+   * 数字毫秒直传，非空字符串过 Date.parse 门（对齐 ollama 的单适配器内敛门——端点改版
+   * 回垃圾串不冒充重置时间）。 */
+  const resetRaw = resetOf(pick.resets_at_ms);
+  const resetsAt = typeof resetRaw === "string" && Number.isNaN(Date.parse(resetRaw)) ? null : resetRaw;
   const out = { label: "StepFun", kind: "plan",
     /* resets_at_ms 是月度 Credit 重置（真重置语义才填 resetsAt）；缺失（实测 Max 快照
      * 不带该字段）不拿订阅到期冒充——到期时间单独落 plan.validEnd。 */
-    windows: { monthly: { percent: Math.round(clampPct(pct) * 10) / 10, resetsAt: resetOf(pick.resets_at_ms) } } };
+    windows: { monthly: { percent: Math.round(clampPct(pct) * 10) / 10, resetsAt } } };
   const name = typeof plan.name === "string" ? plan.name.slice(0, 40) : "";
   const sub = plan.subscription;
   const expiresMs = (sub && typeof sub === "object" && !Array.isArray(sub)) ? resetOf(sub.expires_at_ms) : null;

@@ -109,6 +109,24 @@ test("stepfun: normalize — resets_at_ms lands on window; used_percent missing 
   });
   assert.equal(noPct.windows.monthly.percent, 37.1, "used_percent 缺失按 (total−remaining)/total 自算");
   assert.equal(noPct.windows.monthly.resetsAt, null);
+
+  const clamped = Q.normalizeStepfun({
+    plan: { state: "known", name: "x" },
+    quota: { credit_buckets: [ { type: "subscription", total: "8000000000", remaining: "0", used_percent: 150 } ] },
+  });
+  assert.equal(clamped.windows.monthly.percent, 100, "used_percent>100 由 clampPct 钳满格");
+
+  const zeroPct = Q.normalizeStepfun({
+    plan: { state: "known", name: "x" },
+    quota: { credit_buckets: [ { type: "subscription", total: "8000000000", remaining: "4000000000", used_percent: 0 } ] },
+  });
+  assert.equal(zeroPct.windows.monthly.percent, 0, "used_percent=0 是合法值直取，不落自算兜底");
+
+  const badResetStr = Q.normalizeStepfun({
+    plan: { state: "known", name: "x" },
+    quota: { credit_buckets: [ { type: "subscription", total: "8000000000", remaining: "5028152640", resets_at_ms: "not-a-date" } ] },
+  });
+  assert.equal(badResetStr.windows.monthly.resetsAt, null, "resets_at_ms 垃圾串过不了 Date.parse 门");
 });
 
 test("stepfun: non-subscription bucket falls back; empty buckets → noPlan; inconsistent shape parse_error", () => {
@@ -166,6 +184,7 @@ test("stepfun: credential priority env > secrets > provider_config", async () =>
   assert.equal(prio.calls.find((c) => c.url === USAGE_URL).headers.authorization, "Bearer env-key");
   reply(prio.calls, USAGE_URL, 200, DOC_BODY);
   await flush();
+  prio.client.dispose();
 
   const secOnly = stepfunClient({
     cfgEntries: [["new-provider", "https://api.stepfun.com/step_plan", "cfg-key"]],
