@@ -1,12 +1,12 @@
 # 额度支持审计矩阵
 
-审计日期：2026-10-22（2026-10-24 增补 ZCode Start Plan 行；2026-11-15 增补 OpenCode Go 控制台 meters 实测；2026-11-17 增补 R4 Coder 行与模型价格补充；2026-11-20 增补 Ollama Cloud 行）。范围：本仓库 main 开发线及本轮修复，不代表已发布、已安装或全部厂商已真账号验收。
+审计日期：2026-10-22（2026-10-24 增补 ZCode Start Plan 行；2026-11-15 增补 OpenCode Go 控制台 meters 实测；2026-11-17 增补 R4 Coder 行与模型价格补充；2026-11-20 增补 Ollama Cloud 行；2026-11-21 增补 StepFun Step Plan 行，外部贡献）。范围：本仓库 main 开发线及本轮修复，不代表已发布、已安装或全部厂商已真账号验收。
 
 ## 结论与证据等级
 
 - **v1.5.2 正式版 ≠ main 开发版**；开发源码、仓库插件副本、安装缓存、稳定运行文件须分别核对，不能以源码存在推断正式版可用。
 - 原“自动支持”承诺已收窄：只对已知协议、明确凭据与可证明的账号归属适配；不是任意供应商、任意中转自动查账。
-- **BigModel、当前 BX-GPT 的 sub2api `/v1/usage`、ZCode Start Plan（bigmodel 家族）、OpenCode Go 个人 Go 档（console meters + public usage 两链）、R4 Coder 个人套餐/钱包（`/v1/cli/key` + `/v1/cli/meta`）已本机真实账号实测**。其余源码转写适配按夹具验证理解，**不是真实账号验证**；即使未标 `unverified`，也不因此升级证据等级。
+- **BigModel、当前 BX-GPT 的 sub2api `/v1/usage`、ZCode Start Plan（bigmodel 家族）、OpenCode Go 个人 Go 档（console meters + public usage 两链）、R4 Coder 个人套餐/钱包（`/v1/cli/key` + `/v1/cli/meta`）、StepFun Step Plan（官方 usage 端点，外部贡献者真账号）已本机真实账号实测**。其余源码转写适配按夹具验证理解，**不是真实账号验证**；即使未标 `unverified`，也不因此升级证据等级。
 - **sub2api 已接入自定义中转适配路径**，同源 `/v1/usage` 命中即停止 legacy 探测；尚未发布。
 - 未新增任意域管理接口探测；自定义中转仅在配置地址同源内查询已知用量协议，不猜测管理凭据或跨域发送 key。
 
@@ -36,6 +36,7 @@
 | R4 Coder（r4.codes 中转） | **2026-11-17 新增**：自定义供应商 baseUrl host 为 `api.r4.codes`（含 `r4.codes`/`www.r4.codes` 同域）时零配置认领；并行只读 `GET /v1/cli/key`（limit/spent/held）+ `GET /v1/cli/meta`（plan total/remaining/limit_windows/expires、wallet）→ 套餐池 `windows.plan`、按时长映射 5 小时/日/周/月速率窗、`limit_usd>=0`（0 为合法零额度）时 `quotaSummary`、无套餐/限额时钱包回退；`ceiling_usd=null`（不限速）跳过，`limit_usd=null` 不造 Key 总额度；同时把 `/v1/models` 的 `deepseek-v4.1-flash` 三档补入内置价表（`r4/` 前缀 + 同步脚本 OVERRIDES），修正兜底均价高估 | 普通 `coder_` 推理 key（env `R4_API_KEY`/`R4_CODER_API_KEY`/`R4CODES_API_KEY`、secrets `sources.r4.apiKey`、provider_config）；无需 management key；三端点共享 60 req/min 桶，403 `STANDARD_KEY_REQUIRED`=auth_failed | **本机真实账号实测（2026-11-17）**：`/v1/cli/key`、`/v1/cli/meta`、`/v1/models` HTTP 200，`createQuotaClient` 全链 status=ok、kind=plan、Code Lite +1 套餐池/到期正确；`limit_windows` 当前可为空数组（速率窗不活跃）按空窗降级；团队/组织账号、`pricing_effective` 分时价与 `queued` 礼包未覆盖 |
 | 千问 AI 平台 Token Plan（issue #399） | **2026-11-19 新增**：自定义供应商 baseUrl host 为 `token-plan.maas.qianwenaiapi.com`（或 qianwenaiapi.com 域内 + `sk-sp-` key 前缀）时认领为 `qianwen:<providerId>` 复合源；推理网关是纯推理入口，额度走**平台设备码授权链**（t.qianwenai.com 设备码 → 浏览器授权 → cli.qianwenai.com 换控制台令牌（按 access 指纹缓存 20 分钟）→ cs-data.qianwenai.com 网关查 `per<N><Unit>Percentage` 周/月窗）；⚙ 面板「登录」按钮起流并轮询，登录态存 secrets `sources.qianwen.{token,tokenExpiresAt,account}`，手填 token 与 env `ZCODE_QIANWEN_ACCESS_TOKEN` 为降级通道 | 平台登录态（设备码授权，无 refresh token，过期重登）；`sk-sp-` 推理 key 只作认领信号不作凭据；凭据只发 qianwen 官方三域 | 源码转写自 magpie（MIT）与官方 `@qianwenai/qianwen-cli` 1.11.0 常量表，夹具验证（含双信封 complete 回复/BOM/数字类型宽容解析、错误文案不引 token）；**未真账号实测（unverified）**；阿里云百炼（`token-plan.*.maas.aliyuncs.com` AccessKey 签名链）与团队 seat 绝对 Credits 字段不认领不解析，窗口缺失按 parse_error 不显示 0% |
 | Ollama Cloud（issue #410） | **2026-11-20 新增**：自定义供应商 baseUrl host 为 `ollama.com`（`https:` 必须，路径不参与判定，`/v1` 等宿主 baseUrl 变体同域命中；本地 `localhost:11434` 不命中）时零配置认领；只读 `GET https://ollama.com/api/balance`（Bearer）单端点两代套餐形状：新套餐 `included.{balance_usd,allowance_usd,period}` → 月度额度池窗（`period.until` 为可解析日期才带 resetsAt，缺失或非日期落「套餐」窗不冒充月窗）、旧套餐 `included.{session,weekly}.remaining_percent` 剩余制翻转为已用 → 5 小时/周窗（带 `resets_at`）、`purchased.balance_usd` 充值余额仅无窗口时退化为余额卡（有窗口时不进顶层 balance，渲染端余额形态优先会挤掉窗口段；负值视为无充值）；`allowance<=0` 无窗防除零，超支（`balance_usd<0` 或 `balance>allowance`）钳 [0,100]；`included`/`purchased` 全缺按 parse_error fail-closed，included 在但无任何可解析窗口且无充值按 ok 空窗（纯 PAYG 账号合法形态，不判 no_plan） | Ollama API key（env `OLLAMA_API_KEY`、secrets `sources.ollama.apiKey`、provider_config `access.apiKey`）；只发 ollama.com 官方域；限流 10 req/min（issue 报告者转述，未实测），429 按调度器 Retry-After 退避；⚙ 面板 keyUrl `ollama.com/settings/keys` | 源码转写自 magpie（MIT，其仓 issue #1888 同款端点）与官方 docs（docs.ollama.com/cloud/usage、/api/balance），夹具验证（两代形状/钳制/字符串数字/401 auth_failed/凭据三级优先/伪装域与本地端口拒绝）；**未真账号实测（unverified）**；旧套餐 session 窗映射 5 小时窗是近似（响应无时长字段），period 形状仅官方文档例证；设计规格 [specs/ollama-cloud-quota.md](../specs/ollama-cloud-quota.md) |
+| StepFun Step Plan（Token Plan 订阅 Credit 池） | **2026-11-21 新增（外部贡献）**：自定义供应商 baseUrl host 为 `api.stepfun.com`（https 必须）时零配置认领；只读 `GET https://api.stepfun.com/step_plan/v1/usage`（Bearer）——官方文档化端点（platform.stepfun.com/docs/zh/step-plan/usage），返回账号级套餐额度快照：`plan.name` / `plan.subscription.expires_at_ms` → 套餐名与订阅到期（validEnd 日历日）、`quota.credit_buckets[]`（total/remaining 为整数字符串、used_percent 为服务端已用%，缺失按 total/remaining 自算）→ 月度 Credit 池窗；`resets_at_ms`（月度发放重置，实测 Max 快照可不带）是真重置语义才进 resetsAt，绝不拿订阅到期冒充；非 subscription 桶兜底展示；无有效桶 → noPlan 冻结；remaining > total 按形状不一致 parse_error | StepFun 开放平台 API key（env `STEPFUN_API_KEY` / secrets `sources.stepfun.apiKey` / provider_config `access.apiKey`）；只发 api.stepfun.com 官方域；⚙ 面板 keyUrl `platform.stepfun.com/account-overview` | **本机真实账号实测（2026-11-20/21，外部贡献者）**：真实 key HTTP 200（Pro 37.1% 与 Max 1.6% 两档快照、套餐名/到期/窗口展示、createQuotaClient 全链 status=ok、桌面 chip「月 98%」剩余口径与 ⚙ 源面板列表均已验）；分时扣减（高峰 2 倍）是服务端结算规则不影响快照读数；加油包桶同构兜底为夹具验证（未实测）；401 auth_failed、空桶 no_plan、伪装域拒绝夹具验证；团队/组织账号未覆盖 |
 | CLIProxyAPI | **无专用管理适配** | 管理 API 需要独立 **management key**，不能把推理 key 当管理权限 | 通用 OpenAI legacy 路径不等于支持其管理 API；不新增管理端探测——管理端**连续 5 次认证失败封禁 30 分钟**，识别（无密钥 GET `/v0/management/auth-files` 返回 401 missing management key）后一次补密钥或停手，绝不重试穷举 |
 | new-api | **无专用适配** | 用户/管理访问令牌等不能由普通推理 key 默认推定 | 部分部署兼容 legacy 不能构成 new-api 全面支持承诺 |
 | OpenHubs Pulse | **无适配，不排入** | 无 API key 通道：走 openhubs.zhidemai.com 聚合接口，浏览器 PKCE+Cookie 会话（客户端内无 Authorization/api_key）；会话 idle/absolute 双过期且无刷新令牌 | 适配需用户提供网页登录态 Cookie（比 key 敏感），与 env→secrets→provider_config 凭据契约不匹配 |
@@ -52,14 +53,14 @@
 | 权限提示 | 自动发现 OpenRouter 推理 key 可能随后认证失败；管理权限要求与“发现凭据”是两件事 | 文案明确 management key，不承诺零配置成功 |
 | 字段完整性 | 缺额度、usage、余额或窗口字段不是数值 0；合法零值也不能按缺失丢弃 | **响应字段不完整不补零**；解析失败 fail-closed；旧成功值如保留须标 stale |
 | 展示归属 | chip 主显跟随当前 pane 的 provider；tooltip 可列多源，均为账号池/余额，不是单模型独享 | 源激活成功不等于 chip 必然主显；未完成请求的 fallback、切源、关闭后残留需桌面验收 |
-| 验证边界 | VM / HTTP 夹具能检验解析与状态机，不能证明真实凭据、厂商权限或客户端挂载 | 除 BigModel、已验证的 BX-GPT/sub2api、ZCode Start Plan（bigmodel 家族）、OpenCode Go 个人 Go 档与 R4 Coder（r4.codes 个人套餐/钱包）外，不得把夹具通过表述成真账号实测；本项目其余适配仍按夹具/源码证据理解；Go Plus/Teams、R4 团队/组织账号未测 |
+| 验证边界 | VM / HTTP 夹具能检验解析与状态机，不能证明真实凭据、厂商权限或客户端挂载 | 除 BigModel、已验证的 BX-GPT/sub2api、ZCode Start Plan（bigmodel 家族）、OpenCode Go 个人 Go 档、R4 Coder（r4.codes 个人套餐/钱包）与 StepFun（api.stepfun.com 官方 usage 端点）外，不得把夹具通过表述成真账号实测；本项目其余适配仍按夹具/源码证据理解；Go Plus/Teams、R4 团队/组织账号未测 |
 
 ## 核对入口
 
 - `quota-client.cjs`：适配器、凭据发现、`resolvePrimary()`、`activeSet()`、`tickSource()` 与源列表。
 - `overlay.js`：源开关、凭据字段、chip/tooltip 的状态与归属展示。
 - `inject-main.cjs`：额度快照、配置写入与刷新桥接；`zusage.py`：SCNet 本地估算输入。
-- `tests/quota-client.test.cjs`、`tests/quota-r4.test.cjs`、`tests/quota-ollama.test.cjs`、`tests/overlay-quota-chip.test.cjs`、`tests/test_token_pricing.py`：隔离夹具；不是实际厂商账号凭据测试。
+- `tests/quota-client.test.cjs`、`tests/quota-r4.test.cjs`、`tests/quota-ollama.test.cjs`、`tests/quota-stepfun.test.cjs`、`tests/overlay-quota-chip.test.cjs`、`tests/test_token_pricing.py`：隔离夹具；不是实际厂商账号凭据测试。
 - OpenRouter 官方文档：[Get remaining credits](https://openrouter.ai/docs/api/api-reference/credits/get-credits)（management key 要求及 `total_credits` / `total_usage` 字段）。
 
 本矩阵描述开发版修复；真账号范围仅限上述接口，部署、重启与正式发布另行记录。

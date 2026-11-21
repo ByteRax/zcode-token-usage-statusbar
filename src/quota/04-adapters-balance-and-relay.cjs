@@ -759,6 +759,70 @@ ADAPTERS.push({
   },
 });
 
+/* --- StepFun Step Plan（订阅 Credit 池，2026-11-21 外部贡献） ---
+ * 官方文档化端点：GET https://api.stepfun.com/step_plan/v1/usage（Bearer key），
+ * 转写自 platform.stepfun.com/docs/zh/step-plan/usage（2026-11-20 抓取）并经真实账号
+ * 实调验证（Pro/Max 两档快照 + createQuotaClient 全链 + 桌面 chip 挂载，2026-11-20/21）。
+ * 响应是账号级套餐额度快照：plan.name / plan.subscription.expires_at_ms 为套餐名与
+ * 订阅到期；quota.credit_buckets[] 为额度桶（type="subscription" 是套餐月池，加油包
+ * 桶同构）。total/remaining 是整数字符串（官方防 JS 精度损失写法，Token Plan 档位
+ * ≤ 2e10 Credit < 2^53，按 Number 解析安全）；used_percent 是服务端已算好的已用%，
+ * 缺失时按 (total−remaining)/total 自算兜底。Credit 按订阅月发放、当期剩余到期清零
+ * 不结转（1 元 = 1,000,000 Credit，档位见官方 pricing 文档）。 */
+const STEPFUN_USAGE_URL = "https://api.stepfun.com/step_plan/v1/usage";
+function normalizeStepfun(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw qErr("parse_error", "stepfun non-object body");
+  const plan = body.plan, quota = body.quota;
+  if (!plan || typeof plan !== "object" || Array.isArray(plan)) throw qErr("parse_error", "stepfun missing plan");
+  if (!quota || typeof quota !== "object" || Array.isArray(quota)) throw qErr("parse_error", "stepfun missing quota");
+  const buckets = (Array.isArray(quota.credit_buckets) ? quota.credit_buckets : [])
+    .filter((b) => b && typeof b === "object" && !Array.isArray(b) && num(b.total) > 0 && num(b.remaining) >= 0);
+  if (!buckets.length) return { noPlan: true };   // 无有效额度桶 = 无在订套餐（fail-closed 冻结，不造 0%）
+  const pick = buckets.find((b) => b.type === "subscription") || buckets[0];
+  const total = num(pick.total), remaining = num(pick.remaining);
+  if (total == null || remaining == null || remaining > total) throw qErr("parse_error", "stepfun bucket shape invalid");
+  const usedPct = num(pick.used_percent);
+  const pct = usedPct != null ? usedPct : ((total - remaining) / total) * 100;
+  const out = { label: "StepFun", kind: "plan",
+    /* resets_at_ms 是月度 Credit 重置（真重置语义才填 resetsAt）；缺失（实测 Max 快照
+     * 不带该字段）不拿订阅到期冒充——到期时间单独落 plan.validEnd。 */
+    windows: { monthly: { percent: Math.round(clampPct(pct) * 10) / 10, resetsAt: resetOf(pick.resets_at_ms) } } };
+  const name = typeof plan.name === "string" ? plan.name.slice(0, 40) : "";
+  const sub = plan.subscription;
+  const expiresMs = (sub && typeof sub === "object" && !Array.isArray(sub)) ? resetOf(sub.expires_at_ms) : null;
+  if (name || expiresMs) {
+    out.plan = { version: "", productName: name, validStart: "",
+      validEnd: typeof expiresMs === "number" ? zcodeStartStamp(expiresMs).slice(0, 10) : "" };
+  }
+  return out;
+}
+ADAPTERS.push({
+  id: "stepfun", label: "StepFun", kind: "plan", defaultOn: true,
+  envKeys: ["STEPFUN_API_KEY"],
+  detect(j, providerId) {
+    if (providerId.indexOf("account:") === 0) return null;
+    const cp = j.customProviderOf(providerId);
+    if (!cp) return null;
+    let u = null;
+    try { u = new URL(cp.baseUrl); } catch (e) { return null; }
+    if (u.protocol !== "https:" || u.hostname.toLowerCase() !== "api.stepfun.com") return null;
+    return { key: cp.apiKey, origin: "cfg" };
+  },
+  resolveCred(j, ctx) {
+    for (const k of this.envKeys) {
+      const v = j.env[k];
+      if (v) return { token: v, fingerprint: "env:" + sha16(v), source: "env" };
+    }
+    const sec = (j.secrets.sources || {}).stepfun || {};
+    if (sec.apiKey) return { token: sec.apiKey, fingerprint: "sec:" + sha16(sec.apiKey), source: "secrets" };
+    if (ctx.key) return { token: ctx.key, fingerprint: "cfg:" + sha16(ctx.key), source: "provider_config" };
+    return null;
+  },
+  async fetchOne(j, ctx, cred, ctl) {
+    return normalizeStepfun(await j.http.getJson(STEPFUN_USAGE_URL, { authorization: "Bearer " + cred.token }, ctl));
+  },
+});
+
 /* --- 自定义中转（sub2api / OpenAI legacy；仅查询配置地址的同源） --- */
 ADAPTERS.push({
   id: "custom", label: "中转站", kind: "balance", defaultOn: false,
@@ -812,6 +876,7 @@ const SOURCE_PRESETS = {
     ],
   },
   deepseek: { keyUrl: "https://platform.deepseek.com/api_keys" },
+  stepfun: { keyUrl: "https://platform.stepfun.com/account-overview" },
   openrouter: { keyUrl: "https://openrouter.ai/settings/keys" },
   r4: { keyUrl: "https://r4.codes/dashboard/api-keys" },
   kimi: { keyUrl: "https://platform.moonshot.cn/console/api-keys" },
