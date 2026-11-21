@@ -1217,3 +1217,95 @@ test("GLr security: runtime route baseUrl outside official domains falls back to
   assert.equal(messages.url, "https://open.bigmodel.cn/api/anthropic/v1/messages", "evil runtime route rejected; table fallback used");
   assert.ok(!calls.some((c) => c.url.indexOf("evil.com") >= 0), "no request ever leaves to evil.com");
 });
+
+/* ---------- 合并后置 review（A/B/D 三路）收口：per-leg 脱敏、zcode 路由仅认会话 JWT、边界锁 ---------- */
+
+test("R3-MAJOR: fallback-leg balance detail masks the GLr token actually sent (per-leg secret)", async () => {
+  const f = glrFixture({ zcodeMessagesStatus: 405, bigmodelMessagesStatus: 429, bigmodelMessagesBody: JSON.stringify({ error: { code: "1113", message: "余额不足或无可用资源包 echo=glr-tok-1" } }) });
+  const r = await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r.ok, false);
+  assert.equal(r.kind, "balance");
+  assert.ok(r.detail && r.detail.indexOf("余额不足") >= 0, "upstream body rides detail");
+  assert.equal(r.detail.indexOf("glr-tok-1"), -1, "fallback-leg token must be masked with its own secret");
+  assert.equal(r.detail.indexOf("zc-session-jwt-1"), -1, "primary credential must not leak either");
+});
+
+test("R3: zcode route is session-JWT-only; v2 entry key never sent there (review A-MINOR-1)", async () => {
+  // 会话可用：entry key 存在也不上 zcode 路由（无设备头的 entry key 恒 400 code 3001）
+  const a = glrFixture({});
+  fs.writeFileSync(path.join(a.dir, "config.json"), JSON.stringify({ provider: {
+    "builtin:bigmodel-coding-plan": { options: { apiKey: "v2-entry-key" }, enabled: true },
+  } }));
+  const ra = await a.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(ra.ok, true);
+  const msgA = a.calls.find((c) => c.url.indexOf("/v1/messages") > 0);
+  assert.equal(msgA.url, "https://zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages");
+  assert.equal(msgA.opts.headers.Authorization, "Bearer zc-session-jwt-1", "session JWT wins on the zcode route even with an entry key");
+  assert.equal(a.calls.filter((c) => c.url.indexOf("/access_tokens") > 0).length, 0, "no exchange needed on session route");
+  // 会话不可用：entry key 迁移表值路由（open.bigmodel.cn 接受项目 key），零换发零 zcode 尝试
+  const b = glrFixture({ noSessionJwt: true });
+  fs.writeFileSync(path.join(b.dir, "config.json"), JSON.stringify({ provider: {
+    "builtin:bigmodel-coding-plan": { options: { apiKey: "v2-entry-key" }, enabled: true },
+  } }));
+  const rb = await b.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(rb.ok, true);
+  const msgB = b.calls.find((c) => c.url.indexOf("/v1/messages") > 0);
+  assert.equal(msgB.url, "https://open.bigmodel.cn/api/anthropic/v1/messages", "entry key rides the table route when session is unavailable");
+  assert.equal(msgB.opts.headers.Authorization, "Bearer v2-entry-key");
+  assert.equal(b.calls.filter((c) => c.url.indexOf("zcode.z.ai") > 0).length, 0, "zcode route never attempted without a session credential");
+  assert.equal(b.calls.filter((c) => c.url.indexOf("/access_tokens") > 0).length, 0, "entry key short-circuits exchange");
+});
+
+test("R3-RECIPE-1: enc:-shaped session JWT is never sent; fails closed to GLr/plan_auth", async () => {
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+  const dir = path.dirname(file);
+  fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify({
+    "oauth:bigmodel:access_token": "enc:oauth-1",
+    "zcodejwttoken": "enc:v1:still.cipher.text",   // 敌意/双重包裹信封
+    [GLR_LOC_KEY]: "enc:loc-1",
+  }));
+  const calls = [];
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: async (url, requestOpts) => { calls.push({ url, opts: requestOpts }); return url === GLR_EXCHANGE_URL ? { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { enabled: true, accessToken: "glr-tok-1" } }) } : sseRes(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']); }, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: path.join(dir, "credentials.json"), decryptValue: (enc) => (enc === "enc:loc-1" ? GLR_LOC_JSON : String(enc).indexOf("enc:oauth-") === 0 ? "glr-oauth-1" : null), hostVersion: "3.19.1" });
+  const r = await mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r.ok, true, "migrates to GLr on the table route");
+  const msgCalls = calls.filter((c) => c.url.indexOf("/v1/messages") > 0);
+  assert.equal(msgCalls.length, 1);
+  assert.equal(msgCalls[0].url, "https://open.bigmodel.cn/api/anthropic/v1/messages", "cipher JWT never rides the zcode route");
+  assert.equal(msgCalls[0].opts.headers.Authorization, "Bearer glr-tok-1");
+  assert.ok(!calls.some((c) => c.opts && c.opts.headers && String(c.opts.headers.Authorization || "").indexOf("enc:") === 0), "no envelope-shaped credential ever leaves");
+  // 无 location 兜底：plan_auth 零网络（RECIPE-1 原形）
+  fs.rmSync(path.join(dir, "credentials.json"));
+  fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify({ "oauth:bigmodel:access_token": "enc:oauth-1", "zcodejwttoken": "enc:v1:still.cipher.text" }));
+  const calls2 = [];
+  const mp2 = M.createModelPuller({ customCfgPath: file, fetchImpl: async (url, requestOpts) => { calls2.push({ url }); return sseRes(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']); }, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: path.join(dir, "credentials.json"), decryptValue: (enc) => (String(enc).indexOf("enc:oauth-") === 0 ? "glr-oauth-1" : null), hostVersion: "3.19.1" });
+  const r2 = await mp2.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r2.kind, "plan_auth");
+  assert.equal(calls2.length, 0, "zero network with cipher JWT and no location");
+});
+
+test("R3-RECIPE-2: zcode 5xx stays on primary (retry semantics) without dual-route fallback", async () => {
+  const f = glrFixture({ zcodeMessagesStatus: 502, bigmodelMessagesStatus: 401 });
+  const r = await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r.ok, false);
+  assert.equal(r.kind, "server", "server-class primary failure retries in place, never engages the fallback");
+  const msgCalls = f.calls.filter((c) => c.url.indexOf("/v1/messages") > 0);
+  assert.equal(msgCalls.length, 2, "both attempts on the primary leg");
+  assert.ok(msgCalls.every((c) => c.url.indexOf("zcode.z.ai") > 0), "no bigmodel.cn call for server-class failure");
+});
+
+test("R3-RECIPE-3: zcode 403 keeps primary diagnosis without fallback (401-only auth fallback)", async () => {
+  const f = glrFixture({ zcodeMessagesStatus: 403 });
+  const r = await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r.ok, false);
+  assert.equal(r.kind, "auth");
+  assert.equal(f.calls.filter((c) => c.url.indexOf("/v1/messages") > 0).length, 1, "single call, no fallback for 403");
+});
+
+test("R3: fallback leg runs a single attempt (wall-clock bound)", async () => {
+  const f = glrFixture({ zcodeMessagesStatus: 405, bigmodelMessagesStatus: 500 });
+  const r = await f.mp.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r.ok, false);
+  assert.equal(r.kind, "path", "double failure keeps the primary diagnostic");
+  assert.equal(f.calls.filter((c) => c.url.indexOf("/v1/messages") > 0).length, 2, "primary 405 (1, non-retry) + fallback 500 (1, single-attempt cap); old code retried the 500 for 3");
+});

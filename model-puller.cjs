@@ -2058,28 +2058,32 @@ function createModelPuller(opts) {
     let baseUrl = String((planSrc ? planBaseUrl(providerId) : api.baseUrl) || "").trim().replace(/\/+$/, "");
     /* zcode.z.ai 会话网关（specs/plan-glr-credential.md 补篇）：GLr accessToken 是
      * bigmodel.cn 项目域凭据，打该网关恒 401（2026-11-21 真机实测）——该路由必须用
-     * zcodejwttoken（会话 JWT）+ X-Device-Mid（额度链 zcode-start 同款口径）。 */
+     * zcodejwttoken（会话 JWT）+ X-Device-Mid（额度链 zcode-start 同款口径）。
+     * v2 条目 key 属 open.bigmodel.cn 端点：无设备头打 zcode.z.ai 恒 400 code 3001
+     * （review R3-A），不用于该路由——zcode 路由仅认会话 JWT，会话不可得即迁移表值路由。 */
     const isZcodeSessionRoute = !!planSrc && /(^|\.)zcode\.z\.ai$/.test((() => { try { return new URL(baseUrl).hostname.toLowerCase(); } catch (e) { return ""; } })());
     let apiKey = "", zcodeSession = null;
     if (planSrc) {
       if (isBigmodelPlan) {
-        /* GLr 时代凭据序（specs/plan-glr-credential.md）：v2 条目明文 key（3.18 宿主/旧机器）
-         * → 按路由分流：zcode.z.ai 用会话 JWT+设备号；bigmodel.cn 用 GLr 换发 token
-         * （3.19.x 宿主运行时解析对等）→ 均不可用诚实报 plan_auth。
-         * OAuth 直连兜底已移除——v344 实测被网关 500 code 1234 拒，绝不该作为 fallback 重现。
-         * 会话凭据不可得时 GLr token 直接改走表值路由（bigmodel.cn）为主路由。 */
-        apiKey = planEntryKeyOf(providerId);
-        if (!apiKey) {
-          if (isZcodeSessionRoute) {
-            zcodeSession = readZcodeSessionCred();
-            if (zcodeSession) apiKey = zcodeSession.token;
-            if (!apiKey) {
-              apiKey = await planGLrTokenOf(providerId, external);
-              if (apiKey) baseUrl = String((PLAN_SOURCES[String(providerId)] || {}).baseUrl || baseUrl).trim().replace(/\/+$/, "");
-            }
+        /* GLr 时代凭据序（specs/plan-glr-credential.md）：v2 条目明文 key（3.18 宿主/旧机器，
+         * 属 open.bigmodel.cn 端点）→ 按路由分流：zcode.z.ai 仅认会话 JWT+设备号（会话不可得
+         * 即以 entry key/GLr 迁移表值路由为主路由）；bigmodel.cn 用 GLr 换发 token（3.19.x
+         * 宿主运行时解析对等）→ 均不可用诚实报 plan_auth。
+         * OAuth 直连兜底已移除——v344 实测被网关 500 code 1234 拒，绝不该作为 fallback 重现。 */
+        if (isZcodeSessionRoute) {
+          zcodeSession = readZcodeSessionCred();
+          if (zcodeSession) {
+            apiKey = zcodeSession.token;
           } else {
-            apiKey = await planGLrTokenOf(providerId, external);
+            const entryKey = planEntryKeyOf(providerId);
+            apiKey = entryKey || (await planGLrTokenOf(providerId, external));
+            if (apiKey) {
+              baseUrl = String((PLAN_SOURCES[String(providerId)] || {}).baseUrl || baseUrl).trim().replace(/\/+$/, "");
+              log("enhance zcode session cred unavailable; riding table route with " + (entryKey ? "v2 entry key" : "GLr token"));
+            }
           }
+        } else {
+          apiKey = planEntryKeyOf(providerId) || (await planGLrTokenOf(providerId, external));
         }
         if (!apiKey) {
           if (external && external.aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
@@ -2117,9 +2121,12 @@ function createModelPuller(opts) {
       }
       return req;
     };
-    const runAttempts = async (req) => {
+    /* legKey=本腿实际发送的凭据（review 后置 R3-A/D：maskSecrets 必须配对本腿 secret，
+     * 降级腿复用主腿闭包变量会把 GLr token 原样带进 detail 回渲染端）；maxAttempts：
+     * 降级腿限单次（双腿满配最坏 ≈107s 越过渲染端 75s 兜底）；legTag=日志腿标识。 */
+    const runAttempts = async (req, legKey, maxAttempts, legTag) => {
       let lastFail = null;
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
         if (external && external.aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
         if (attempt) {
           const aborted = await new Promise((resolve) => {
@@ -2167,7 +2174,7 @@ function createModelPuller(opts) {
           }
           if (!res.ok) {
             let errorDetail = "";
-            try { errorDetail = maskSecrets(String(await readEnhanceBody(res)), apiKey).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "").slice(0, 500); } catch (e) { }   // 必须在取消响应体之前读取；正文过 maskSecrets 防凭据回显
+            try { errorDetail = maskSecrets(String(await readEnhanceBody(res)), legKey || apiKey).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "").slice(0, 500); } catch (e) { }   // 必须在取消响应体之前读取；正文过 maskSecrets（本腿凭据，R3-A/D）防凭据回显
             if (res && res.body && typeof res.body.cancel === "function") {
               try { Promise.resolve(res.body.cancel()).catch(() => { }); } catch (e) { }
             }
@@ -2182,7 +2189,7 @@ function createModelPuller(opts) {
               delete lastFail.error;
             }
             if (errorDetail) lastFail.detail = errorDetail;
-            log("enhance http " + lastFail.status + " (" + attempt + ")");
+            log("enhance http " + lastFail.status + " leg=" + (legTag || "primary") + " (" + attempt + ")");
             if (lastFail.kind !== "server") return lastFail;
           }
         } catch (e) {
@@ -2196,7 +2203,7 @@ function createModelPuller(opts) {
       }
       return lastFail;
     };
-    let result = await runAttempts(buildRequest(baseUrl, apiKey, zcodeSession ? zcodeSession.deviceMid : null));
+    let result = await runAttempts(buildRequest(baseUrl, apiKey, zcodeSession ? zcodeSession.deviceMid : null), apiKey, 2, "primary");
     if (planSrc && isBigmodelPlan && result && !result.ok && (result.kind === "path" || result.status === 401)) {
       const primaryHost = (() => { try { return new URL(baseUrl).hostname.toLowerCase(); } catch (e) { return ""; } })();
       if (/(^|\.)zcode\.z\.ai$/.test(primaryHost)) {
@@ -2208,7 +2215,8 @@ function createModelPuller(opts) {
         if (altBase && altBase !== baseUrl && !(external && external.aborted)) {
           const glr = await planGLrTokenOf(providerId, external);
           if (glr) {
-            const r2 = await runAttempts(buildRequest(altBase, glr, null));
+            log("enhance dual-route fallback engaged (primary " + result.status + ")");
+            const r2 = await runAttempts(buildRequest(altBase, glr, null), glr, 1, "fallback");   // 降级腿：单次 + 本腿凭据脱敏
             if (r2 && (r2.ok || r2.kind === "balance")) return r2;   // 降级成功或给出更可行动的 balance 文案
             return result;   // 双败：主路由的 path/401 更具诊断性
           }
