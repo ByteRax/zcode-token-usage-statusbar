@@ -404,10 +404,18 @@ def ack_restart(runtime, loaded):
                 #（如 preserved 保护的开发部署覆盖了同步写入的字节）。该目标重启也
                 # 加载不到（loaded 恒不等于 digest），保留只会让 ⚙ 红点永亮——以盘上
                 # 现状为准视为已被超越，从待办剔除；目标仍有效（盘上==digest）则照常保留。
+                if (os.path.splitdrive(key)[0] or os.path.isabs(key) or "\x00" in key
+                        or key in (os.curdir, os.pardir)
+                        or os.sep in key or (os.altsep and os.altsep in key)):
+                    continue   # 损坏 marker 的路径形键：正常写入方全白名单，拒读防拼路径逃逸
                 try:
                     on_disk = hashlib.sha256((runtime / key).read_bytes()).hexdigest()
+                except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
+                    on_disk = None   # 文件已不在盘上：目标永加载不到，按已被超越剔除
                 except OSError:
-                    on_disk = None
+                    # Windows 读目录占位抛 PermissionError 而非 IsADirectoryError：目录永不
+                    # 匹配 digest，同样按已被超越剔除；其余瞬态读失败保守保留待办，下次 ack 再核
+                    on_disk = None if (runtime / key).is_dir() else digest
                 if on_disk != digest:
                     continue
                 remaining[key] = digest

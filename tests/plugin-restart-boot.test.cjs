@@ -57,10 +57,13 @@ test("real startup fingerprint acknowledgement clears only deployed matching has
   assert.equal(fs.existsSync(boot.marker), false);
 });
 
-test("real startup retains newer pending file while removing matching older entries", async (t) => {
+test("real startup drops marker entries whose recorded bytes left the disk", async (t) => {
+  // 盘检语义（2026-11-21 孤儿 marker 防御）：marker 记录的 digest 不在盘上（伪 digest、
+  // 记录后文件被第三方改写/删除）一律按已被超越剔除，不再整单保留——孤儿条目不得让
+  // ⚙ 红点永亮；合法待办由 ack_restart 的 createdAt-vs-_loadedAt 守卫保留、由下次
+  // SessionStart 重同步自愈
   const boot = await bootLoader(t, (hashes) => ({ ...hashes, "plugin-updater.cjs": "f".repeat(64) }));
-  assert.deepEqual(JSON.parse(fs.readFileSync(boot.marker, "utf8")).hashes,
-    { "plugin-updater.cjs": "f".repeat(64) });
+  assert.equal(fs.existsSync(boot.marker), false);
 });
 
 test("restart notification written after startup snapshot is not cleared even if hashes match", async (t) => {

@@ -221,7 +221,7 @@ class RestartNoticeTests(unittest.TestCase):
         保护，行为正确）把运行文件覆盖为更新字节——digest 与盘上现状永久分叉，旧逻辑
         remaining 恒非空导致 marker 孤儿化。以盘上现状为准：digest 不在盘上即视为已被
         超越，从待办剔除；全部剔除后 marker 清除，红点不再常亮。"""
-        import runtime_lock
+        runtime_lock = root_runtime_lock()
         self.pending_sync()
         created_ms = json.loads((self.runtime / notice.MARKER).read_text(encoding="utf-8"))["createdAt"] * 1000
         (self.runtime / "inject-main.cjs").write_bytes(b"newer deploy supersedes recorded digest")
@@ -232,7 +232,7 @@ class RestartNoticeTests(unittest.TestCase):
     def test_disk_backed_digest_survives_when_loaded_snapshot_is_stale(self):
         """对照侧：目标字节仍在盘上（等重启加载）、只是启动快照未持有——marker 必须保留，
         不得因 loaded 未匹配被新逻辑误剔。"""
-        import runtime_lock
+        runtime_lock = root_runtime_lock()
         self.pending_sync()
         created_ms = json.loads((self.runtime / notice.MARKER).read_text(encoding="utf-8"))["createdAt"] * 1000
         ack = runtime_lock.ack_restart(self.runtime, {"_loadedAt": created_ms + 1})
@@ -240,6 +240,89 @@ class RestartNoticeTests(unittest.TestCase):
         self.assertTrue((self.runtime / notice.MARKER).exists())
         self.assertEqual(json.loads((self.runtime / notice.MARKER).read_text(encoding="utf-8"))["hashes"],
                          {"inject-main.cjs": hashlib.sha256(b"new loader").hexdigest()})
+
+    def test_missing_file_supersedes_recorded_digest_and_clears_marker(self):
+        """覆盖的极端形态：记录后运行文件被删除（读侧 FileNotFoundError）同样永加载
+        不到，按已被超越剔除，marker 照常清除。"""
+        runtime_lock = root_runtime_lock()
+        self.pending_sync()
+        created_ms = json.loads((self.runtime / notice.MARKER).read_text(encoding="utf-8"))["createdAt"] * 1000
+        (self.runtime / "inject-main.cjs").unlink()
+        ack = runtime_lock.ack_restart(self.runtime, {"_loadedAt": created_ms + 1})
+        self.assertTrue(ack["cleared"])
+        self.assertFalse((self.runtime / notice.MARKER).exists())
+
+    def test_directory_at_target_path_supersedes_recorded_digest(self):
+        """目录占位在目标路径（损坏 marker/异常部署形态）：目录永不匹配 digest，按已被
+        超越剔除。Windows 读目录抛 PermissionError 而非 IsADirectoryError，靠 is_dir
+        归一，两平台断言一致。"""
+        runtime_lock = root_runtime_lock()
+        self.pending_sync()
+        created_ms = json.loads((self.runtime / notice.MARKER).read_text(encoding="utf-8"))["createdAt"] * 1000
+        (self.runtime / "inject-main.cjs").unlink()
+        (self.runtime / "inject-main.cjs").mkdir()
+        ack = runtime_lock.ack_restart(self.runtime, {"_loadedAt": created_ms + 1})
+        self.assertTrue(ack["cleared"])
+        self.assertFalse((self.runtime / notice.MARKER).exists())
+
+    def test_transient_read_failure_conservatively_keeps_pending_digest(self):
+        """瞬态读失败（杀软/备份短暂持锁的 PermissionError）无法判定盘上现状：保守
+        保留待办、下次 ack 再核，不得当「已被超越」误剔让红点提前熄灭。"""
+        runtime_lock = root_runtime_lock()
+        self.pending_sync()
+        created_ms = json.loads((self.runtime / notice.MARKER).read_text(encoding="utf-8"))["createdAt"] * 1000
+        real_read_bytes = Path.read_bytes
+
+        def flaky_read_bytes(path_self):
+            if path_self.name == "inject-main.cjs":
+                raise PermissionError(13, "transient scanner lock")
+            return real_read_bytes(path_self)
+
+        with mock.patch.object(Path, "read_bytes", flaky_read_bytes):
+            ack = runtime_lock.ack_restart(self.runtime, {"_loadedAt": created_ms + 1})
+        self.assertFalse(ack["cleared"])
+        self.assertEqual(json.loads((self.runtime / notice.MARKER).read_text(encoding="utf-8"))["hashes"],
+                         {"inject-main.cjs": hashlib.sha256(b"new loader").hexdigest()})
+
+    def test_malformed_marker_key_is_dropped_and_good_entry_kept(self):
+        """损坏 marker 的路径形键（分隔符/../NUL）不进盘检拼路径读盘，直接从待办剔除；
+        同单内合法条目不受影响照常保留。分隔符逃逸键在运行目录外真实放置 digest 匹配
+        字节：形状校验缺席时该键会被读到并匹配保留（逃逸成立），本测试即转红——
+        钉住整个形状校验而非仅 NUL 分支。"""
+        runtime_lock = root_runtime_lock()
+        self.pending_sync()
+        outside = self.runtime.parent / "escaped"
+        outside.write_bytes(b"escaped payload bytes")
+        escape_digest = hashlib.sha256(b"escaped payload bytes").hexdigest()
+        marker = self.runtime / notice.MARKER
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        data["hashes"]["..\\escaped"] = escape_digest    # Windows 分隔符逃逸
+        data["hashes"]["../escaped"] = escape_digest     # POSIX 分隔符 / Windows altsep
+        data["hashes"]["a\x00nul"] = "c" * 64
+        marker.write_text(json.dumps(data), encoding="utf-8")
+        created_ms = data["createdAt"] * 1000
+        ack = runtime_lock.ack_restart(self.runtime, {"_loadedAt": created_ms + 1})
+        self.assertFalse(ack["cleared"])
+        self.assertEqual(json.loads(marker.read_text(encoding="utf-8"))["hashes"],
+                         {"inject-main.cjs": hashlib.sha256(b"new loader").hexdigest()})
+
+    def test_partially_superseded_marker_keeps_only_disk_backed_entries(self):
+        """多条目一剔一留：被超越条目剔除、盘上仍有效条目保留，marker 部分销账而非
+        整单清除。"""
+        runtime_lock = root_runtime_lock()
+        self.pending_sync()
+        (self.runtime / "quota-client.cjs").write_bytes(b"still pending on disk")
+        kept_digest = hashlib.sha256(b"still pending on disk").hexdigest()
+        marker = self.runtime / notice.MARKER
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        data["hashes"]["quota-client.cjs"] = kept_digest
+        marker.write_text(json.dumps(data), encoding="utf-8")
+        created_ms = data["createdAt"] * 1000
+        (self.runtime / "inject-main.cjs").write_bytes(b"newer deploy supersedes recorded digest")
+        ack = runtime_lock.ack_restart(self.runtime, {"_loadedAt": created_ms + 1})
+        self.assertFalse(ack["cleared"])
+        self.assertEqual(json.loads(marker.read_text(encoding="utf-8"))["hashes"],
+                         {"quota-client.cjs": kept_digest})
 
     def test_publication_cas_does_not_recreate_or_certify_other_intents(self):
         import runtime_lock
