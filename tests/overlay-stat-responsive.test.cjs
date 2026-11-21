@@ -119,8 +119,10 @@ test('v412 模式映射与幂等：理想宽 540 时 540→full 500→compact 43
     return { attr, writes };
   }
   assert.equal(run(540).attr, 'full');
-  assert.equal(run(516).attr, 'full');
-  assert.equal(run(515.4).attr, 'compact');
+  // v416 容差 24px 提到 32px：真实 DOM 卡根外层 .tip 有 28px padding+border chrome，
+  // 24px 容差使 full 档在满宽窗口恒不可达（边界随批顺延：508 全含 / 507.4 落 compact）
+  assert.equal(run(508).attr, 'full');
+  assert.equal(run(507.4).attr, 'compact');
   assert.equal(run(440).attr, 'compact');
   assert.equal(run(439.6).attr, 'narrow');
   assert.equal(run(360).attr, 'narrow');

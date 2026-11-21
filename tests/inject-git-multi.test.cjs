@@ -302,8 +302,8 @@ test("queryGitStatus: 恰 1 个子仓走完整单仓管线并附子仓 repoPath"
   assert.ok(!("repos" in st), "单仓形状无 repos");
   assert.deepEqual([st.branch, st.ins, st.del], ["main", 5, 1], "diff HEAD 短统计已合并");
   assert.deepEqual(execs.map(e => [...e.args]), [
-    ["-C", "/fixture/parent", "status", "--porcelain", "--branch"],
-    ["-C", "/fixture/parent/alpha", "status", "--porcelain", "--branch"],
+    ["-C", "/fixture/parent", "-c", "core.quotepath=false", "status", "--porcelain", "--branch"],
+    ["-C", "/fixture/parent/alpha", "-c", "core.quotepath=false", "status", "--porcelain", "--branch"],
     ["-C", "/fixture/parent/alpha", "diff", "HEAD", "--shortstat"],
   ], "status + diff HEAD 两条命令都执行");
 });
@@ -323,7 +323,7 @@ test("queryGitStatus: workspace 自身是仓库直接单仓形状，repoPath 等
   assert.equal(st.repoPath, "/fixture/repo");
   assert.ok(!("kind" in st) && !("repos" in st), "不触发子仓聚合");
   assert.deepEqual(execs.map(e => [...e.args.filter(a => a !== "-C" && a !== "/fixture/repo")]),
-    [["status", "--porcelain", "--branch"], ["diff", "HEAD", "--shortstat"]], "现有单仓管线原样");
+    [["-c", "core.quotepath=false", "status", "--porcelain", "--branch"], ["diff", "HEAD", "--shortstat"]], "现有单仓管线原样（quotepath 随 v416 关闭）");
 });
 
 /* ---------- 上限语义与 gitTick 集成 ---------- */

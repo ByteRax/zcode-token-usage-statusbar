@@ -566,6 +566,8 @@
       }
       if (weekForm && an.overall) series.push({ color: "", dashed: true, mkey: "", pts: spd3SeriesPts(slots, null) });
     } else {
+      /* v392 起 today/week 单模型恒柱状，不进本函数；此分支只服务多模型（multi）
+       * 与 perModel===0 的降级中性线——soloKey 彩色线/面积/端标签为不可达历史形态 */
       var soloKey = !multi && an.perModel && an.perModel.length === 1 ? an.perModel[0].key : "";
       series.push({ color: soloKey ? spd3Color(soloKey) : "", dashed: false, mkey: soloKey, pts: spd3SeriesPts(slots, null) });
     }
@@ -710,7 +712,9 @@
       var maxV = spd3RealMax(slots);
       if (!slots.length || !(maxV > 0)) return spd3ChartEmptyHTML(spd3ChartHeadHTML(an, sub) || "");
       var tk = spd3Ticks(maxV), gt = spd3GridTicks(tk);
-      SPD_PORTAL = spd3PortalFor(slots, hoverIdx, o, false);
+      /* slots 是日桶：slotDay 必须传 true（§11.5 日桶区间「全天/截至」口径）——
+       * v392 从 today 单模型分支移植时把 today 的 false 一起抄了过来（v416 修正） */
+      SPD_PORTAL = spd3PortalFor(slots, hoverIdx, o, true);
       return SPD3_CHART_CSS +
         '<div class="zu-speed-chart zu-sv3-chart">' + (spd3ChartHeadHTML(an, sub) || "") +
         spd3BarsFrame(gt, slots.length, spd3BarCols(slots, hoverIdx, tk.yMax)) + "</div>";

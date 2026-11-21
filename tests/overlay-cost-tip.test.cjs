@@ -107,7 +107,7 @@ function harness({ costLS = null } = {}) {
              'window.__zuTips = h.tips;\n      for (var i = 0; i < els.length; i++) els[i].__tip = h.tips[i] || null;')
     .replace('function wireTpsChip(chip) {', 'window.__zuTpsTip = tpsChipTipHTML;\n    function wireTpsChip(chip) {')
     .replace(/\}\)\(\);\s*$/, 'window.costTest = { state: function() { return state; } };})();');
-  function inject() { window.__zusageOverlay = false; if (!globalThis.__dump2) { globalThis.__dump2 = 1; fs.writeFileSync('/tmp/exe-ct.js', executable); } vm.runInContext(executable, sandbox); }
+  function inject() { window.__zusageOverlay = false; if (!globalThis.__dump2) { globalThis.__dump2 = 1; fs.writeFileSync(path.join(require('node:os').tmpdir(), 'exe-ct.js'), executable); } vm.runInContext(executable, sandbox); }
   function tick() { for (const t of [...timers.values()]) if (t.interval && (t.ms === 600 || t.ms === 500)) t.fn(); }
   function boot() { for (const [n, t] of [...timers]) if (!t.interval && t.ms === 0) { timers.delete(n); t.fn(); } }
   function buildComposer(pid, sid) {

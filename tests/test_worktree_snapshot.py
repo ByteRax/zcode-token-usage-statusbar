@@ -171,15 +171,17 @@ class WorktreeSourceRootTests(unittest.TestCase):
 
     def test_source_root_from_git_link(self):
         """<root>/.git 链接文件上溯两级得源仓库（v409）。"""
+        # 期望值经 Path 归一：实现返回 str(Path(...))，Windows 下分隔符为本机形状
+        # （断言曾硬编码 POSIX 字面量，在 Windows 恒红——v416 修正）
         (self.root / ".git").write_text("gitdir: /src/repo/.git/worktrees/wtname6\n", encoding="utf-8")
-        self.assertEqual(zusage._worktree_source_root(str(self.root)), "/src/repo")
+        self.assertEqual(zusage._worktree_source_root(str(self.root)), str(Path("/src/repo")))
 
     def test_fail_soft_cases(self):
         self.assertIsNone(zusage._worktree_source_root(str(self.root)))   # 无 .git
         (self.root / ".git").write_text("gitdir: /src/repo/.git\n", encoding="utf-8")
         self.assertIsNone(zusage._worktree_source_root(str(self.root)))   # 非 worktrees 布局
         (self.root / ".git").write_text("gitdir: /x/.git/worktrees/w\n", encoding="utf-8")
-        self.assertEqual(zusage._worktree_source_root(str(self.root)), "/x")   # 最短合法形态
+        self.assertEqual(zusage._worktree_source_root(str(self.root)), str(Path("/x")))   # 最短合法形态
         (self.root / ".git").write_text("not gitdir line\n", encoding="utf-8")
         self.assertIsNone(zusage._worktree_source_root(str(self.root)))   # 格式不符
 

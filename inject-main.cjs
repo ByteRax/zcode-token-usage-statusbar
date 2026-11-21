@@ -2394,7 +2394,10 @@ function gitFailure(r) {   // null = 成功；否则渲染端可识别的 reason
  * diff + diff --cached 求和。成功返回统一附 repoPath（渲染端 tooltip 目录行用）与 ts（成功
  * 时刻）与 op（进行中的 Git 操作），失败形状不变。 */
 async function gitSingleStatus(cwd) {
-  const st = await gitExec(cwd, ["status", "--porcelain", "--branch"]);
+  /* core.quotepath=false：v411 起本管线的文件路径直接进 tooltip 展示，默认 quotepath
+   * 会把非 ASCII 文件名转成八进制转义串（中文文件名整行不可读）；仅单仓管线开（多仓
+   * 聚合只计数不收路径）。渲染端 gitEsc 只做 HTML 转义，不做 unquotepath。 */
+  const st = await gitExec(cwd, ["-c", "core.quotepath=false", "status", "--porcelain", "--branch"]);
   const bad = gitFailure(st);
   if (bad) {
     if (bad === "nogit" && !gitNoBinaryLogged) { gitNoBinaryLogged = true; LOG("git not found in PATH; git chip stays hidden"); }

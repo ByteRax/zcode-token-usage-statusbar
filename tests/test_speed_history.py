@@ -505,17 +505,19 @@ class SpeedDaysTests(unittest.TestCase):
 
     def test_day_counts_include_invalid_rows_and_model_tn(self):
         now = int(datetime.now().timestamp() * 1000)
-        # 同一天：t1 一条有效 + 一条无效；t2 一条有效 → turns=2、n=3、out=150、ms=1500
+        # 同一天：t1 一条有效 + 一条无效（低于下限）；t2/t3 各一条有效 + 一条超上限
+        # 无效 → turns=3、n=4、out=150、ms=1500（上下两向无效窗口都只计 n，不计 out/ms）
         self.row("e1", "t1", 100, 1000, now)
-        self.row("e2", "t1", 999, 100, now)      # 无效窗口：n 计入，out/ms 不计
+        self.row("e2", "t1", 999, 100, now)      # 无效窗口（<MIN_GEN_MS）：n 计入，out/ms 不计
         self.row("e3", "t2", 50, 500, now)
+        self.row("e4", "t3", 70, 3600001, now)   # 无效窗口（>1h 上限）：同上，防窗口上限漏网
         self.con.commit()
         sd = zusage._speed_days(self.con)
         b = self.bucket(sd, datetime.fromtimestamp(now / 1000).date())
-        self.assertEqual(b[:4], [150, 1500, 3, 2])
+        self.assertEqual(b[:4], [150, 1500, 4, 3])
         msl_glm = b[5][:5]   # 唯一模型 glm 的打平条目
-        self.assertEqual(msl_glm[3], 3, "模型 n=当日该模型已完成行数（含无效窗口行）")
-        self.assertEqual(msl_glm[4], 2, "tn=当日含该模型已完成行的 distinct 轮数")
+        self.assertEqual(msl_glm[3], 4, "模型 n=当日该模型已完成行数（含无效窗口行）")
+        self.assertEqual(msl_glm[4], 3, "tn=当日含该模型已完成行的 distinct 轮数")
 
     def test_null_turn_id_rows_count_independently(self):
         now = int(datetime.now().timestamp() * 1000)

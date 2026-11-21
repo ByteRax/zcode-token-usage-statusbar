@@ -177,7 +177,7 @@ test("queryGitStatus: one status + one diff HEAD call with locked-down env, merg
   assert.deepEqual({ ...st.files[0] }, { p: "a", s: "modified" });
   assert.equal(typeof st.ts, "number");
   assert.deepEqual(execs.map(e => [...e.args]), [
-    ["-C", "/fixture/repo", "status", "--porcelain", "--branch"],
+    ["-C", "/fixture/repo", "-c", "core.quotepath=false", "status", "--porcelain", "--branch"],
     ["-C", "/fixture/repo", "diff", "HEAD", "--shortstat"],
   ]);
   assert.equal(execs[0].cmd, "git");
@@ -227,7 +227,7 @@ test("queryGitStatus: commit-less repo falls back to unstaged + cached shortstat
   assert.equal(st.ok, true);
   assert.deepEqual([st.noCommits, st.branch, st.ins, st.del], [true, "main", 3, 0]);
   assert.deepEqual(execs.map(e => e.args.filter(a => a !== "-C" && a !== "/fixture/repo")).map(a => [...a]), [
-    ["status", "--porcelain", "--branch"],
+    ["-c", "core.quotepath=false", "status", "--porcelain", "--branch"],
     ["diff", "HEAD", "--shortstat"],
     ["diff", "--shortstat"],
     ["diff", "--cached", "--shortstat"],
