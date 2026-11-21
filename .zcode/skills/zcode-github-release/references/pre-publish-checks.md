@@ -85,12 +85,12 @@ done
 
 ## 重启要求
 
-主进程加载的冷文件变更后，旧版主进程（或涉及 `inject-main.cjs` 自身变更时全部版本）必须完全退出 ZCode 再启动，更新说明必须写明。权威清单是 `overlay_install.py` 的 `cold_files` 与 `plugin-updater.cjs` 的 `cold` 判定（先核对两处清单没有漂移，当前为 `inject-main.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`quota-client.cjs`、`model-puller.cjs`、`engine-patch.cjs`；注：v258 起已运行新版 `inject-main.cjs` 的客户端可通过 `hotReloadMainModules` 热换除 `inject-main.cjs` 外的 6 个子模块，但面向在野跨版本升级用户仍须按该清单提示重启）。改写 `app.asar` 的注入/渲染端桥文件或 macOS 待更新包补丁同样需要完全重启。用上一正式 tag 到发布提交的 diff 判定，不凭印象：
+主进程加载的冷文件变更后，旧版主进程（或涉及 `inject-main.cjs` 自身变更时全部版本）必须完全退出 ZCode 再启动，更新说明必须写明。权威清单是 `overlay_install.py` 的 `cold_files` 与 `plugin-updater.cjs` 的 `cold` 判定（先核对两处清单没有漂移，当前为 `inject-main.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`quota-client.cjs`、`model-puller.cjs`、`engine-patch.cjs`、`sysmon-client.cjs`；注：已运行新版 `inject-main.cjs` 的客户端可通过 `hotReloadMainModules` 热换除 `inject-main.cjs` 外的其余子模块，但面向在野跨版本升级用户仍须按该清单提示重启）。改写 `app.asar` 的注入/渲染端桥文件或 macOS 待更新包补丁同样需要完全重启。用上一正式 tag 到发布提交的 diff 判定，不凭印象：
 
 ```bash
-git diff --name-only PREV_TAG..TARGET -- inject-main.cjs plugin-updater.cjs plugin-release.cjs plugin-storage.cjs quota-client.cjs model-puller.cjs engine-patch.cjs renderer_bridge.py patch_install.py pending_zip_patch.py
+git diff --name-only PREV_TAG..TARGET -- inject-main.cjs plugin-updater.cjs plugin-release.cjs plugin-storage.cjs quota-client.cjs model-puller.cjs engine-patch.cjs sysmon-client.cjs renderer_bridge.py patch_install.py pending_zip_patch.py
 ```
 
-用户在配置里显式写了 `hot_reload: false` 时，`overlay.js`、`zusage.py` 也按冷文件处理（`plugin-updater.cjs`、`overlay_install.py` 在该开关为 false 时把它们并入冷文件清单，见 `docs/user-guide.md` 的热更新说明）：只改了这两个文件时，对这类用户同样要在相关条目末尾用逗号或分号补「更新后请完全退出 ZCode 再打开」，不能写「无需重启」。
+用户在配置里显式写了 `hot_reload: false` 时，`overlay.js`、`zusage.py`、`mobile-relay.cjs` 也按冷文件处理（`plugin-updater.cjs`、`overlay_install.py` 在该开关为 false 时把它们并入冷文件清单，见 `docs/user-guide.md` 的热更新说明）：只改了这些文件时，对这类用户同样要在相关条目末尾用逗号或分号补「更新后请完全退出 ZCode 再打开」，不能写「无需重启」。
 
 有输出：在相关新功能或修复条目末尾用逗号或分号补「更新后请完全退出 ZCode 再打开」，涉及托盘时注明从托盘退出；不另设「安装与升级注意」章节。只关窗口、刷新页面或重开会话无效。无输出：不例行追加重启声明；确需写「无需重启」时，仍须按 `AGENTS.md` §3 核实实际加载路径。

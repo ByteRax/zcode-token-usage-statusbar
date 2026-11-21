@@ -4,7 +4,7 @@
 
 Git chip（`.zu-git`）随 ZCode 输入框工具行前导区的真实可用宽度渐进降级：宽屏保留完整状态，窄屏收起分支名，更窄留摘要，极窄留图标与风险标记，空间仍不足时优先保宿主原生控件并摘除 chip，恢复宽度后自动重现。
 
-- 仅改渲染层展示形态；不改 Git 数据链（`gitTick`/`git-refresh`/`__zusageGitState` 推送、10s 周期、5s 节流）、多仓聚合口径、Tooltip 内容、点击刷新、aria 播报、`zusage3.barOrder`/`barPriority`（不参与工具栏）。
+- 仅改渲染层展示形态；不改 Git 数据链（`gitTick`/`git-refresh`/`__zusageGitState` 推送；v420 起刷新时机为 fs watch 60s 防抖、点击优先唤起原生胶囊弹层，见 [git-chip-host-sync.md](git-chip-host-sync.md)）、多仓聚合口径、Tooltip 内容、aria 播报、`zusage3.barOrder`/`barPriority`（不参与工具栏）。
 - 套餐额度 chip、原生上下文按钮（含压缩入口）、速度 chip、系统状态 chip、增强按钮、宿主原生控件各自独立，本规格只调整 Git chip 自身的宽度占用，不劫持/覆盖/隐藏它们，不新增全局 Observer 或 scroll/resize 监听。
 - 数据语义、计数缩写（v128 `gitNum` <1万原值规则）、颜色语义（+绿/-红/?黄/冲突红/过期警示黄）、`zu-gbusy` 刷新忙态全部沿用既有契约（[overlay-ui.md](../.zcode/rules/overlay-ui.md) §6）。
 
@@ -57,8 +57,8 @@ Git chip（`.zu-git`）随 ZCode 输入框工具行前导区的真实可用宽�
 
 ## 交互与无障碍（保持不变）
 
-- 点击仍仅发 `git-refresh`（busy/请求回执/scope 迁移保护全保留）；`⋯`、状态点不新增 click 目标。
-- hover/focus 仍弹 `showGitTip` 完整明细；Enter/Space 刷新、Escape 关闭、`aria-live` 播报、`aria-busy` 沿用。
+- 点击（v420 起）优先唤起宿主原生胶囊弹层，胶囊缺失/隐藏时回退发 `git-refresh`（busy/请求回执/scope 迁移保护全保留，见 [git-chip-host-sync.md](git-chip-host-sync.md)）；`⋯`、状态点不新增 click 目标。
+- hover/focus 仍弹 `showGitTip` 完整明细；Enter/Space 等价点击、Escape 关闭、`aria-live` 播报、`aria-busy` 沿用。
 - aria-label 在各级都保留完整真实状态（L1/L2/L3/L3I 不裁剪）；hidden 摘除期间 aria-live 清空 Git 段（与额度 chip hidden 同款）。
 - 刷新在途（`zu-gbusy`）遇宽度变化降级时 busy 类随内容签名保留在重建的 chip 上；hidden 摘除后回执到达走现有 `gitChipCache` 判空路径；hidden 期间完成刷新、恢复宽度重建的新 chip 不带 `zu-gbusy`（回执已消费，完成播报已发）——已知无害边界，不作缺陷。
 - hidden 期间每拍「重建空 chip→量测→再摘除」的节点抖动与额度 chip hidden 先例逐行同构（插拔同拍完成、无可见闪烁、avail 算术不受空 chip 影响），接受不改。

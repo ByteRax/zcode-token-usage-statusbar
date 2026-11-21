@@ -1461,9 +1461,80 @@
       return null;
     }
     function onGitEnter() { showGitTip(this); }
+    /* v420：点击优先唤起宿主原生 Git 胶囊弹层（specs/git-chip-host-sync.md §2）。胶囊只在同 pane
+     * 的 composer 里找：wantedEl 可能是编辑器等 pane 内节点（真实宿主实测 wantedEl.querySelector
+     * 查不到 composer 状态区），沿 readPaneScope 同款上溯到 data-session-id 的 pane 根、校验 sid
+     * 后再查——干净仓库宿主不渲染胶囊、旧宿主无该结构、胶囊不可见时一律回退原有立即刷新链；
+     * 命中则派发 pointer 全序列合成点击交宿主 Radix 开面板（与原生胶囊点击行为一致：只开面板
+     * 不刷新），坐标取胶囊中心，全程 try 包裹不外抛。 */
+    function findNativeGitCapsule() {
+      try {
+        var root = wantedEl, guard = 0;
+        while (root && !(root.hasAttribute && root.hasAttribute("data-session-id")) && guard++ < 24) root = root.parentElement;
+        if (!root || !root.isConnected || !root.querySelector) return null;
+        if (root.getAttribute("data-session-id") !== pickedSid) return null;   // 不跨 pane 借胶囊
+        var el = root.querySelector('[data-status-capsule="git"]');
+        if (!el || !el.getClientRects || !el.getClientRects().length) return null;
+        return el;
+      } catch (e) { return null; }
+    }
+    function openNativeGitCapsule(el) {
+      try {
+        hideGitTip();
+        var r = el.getBoundingClientRect();
+        var o = { bubbles: true, cancelable: true, view: window, button: 0,
+          clientX: Math.round((r.left || 0) + (r.width || 0) / 2), clientY: Math.round((r.top || 0) + (r.height || 0) / 2) };
+        var PE = typeof PointerEvent === "function" ? PointerEvent : MouseEvent;
+        el.dispatchEvent(new PE("pointerdown", o));
+        el.dispatchEvent(new MouseEvent("mousedown", o));
+        el.dispatchEvent(new PE("pointerup", o));
+        el.dispatchEvent(new MouseEvent("mouseup", o));
+        el.dispatchEvent(new MouseEvent("click", o));
+        scheduleCapsuleReanchor();   // v422：等 Radix 挂载后把弹层迁到 chip 正上方
+      } catch (e) { }
+    }
+    /* v422 弹层定位迁移（specs/git-chip-host-sync.md §2）：Radix 把弹层锚在原生胶囊、位置写
+     * wrapper 内联 transform（强改会被其定位引擎覆盖回）；改用独立 translate 属性——与
+     * transform 叠乘、Radix 从不写它、无拉锯——水平居中于 chip、底缘距 chip 顶 8px、视口
+     * 钳边 8px。Radix 挂载是异步 React 渲染，0 起步五档重试；令牌去重防连点竞争；胶囊
+     * 自身点击（非 chip 路径）不经此链，定位保持原生。 */
+    var capsuleReanchorToken = 0;
+    function findCapsulePopperWrapper() {
+      try {
+        var content = document.querySelector('[data-status-capsule-content="git"]');
+        if (!content) return null;
+        var wrap = content.closest ? content.closest("[data-radix-popper-content-wrapper]") : null;
+        if (wrap) return wrap;
+        var p = content.parentElement;
+        return p && p.hasAttribute && p.hasAttribute("data-radix-popper-content-wrapper") ? p : null;
+      } catch (e) { return null; }
+    }
+    function applyCapsuleReanchor(chip, wrap) {
+      try {
+        var cr = chip.getBoundingClientRect(), wr = wrap.getBoundingClientRect();
+        if (!cr || !wr || !(cr.width > 0) || !(wr.width > 0)) return;
+        var left = Math.min(Math.max(8, cr.left + cr.width / 2 - wr.width / 2), Math.max(8, window.innerWidth - wr.width - 8));
+        var top = Math.max(8, cr.top - 8 - wr.height);
+        wrap.style.translate = Math.round(left - wr.left) + "px " + Math.round(top - wr.top) + "px";
+      } catch (e) { }
+    }
+    function scheduleCapsuleReanchor() {
+      var chip = gitChipCache;
+      if (!chip || !chip.isConnected) return;
+      var token = ++capsuleReanchorToken, delays = [60, 120, 240, 480, 800], i = 0;
+      var step = function () {
+        if (token !== capsuleReanchorToken) return;   // 连点：新一次点击接管
+        var wrap = findCapsulePopperWrapper();
+        if (wrap) { applyCapsuleReanchor(chip, wrap); return; }
+        if (i < delays.length) setTimeout(step, delays[i++]);
+      };
+      step();
+    }
     function onGitClick(e) {
       e.preventDefault();
       e.stopPropagation();
+      var capsule = findNativeGitCapsule();
+      if (capsule) { openNativeGitCapsule(capsule); return; }
       if (gitRefreshRequestId) return;
       var scope = readPaneScope(wantedEl, pickedSid, pid);
       var wt = scope ? worktreeFor(scope.sid) : null;   // specs/worktree-branch.md：刷新请求同样按覆写路径
@@ -1584,7 +1655,7 @@
       var btn = mount.btn, wrap = mount.wrap;
       var chip = gitChipCache;
       if (!chip || !chip.isConnected) {
-        if (gitTipFor === chip) hideGitTip();
+        if (gitTipFor === chip && !state.devKeepTip) hideGitTip();   // v424 开发者常驻：React 重建 chip 不收（弹层滞留待重悬停刷新）
         chip = null;
         for (var i = 0; i < wrap.children.length; i++) {   // 复用热更/重建遗留的同类节点，避免双 chip
           if (wrap.children[i].classList && wrap.children[i].classList.contains("zu-git")) { chip = wrap.children[i]; break; }
@@ -1598,7 +1669,7 @@
           chip.addEventListener("mouseenter", onGitEnter);
           chip.addEventListener("mouseleave", hideGitTipSoon);
           chip.addEventListener("focus", onGitEnter);
-          chip.addEventListener("blur", hideGitTip);
+          chip.addEventListener("blur", function () { if (!state.devKeepTip) hideGitTip(); });   // v423 开发者常驻不自动收
           chip.addEventListener("keydown", onRefreshKeydown);
           chip.addEventListener("keyup", onRefreshKeyup);
           chip.addEventListener("click", onGitClick);
@@ -1638,7 +1709,7 @@
       }
       gitLevel = level;
       if (level === "hidden") {
-        if (gitTipFor === chip) hideGitTip();
+        if (gitTipFor === chip && !state.devKeepTip) hideGitTip();   // v424 开发者常驻：极窄摘 chip 不收弹层
         try { chip.remove(); } catch (e) { }
         gitChipCache = null;
         ariaLiveState.__zuGitLive = "";
@@ -1779,6 +1850,146 @@
       try { sysmonChipCache.remove(); } catch (e) { }
       sysmonChipCache = null;
       sysmonWantRecalc();
+    }
+
+    /* ---------- v421 压缩分隔线统计标注（宿主「上下文已压缩」分隔线下方多行标注块） ----------
+     * 宿主 v4 协议的 compact marker 载荷本就带 tokensBefore/tokensAfter 与行级 createdAt
+     * （zcode-protocol-v4/rows.ts），但分隔线只渲染文案、数字与时间不进 DOM。数据源改走
+     * 插件本地库：zusage.py 把 query_source='compact' 行（成功一次=时间线一条 success
+     * 分隔线，按 started_at 序与 DOM 第 k 条一一对应）及压缩前后 main_turn 输入、压缩后
+     * 首请求缓存三列推入快照顶层 compactions（{sid:[{ts,b,a,cr,cw}]}，粘性回填见 00 分片；
+     * 数字为插件 ctx 口径，a 含 system+工具模式，不冒充宿主 marker 载荷值）。
+     * DOM 锚=[data-row-kind="timelineMarker"][data-marker-type="compact"][data-status="success"]，
+     * 标注块独立成行：宿主中央 pill 是 inline-flex 行向（icon+label 一行），行尾平拼会让
+     * min-w-0 收缩把 label 和数字任意折断——只给 pill 补 flex-wrap:wrap（React 无 style
+     * 属性不回收该内联样式，摘除时还原），标注 span flex-basis:100% 独占一行换到 label
+     * 下方居中多行（v437 三行：日期+序数与间隔／变化水位%+减少／压缩消耗+耗时+
+     * 执行模型，<br> 分行，缺样本整行省略，整块 nowrap 防窄窗折断句中）；
+     * 带 data-zusage-cmp 标记 + __zuSig 签名幂等；
+     * render 数据点 + heavy 对账点 + body MutationObserver（与弹层压缩按钮同款 rAF 去抖）
+     * 三路兜回。作用域=本实例 pane（composer 祖先链 v4-session-pane-*，分栏各标各的，
+     * 找不到 pane 退化全文档查、按 pane 过滤兜底）；记录缺条目的分隔线不标并摘除多余
+     * 标注（诚实降级）。数字格式按用户规格固定千分位逗号（不走 fmt 的万/亿·K/M 档），
+     * 日期随 zusage3.lang。 */
+    function cmpNum(n) {
+      return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    }
+    /* 宿主同款时长格式（与 05 分片 formatWorkDuration 同算法同约定，该函数在轮播闭包
+     * 不可跨用；conversationWorkDuration.ts：totalSeconds=max(1,round(ms/1000))，非零
+     * 单位入列、至多两段，中文值与单位间插空格）。压缩耗时秒级、距上次间隔时/天级共用。 */
+    function cmpDur(ms) {
+      var totalSeconds = Math.max(1, Math.round((Number(ms) || 0) / 1000));
+      var d = Math.floor(totalSeconds / 86400);
+      var h = Math.floor((totalSeconds % 86400) / 3600);
+      var m = Math.floor((totalSeconds % 3600) / 60);
+      var s = totalSeconds % 60;
+      var en = state.lang === "en";
+      var units = [[d, "天", "d"], [h, "时", "h"], [m, "分", "m"], [s, "秒", "s"]];
+      var parts = [];
+      for (var i = 0; i < units.length; i++) {
+        if (units[i][0] > 0 || (i === 3 && !parts.length)) {
+          parts.push(en ? units[i][0] + units[i][2] : units[i][0] + " " + units[i][1]);
+        }
+      }
+      return parts.slice(0, 2).join(" ");
+    }
+    function cmpDate(ts) {
+      var d = new Date(Number(ts) || 0);
+      if (!d.getTime()) return "";
+      var p2 = function (x) { return (x < 10 ? "0" : "") + x; };
+      var hm = p2(d.getHours()) + ":" + p2(d.getMinutes()) + ":" + p2(d.getSeconds());
+      if (state.lang === "en") {
+        var MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        return MON[d.getMonth()] + " " + d.getDate() + ", " + d.getFullYear() + " " + hm;
+      }
+      return d.getFullYear() + " 年 " + (d.getMonth() + 1) + " 月 " + d.getDate() + " 日 " + hm;
+    }
+    function compSuffixHtml(r, idx, list) {
+      /* v437 三行版式（v428 曾四行，缓存四项行经爸爸点名去除）：日期+序数与间隔／
+       * 变化(水位%)+减少／压缩消耗+耗时+执行模型，缺样本的段整体省行（诚实降级）；
+       * 整块 nowrap 防窄窗折断句中。水位窗口与上下文按钮同优先级（ctxOv 手动覆盖 >
+       * nativeCtxVal 原生 aria 总量 > 快照 context_window），窗口未知退回纯数字。 */
+      var lines = [];
+      var meta = [];
+      var date = cmpDate(r.ts);
+      if (date) meta.push(date);
+      if (list && idx >= 0) {
+        meta.push(L("第 " + (idx + 1) + " 次", "#" + (idx + 1)));
+        var prev = idx > 0 && list[idx - 1];
+        if (prev && prev.ts && r.ts > prev.ts) {
+          meta.push(L("距上次 " + cmpDur(r.ts - prev.ts), cmpDur(r.ts - prev.ts) + " since last"));
+        }
+      }
+      if (meta.length) lines.push(meta.join(" · "));
+      if (r.b > 0 && r.a > 0) {
+        var drop = Math.max(0, r.b - r.a);
+        var pct = (drop / r.b * 100).toFixed(2);
+        var win = parseInt(state.ctxOv, 10) || nativeCtxVal || (state.data && state.data.context_window) || 0;
+        var chg = win > 0
+          ? Math.round(r.b / win * 100) + "%(" + cmpNum(r.b) + ")→" + Math.round(r.a / win * 100) + "%(" + cmpNum(r.a) + ")"
+          : cmpNum(r.b) + "→" + cmpNum(r.a);
+        var chgEn = win > 0
+          ? Math.round(r.b / win * 100) + "% (" + cmpNum(r.b) + ")→" + Math.round(r.a / win * 100) + "% (" + cmpNum(r.a) + ")"
+          : cmpNum(r.b) + "→" + cmpNum(r.a);
+        lines.push(L("上下文变化：" + chg + " · 减少：" + cmpNum(drop) + " Token（" + pct + "%）",
+          "Context: " + chgEn + " · Reduced: " + cmpNum(drop) + " tokens (" + pct + "%)"));
+      }
+      /* v437：缓存四项行（未缓存输入/读取/创建/命中率）整行去除——快照 cr/cw 字段保留
+       * （zusage 侧不删，未来费用/首答估算仍需未缓存口径），仅前端不渲染。 */
+      var op = [];
+      if (r.out > 0) op.push(L("压缩消耗 " + cmpNum(r.out) + " Token", "Compaction cost " + cmpNum(r.out) + " tokens"));   // v434：措辞（用户规格）——out 是压缩请求自身的消耗，旧词「摘要」易误读为摘要正文长度
+      if (r.dur > 0) op.push(L("耗时 " + cmpDur(r.dur), "Took " + cmpDur(r.dur)));
+      if (r.alt) op.push(L("由 " + esc(r.alt) + " 执行", "by " + esc(r.alt)));   // v433：model_id 来自 DB（自定义名可含 HTML），与其余转义链同规
+      if (op.length) lines.push(op.join(" · "));
+      return lines.join("<br>");
+    }
+    function syncCompactionRows() {
+      if (inactive()) return;
+      if (typeof mobileMode !== "undefined" && mobileMode) return;
+      try {
+        var recs = null;
+        var sid = pickedSid || instSid || "";
+        if (lastCompactions && typeof lastCompactions === "object") recs = lastCompactions[sid];
+        var rows = document.querySelectorAll('[data-row-kind="timelineMarker"][data-marker-type="compact"][data-status="success"]');
+        /* pane 作用域：与 readQuotaSelection 同款祖先链爬升；锚缺失（composer 未绑定）
+         * 时退化为全文档查询（单会话窗口无歧义），多分栏下各实例按各自 pane 过滤。 */
+        var pane = null;
+        var anchor = wantedEl && wantedEl.isConnected ? wantedEl : composer;
+        for (var anc = anchor; anc && anc !== document.body; anc = anc.parentElement) {
+          var tid = anc.getAttribute && anc.getAttribute("data-testid");
+          if (tid && tid.indexOf("v4-session-pane-") === 0) { pane = anc; break; }
+        }
+        var k = 0;   // 只累计 pane 内分隔线，分栏并存时序号不串
+        for (var i = 0; i < rows.length; i++) {
+          if (pane && !pane.contains(rows[i])) continue;
+          /* v421 开关门控：state.cmpAnn 关=rec 恒空 → 走下方摘除分支（标注撤下即时生效） */
+          var row = rows[i], rec = (state.cmpAnn ? recs : null) && recs[k++];
+          var old = row.querySelector("span[data-zusage-cmp]");
+          if (!rec || !rec.ts) {
+            if (old && old.parentNode) {
+              old.parentNode.style.flexWrap = "";   // 还原宿主 pill 单行布局
+              old.parentNode.removeChild(old);
+            }
+            continue;
+          }
+          var html = compSuffixHtml(rec, k - 1, recs);
+          if (old && old.__zuSig === html) continue;
+          if (old && old.parentNode) old.parentNode.removeChild(old);
+          /* 中央 pill=行内唯一 <span> 直接子级（两侧是装饰细线 div），label 之后追加 */
+          var pill = null;
+          for (var c = 0; c < row.children.length; c++) {
+            if (row.children[c].tagName === "SPAN") { pill = row.children[c]; break; }
+          }
+          if (!pill) continue;
+          var span = document.createElement("span");
+          span.setAttribute("data-zusage-cmp", "1");
+          span.__zuSig = html;
+          span.innerHTML = html;   // 内容全部由数字/日期拼出，无用户可控文本
+          span.style.cssText = "flex:0 0 100%;font-size:12px;opacity:.78;text-align:center;line-height:1.5;white-space:nowrap;";
+          pill.style.flexWrap = "wrap";   // 行向 pill 放行换行：标注块落到 label 下（先设再挂避免闪帧）
+          pill.appendChild(span);
+        }
+      } catch (e) { FATAL.cmpErr = String((e && e.stack) || e); }
     }
 
     /* ---------- v105 压缩上下文：「上下文容量」弹层内、命中率行下方的胶囊按钮 ----------

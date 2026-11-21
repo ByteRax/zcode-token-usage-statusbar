@@ -875,8 +875,11 @@ function createUpdater(options) {
   async function recordRestart(report) {
     if (report.restartRecorded === true) return;
     const changed = Array.isArray(report.changed) ? report.changed : [];
+    // 与 overlay_install.py 的 cold_files 保持同款（两处清单不许漂移）：
+    // 常冷 8 项 + hot_reload:false 时追加 overlay.js/zusage.py/mobile-relay.cjs。
     const cold = changed.filter((f) => f === "inject-main.cjs" || f === "plugin-updater.cjs" || f === "plugin-release.cjs" || f === "plugin-storage.cjs" || f === "quota-client.cjs"
-      || ((readConfig(configFile) || {}).hot_reload === false && (f === "overlay.js" || f === "zusage.py")));
+      || f === "model-puller.cjs" || f === "engine-patch.cjs" || f === "sysmon-client.cjs"
+      || ((readConfig(configFile) || {}).hot_reload === false && (f === "overlay.js" || f === "zusage.py" || f === "mobile-relay.cjs")));
     if (!cold.length) return;
     const hashes = {};
     for (const name of cold) {

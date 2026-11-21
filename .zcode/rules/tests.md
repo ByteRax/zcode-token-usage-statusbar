@@ -39,7 +39,7 @@
 - 长期红的测试等于没有测试；断言按域拆分分开报错，不让一个失配域掩盖另一域的新回归。
 - 同一契约串可能被多个测试文件分别断言（先例：一条 `.zu-git-sep` 样式规则锁三处）——改共享样式/协议串前先 `grep -rn "<串名>" tests/` 全量找锁定点，别只改先撞见的那处。spawn 参数同理：argv 形状锁散在多个测试文件（如 `inject-git-multi` 的期望数组），改 spawn argv 必须全仓 grep 期望数组随批同步，漏一处即确定性新红。
 - 依赖本机环境的测试（`skipUnless(真机存在)`、读已安装客户端）不算守卫：同一不变量必须有不依赖本机状态的隔离等价测试，变异验证也要在「真机不可用」条件下再跑一遍。先例：桥遗留代际识别曾只被「本机 asar 里恰好部署着旧桥」的真机测试守着，本机桥一升级（SessionStart 自动打桥）它就不再覆盖，去掉 V1/V2 识别、误改遗留模板正文的变异全部通过（`BridgeGenerationTests` 补上）。报告「skipped=N」时说出是哪几个、跳过原因，以及它们让哪个平台/路径零覆盖。
-- 环境性既有失败与回归定责：本机存在一批与代码改动无关的既有失败（真实 Chrome 无头夹具族、Electron fs shim 对伪 asar 路径的 `ENOTDIR` 族、POSIX 专属断言族等；具体名单随版本演进，不在此维护）——先跑 HEAD 干净基线（`git worktree add --detach` 双树同跑，失败集合逐一相同即非本次改动引入）再定责，交付如实披露为既有环境失败。外部 PR 基于旧 main 时，PR 分支上会红一堆 main 已修的测试——判责以「fork/main 干净基线 + 模拟合并树（fork/main merge 该 PR 后的树；GitHub mergeable=CLEAN 时即合并后 main 的精确预览）」两侧为准，PR 分支单独跑出的红不算它的问题。连真实 CDP/实机前提的测试存在抖动（单跑红、全量绿），复跑定责勿一次定红。
+- 环境性既有失败与回归定责：本机存在一批与代码改动无关的既有失败（真实 Chrome 无头夹具族、Electron fs shim 对伪 asar 路径的 `ENOTDIR` 族、POSIX 专属断言族等；具体名单随版本演进，不在此维护）——先跑 HEAD 干净基线（`git worktree add --detach` 双树同跑，失败集合逐一相同即非本次改动引入）再定责，交付如实披露为既有环境失败。外部 PR 基于旧 main 时，PR 分支上会红一堆 main 已修的测试——判责以「fork/main 干净基线 + 模拟合并树（fork/main merge 该 PR 后的树；GitHub mergeable=CLEAN 时即合并后 main 的精确预览）」两侧为准，PR 分支单独跑出的红不算它的问题。连真实 CDP/实机前提的测试存在抖动（单跑红、全量绿），复跑定责勿一次定红。浏览器夹具的 `getComputedStyle` 序列化值同样随版本漂移（曾实证新版 Chrome 把 `flex-start` 序列化为 `flow-start`，overlay 源码并无该值——overlay-pill-theme 族红先排除序列化漂移再定责）。
 
 ## 4. 实机验证
 

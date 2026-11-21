@@ -13,6 +13,8 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
  * 无提交仓库回退、gitTick 的路径校验/去重/多窗口分发/非本地页忽略、git-refresh 动作路由。 */
 function loadPump(respond = () => ({})) {
   const intervals = [], timers = new Map(), windows = [], execs = [];
+  const watches = [], closed = [], timeouts = [], errors = [];
+  const watchCtl = { fail: false };   // v420：fs.watch 建档失败开关（非致命用例）
   let id = 0;
   const state = { vanishOk: false };   // 测试可控的「目录存在性」开关（notrepo 补推用例）
   const mockFs = {
@@ -27,14 +29,20 @@ function loadPump(respond = () => ({})) {
       throw Object.assign(new Error("ENOENT: " + file), { code: "ENOENT" });
     },
     readdirSync: dir => dir === "/fixture/parent" ? ["a", "b"] : [],
-    existsSync: file => ["/fixture/parent/a/.git", "/fixture/parent/b/.git"].includes(file), watch: () => ({ on() {} }), writeFileSync() {},
+    existsSync: file => ["/fixture/parent/a/.git", "/fixture/parent/b/.git"].includes(file),
+    watch: (dir, opts, fn) => {   // v420：记录建档/关闭，供 watcher 生命周期断言
+      if (watchCtl.fail) throw new Error("EPERM: watch unavailable");
+      watches.push({ dir, opts: opts || {}, fn });
+      return { on(ev, cb) { if (ev === "error") errors.push({ dir, cb }); }, close() { closed.push(dir); } };
+    },
+    writeFileSync() {},
   };
   const ipc = new EventEmitter();
   const sandbox = {
     __dirname: "/fixture/runtime", console: { error() {} },
     process: { resourcesPath: "/fixture/resources", execPath: process.execPath, uptime: () => 1, env: {} },
     module: { exports: {} },
-    setTimeout: (fn, ms) => { timers.set(++id, fn); return id; },
+    setTimeout: (fn, ms) => { timeouts.push({ fn, ms }); timers.set(++id, fn); return id; },
     clearTimeout: n => timers.delete(n),
     setInterval: (fn, ms) => { intervals.push({ fn, ms }); return intervals.length; },
     require(name) {
@@ -69,14 +77,14 @@ function loadPump(respond = () => ({})) {
       } };
     windows.push(wc); return wc;
   }
-  return { api: sandbox.module.exports.__zusageTest, intervals, execs, addWindow, state };
+  return { api: sandbox.module.exports.__zusageTest, intervals, execs, addWindow, state, watches, closed, timeouts, errors, watchCtl, sandbox };
 }
 
 /* ---------- parseGitPorcelain ---------- */
 
 test("parseGitPorcelain: upstream with ahead/behind, per-code counts, rename and conflict", async () => {
   const { api } = loadPump();
-  const r = api.parseGitPorcelain("## main...origin/main [ahead 2, behind 1]\nM  a.py\n M b.py\n?? c.py\nR  d.txt\nDD e.py\nA  f.py\n!! ign\n");
+  const r = api.parseGitPorcelain("## main...origin/main [ahead 2, behind 1]\x00M  a.py\x00 M b.py\x00?? c.py\x00R  newd.txt\x00oldd.txt\x00DD e.py\x00A  f.py\x00");
   assert.deepEqual({ ...r }, { branch: "main", upstream: "origin/main", ahead: 2, behind: 1,
     detached: false, noCommits: false, staged: 3, unstaged: 1, untracked: 1, conflicts: 1, changed: 5 });
 });
@@ -86,49 +94,62 @@ test("parseGitPorcelain: collectFiles gathers labeled entries with cap and true 
   /* 欠帽段：55 条 M + 5 条特殊状态 = 恰 60 条全收，逐状态验证标签 */
   const lines = ["## main"];
   for (let i2 = 0; i2 < 55; i2++) lines.push("M  f" + i2 + ".py");
-  lines.push("?? u0.md", "D  del.js", "R  old -> new.txt", "DD c.py", "A  add.py");
-  const r = api.parseGitPorcelain(lines.join("\n"), true);
+  lines.push("?? u0.md", "D  del.js", "R  new.txt", "old.txt", "DD c.py", "A  add.py");
+  const r = api.parseGitPorcelain(lines.join("\x00"), true);   // v433：-z NUL 分段（rename 占两个 token）
   assert.equal(r.files.length, 60);
   assert.equal(r.ft, 60, "ft=真实总条目数（changed+untracked）");
   /* VM realm 对象跨上下文 deepEqual 会因原型不等误报，展开成宿主对象再比 */
   assert.deepEqual({ ...r.files[0] }, { p: "f0.py", s: "modified" });
   assert.deepEqual({ ...r.files[55] }, { p: "u0.md", s: "untracked" });
   assert.deepEqual({ ...r.files[56] }, { p: "del.js", s: "deleted" });
-  assert.deepEqual({ ...r.files[57] }, { p: "old -> new.txt", s: "renamed" });   // rename 路径原样保留
+  assert.deepEqual({ ...r.files[57] }, { p: "old.txt -> new.txt", s: "renamed" });   // rename 显示串=旧名 -> 新名（-z 双字段拼合）
   assert.deepEqual({ ...r.files[58] }, { p: "c.py", s: "conflict" });
   assert.deepEqual({ ...r.files[59] }, { p: "add.py", s: "added" });
   /* 超帽段：70 条 M + 5 条特殊 = 75 条，只收前 60，ft 仍报真实总数 */
   const big = ["## main"];
   for (let i3 = 0; i3 < 70; i3++) big.push("M  g" + i3 + ".py");
-  big.push("?? u0.md", "D  del.js", "R  old -> new.txt", "DD c.py", "A  add.py");
-  const b = api.parseGitPorcelain(big.join("\n"), true);
+  big.push("?? u0.md", "D  del.js", "R  new.txt", "old.txt", "DD c.py", "A  add.py");
+  const b = api.parseGitPorcelain(big.join("\x00"), true);
   assert.equal(b.files.length, 60, "明细帽 60 条");
   assert.equal(b.ft, 75, "超出帽后 ft 仍为真实总数（渲染端据以显「另有 N 项」）");
-  const small = api.parseGitPorcelain("## main\nM  a.py\n?? b.md\n", true);
+  const small = api.parseGitPorcelain("## main\x00M  a.py\x00?? b.md\x00", true);
   assert.equal(small.ft, 2);
   assert.deepEqual([...small.files].map(f => ({ ...f })), [{ p: "a.py", s: "modified" }, { p: "b.md", s: "untracked" }]);
-  const none = api.parseGitPorcelain("## main\n", true);
+  const none = api.parseGitPorcelain("## main\x00", true);
   assert.deepEqual([...none.files], []);   // 干净仓库：空数组（渲染端按 length 隐藏小节）
 });
 
 test("parseGitPorcelain: multi-repo pipeline keeps counts only (no files field)", async () => {
   const { api } = loadPump();
-  const r = api.parseGitPorcelain("## main\nM  a.py\n?? b.md\n");
+  const r = api.parseGitPorcelain("## main\x00M  a.py\x00?? b.md\x00");
   assert.equal(r.files, undefined, "多仓逐仓管线不收明细");
   assert.equal(r.ft, undefined);
 });
 
+test("parseGitPorcelain: numstatMap attaches per-file add/del, rename keyed by new name (v425)", async () => {
+  const { api } = loadPump();
+  const map = { "a": { ins: 3, del: 1 }, "new.txt": { ins: 2, del: 2 } };
+  const r = api.parseGitPorcelain("## main\x00M  a\x00R  new.txt\x00old.txt\x00?? u.md\x00", true, map);
+  assert.deepEqual([...r.files].map(f => ({ ...f })), [
+    { p: "a", s: "modified", add: 3, del: 1 },
+    { p: "old.txt -> new.txt", s: "renamed", add: 2, del: 2 },   // -z：XY 段=新名（映射键），下一段=旧名（显示串拼合）
+    { p: "u.md", s: "untracked" },   // 未跟踪不在 numstat，无计数（行尾省略）
+  ]);
+  const noMap = api.parseGitPorcelain("## main\x00M  a\x00", true);
+  assert.equal(noMap.files[0].add, undefined, "缺省不附计数（多仓/旧主进程形状不变）");
+});
+
 test("parseGitPorcelain: bare branch without upstream tracks nothing", async () => {
   const { api } = loadPump();
-  const r = api.parseGitPorcelain("## main\n");
+  const r = api.parseGitPorcelain("## main\x00");
   assert.deepEqual([r.branch, r.upstream, r.ahead, r.behind], ["main", "", 0, 0]);
 });
 
 test("parseGitPorcelain: detached HEAD and ahead-only tracking", async () => {
   const { api } = loadPump();
-  const d = api.parseGitPorcelain("## HEAD (no branch)\n");
+  const d = api.parseGitPorcelain("## HEAD (no branch)\x00");
   assert.deepEqual([d.detached, d.branch, d.upstream], [true, "", ""]);
-  const a = api.parseGitPorcelain("## feat/x...origin/feat/x [ahead 3]\n");
+  const a = api.parseGitPorcelain("## feat/x...origin/feat/x [ahead 3]\x00");
   assert.deepEqual([a.branch, r_up(a)], ["feat/x", "origin/feat/x"]);
   assert.deepEqual([a.ahead, a.behind], [3, 0]);
   function r_up(x) { return x.upstream; }
@@ -136,49 +157,64 @@ test("parseGitPorcelain: detached HEAD and ahead-only tracking", async () => {
 
 test("parseGitPorcelain: gone upstream and no-commits / initial-commit headers", async () => {
   const { api } = loadPump();
-  const g = api.parseGitPorcelain("## main...origin/main [gone]\n");
+  const g = api.parseGitPorcelain("## main...origin/main [gone]\x00");
   assert.deepEqual([g.upstream, g.ahead, g.behind], ["origin/main", 0, 0]);
-  const nc = api.parseGitPorcelain("## No commits yet on main\n?? x\n");
+  const nc = api.parseGitPorcelain("## No commits yet on main\x00?? x\x00");
   assert.deepEqual([nc.noCommits, nc.branch, nc.untracked], [true, "main", 1]);
-  const ic = api.parseGitPorcelain("## Initial commit on dev\n");
+  const ic = api.parseGitPorcelain("## Initial commit on dev\x00");
   assert.deepEqual([ic.noCommits, ic.branch], [true, "dev"]);
 });
 
-test("parseGitPorcelain: tolerates CRLF line endings and empty input", async () => {
+test("parseGitPorcelain: tolerates trailing NUL, header-only and empty input (-z)", async () => {
   const { api } = loadPump();
-  const r = api.parseGitPorcelain("## main\r\nM  a\r\n?? b\r\n");
+  const r = api.parseGitPorcelain("## main\x00M  a\x00?? b\x00\x00");
   assert.deepEqual([r.branch, r.staged, r.untracked], ["main", 1, 1]);
   assert.deepEqual({ ...api.parseGitPorcelain("") },
     { branch: "", upstream: "", ahead: 0, behind: 0, detached: false, noCommits: false, staged: 0, unstaged: 0, untracked: 0, conflicts: 0, changed: 0 });
 });
 
-/* ---------- parseShortstat ---------- */
+/* ---------- parseNumstat（v425 替代 parseShortstat）---------- */
 
-test("parseShortstat: both, singular and half-present forms", async () => {
+test("parseNumstat: totals, binary dash rows, rename arrow keying, tab-in-path", async () => {
   const { api } = loadPump();
-  assert.deepEqual({ ...api.parseShortstat(" 3 files changed, 12 insertions(+), 4 deletions(-)\n") }, { ins: 12, del: 4 });
-  assert.deepEqual({ ...api.parseShortstat(" 1 file changed, 1 insertion(+)\n") }, { ins: 1, del: 0 });
-  assert.deepEqual({ ...api.parseShortstat(" 2 files changed, 5 deletions(-)\n") }, { ins: 0, del: 5 });
-  assert.deepEqual({ ...api.parseShortstat("") }, { ins: 0, del: 0 });
+  const r = api.parseNumstat("12\t4\ta.py\x00-\t-\tbin.dat\x002\t1\t\x00old.md\x00new.md\x003\t0\tspace\tname.txt\x00");
+  assert.equal(r.ins, 17, "二进制 - 计 0，其余求和（总量与 shortstat 口径等价）");
+  assert.equal(r.del, 5);
+  assert.deepEqual({ ...r.map["a.py"] }, { ins: 12, del: 4 });
+  assert.equal(r.map["bin.dat"], undefined, "二进制不入映射（渲染端行尾省略）");
+  assert.deepEqual({ ...r.map["new.md"] }, { ins: 2, del: 1 }, "-z rename 三段 NUL（空路径段为信号，旧名在前取后段新名）");
+  assert.deepEqual({ ...r.map["space\tname.txt"] }, { ins: 3, del: 0 }, "路径含制表符不截断");
+  const empty = api.parseNumstat("");
+  assert.deepEqual([empty.ins, empty.del, Object.keys(empty.map).length], [0, 0, 0]);
+  const m = api.mergeNumstat(api.parseNumstat("1\t2\ta.py\x00"), api.parseNumstat("5\t0\ta.py\x003\t1\tb.py\x00"));
+  assert.deepEqual([m.ins, m.del], [9, 3], "无提交仓库两段合并总量");
+  assert.deepEqual({ ...m.map["a.py"] }, { ins: 6, del: 2 }, "同路径跨段计数相加");
+  assert.deepEqual({ ...m.map["b.py"] }, { ins: 3, del: 1 });
+});
+
+test("parseNumstat: quotepath=false keeps raw UTF-8 paths for porcelain matching", async () => {
+  const { api } = loadPump();
+  const r = api.parseNumstat("1\t0\t说明.md\x00");
+  assert.ok(r.map["说明.md"], "非 ASCII 路径原样入表");
 });
 
 /* ---------- queryGitStatus ---------- */
 
 test("queryGitStatus: one status + one diff HEAD call with locked-down env, merged result", async () => {
   const respond = args => args.includes("status")
-    ? { stdout: "## main...origin/main [ahead 2]\n M a\n" }
-    : { stdout: " 3 files changed, 12 insertions(+), 4 deletions(-)\n" };
+    ? { stdout: "## main...origin/main [ahead 2]\x00 M a\x00" }
+    : { stdout: "12\t4\ta\x00" };
   const { api, execs } = loadPump(respond);
   const st = await api.queryGitStatus("/fixture/repo");
   assert.equal(st.ok, true);
   assert.deepEqual([st.branch, st.ahead, st.ins, st.del, st.unstaged], ["main", 2, 12, 4, 1]);
   /* v411 接线断言：单仓查询必须收逐文件明细（collectFiles=true 漏传即红，审查 MAJOR-1） */
   assert.equal(st.ft, 1);
-  assert.deepEqual({ ...st.files[0] }, { p: "a", s: "modified" });
+  assert.deepEqual({ ...st.files[0] }, { p: "a", s: "modified", add: 12, del: 4 }, "v425：numstat 命中即附每文件 ±N");
   assert.equal(typeof st.ts, "number");
   assert.deepEqual(execs.map(e => [...e.args]), [
-    ["-C", "/fixture/repo", "-c", "core.quotepath=false", "status", "--porcelain", "--branch"],
-    ["-C", "/fixture/repo", "diff", "HEAD", "--shortstat"],
+    ["-C", "/fixture/repo", "-c", "core.quotepath=false", "status", "--porcelain", "--branch", "-z"],
+    ["-C", "/fixture/repo", "-c", "core.quotepath=false", "diff", "HEAD", "--numstat", "-z"],
   ]);
   assert.equal(execs[0].cmd, "git");
   assert.equal(execs[0].opts.env.GIT_OPTIONAL_LOCKS, "0");
@@ -206,7 +242,7 @@ test("queryGitStatus: ENOENT maps to nogit (single attempt, no diff)", async () 
 
 test("queryGitStatus: timed-out diff HEAD reports timeout without the two-call fallback", async () => {
   const respond = args => args.includes("status")
-    ? { stdout: "## main\n" }
+    ? { stdout: "## main\x00" }
     : { error: { killed: true } };
   const { api, execs } = loadPump(respond);
   const st = await api.queryGitStatus("/fixture/repo");
@@ -214,30 +250,31 @@ test("queryGitStatus: timed-out diff HEAD reports timeout without the two-call f
   assert.equal(execs.length, 2, "status + diff HEAD，超时不走回退");
 });
 
-test("queryGitStatus: commit-less repo falls back to unstaged + cached shortstat sum", async () => {
+test("queryGitStatus: commit-less repo falls back to unstaged + cached numstat merge", async () => {
   const respond = args => {
     const cmd = args.join(" ");   // Array.includes 按整元素比较，"–cached"/"HEAD" 需按整串子串判断
-    if (cmd.includes(" status ")) return { stdout: "## No commits yet on main\n" };
-    if (cmd.includes("--cached")) return { stdout: " 1 file changed, 1 insertion(+)\n" };
+    if (cmd.includes(" status ")) return { stdout: "## No commits yet on main\x00A  g.txt\x00" };
+    if (cmd.includes("--cached")) return { stdout: "1\t0\tf.txt\x00" };
     if (cmd.includes(" HEAD ")) return { error: { code: 128 }, stderr: "fatal: ambiguous argument 'HEAD': unknown revision" };
-    return { stdout: " 1 file changed, 2 insertions(+)\n" };
+    return { stdout: "2\t0\tg.txt\x00" };
   };
   const { api, execs } = loadPump(respond);
   const st = await api.queryGitStatus("/fixture/repo");
   assert.equal(st.ok, true);
   assert.deepEqual([st.noCommits, st.branch, st.ins, st.del], [true, "main", 3, 0]);
+  assert.deepEqual({ ...st.files[0] }, { p: "g.txt", s: "added", add: 2, del: 0 }, "两段 numstat 逐路径合并后仍按路径附带");
   assert.deepEqual(execs.map(e => e.args.filter(a => a !== "-C" && a !== "/fixture/repo")).map(a => [...a]), [
-    ["-c", "core.quotepath=false", "status", "--porcelain", "--branch"],
-    ["diff", "HEAD", "--shortstat"],
-    ["diff", "--shortstat"],
-    ["diff", "--cached", "--shortstat"],
+    ["-c", "core.quotepath=false", "status", "--porcelain", "--branch", "-z"],
+    ["-c", "core.quotepath=false", "diff", "HEAD", "--numstat", "-z"],
+    ["-c", "core.quotepath=false", "diff", "--numstat", "-z"],
+    ["-c", "core.quotepath=false", "diff", "--cached", "--numstat", "-z"],
   ]);
 });
 
 /* ---------- gitTick / 推送 / 动作路由 ---------- */
 
 test("gitTick: dedupes valid local paths, filters invalid ones, pushes to each declaring window", async () => {
-  const respond = args => args.includes("status") ? { stdout: "## main\n" } : { stdout: "" };
+  const respond = args => args.includes("status") ? { stdout: "## main\x00" } : { stdout: "" };
   const h = loadPump(respond);
   const a = h.addWindow(), b = h.addWindow(), web = h.addWindow("https://example.com/");
   a.gitPaths = ["/fixture/repo", "relative", "/missing/repo", "/fixture/repo"];
@@ -255,7 +292,7 @@ test("gitTick: dedupes valid local paths, filters invalid ones, pushes to each d
 });
 
 test("gitTick: two distinct repositories each get one query", async () => {
-  const respond = args => args.includes("status") ? { stdout: "## main\n" } : { stdout: "" };
+  const respond = args => args.includes("status") ? { stdout: "## main\x00" } : { stdout: "" };
   const h = loadPump(respond);
   const wc = h.addWindow();
   wc.gitPaths = ["/fixture/repo", "/fixture/repo2"];
@@ -275,7 +312,7 @@ test("gitTick: no wanted paths means no git processes at all", async () => {
 });
 
 test("gitTick: vanished declared paths get one notrepo push; recovery re-arms the notice", async () => {
-  const respond = args => args.includes("status") ? { stdout: "## main\n" } : { stdout: "" };
+  const respond = args => args.includes("status") ? { stdout: "## main\x00" } : { stdout: "" };
   const h = loadPump(respond);
   const wc = h.addWindow();
   wc.gitPaths = ["/fixture/repo", "/fixture/vanish"];
@@ -299,7 +336,7 @@ test("gitTick: vanished declared paths get one notrepo push; recovery re-arms th
 });
 
 test("gitTick: vanished path notifies every declaring window independently", async () => {
-  const respond = args => args.includes("status") ? { stdout: "## main\n" } : { stdout: "" };
+  const respond = args => args.includes("status") ? { stdout: "## main\x00" } : { stdout: "" };
   const h = loadPump(respond);
   const a = h.addWindow(), b = h.addWindow();
   a.gitPaths = ["/fixture/vanish"];
@@ -327,8 +364,8 @@ test("manual Git refresh waits for the follow-up tick when a poll is already run
   const h = loadPump(args => {
     if (!args.includes("status")) return { stdout: "" };
     statusCalls++;
-    if (statusCalls === 1) return { wait: new Promise(resolve => { releaseFirst = resolve; }), stdout: "## main\\n" };
-    return { stdout: "## main\\n" };
+    if (statusCalls === 1) return { wait: new Promise(resolve => { releaseFirst = resolve; }), stdout: "## main\x00" };
+    return { stdout: "## main\x00" };
   });
   const wc = h.addWindow();
   wc.gitPaths = ["/fixture/repo"];
@@ -345,7 +382,7 @@ test("manual Git refresh waits for the follow-up tick when a poll is already run
 });
 
 test("manual Git refresh fails when its requested path is absent or query fails", async () => {
-  const noPath = loadPump(() => ({ stdout: "## main\n" }));
+  const noPath = loadPump(() => ({ stdout: "## main\x00" }));
   const noPathWc = noPath.addWindow();
   await noPath.api.gitTick(true, "manual-empty", noPathWc, "/fixture/missing");
   await flush();
@@ -367,7 +404,7 @@ test("manual Git refresh fails when its requested path is absent or query fails"
   const multi = loadPump(args => {
     const cmd = args.join(" ");
     if (cmd.includes("status") && cmd.includes("/fixture/parent")) return { error: { code: 128 }, stderr: "fatal: not a git repository" };
-    if (cmd.includes("status") && cmd.includes("/fixture/parent/a")) return { stdout: "## main\\n" };
+    if (cmd.includes("status") && cmd.includes("/fixture/parent/a")) return { stdout: "## main\x00" };
     if (cmd.includes("status") && cmd.includes("/fixture/parent/b")) return { error: { killed: true } };
     return { stdout: "" };
   });
@@ -379,7 +416,7 @@ test("manual Git refresh fails when its requested path is absent or query fails"
 });
 
 test("pollPluginRequests routes git-refresh to an immediate tick", async () => {
-  const respond = args => args.includes("status") ? { stdout: "## main\n" } : { stdout: "" };
+  const respond = args => args.includes("status") ? { stdout: "## main\x00" } : { stdout: "" };
   const h = loadPump(respond);
   const wc = h.addWindow();
   wc.gitPaths = ["/fixture/repo"];
@@ -392,9 +429,161 @@ test("pollPluginRequests routes git-refresh to an immediate tick", async () => {
   assert.equal(wc.requests.length, 0, "请求已被 splice 消费");
 });
 
-test("git refresh interval is registered at 10s", async () => {
+/* ---------- v420 fs watch 刷新链（specs/git-chip-host-sync.md）---------- */
+
+test("debounce tick colliding with an in-flight tick re-runs after it settles (v433)", async () => {
+  let releaseFirst;
+  let statusCalls = 0;
+  const h = loadPump(args => {
+    if (!args.includes("status")) return { stdout: "" };
+    statusCalls++;
+    if (statusCalls === 1) return { wait: new Promise(resolve => { releaseFirst = resolve; }), stdout: "## main\x00" };
+    return { stdout: "## main\x00" };
+  });
+  const wc = h.addWindow();
+  wc.gitPaths = ["/fixture/repo"];
+  const first = h.api.gitTick(false);   // 首查在途
+  await flush();
+  await h.api.gitTick(false);           // 防抖 tick 撞在途：v433 起置 pending，不再静默丢弃
+  await flush();
+  assert.equal(statusCalls, 1, "在途期间不并发第二查");
+  releaseFirst();
+  await first; await flush();
+  assert.equal(statusCalls, 2, "撞在途的防抖 tick 在结算后补跑（无条件 gitRefreshPending）");
+});
+
+test("git refresh has no polling interval; ticks are fs-watch driven (v420)", async () => {
   const h = loadPump();
-  assert.ok(h.intervals.some(i => i.ms === 10000), "gitTick 10s 轮询已注册");
+  assert.equal(h.intervals.some(i => i.ms === 10000), false, "10s 轮询定时器已移除");
+});
+
+test("gitTick registers workspace watcher plus deduped .git metadata watchers", async () => {
+  const respond = args => {
+    const cmd = args.join(" ");
+    if (cmd.includes("status")) return { stdout: "## main\x00" };
+    if (cmd.includes("rev-parse")) return { stdout: "/fixture/repo/.git\n/fixture/repo/.git\n" };
+    return { stdout: "" };
+  };
+  const h = loadPump(respond);
+  const base = h.watches.length;   // 模块加载期其它链路的 watcher 记录作基线
+  const wc = h.addWindow();
+  wc.gitPaths = ["/fixture/repo"];
+  await h.api.gitTick(false); await flush();
+  const dirs = h.watches.slice(base).map(w => w.dir).sort();
+  assert.deepEqual(dirs, ["/fixture/repo", "/fixture/repo/.git"], "工作区 + 元数据目录都已监听（相同目录去重）");
+  const ws = h.watches.slice(base).find(w => w.dir === "/fixture/repo");
+  assert.equal(ws.opts.recursive, true, "非 Linux 平台工作区递归监听");
+  assert.equal(h.watches.slice(base).find(w => w.dir === "/fixture/repo/.git").opts.recursive, true, "元数据目录恒递归");
+});
+
+test("gitTick resolves a relative git-common-dir against the workspace path", async () => {
+  const respond = args => {
+    const cmd = args.join(" ");
+    if (cmd.includes("status")) return { stdout: "## main\x00" };
+    if (cmd.includes("rev-parse")) return { stdout: "/fixture/repo/.git\n../common/.git\n" };
+    return { stdout: "" };
+  };
+  const h = loadPump(respond);
+  const base = h.watches.length;
+  const wc = h.addWindow();
+  wc.gitPaths = ["/fixture/repo"];
+  await h.api.gitTick(false); await flush();
+  const dirs = h.watches.slice(base).map(w => w.dir).sort();
+  assert.deepEqual(dirs, ["/fixture/common/.git", "/fixture/repo", "/fixture/repo/.git"], "相对 --git-common-dir 按工作区 resolve（宿主同款，此处指向外部 common dir）");
+});
+
+test("workspace watch events arm a 60s trailing debounce that runs one full tick", async () => {
+  const respond = args => args.includes("status") ? { stdout: "## main\x00" } : { stdout: "" };
+  const h = loadPump(respond);
+  const wc = h.addWindow();
+  wc.gitPaths = ["/fixture/repo"];
+  await h.api.gitTick(false); await flush();
+  h.execs.length = 0; wc.pushes.length = 0;
+  const before = h.timeouts.length;
+  h.watches.find(w => w.dir === "/fixture/repo").fn("change");
+  h.watches.find(w => w.dir === "/fixture/repo").fn("rename");
+  const armed = h.timeouts.slice(before).filter(t => t.ms === 60000);
+  assert.equal(armed.length, 2, "每个事件各重挂一次 60s 计时器（第二次 clearTimeout 重置第一次——尾随防抖）");
+  assert.equal(h.execs.length, 0, "防抖期内不查询");
+  armed[armed.length - 1].fn();
+  await flush();
+  assert.ok(h.execs.some(e => e.args.includes("status")), "静默满 60s 后全路径查询一轮");
+  assert.ok(wc.pushes.some(js => js.includes("__zusageGitState")), "结果照常推送");
+});
+
+test("Linux keeps the workspace watcher non-recursive (host parity)", async () => {
+  const respond = args => args.includes("status") ? { stdout: "## main\x00" } : { stdout: "" };
+  const h = loadPump(respond);
+  h.sandbox.process.platform = "linux";
+  const wc = h.addWindow();
+  wc.gitPaths = ["/fixture/repo"];
+  await h.api.gitTick(false); await flush();
+  assert.equal(h.watches.find(w => w.dir === "/fixture/repo").opts.recursive, false, "Linux 工作区禁递归（防慢挂载阻塞）");
+});
+
+test("watcher runtime error unhooks the path so the next tick rebuilds (v433)", async () => {
+  const respond = args => args.includes("status") ? { stdout: "## main\x00" } : { stdout: "" };
+  const h = loadPump(respond);
+  const wc = h.addWindow();
+  wc.gitPaths = ["/fixture/repo"];
+  await h.api.gitTick(false); await flush();
+  const countRepo = () => h.watches.filter(w => w.dir === "/fixture/repo").length;
+  assert.equal(countRepo(), 1, "前置：工作区 watcher 已建");
+  const err = h.errors.find(e => e.dir === "/fixture/repo");
+  assert.ok(err, "error 回调已挂");
+  err.cb(); await flush();   // 模拟运行期错误（目录被删重建等）
+  await h.api.gitTick(false); await flush();
+  assert.equal(countRepo(), 2, "摘档后下轮 tick 重建（死 watcher 不再占位冻结自动刷新）");
+});
+
+test("watchers are closed when a path leaves the union and not closed twice", async () => {
+  const respond = args => args.includes("status") ? { stdout: "## main\x00" } : { stdout: "" };
+  const h = loadPump(respond);
+  const wBase = h.watches.length, cBase = h.closed.length;
+  const wc = h.addWindow();
+  wc.gitPaths = ["/fixture/repo", "/fixture/repo2"];
+  await h.api.gitTick(false); await flush();
+  assert.equal(h.watches.length - wBase, 2, "两仓库各建工作区 watcher（rev-parse 空输出无元数据监听）");
+  wc.gitPaths = ["/fixture/repo"];
+  await h.api.gitTick(false); await flush();
+  assert.deepEqual(h.closed.slice(cBase).sort(), ["/fixture/repo2"], "路径离开并集后 watcher 关闭");
+  await h.api.gitTick(false); await flush();
+  assert.equal(h.closed.length - cBase, 1, "仍在并集内的 watcher 不重复关闭");
+});
+
+test("in-flight watcher resolution for a departed path is discarded (v433)", async () => {
+  let revRelease;
+  const revWait = new Promise(resolve => { revRelease = resolve; });
+  const respond = args => {
+    const cmd = args.join(" ");
+    if (cmd.includes("status")) return { stdout: "## main\x00" };
+    if (cmd.includes("rev-parse")) return { wait: revWait, stdout: "/fixture/repo/.git\x00/fixture/repo/.git\x00" };
+    return { stdout: "" };
+  };
+  const h = loadPump(respond);
+  const wc = h.addWindow();
+  wc.gitPaths = ["/fixture/repo"];
+  await h.api.gitTick(false); await flush();   // 解析在途（rev-parse 挂起）
+  wc.gitPaths = [];
+  await h.api.gitTick(false); await flush();   // 路径离开并集
+  revRelease();
+  await flush();
+  assert.equal(h.watches.filter(w => w.dir === "/fixture/repo").length, 0, "离开并集后完成的在途解析不得建档");
+  wc.gitPaths = ["/fixture/repo"];
+  await h.api.gitTick(false); await flush();
+  assert.ok(h.watches.some(w => w.dir === "/fixture/repo"), "路径回归后下轮 tick 重建");
+});
+
+test("fs.watch creation failure is non-fatal: query and push still work", async () => {
+  const respond = args => args.includes("status") ? { stdout: "## main\x00" } : { stdout: "" };
+  const h = loadPump(respond);
+  const baseline = h.watches.length;   // 模块加载期其它链路（db 目录等）已有 watcher 记录
+  h.watchCtl.fail = true;
+  const wc = h.addWindow();
+  wc.gitPaths = ["/fixture/repo"];
+  await h.api.gitTick(false); await flush();
+  assert.equal(h.watches.length, baseline, "git 路径未建任何 watcher");
+  assert.ok(wc.pushes.some(js => js.includes("__zusageGitState") && js.includes('"ok":true')), "查询与推送不受影响（宿主同策略，不回退轮询）");
 });
 
 /* ---------- 2026-10-24 夜间扫描回归：IPC 门控与窗口表清理 ---------- */

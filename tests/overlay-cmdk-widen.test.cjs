@@ -75,9 +75,9 @@ test('buildPanel shows the widen toggle in both languages and restores its check
   vm.runInNewContext(buildSource + '\nbuildPanel();', context);
   assert.match(context.panel.innerHTML, /<input type="checkbox" class="zu-cmdk-widen">/);
   assert.match(context.panel.innerHTML, /命令中心加宽/);
-  // 位置：紧跟「项目完整路径」之后、语言选择之前（通用区尾部）
+  // 位置：通用区末行（语言选择已上移「显示」区「状态条样式」之前）
   assert.ok(context.panel.innerHTML.indexOf('zu-cmdk-widen') > context.panel.innerHTML.indexOf('zu-pp-enable'));
-  assert.ok(context.panel.innerHTML.indexOf('zu-cmdk-widen') < context.panel.innerHTML.indexOf('zu-settings-langs'));
+  assert.ok(context.panel.innerHTML.indexOf('zu-settings-langs') < context.panel.innerHTML.indexOf('zu-cmdk-widen'));
   assert.equal(cwBox.checked, true);
   context.state.cmdkW = 0;
   vm.runInNewContext('buildPanel();', context);

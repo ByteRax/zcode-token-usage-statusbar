@@ -108,11 +108,19 @@ function harness() {
     clearInterval: n => timers.delete(n),
     requestAnimationFrame: fn => { frames.set(++id, fn); return id; }, cancelAnimationFrame: n => frames.delete(n),
     MutationObserver: class { constructor(fn) { this.fn = fn; } observe() {} disconnect() {} },
+    /* v420：原生胶囊合成点击序列的事件构造器（openNativeGitCapsule 派发用） */
+    MouseEvent: class { constructor(type, init) { this.type = type; Object.assign(this, init || {}); } },
+    PointerEvent: class { constructor(type, init) { this.type = type; Object.assign(this, init || {}); } },
   });
   const executable = source.replace(/\}\)\(\);\s*$/, 'window.gitTest = { instances: function() { return instances; }, state: function() { return state; } };})();');
   function inject() { window.__zusageOverlay = false; vm.runInContext(executable, sandbox); }
   function tick() { for (const t of [...timers.values()]) if (t.interval && (t.ms === 600 || t.ms === 500)) t.fn(); }
   function boot() { for (const [n, t] of [...timers]) if (!t.interval && t.ms === 0) { timers.delete(n); t.fn(); } }
+  function fireTimers(ms) { for (const [n, t] of [...timers]) if (!t.interval && t.ms === ms) { timers.delete(n); t.fn(); } }   // v423：触发宽限定时器（mouseleave 门红证用）
+  /* v422：document.querySelector 注册表（Element 原生实现会自动造空元素，定位迁移测试需要
+   * 精确的 null/命中语义） */
+  const docQueries = new Map();
+  document.querySelector = sel => docQueries.has(sel) ? docQueries.get(sel) : null;
   function buildComposer(pid, sid, { repoPath = '/repo/a', identity = '', remote = '' } = {}) {
     const card = body.appendChild(new Element());
     const row = card.appendChild(new Element());
@@ -145,7 +153,7 @@ function harness() {
       recent: [{ sid: 'sid_main', workspace_identity: '', ctx, context_window: cw, last_at: 1 }] };
   }
   function advance(ms) { clockOffset += ms; }   // v308：时钟快进（越过 TTL 缓存）
-  return { window, body, inject, tick, boot, advance, buildComposer, payload };
+  return { window, body, document, inject, tick, boot, fireTimers, advance, buildComposer, payload, docQueries };
 }
 
 function gitState(o = {}) {
@@ -537,18 +545,19 @@ test('long branch names truncate to 16 chars with ellipsis and html-escape', () 
   assert.match(chip.innerHTML, /zu-git-name">&lt;feat\/very-long-…<\/span>/);
 });
 
-test('refresh requests: first scope resolution asks once, snapshots throttle, click forces', () => {
+test('refresh requests: path-set change asks once, snapshots no longer re-ask, click (no capsule) forces', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
   const asks = () => h.window.__zusagePluginRequests.filter(r => r.action === 'git-refresh').length;
   assert.equal(asks(), 1, '协调器派发 pane、scope 解析成功即上报路径并请求首查（不必等首个快照）');
   h.window.__zusageUpdate(h.payload());
-  assert.equal(asks(), 1, '路径集未变的快照重推被节流');
+  h.window.__zusageUpdate(h.payload());
+  assert.equal(asks(), 1, 'v420：路径集未变的快照重推不再触发重查（fs watch 60s 防抖驱动后续更新）');
   h.window.__zusageGitState('/repo/a', gitState());
   const chip = chipOf(ui.row);
   const live = ui.row.parentElement.children.find(e => e.classList.contains('zusage-root')).querySelector('.zu-sr-only');
   dispatch(chip, 'click');
-  assert.equal(asks(), 2, '点击绕过节流');
+  assert.equal(asks(), 2, '无原生胶囊时点击回退立即刷新');
   assert.ok(chip.classList.contains('zu-gbusy'));
   assert.equal(chip.getAttribute('aria-busy'), 'true');
   assert.equal(live.textContent, 'Git 状态查询中');
@@ -561,6 +570,80 @@ test('refresh requests: first scope resolution asks once, snapshots throttle, cl
   h.window.__zusagePluginResult({ id: request.requestId, ok: true, pending: false });
   assert.equal(chip.getAttribute('aria-busy'), 'false');
   assert.match(live.textContent, /Git 状态已更新：Git 分支 main/);
+});
+
+test('click with a visible native capsule dispatches the pointer sequence and skips refresh', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  const capsule = new Element('button');
+  capsule.setAttribute('data-status-capsule', 'git');
+  capsule.getClientRects = () => [{}];   // 可见性判据（display:none 时为空数组）
+  const events = [];
+  capsule.dispatchEvent = ev => events.push(ev.type);
+  ui.editor.queries.set('[data-status-capsule="git"]', capsule);   // 夹具 querySelector 预注册
+  /* v422 定位迁移夹具：Radix popper wrapper + content 预置（wrapper rect 在 chip 右下方，
+   * 断言迁移后水平居中于 chip、底缘距 chip 顶 8px——chip rect 恒 {20,600,520,650}） */
+  const wrapper = new Element('div');
+  wrapper.setAttribute('data-radix-popper-content-wrapper', 'true');
+  wrapper.getBoundingClientRect = () => ({ left: 800, top: 700, right: 980, bottom: 760, width: 180, height: 60 });
+  const content = new Element('div');
+  content.setAttribute('data-status-capsule-content', 'git');
+  wrapper.appendChild(content);
+  h.body.appendChild(wrapper);
+  h.docQueries.set('[data-status-capsule-content="git"]', content);
+  const chip = drive(h, ui);
+  const tip = h.body.children.find(e => e.classList.contains('zusage-git-tip'));
+  dispatch(chip, 'mouseenter');
+  assert.equal(tip.style.display, 'block', '前置：悬停 tooltip 在屏');
+  dispatch(chip, 'click');
+  assert.deepEqual(events, ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'], '完整 pointer 序列派发给原生胶囊');
+  const refreshes = h.window.__zusagePluginRequests.filter(r => r.action === 'git-refresh').filter(r => r.requestId);
+  assert.equal(refreshes.length, 0, '命中原生胶囊不发 git-refresh');
+  assert.ok(!chip.classList.contains('zu-gbusy'), '不进 busy 态');
+  assert.equal(chip.getAttribute('aria-busy'), 'false');
+  assert.equal(tip.style.display, 'none', '点击后收起我方 tooltip（原生弹层接管）');
+  assert.equal(wrapper.style.translate, '-620px -168px', '弹层迁移：chip 中心 270−半宽 90=180（dx=−620）、chip 顶 600−8−高 60=532（dy=−168）');
+});
+
+test('capsule is not borrowed across panes: sid mismatch on pane root falls back (no dispatch)', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  const capsule = new Element('button');
+  capsule.setAttribute('data-status-capsule', 'git');
+  capsule.getClientRects = () => [{}];
+  const events = [];
+  capsule.dispatchEvent = ev => events.push(ev.type);
+  ui.editor.queries.set('[data-status-capsule="git"]', capsule);   // 胶囊注册在 pane 根上（可达）
+  const chip = drive(h, ui);
+  ui.editor.sid = 'sid_other';   // pane 根换会话：实例 pickedSid 仍是 sid_main
+  ui.editor.setAttribute('data-session-id', 'sid_other');
+  dispatch(chip, 'click');
+  assert.deepEqual(events, [], '异 sid 的 pane 根不得借用其胶囊（v433 跨 pane 守卫）');
+  assert.equal(h.window.__zusagePluginRequests.filter(r => r.action === 'git-refresh' && r.requestId).length, 0, 'scope 校验同侧失配：连手动刷新回退也不发（fail-closed 静默；首查请求无 requestId 不计）');
+});
+
+test('capsule reanchor is skipped when no popper wrapper mounts (native absent/old host)', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  const capsule = new Element('button');
+  capsule.setAttribute('data-status-capsule', 'git');
+  capsule.getClientRects = () => [{}];
+  capsule.dispatchEvent = () => {};
+  ui.editor.queries.set('[data-status-capsule="git"]', capsule);
+  const chip = drive(h, ui);
+  dispatch(chip, 'click');   // 无 wrapper：重试链空转，不得抛错
+  assert.ok(!chip.classList.contains('zu-gbusy'));
+});
+
+test('click falls back to refresh when the native capsule exists but is hidden', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  const capsule = new Element('button');
+  capsule.setAttribute('data-status-capsule', 'git');
+  capsule.getClientRects = () => [];   // display:none 等不可见态
+  capsule.dispatchEvent = () => { throw new Error('must not dispatch'); };
+  ui.editor.queries.set('[data-status-capsule="git"]', capsule);
+  const chip = drive(h, ui);
+  dispatch(chip, 'click');
+  const refreshes = h.window.__zusagePluginRequests.filter(r => r.action === 'git-refresh').filter(r => r.requestId);
+  assert.equal(refreshes.length, 1, '胶囊不可见 → 回退立即刷新链');
+  assert.ok(chip.classList.contains('zu-gbusy'), '回退链带 busy 态');
 });
 
 test('refresh completion for a prior composer is ignored after pane scope changes', () => {
@@ -607,6 +690,65 @@ test('hover tooltip shows branch, upstream, counts, directory and refresh hint',
   assert.equal(tip.style.display, 'block', '悬停桥：移入 tooltip 前保持显示（延迟收起）');
   dispatch(h.window, 'keydown', { key: 'Escape' });
   assert.equal(tip.style.display, 'none', 'Esc 关闭');
+});
+
+test('devKeepTip pins git tooltip: mouseleave/blur/outside sweep skip, Escape still closes', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  const chip = drive(h, ui);
+  const tip = h.body.children.find(e => e.classList.contains('zusage-git-tip'));
+  h.window.gitTest.state().devKeepTip = 1;
+  dispatch(chip, 'mouseenter');
+  assert.equal(tip.style.display, 'block');
+  dispatch(chip, 'mouseleave');
+  assert.equal(tip.style.display, 'block', 'devKeepTip：mouseleave 不自动收（hideGitTipSoon 加门）');
+  h.fireTimers(200);
+  assert.equal(tip.style.display, 'block', 'devKeepTip：宽限定时器未挂（挂了即红）');
+  dispatch(chip, 'blur');
+  assert.equal(tip.style.display, 'block', 'devKeepTip：失焦不自动收');
+  dispatch(h.document, 'mousedown', { target: new Element('div') });   // 外点清扫（v339 tipOutsideDown）
+  assert.equal(tip.style.display, 'block', 'devKeepTip：外点清扫不收（08 分片 gitTip 分支加门）');
+  dispatch(chip, 'mouseenter');   // 重悬停保持 pinned（上一步外点未收）
+  dispatch(tip, 'mouseleave');
+  assert.equal(tip.style.display, 'block', 'devKeepTip：移出弹层本体不收（v424 漏网补门，用户命中路径）');
+  chip.remove();   // 模拟 React 重建工具行：旧 chip 真实离场（remove 而非 setConnected——僵尸 nextSibling 会令 insertBefore 早退、失真）
+  h.tick();
+  assert.equal(tip.style.display, 'block', 'devKeepTip：chip 断连重建分支不收（v424，弹层滞留待重悬停刷新）');
+  const rebuilt = chipOf(ui.row);
+  assert.ok(rebuilt && rebuilt !== chip, '重建分支照常重挂新 chip');
+  dispatch(h.window, 'keydown', { key: 'Escape' });
+  assert.equal(tip.style.display, 'none', 'devKeepTip：Escape 仍手动关（既有契约）');
+});
+
+test('outside sweep still closes git tooltip without devKeepTip', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  const chip = drive(h, ui);
+  const tip = h.body.children.find(e => e.classList.contains('zusage-git-tip'));
+  dispatch(chip, 'mouseenter');
+  assert.equal(tip.style.display, 'block');
+  dispatch(h.document, 'mousedown', { target: new Element('div') });
+  assert.equal(tip.style.display, 'none', '常态：点空白即收（v339 既有行为不回退）');
+});
+
+test('changed-files rows: type icon by extension + trailing ±N, untracked without counts (v425)', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  const chip = drive(h, ui, gitState({ files: [
+    { p: 'src/a.js', s: 'modified', add: 49, del: 0 },
+    { p: 'README.md', s: 'added', add: 3, del: 1 },
+    { p: 'old -> new.txt', s: 'renamed' },   // numstat 未命中：无计数
+    { p: 'pic.png', s: 'untracked' },
+    { p: 'c.c', s: 'conflict', add: 1, del: 1 },
+  ] }));
+  dispatch(chip, 'mouseenter');
+  const tip = h.body.children.find(e => e.classList.contains('zusage-git-tip'));
+  assert.match(tip.innerHTML, /zu-gf-ico[^>]*><svg/, '列首状态文字改文件类型图标');
+  assert.match(tip.innerHTML, /zu-gf-add">\+49</);
+  assert.match(tip.innerHTML, /zu-gf-del">-0</);
+  assert.equal((tip.innerHTML.match(/class="zu-gf-num"/g) || []).length, 3, '仅 numstat 命中的行带 ±N（rename/未跟踪省略）');
+  assert.match(tip.innerHTML, />JS</, '扩展名粗体小字按新名取（rename 路径尾段）');
+  assert.match(tip.innerHTML, /rx="3.2" fill="#e8c66a"\/><text[^>]*>JS<\/text>/, 'js 徽标：实心圆角方块+粗体字（v426 重制）');
+  assert.match(tip.innerHTML, /fill="#d9534f"\/><text[^>]*fill="#ffffff"[^>]*>C<\/text>/, '冲突深红底白字（原 zu-gf-c 语义）');
+  assert.match(tip.innerHTML, /title="改"/, '状态词保留在图标 title');
+  assert.doesNotMatch(tip.innerHTML, /<b class="zu-gf[^"]">[^<]+<\/b><span/, '不再输出状态文字标签列');
 });
 
 test('reinjection cleans the old chip and tooltip, then rebuilds', () => {

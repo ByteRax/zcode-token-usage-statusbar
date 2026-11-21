@@ -2286,19 +2286,22 @@ function queryTurnText(sid, wc, plainUnits, forceKmb, unitEpoch, noCost) {
 
 /* ---------- Git 状态旁路查询（v96）：工具行 Git chip 的数据源 ----------
  * 渲染端把各 pane 的本地工作区路径写进 window.__zusageGitPaths（远端 pane 不上报；开关关闭为空），
- * 这里每 10s 取各主窗口并集逐路径跑 git（一次性 execFile，与 Python 泵无关，不占 stdin 行协议），
- * 结果按路径推回每个声明过该路径的窗口（window.__zusageGitState）。渲染端 git-refresh 请求
- * （回合后节流 / chip 点击）立即重查。git 缺失 / 非仓库按 reason 回推，渲染端据此不挂载；
+ * 主进程对各窗声明路径并集建 fs.watch（v420 起对齐宿主原生 Git 胶囊刷新时机，弃 10s 轮询）：
+ * 任一监听事件重置 60s 尾随防抖，静默满 60s 取并集逐路径跑 git（一次性 execFile，与 Python 泵
+ * 无关，不占 stdin 行协议），结果按路径推回每个声明过该路径的窗口（window.__zusageGitState）。
+ * 渲染端 git-refresh 请求（路径集变化首查 / chip 点击回退）立即重查。git 缺失 / 非仓库按 reason
+ * 回推，渲染端据此不挂载；
  * 超时与其它错误也回推，渲染端保留最近成功态并标 stale。
- * 命令：status --porcelain --branch（分支/上游/ahead-behind/各类文件计数）+ diff HEAD --shortstat
- * （工作区相对 HEAD 的插入/删除行数，含已暂存；HEAD 无效的无提交仓库退回 diff + diff --cached
- * 求和，即 cc-pretty-statusline 的原始做法）。GIT_OPTIONAL_LOCKS=0 不写 index 锁（后台轮询不与
+ * 命令：status --porcelain --branch -z（分支/上游/ahead-behind/各类文件计数）+ diff HEAD --numstat -z
+ * （每文件插入/删除行数，总量求和与原 --shortstat 等价——v425 起同一命令兼供 tooltip 逐文件
+ * ±N 与状态标签→文件类型图标改造；HEAD 无效的无提交仓库退回 diff + diff --cached 的 numstat
+ * 合并求和）。GIT_OPTIONAL_LOCKS=0 不写 index 锁（后台查询不与
  * 用户的 git 操作抢 index.lock），LC_ALL=C 让 shortstat 文案可解析，GIT_TERMINAL_PROMPT=0 杜绝交互。
  * 多仓聚合：workspace 自身非仓库（status 报 notrepo）时枚举直接子目录中的 git 仓库——0 仓维持
  * notrepo（chip 隐藏）；恰 1 仓对该子仓走完整单仓管线（成功结果附 repoPath）；≥2 仓每仓只跑一条
  * status --porcelain --branch（Promise.all 并行，不跑 diff 行数），按字母序聚合为 kind:"multi"，
  * 上限 GIT_REPO_CAP=32，超出折叠进 more；子仓失败只在对应项记 err，不拖垮整体与其余仓。 */
-const GIT_TICK_MS = 10000, GIT_TIMEOUT_MS = 8000, GIT_MAX_BUFFER = 4 * 1024 * 1024;
+const GIT_TIMEOUT_MS = 8000, GIT_MAX_BUFFER = 4 * 1024 * 1024;
 const GIT_ENV = Object.assign({}, process.env, { GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" });
 const GIT_CONFLICT = new Set(["DD", "AU", "UD", "UA", "DU", "AA", "UU"]);
 const GIT_REPO_CAP = 32;   // 多仓聚合上限：父目录非仓库时最多查询 32 个直接子仓库，超出折叠进 more
@@ -2321,7 +2324,7 @@ function finishGitRefreshWaiters(results) {
 }
 
 const GIT_FILES_CAP = 60;   // 逐文件明细帽：tooltip 列前 60 条，ft 承载真实总数
-function fileLabel(x, y) {   // 展示标签：冲突 > 未跟踪 > 删除 > 改名 > 改（与 tooltip 颜色档对应）
+function fileLabel(x, y) {   // 展示标签：冲突 > 未跟踪 > 删除 > 改名 > 改（title 提示与冲突红保留，v425 起列首标签让位文件类型图标）
   if (GIT_CONFLICT.has(x + y)) return "conflict";
   if (x === "?" ) return "untracked";
   if (x === "D" || y === "D") return "deleted";
@@ -2329,14 +2332,31 @@ function fileLabel(x, y) {   // 展示标签：冲突 > 未跟踪 > 删除 > 改
   if (x === "A" || y === "A") return "added";
   return "modified";
 }
-function parseGitPorcelain(text, collectFiles) {
+/* v426：porcelain 路径 → 文件条目；numstatMap 命中即附 add/del（rename 的映射键 numKey 由
+ * 调用方给 -z 的干净新名，显示串仍是 "old -> new" 组合形；未跟踪不在 numstat 里，天然无
+ * 计数，行尾省略）。 */
+function fileEntry(p, x, y, numKey, numstatMap) {
+  const e = { p: p, s: fileLabel(x, y) };
+  if (numstatMap) {
+    const hit = numstatMap[numKey];
+    if (hit) { e.add = hit.ins; e.del = hit.del; }
+  }
+  return e;
+}
+/* v433：porcelain 解析 -z 化（v425 的行式解析对含空格/引号路径失配——porcelain 非 -z 会给
+ * 路径加 C 转义引号，与 numstat 的裸路径对不上，空格文件名整类丢 ±N）。-z 格式（实测 git
+ * 2.x）：条目 "XY path\0"；rename/copy 为 "XY 新名\0旧名\0"——新名跟在 XY 后、旧名占下一
+ * 个 NUL 段；分支头 "## ..." 同样以 NUL 结尾。显示串保持 "old -> new" 组合形（渲染端转义
+ * 与图标按尾段取新名），映射键用 -z 干净新名。 */
+function parseGitPorcelain(text, collectFiles, numstatMap) {
   const out = { branch: "", upstream: "", ahead: 0, behind: 0, detached: false, noCommits: false, staged: 0, unstaged: 0, untracked: 0, conflicts: 0, changed: 0 };
   if (collectFiles) { out.files = []; out.ft = 0; }
-  for (const raw of String(text || "").split("\n")) {
-    const line = raw.replace(/\r$/, "");
-    if (!line) continue;
-    if (line.startsWith("## ")) {
-      const head = line.slice(3);
+  const toks = String(text || "").split("\0");
+  for (let i = 0; i < toks.length; i++) {
+    const tok = toks[i];
+    if (!tok) continue;
+    if (tok.startsWith("## ")) {
+      const head = tok.slice(3);
       if (head === "HEAD (no branch)") { out.detached = true; continue; }
       const fresh = head.match(/^(?:No commits yet|Initial commit) on (.+)$/);
       if (fresh) { out.noCommits = true; out.branch = fresh[1]; continue; }
@@ -2349,16 +2369,23 @@ function parseGitPorcelain(text, collectFiles) {
       if (b) out.behind = parseInt(b[1], 10);
       continue;
     }
-    if (line.length < 2) continue;
-    const x = line[0], y = line[1];
+    if (tok.length < 4) continue;   // XY+空格+至少 1 字符路径
+    const x = tok[0], y = tok[1];
+    if (x === "!" && y === "!") continue;   // 仅 --ignored 时出现（-z 下不会出现，防御保留）
+    let p, numKey;
+    if ((x === "R" || x === "C") && i + 1 < toks.length) {
+      numKey = tok.slice(3);   // 新名（映射键）
+      p = toks[++i] + " -> " + numKey;   // 旧名占下一个 NUL 段，显示串拼回组合形
+    } else {
+      p = numKey = tok.slice(3);
+    }
     if (x === "?" && y === "?") {
       out.untracked++;
-      if (collectFiles && out.files.length < GIT_FILES_CAP) out.files.push({ p: line.slice(3), s: fileLabel(x, y) });
+      if (collectFiles && out.files.length < GIT_FILES_CAP) out.files.push(fileEntry(p, x, y, numKey, numstatMap));
       continue;
     }
-    if (x === "!" && y === "!") continue;   // 仅 --ignored 时出现
-    out.changed++;   // 非未跟踪/非忽略的条目行计 1：MM 部分暂存也只算一行，不与 staged/unstaged 相加重复计
-    if (collectFiles && out.files.length < GIT_FILES_CAP) out.files.push({ p: line.slice(3), s: fileLabel(x, y) });
+    out.changed++;   // 非未跟踪/非忽略的条目计 1：MM 部分暂存也只算一条，不与 staged/unstaged 相加重复计
+    if (collectFiles && out.files.length < GIT_FILES_CAP) out.files.push(fileEntry(p, x, y, numKey, numstatMap));
     if (GIT_CONFLICT.has(x + y)) { out.conflicts++; continue; }
     if (x !== " ") out.staged++;
     if (y !== " ") out.unstaged++;
@@ -2366,10 +2393,35 @@ function parseGitPorcelain(text, collectFiles) {
   if (collectFiles) out.ft = out.changed + out.untracked;   // 真实总条目数（含未入帽的）
   return out;
 }
-function parseShortstat(text) {
-  const s = String(text || "");
-  const ins = s.match(/(\d+) insertions?\(\+\)/), del = s.match(/(\d+) deletions?\(-\)/);
-  return { ins: ins ? parseInt(ins[1], 10) : 0, del: del ? parseInt(del[1], 10) : 0 };
+/* v433：numstat 解析 -z 化（与 porcelain -z 同动机：非 -z 的 rename "old => new" 花括号形
+ * 与路径内箭头歧义、porcelain 引号串对不上键）。-z 格式（实测）：普通条目 "ins\tdel\tpath\0"，
+ * 二进制 "-\t-\tpath\0" 计 0 且不入映射；rename 为三段 NUL："ins\tdel\t\0" + "<旧名>\0" +
+ * "<新名>\0"——第三个 TAB 字段为空即信号，旧名在前、取后段新名为键。 */
+function parseNumstat(text) {
+  const out = { ins: 0, del: 0, map: {} };
+  const toks = String(text || "").split("\0");
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i].split("\t");
+    if (t.length < 3) continue;
+    const ins = t[0] === "-" ? 0 : parseInt(t[0], 10) || 0;
+    const del = t[1] === "-" ? 0 : parseInt(t[1], 10) || 0;
+    out.ins += ins;
+    out.del += del;
+    if (t[0] === "-" || t[1] === "-") continue;   // 二进制不入映射（行尾省略）
+    let key = t.slice(2).join("\t");
+    if (key === "" && i + 2 < toks.length) { key = toks[i + 2]; i += 2; }   // rename：跳过旧名段，取新名
+    if (key) out.map[key] = { ins: ins, del: del };
+  }
+  return out;
+}
+function mergeNumstat(a, b) {
+  const map = {};
+  for (const k in a.map) map[k] = a.map[k];
+  for (const k in b.map) {
+    const v = map[k];
+    map[k] = v ? { ins: v.ins + b.map[k].ins, del: v.del + b.map[k].del } : b.map[k];
+  }
+  return { ins: a.ins + b.ins, del: a.del + b.del, map: map };
 }
 function gitPathOk(p) {
   if (typeof p !== "string" || !p || p.length > 4096 || /[\x00-\x1f\x7f]/.test(p) || !path.isAbsolute(p)) return false;
@@ -2390,32 +2442,34 @@ function gitFailure(r) {   // null = 成功；否则渲染端可识别的 reason
   if (/not a git repository/i.test(r.stderr)) return "notrepo";
   return "error";
 }
-/* 单仓管线（queryGitStatus 的原有主体）：status + diff HEAD --shortstat，无提交仓库退回
- * diff + diff --cached 求和。成功返回统一附 repoPath（渲染端 tooltip 目录行用）与 ts（成功
- * 时刻）与 op（进行中的 Git 操作），失败形状不变。 */
+/* 单仓管线（queryGitStatus 的原有主体）：status + diff HEAD --numstat（v425 替代 shortstat，
+ * 总量等价、每文件 ±N 同命令产出），无提交仓库退回 diff + diff --cached 的 numstat 逐路径
+ * 合并求和。成功返回统一附 repoPath（渲染端 tooltip 目录行用）与 ts（成功时刻）与 op（进行中
+ * 的 Git 操作），失败形状不变。两条命令都带 -z（v433）：非 -z 的 porcelain 给含空格/引号路径加转义引号、
+ * rename 是 "old -> new" 歧义串，numstat 的 rename 还有 "dir/{old => new}" 花括号形——-z 下全部为
+ * NUL 分段的干净字段（porcelain rename=新名段+旧名段；numstat rename=ins\tdel\t\0旧名\0新名\0），
+ * 与 quotepath 无关地逐条对上。 */
 async function gitSingleStatus(cwd) {
   /* core.quotepath=false：v411 起本管线的文件路径直接进 tooltip 展示，默认 quotepath
    * 会把非 ASCII 文件名转成八进制转义串（中文文件名整行不可读）；仅单仓管线开（多仓
-   * 聚合只计数不收路径）。渲染端 gitEsc 只做 HTML 转义，不做 unquotepath。 */
-  const st = await gitExec(cwd, ["-c", "core.quotepath=false", "status", "--porcelain", "--branch"]);
+   * 聚合只计数不收路径）。渲染端 gitEsc 只做 HTML 转义，不做 unquotepath。status 与
+   * numstat 两条命令都要带——路径按同一套原始 UTF-8 产出才能逐条对上。 */
+  const st = await gitExec(cwd, ["-c", "core.quotepath=false", "status", "--porcelain", "--branch", "-z"]);
   const bad = gitFailure(st);
   if (bad) {
     if (bad === "nogit" && !gitNoBinaryLogged) { gitNoBinaryLogged = true; LOG("git not found in PATH; git chip stays hidden"); }
     return { ok: false, reason: bad, ts: Date.now() };
   }
-  const d1 = await gitExec(cwd, ["diff", "HEAD", "--shortstat"]);
+  const d1 = await gitExec(cwd, ["-c", "core.quotepath=false", "diff", "HEAD", "--numstat", "-z"]);
   let counts = null;
-  if (!d1.error) counts = parseShortstat(d1.stdout);
-  else if (gitFailure(d1) === "error") {   // HEAD 无效（无提交仓库）等非超时失败：退回两段式求和
-    const a = await gitExec(cwd, ["diff", "--shortstat"]);
-    const b = a.error ? a : await gitExec(cwd, ["diff", "--cached", "--shortstat"]);
-    if (!a.error && !b.error) {
-      const pa = parseShortstat(a.stdout), pb = parseShortstat(b.stdout);
-      counts = { ins: pa.ins + pb.ins, del: pa.del + pb.del };
-    }
+  if (!d1.error) counts = parseNumstat(d1.stdout);
+  else if (gitFailure(d1) === "error") {   // HEAD 无效（无提交仓库）等非超时失败：退回两段式求和（同路径计数相加）
+    const a = await gitExec(cwd, ["-c", "core.quotepath=false", "diff", "--numstat", "-z"]);
+    const b = a.error ? a : await gitExec(cwd, ["-c", "core.quotepath=false", "diff", "--cached", "--numstat", "-z"]);
+    if (!a.error && !b.error) counts = mergeNumstat(parseNumstat(a.stdout), parseNumstat(b.stdout));
   }
   if (!counts) return { ok: false, reason: gitFailure(d1) || "error", ts: Date.now() };
-  return Object.assign({ ok: true, ts: Date.now(), ins: counts.ins, del: counts.del, repoPath: cwd, op: detectGitOp(cwd) }, parseGitPorcelain(st.stdout, true));   // v411：单仓收逐文件明细（多仓聚合不收）
+  return Object.assign({ ok: true, ts: Date.now(), ins: counts.ins, del: counts.del, repoPath: cwd, op: detectGitOp(cwd) }, parseGitPorcelain(st.stdout, true, counts.map));   // v411 收逐文件明细；v425 附每文件 ±N（多仓聚合不收）
 }
 /* 进行中的 Git 操作探测：解析 .git 目录（目录或 worktree 链接文件都认），按官方触发器文件
  * 存在性判操作类型。纯 fs 探针零子进程；rebase-apply 目录被 rebase --apply 与 git am 共用，
@@ -2473,7 +2527,7 @@ async function queryGitStatus(cwd) {
   const repos = found.repos.slice();   // 已按名字码点序
   let cursor = 0;
   const runOne = async (r) => {
-    const s = await gitExec(r.path, ["status", "--porcelain", "--branch"]);   // 多仓只跑 status，不跑 diff 行数
+    const s = await gitExec(r.path, ["status", "--porcelain", "--branch", "-z"]);   // 多仓只跑 status，不跑 diff 行数
     const bad = gitFailure(s);
     if (bad) {
       const good = gitRepoLastGood.get(r.path);
@@ -2525,9 +2579,9 @@ function pushGitRefreshResult(wc, requestId, result) {
 async function gitTick(fromRefresh, requestId, requestWc, requestPath) {
   if (fromRefresh && requestId) gitRefreshWaiters.push([requestWc, requestId, requestPath || ""]);
   if (gitTickBusy) {
-    if (fromRefresh) gitRefreshPending = true;
+    gitRefreshPending = true;   // v433：防抖 tick 撞在途也补跑——轮询已删，丢弃成本是「下次事件+60s」
     return;
-  }   // 在途时的手动刷新：结束后补跑一轮
+  }   // 在途时的手动刷新/防抖 tick：结束后补跑一轮
   if (shuttingDown || !hasWindows()) {
     if (fromRefresh) finishGitRefreshWaiters(new Map());
     return;
@@ -2553,6 +2607,9 @@ async function gitTick(fromRefresh, requestId, requestWc, requestPath) {
     }
     const all = new Set();
     for (const [, ps] of wants) for (const p of ps) all.add(p);
+    gitWantPaths.clear();
+    for (const p of all) gitWantPaths.add(p);
+    syncGitWatchers(all);   // v420：监听面随路径并集增删（新路径建档、消失路径关闭）
     const results = new Map();
     const refreshPaths = new Set();
     if (requestPath && requestWc && wants.some(([wc]) => wc === requestWc)) refreshPaths.add(requestPath);
@@ -2578,7 +2635,80 @@ async function gitTick(fromRefresh, requestId, requestWc, requestPath) {
     }
   }
 }
-setInterval(() => { gitTick(false).catch(() => { }); }, GIT_TICK_MS);
+/* ---------- v420 fs watch 刷新链（对齐宿主原生 Git 胶囊 useGitAutoRefresh，specs/git-chip-host-sync.md）----------
+ * 监听面：工作区目录（非 Linux 递归；Linux 宿主明确禁递归防慢挂载阻塞）+ 仓库 .git 元数据目录
+ * （git rev-parse --absolute-git-dir / --git-common-dir 每路径一次性解析，恒递归——linked worktree
+ * 的元数据在主仓库 .git 下，切分支/提交也能被看见；相对 commonDir 按工作区 resolve，重复目录去重）。
+ * 任一事件重置 60s 尾随防抖（宿主 GIT_AUTO_REFRESH_DEBOUNCE_MS 同值同型），静默满 60s 跑一轮
+ * gitTick 全路径查询；watcher 随 gitTick 的路径并集增删。watcher 创建失败仅记一次日志、保留首查/
+ * 点击/路径变化链（宿主同策略，不回退轮询）；解析全失败的路径不登记，待后续 tick 触发重试。 */
+const GIT_WATCH_DEBOUNCE_MS = 60000;
+let gitWatchTimer = 0, gitWatchWarned = false;
+const gitWatchers = new Map();   // 工作区路径 → [FSWatcher]
+const gitWatchResolving = new Set();   // 元数据解析/建 watcher 在途的路径，防并发重复建
+const gitWantPaths = new Set();   // v433：最近一轮 tick 的路径并集（在途解析完成时校验仍被需要）
+function scheduleGitWatchTick() {
+  if (shuttingDown) return;
+  if (gitWatchTimer) clearTimeout(gitWatchTimer);
+  gitWatchTimer = setTimeout(() => {
+    gitWatchTimer = 0;
+    if (!shuttingDown) gitTick(false).catch(() => { });
+  }, GIT_WATCH_DEBOUNCE_MS);
+}
+function gitWatchOne(list, dir, recursive) {
+  try {
+    const w = fs.watch(dir, { recursive: recursive }, () => scheduleGitWatchTick());
+    /* v433：运行期错误（目录被删重建/Windows 缓冲溢出/EMFILE）除关闭外，把所属路径从
+     * 登记表摘除——否则 syncGitWatchers 见 has(p) 永远跳过，该路径自动刷新从此冻结。 */
+    w.on("error", () => {
+      try { w.close(); } catch (e) { }
+      for (const [k, l] of gitWatchers) if (l.includes(w)) {
+        for (const x of l) { try { x.close(); } catch (e) { } }   // v433：兄弟 watcher 一并关（防 EMFILE 抖动互喂泄漏）
+        gitWatchers.delete(k);
+        break;
+      }
+    });
+    list.push(w);
+  } catch (e) {
+    if (!gitWatchWarned) { gitWatchWarned = true; LOG("git chip fs.watch unavailable (" + ((e && e.message) || e) + "); refresh falls back to path-change/manual triggers only"); }
+  }
+}
+async function resolveGitMetaDirs(p) {
+  const rp = await gitExec(p, ["rev-parse", "--absolute-git-dir", "--git-common-dir"]);
+  if (rp.error) return [];
+  const lines = String(rp.stdout || "").split("\n").map(s => s.trim()).filter(Boolean);
+  if (!lines.length) return [];
+  const gd = lines[0];
+  let cd = lines[1] || gd;
+  if (cd && !path.isAbsolute(cd)) cd = path.resolve(p, cd);
+  const out = [];
+  for (const d of [gd, cd]) if (d && path.isAbsolute(d) && out.indexOf(d) < 0) out.push(d);
+  return out;
+}
+function syncGitWatchers(all) {
+  if (shuttingDown) return;   // v433：退出清理后在途 tick 不得重建 watcher
+  for (const p of [...gitWatchers.keys()]) {   // 路径离开并集：关闭并移除 watcher
+    if (all.has(p)) continue;
+    const list = gitWatchers.get(p);
+    gitWatchers.delete(p);
+    for (const w of list || []) { try { w.close(); } catch (e) { } }
+  }
+  for (const p of all) {
+    if (gitWatchers.has(p) || gitWatchResolving.has(p)) continue;
+    gitWatchResolving.add(p);
+    (async () => {
+      try {
+        const meta = await resolveGitMetaDirs(p);
+        if (!gitWantPaths.has(p)) return;   // v433：解析期间路径已离开并集，丢弃孤儿 watcher
+        const list = [];
+        gitWatchOne(list, p, process.platform !== "linux");
+        for (const d of meta) if (d !== p) gitWatchOne(list, d, true);
+        if (list.length) gitWatchers.set(p, list);
+      } catch (e) { }
+      finally { gitWatchResolving.delete(p); }
+    })();
+  }
+}
 
 async function pollPluginRequests() {
   if (pluginRequestBusy) return;
@@ -2809,7 +2939,7 @@ if (typeof module === "object" && module && module.exports) {
   module.exports.__zusageTest = {
     handlePayload, maybeSpawn, isRemoteSid, remoteSids, pendingSids,
     targetByIdentity: () => targetByIdentity,
-    parseGitPorcelain, parseShortstat, queryGitStatus, gitTick, discoverChildRepos, detectGitOp,
+    parseGitPorcelain, parseNumstat, mergeNumstat, queryGitStatus, gitTick, discoverChildRepos, detectGitOp,
     ipcState: () => ({ activeSid, windowWorkspaces, windowTasks, scopeBindings, remoteEvidence }),
     hotReloadMainModules,   // v258：热替换循环测试入口
     disposeQuotaSubsystem,   // v258：退出清理测试入口（watcher 关闭断言）
@@ -2833,4 +2963,7 @@ app.on("before-quit", () => {
   if (dbWatcher) { try { dbWatcher.close(); } catch (e) { } dbWatcher = null; }
   if (pendingZipWatcher) { try { pendingZipWatcher.close(); } catch (e) { } pendingZipWatcher = null; }
   if (pendingZipTimer) { clearInterval(pendingZipTimer); pendingZipTimer = null; }
+  clearTimeout(gitWatchTimer);   // v433：git watch 链与其它监听器同款归属清理（进程将退，防御性对称）
+  for (const list of gitWatchers.values()) for (const w of list) { try { w.close(); } catch (e) { } }
+  gitWatchers.clear();
 });

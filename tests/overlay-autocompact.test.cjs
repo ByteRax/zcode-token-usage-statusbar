@@ -91,7 +91,7 @@ test("issue #191：引擎被单独热更（drifted）时状态行明示热更与
   assert.match(nosha.node(".zu-ac-status").textContent, /已被单独热更/);
 });
 
-test("数值框随主进程真值回写：percent 显示值，其它模式显示空（留空=跟随默认）", () => {
+test("数值框随主进程真值回写：percent/tokens 显示规整值，其它模式显示空（留空=跟随默认）", () => {
   const focused = runHelpers({ state: { enginePatch: { enabled: true, state: "applied", config: { enabled: true, thresholdPercent: 70 } } } });
   focused.node(".zu-ac-value").value = "999";
   focused.sandbox.document.activeElement = focused.node(".zu-ac-value");
@@ -100,9 +100,12 @@ test("数值框随主进程真值回写：percent 显示值，其它模式显示
   const idle = runHelpers({ state: { enginePatch: { enabled: true, state: "applied", config: { enabled: true, thresholdPercent: 70 } } } });
   idle.sandbox.syncAutoCompactInputs();
   assert.equal(idle.node(".zu-ac-value").value, "70");
-  const legacy = runHelpers({ state: { enginePatch: { enabled: true, state: "applied", config: { enabled: true, thresholdTokens: 120000 } } } });
-  legacy.sandbox.syncAutoCompactInputs();
-  assert.equal(legacy.node(".zu-ac-value").value, "", "v188 起 tokens 旧配置不在 UI 回显（留空=跟随默认）");
+  const tokens = runHelpers({ state: { enginePatch: { enabled: true, state: "applied", config: { enabled: true, thresholdTokens: 300000 } } } });
+  tokens.sandbox.syncAutoCompactInputs();
+  assert.equal(tokens.node(".zu-ac-value").value, "300k", "v420 起 tokens 配置回显规整形式（手写配置不再被面板空值保存抹成 default）");
+  const buffer = runHelpers({ state: { enginePatch: { enabled: true, state: "applied", config: { enabled: true, bufferTokens: 5000 } } } });
+  buffer.sandbox.syncAutoCompactInputs();
+  assert.equal(buffer.node(".zu-ac-value").value, "", "buffer 模式仍不在 UI 回显（协议保留未暴露）");
 });
 
 test("低阈值警告：目标低于当前用量才触发（200K 窗、85% 现值 vs 70% 目标）", () => {
@@ -216,6 +219,123 @@ test("v194：数值行 30-99 实时校验与提交拒绝", () => {
   assert.ok(sent && sent.payload.value === 50, "合法值正常提交");
 });
 
+test("v426：模式下拉驱动 parseAcValue（percent/tokens 分签名）与回显 formatAcValue", () => {
+  const { sandbox } = runHelpers();
+  const p = (v, m) => { const r = sandbox.parseAcValue(v, m); return r ? r.mode + "|" + r.value : "null"; };
+  assert.equal(p(""), "default|");
+  assert.equal(p("   "), "default|");
+  assert.equal(p("80", "percent"), "percent|80");
+  assert.equal(p("30", "percent"), "percent|30");
+  assert.equal(p("99", "percent"), "percent|99");
+  assert.equal(p("29", "percent"), "null");
+  assert.equal(p("100", "percent"), "null", "percent 模式 100+ 非法（域判定归下拉，不再猜）");
+  assert.equal(p("300k", "percent"), "null", "k 后缀在 percent 模式非法");
+  assert.equal(p("300k", "tokens"), "tokens|300000");
+  assert.equal(p("300K", "tokens"), "tokens|300000");
+  assert.equal(p("1.5m", "tokens"), "tokens|1500000");
+  assert.equal(p("300000", "tokens"), "tokens|300000", "tokens 模式裸数字合法");
+  assert.equal(p("99999", "tokens"), "null", "低于 100k 下限拒绝");
+  assert.equal(p("300x", "tokens"), "null", "非法后缀拒绝");
+  assert.equal(p("abc", "tokens"), "null");
+  assert.equal(p("-5", "tokens"), "null");
+  assert.equal(sandbox.formatAcValue("tokens", "300000"), "300k");
+  assert.equal(sandbox.formatAcValue("tokens", 100000), "100k");
+  assert.equal(sandbox.formatAcValue("tokens", "150500"), "150500", "不整除千位保持裸数字");
+  assert.equal(sandbox.formatAcValue("percent", "80"), "80");
+});
+
+test("v436：切模式数值跟随换算（按当前会话窗口，未知按 1M；钳对侧合法域；空/非法/编辑中不动）", () => {
+  const cvt = ({ value, to, lastBand }) => {
+    const { sandbox, node } = runHelpers({ lastBand: lastBand === undefined ? null : lastBand });
+    node(".zu-ac-value").value = value;
+    sandbox.acConvertOnModeSwitch({ value: to });
+    return node(".zu-ac-value").value;
+  };
+  // 双向主路径：65% ↔ 650k（1M 基准）、300k → 30%
+  assert.equal(cvt({ value: "65", to: "tokens" }), "650k");
+  assert.equal(cvt({ value: "650000", to: "percent" }), "65");
+  assert.equal(cvt({ value: "300k", to: "percent" }), "30");
+  assert.equal(cvt({ value: "80", to: "tokens" }), "800k");
+  // 基准取 lastBand.cw；缺 lastBand 按默认 1M
+  assert.equal(cvt({ value: "65", to: "tokens", lastBand: { cw: 200000, pct: 50 } }), "130k");
+  assert.equal(cvt({ value: "150000", to: "percent", lastBand: { cw: 300000, pct: 40 } }), "50");
+  // 对侧合法域钳制：percent 下限 30（100k/1M=10%→30）、tokens 下限 100k（30%×128k=38.4k→100k）、percent 上限 99
+  assert.equal(cvt({ value: "30", to: "tokens" }), "300k", "边界自洽：30%×1M=300k");
+  assert.equal(cvt({ value: "100000", to: "percent" }), "30", "100k/1M=10% 钳到下限 30");
+  assert.equal(cvt({ value: "99", to: "tokens", lastBand: { cw: 128000, pct: 60 } }), "126720", "99%×128k=126720 ≥100k 合法（不整除千位显裸数字）");
+  assert.equal(cvt({ value: "30", to: "tokens", lastBand: { cw: 128000, pct: 60 } }), "100k", "30%×128k=38.4k 钳到 100k 下限");
+  assert.equal(cvt({ value: "1000000", to: "percent", lastBand: { cw: 500000, pct: 80 } }), "99", "1M/500k=200% 钳到上限 99");
+  // 空/非法保持原样（交状态行校验提示），不伪造数值
+  assert.equal(cvt({ value: "", to: "tokens" }), "");
+  assert.equal(cvt({ value: "abc", to: "tokens" }), "abc");
+  assert.equal(cvt({ value: "5", to: "tokens" }), "5", "5 不在 percent 域：不换算");
+  // 用户正在编辑输入框时不覆盖
+  const editing = runHelpers();
+  editing.node(".zu-ac-value").value = "65";
+  editing.sandbox.document = { activeElement: editing.node(".zu-ac-value") };
+  editing.sandbox.acConvertOnModeSwitch({ value: "tokens" });
+  assert.equal(editing.node(".zu-ac-value").value, "65", "编辑中不覆盖");
+  // 集成序列（真机实报回归锁）：委托分支是「先 sync 回显已保存真值，再换算」——
+  // 先换算会被 sync 的配置回显抹回原值（65→切 Token 数仍显 65）
+  const seq = runHelpers({ state: { enginePatch: { enabled: true, state: "applied", config: { enabled: true, thresholdPercent: 65 } } } });
+  seq.sandbox.syncAutoCompactInputs();
+  assert.equal(seq.node(".zu-ac-value").value, "65");
+  seq.sandbox.acConvertOnModeSwitch({ value: "tokens" });
+  assert.equal(seq.node(".zu-ac-value").value, "650k", "sync 之后再换算：65%→650k 不被回显抹掉");
+  const seqRev = runHelpers({ state: { enginePatch: { enabled: true, state: "applied", config: { enabled: true, thresholdTokens: 650000 } } } });
+  seqRev.sandbox.syncAutoCompactInputs();
+  seqRev.sandbox.acConvertOnModeSwitch({ value: "percent" });
+  assert.equal(seqRev.node(".zu-ac-value").value, "65", "反向：650k→65");
+});
+
+test("v426：模式下拉回显、分模式校验与提交", () => {
+  const cfg = { enabled: true, state: "applied", config: { enabled: true, thresholdTokens: 300000 } };
+  /* 回显：tokens 配置 → select= tokens + 输入框 300k；default 配置 → select=percent + 输入框空 */
+  const shown = runHelpers({ state: { enginePatch: cfg } });
+  shown.sandbox.syncAutoCompactInputs();
+  assert.equal(shown.node(".zu-ac-mode").value, "tokens", "tokens 配置回显下拉选中 Token 数");
+  assert.equal(shown.node(".zu-ac-value").value, "300k", "tokens 配置回显规整形式");
+  const blank = runHelpers({ state: { enginePatch: { enabled: true, state: "applied", config: { enabled: true } } } });
+  blank.sandbox.syncAutoCompactInputs();
+  assert.equal(blank.node(".zu-ac-mode").value, "percent", "default 配置下拉显示百分比（留空=默认）");
+  assert.equal(blank.node(".zu-ac-value").value, "");
+  /* percent 模式非法值：状态行提示且不发起请求 */
+  let sent = null;
+  const gap = runHelpers({ state: { enginePatch: { enabled: true, state: "applied", config: { enabled: true, thresholdPercent: 70 } } } });
+  gap.sandbox.document.activeElement = gap.node(".zu-ac-value");   // 模拟输入中：非焦点时 sync 会用配置值覆写
+  gap.sandbox.pluginRequest = (action, extra, done) => { sent = { action, extra }; };
+  gap.sandbox.showSettingsFeedback = () => { };
+  gap.node(".zu-ac-value").value = "500";
+  gap.sandbox.syncAutoCompactInputs();
+  assert.match(gap.node(".zu-ac-status").textContent, /30-99/);
+  gap.sandbox.sendAutoCompactConfig();
+  assert.equal(sent, null, "percent 模式非法值不发起请求");
+  /* 切下拉到 tokens：同一值立即按新模式提示（select change 只重校验不提交；select 保持焦点=编辑态，回显守卫不回写） */
+  gap.node(".zu-ac-mode").value = "tokens";
+  gap.sandbox.document.activeElement = gap.node(".zu-ac-mode");
+  gap.sandbox.syncAutoCompactInputs();
+  assert.match(gap.node(".zu-ac-status").textContent, /100k/);
+  /* tokens 模式 k 后缀提交且回执后回显规整形式 */
+  const k = runHelpers({ state: { enginePatch: cfg } });
+  k.sandbox.pluginRequest = (action, extra, done) => { sent = { action, extra }; done({ ok: true, config: { enabled: true, thresholdTokens: 300000 } }); };
+  k.sandbox.showSettingsFeedback = () => { };
+  k.sandbox.inactive = () => false;
+  k.node(".zu-ac-mode").value = "tokens";
+  k.node(".zu-ac-value").value = "300k";
+  k.sandbox.sendAutoCompactConfig();
+  assert.equal(JSON.stringify(sent), '{"action":"autocompact-config","extra":{"mode":"tokens","value":300000}}', "k 后缀按 tokens 提交");
+  assert.equal(k.node(".zu-ac-value").value, "300k", "回执后回显规整形式");
+  /* percent 模式照旧直提数字 */
+  const pct = runHelpers({ state: { enginePatch: { enabled: true, state: "applied", config: { enabled: true, thresholdPercent: 70 } } } });
+  pct.sandbox.pluginRequest = (action, extra, done) => { sent = { action, extra }; done({ ok: true, config: { enabled: true, thresholdPercent: 85 } }); };
+  pct.sandbox.showSettingsFeedback = () => { };
+  pct.sandbox.inactive = () => false;
+  pct.node(".zu-ac-mode").value = "percent";
+  pct.node(".zu-ac-value").value = "85";
+  pct.sandbox.sendAutoCompactConfig();
+  assert.equal(JSON.stringify(sent), '{"action":"autocompact-config","extra":{"mode":"percent","value":85}}', "percent 模式直提数字");
+});
+
 test("v190：注入开关关闭（或主进程未加载）时数值行整行隐藏", () => {
   const off = runHelpers({ state: { enginePatch: { enabled: false, state: "off" } } });
   off.sandbox.syncAutoCompactInputs();
@@ -233,7 +353,7 @@ test("源码契约：设置控件、动作路由与状态种子齐备", () => {
     'pluginRequest("autocompact-patch"', "autocompact-config", "sendAutoCompactConfig"]) {
     assert.ok(source.includes(needle), "overlay.js 缺少 " + needle);
   }
-  assert.ok(!source.includes("zu-ac-mode"), "v188：模式下拉已移除（只留百分比）");
+  assert.ok(source.includes('class="zu-ac-mode"') && source.includes('value="tokens"'), "v426：模式下拉回归（percent/tokens 两项）");
   assert.match(source, /\.zu-ac-info\{display:flex;align-items:baseline;justify-content:space-between/);   // v192 两端对齐，「调整」居右
   assert.doesNotMatch(source, /\.zu-ac-info\{[^}]*margin/);   // v193 行上禁止任何 margin 声明（:where() 零权重的 space-y-3 会被类名权重压掉，间距必须整段交给容器）
   assert.match(source, /enginePatch: \(window\.__zusagePluginState && window\.__zusagePluginState\.enginePatch\) \|\| null/);   // 状态种子

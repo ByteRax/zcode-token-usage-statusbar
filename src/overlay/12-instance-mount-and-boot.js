@@ -414,6 +414,7 @@
       if (typeof syncSysmonChip === "function") syncSysmonChip();     // v356：系统状态 chip DOM 对账点（typeof 守卫兼容切片沙箱；非精简主题内部门控摘除）
       renderWorkflowCards();   // v332：工作流 run 卡 chip DOM 对账点（React 重建卡片后兜回；数据点在 render 尾部）
       renderRunningSubagentItems();   // v333：状态面板 Agents 行 chip DOM 对账点（React 高频重写 elapsed 后兜回）
+      syncCompactionRows();   // v421：压缩分隔线标注 DOM 对账点（React 重渲染分隔线后兜回，幂等）
       syncCompactBtn();     // v105：弹层压缩按钮对账点（Observer 漏触发/节点移位后兜回）
       dedupBars();          // v169：同容器双条去重（Windows 最小化/还原双条，用户报告）
       if (state.data && pid === "auto") {
@@ -1089,6 +1090,7 @@
         requestAnimationFrame(function () {
           hcObsQueued = false;
           syncCompactBtn();
+          syncCompactionRows();   // v421：时间线重渲染（React 行重建/新分隔线落位）的即时重注路径
         });
       });
       hcObserver.observe(document.body, { childList: true, subtree: true });
