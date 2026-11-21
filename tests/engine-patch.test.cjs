@@ -21,6 +21,7 @@ const FACTORY_TARGETS = ENGINE_TARGETS.map((t) => ({ build: t.build, engineSha25
  * 登记新版本时在此追加一行。 */
 test("出厂登记表逐版本锁定判定符号：滚动 ANCHOR/REPLACEMENT 不得改写旧条目", () => {
   const symbols = {
+    "3.19.1": ["Uue", "KKo", "4b90ae046753be9f5ba63dee14b8fd2cdb07b5540e9bfe348ba127504b8cf8da"],
     "3.19.0": ["Hue", "xZo", "6b84e928d9258fe020c6ab8c75fa2c123b0cd658fe43c0ce141a13df677fb0ea"],
     "3.18.2": ["iTe", "PWo", "08726b5ef69e1e9072828baa4656713cb3aac93bb096938681278c5600312b2c"],
     "3.18.1": ["oTe", "vWo", "666f9c5a0a566eb8cbb906625e219aa2657e9f6a0e0ea8a73471fabdc54110b6"],
@@ -195,6 +196,32 @@ test("出厂条目兜底：四段 appVersion + 判定区符号未轮换 → 按�
     assert.equal(s.patcher.status().build, "3.17.2");
     assert.equal(s.patcher.restore(), "off");
     assert.deepEqual(fs.readFileSync(s.enginePath), s.original);
+  } finally { s.cleanup(); }
+});
+
+test("3.19.1 漂移兜底只接受自身的唯一锚点，重复应用与还原均保持字节一致", () => {
+  const anchor = "n=Uue(e.bufferTokens)??KKo;return Math.max(0,t-n)";
+  const original = Buffer.concat([makeFixture({ anchor }), Buffer.from("/* 3.19.1 drift */\n")]);
+  const s = setup({ fixture: original, appVersion: "3.19.1.10833" });
+  try {
+    assert.ok(!ENGINE_TARGETS.some(t => t.engineSha256 === sha256hex(original)), "夹具只走出厂登记的漂移兜底");
+    assert.equal(s.patcher.ensure(), "applied");
+    assert.equal(s.patcher.status().build, "3.19.1");
+    const patched = fs.readFileSync(s.enginePath);
+    assert.notDeepEqual(patched, original);
+    assert.equal(s.patcher.ensure(), "applied");
+    assert.deepEqual(fs.readFileSync(s.enginePath), patched);
+    assert.equal(s.patcher.restore(), "off");
+    assert.deepEqual(fs.readFileSync(s.enginePath), original);
+
+    const older = makeFixture({ anchor: "n=Hue(e.bufferTokens)??xZo;return Math.max(0,t-n)" });
+    const duplicate = Buffer.concat([original, Buffer.from("function r(e){let t=Y(e)," + anchor + "}\n")]);
+    for (const bytes of [older, duplicate]) {
+      fs.writeFileSync(s.enginePath, bytes);
+      assert.equal(s.patcher.ensure(), "unsupported_build");
+      assert.equal(s.patcher.status().drifted, "3.19.1");
+      assert.deepEqual(fs.readFileSync(s.enginePath), bytes);
+    }
   } finally { s.cleanup(); }
 });
 
