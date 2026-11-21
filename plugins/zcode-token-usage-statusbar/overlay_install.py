@@ -895,19 +895,36 @@ def _publish_mobile_pending(pi, result, quiet_monitor=False):
 
 
 def _ensure_mobile_patch_safely(pi, ensure, quiet_monitor=False):
-    """串行让位 + replace-failed 转存：目标锁内确认无既有 pending 才就地补打；
-    os.replace 被运行中客户端拒绝时把已构建 stage 转存为待替换包（锁外调 publish，
-    file_lock 不可重入），完全退出后自动收尾。已有 pending 时绝不读写/合并/重发。"""
-    try:
-        with pi._target_lock():
+    """串行让位 + replace-failed 转存：ensure 内部已是「锁外构建 + 短锁提交」，
+    正确性（既有 pending 让位、发布前指纹重验）由其短锁内复查保证；这里只留
+    锁外快查（有 pending 直接让位，省一次无谓构建）。os.replace 被运行中客户端
+    拒绝时把已构建 stage 转存为待替换包（锁外调 publish，file_lock 不可重入），
+    完全退出后自动收尾。锁获取超时（多窗口并发 SessionStart 抢锁）退避重试一次，
+    仍超时按 deferred 上报——不再退化为每轮必现的命令行指引（2026-11-21 实证）。"""
+    last = None
+    for attempt in range(2):
+        round_started = time.monotonic()
+        if attempt:
+            time.sleep(1.5)   # 锁竞争通常是瞬时窗口
+        try:
             if any(path.exists() or path.is_symlink() for path in (pi.TMP, pi.TMP_META)):
                 return {"status": "deferred", "detail": "existing pending operation"}
             result = ensure(pi.ASAR)
-        if result.get("status") != "replace-failed":
+            status = result.get("status")
+            if status == "replace-failed":
+                return _publish_mobile_pending(pi, result, quiet_monitor)
+            if status == "deferred" and result.get("detail") != "existing pending operation":
+                if attempt == 0 and time.monotonic() - round_started > _MOBILE_RETRY_BUDGET_S:
+                    # 首轮已含整包构建 + 等锁（锁超时发生在构建之后）：再退避重试
+                    # 一轮要再付一次全构建，可能顶破 SessionStart 60s 预算被宿主
+                    # 杀掉——连限频提示都发不出，不如就此按 deferred 上报
+                    return result
+                last = result   # ensure 短锁仍超时：退避后重试一次
+                continue
             return result
-        return _publish_mobile_pending(pi, result, quiet_monitor)
-    except TimeoutError as error:
-        return {"status": "deferred", "detail": str(error)}
+        except TimeoutError as error:
+            last = {"status": "deferred", "detail": str(error)}
+    return last
 
 
 def ensure_mobile_relay_stash(pi, quiet_monitor=False):
@@ -916,25 +933,23 @@ def ensure_mobile_relay_stash(pi, quiet_monitor=False):
         from mobile_relay_patch import ensure_deployed as ensure_stash
         redirect = contextlib.redirect_stdout(sys.stderr) if quiet_monitor else contextlib.nullcontext()
         with redirect:
-            return _ensure_mobile_patch_safely(pi, lambda path: ensure_stash(path, _locked=True),
-                                               quiet_monitor)
+            return _ensure_mobile_patch_safely(pi, ensure_stash, quiet_monitor)
     except Exception as e:
         print(f"[zusage-plugin] mobile relay stash ensure failed（已忽略）：{e}", file=sys.stderr)
         return {"status": "skipped-error", "detail": str(e)}
 
 
 def _mobile_retry_command(pi, operation="apply"):
-    """deferred 场景的可执行动作：完全退出后对目标 asar 单独打/剥补丁。"""
+    """deferred 场景的可执行动作（CLI 高级选项）：完全退出后对目标 asar 单独打/剥补丁。"""
     script = PLUGIN_ROOT / "mobile_relay_patch.py"
     return (f'"{PYEXE}" "{script}" {operation} --asar "{pi.ASAR}"'
             f"（或重跑 \"{PYEXE}\" \"{PLUGIN_ROOT / 'overlay_install.py'}\" install）")
 
 
-def _mobile_deferred_message(pi):
-    return ("手机中继补丁尚未就绪：请先完全退出 ZCode（关闭窗口不等于退出；"
-            "仍在托盘/后台时请从托盘退出，并在任务管理器确认没有 ZCode 进程残留），"
-            f"然后执行 {_mobile_retry_command(pi)}。"
-            "在运行中的客户端里重跑 /install-overlay 无法完成该补丁。")
+def _mobile_deferred_message():
+    return ("手机远控增强尚未就绪（不影响统计主链）：在输入框输入 /install-overlay "
+            "回车重试；提示「已排定」后点状态条 ⚙ 齿轮的「重启 ZCode」按钮即可自动完成。"
+            "若多次未成功，请从托盘完全退出 ZCode（关闭窗口不等于退出）后重新打开再试。")
 
 
 def _mobile_pending_scheduled_message():
@@ -1060,12 +1075,36 @@ def ensure_renderer_bridge(pi, quiet_monitor=False):
     return result
 
 
+_MOBILE_DEFERRED_NOTICE_FILE = ".mobile-deferred-notice.json"
+_MOBILE_DEFERRED_NOTICE_INTERVAL_S = 24 * 3600.0
+_MOBILE_RETRY_BUDGET_S = 15.0   # hook 首轮耗时超过此值不再退避重试（SessionStart 预算 60s）
+
+
+def _deferred_notice_allowed(runtime):
+    """「尚未就绪」会话提示 24h 限频；状态文件读不出（缺失/损坏）一律放行——
+    宁可重复提醒，不静默吞掉可修复的指引。"""
+    try:
+        data = json.loads((Path(runtime) / _MOBILE_DEFERRED_NOTICE_FILE).read_text(encoding="utf-8"))
+        return (time.time() - float(data.get("lastShownAt") or 0.0)) >= _MOBILE_DEFERRED_NOTICE_INTERVAL_S
+    except Exception:
+        return True
+
+
+def _mark_deferred_notice_shown(runtime):
+    try:
+        _atomic_write(Path(runtime) / _MOBILE_DEFERRED_NOTICE_FILE,
+                      json.dumps({"lastShownAt": time.time()}, ensure_ascii=False).encode("utf-8"))
+    except Exception:
+        pass
+
+
 def _mobile_pending_notice(out, pi, mobile):
     """SessionStart 静默链：pending=已排定自动收尾；deferred 按成因分流——已有
-    待替换操作（含 bridge pending）等收尾后自动补装，不给手动命令；其余（锁超时、
-    清理失败）才提示完全退出后走独立补丁命令。skipped-error/unknown 属可选增强
-    不可用（宿主不支持/夹具无有效 asar），不得每会话打扰；显式 /install-overlay
-    的失败仍走 CLI 分支自行打印。已有 systemMessage 优先保留。"""
+    待替换操作（含 bridge pending）等收尾后自动补装，不给手动命令；其余给免终端
+    重试路径（/install-overlay → ⚙「重启 ZCode」）并按 24h 限频，命令行仅保留在
+    CLI 高级选项。skipped-error/unknown 属可选增强不可用（宿主不支持/夹具无有效
+    asar），不得每会话打扰；显式 /install-overlay 的失败仍走 CLI 分支自行打印。
+    已有 systemMessage 优先保留。"""
     if "systemMessage" in out or "hookSpecificOutput" in out:
         return out
     status = (mobile or {}).get("status")
@@ -1076,7 +1115,10 @@ def _mobile_pending_notice(out, pi, mobile):
         return _nudge(out, PREFIX + _mobile_pending_scheduled_message())
     if (mobile or {}).get("detail") in ("existing pending operation", "bridge pending"):
         return _nudge(out, PREFIX + _mobile_deferred_waiting_message())
-    return _nudge(out, PREFIX + _mobile_deferred_message(pi))
+    if not _deferred_notice_allowed(pi.RUNTIME):
+        return out
+    _mark_deferred_notice_shown(pi.RUNTIME)
+    return _nudge(out, PREFIX + _mobile_deferred_message())
 
 
 def _bridge_notice(out, result, pi, quiet_hook=False):
@@ -1443,7 +1485,8 @@ def main():
                 if mobile.get("detail") in ("existing pending operation", "bridge pending"):
                     print(_mobile_deferred_waiting_message())
                 else:
-                    print(_mobile_deferred_message(pi))
+                    print(_mobile_deferred_message()
+                          + f"高级（需先完全退出 ZCode 后执行）：{_mobile_retry_command(pi)}。")
             elif status == "patched":
                 if pi.client_running():
                     print("手机中继补丁已写入；请完全退出并重开 ZCode 后生效（只关窗口或重开会话无效）。")

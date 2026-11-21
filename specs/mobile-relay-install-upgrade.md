@@ -12,7 +12,11 @@ SessionStart、显式插件安装和独立安装在状态条已注入或安装�
 
 移除路径与安装共用同一把目标锁与同一份 stage 约定：只清理由本次调用创建的 `.mobile-relay-*` stage，绝不碰其他调用留下的同名文件；成功/absent 由调用方视为完成，`deferred` 或失败不是卸载失败。
 
+**锁窗口纪律（锁外构建 + 短锁提交）**：`ensure_deployed` 的读档、变换与 stage 写盘全程在目标锁外完成（读 asar 不需要锁），目标锁只包「既有 pending 复查 + 发布前指纹重验 + `os.replace`」的亚秒级提交。构建期间目标被并发改写（另一进程收尾 pending、宿主重写 asar）时按提交前指纹不符整体重试一次，二次仍变按 `skipped-error` 报告。hook 链不再外层长持锁调 `_locked=True`：`_ensure_mobile_patch_safely` 只保留锁外快查（存在 pending 直接让位，省一次无谓构建），正确性由 ensure 短锁内的 pending 复查与 publish 端硬保证兜底。锁获取超时（`TimeoutError`，ensure 内部已转 `deferred` 返回）在 **hook 链**退避重试一次（首轮已耗时超 15s 不再重试，防顶破 SessionStart 60s 预算），仍超时才上报；独立 `install.py` 链为单次尝试。构建/取指纹阶段撞上并发发布窗口（`PendingTmpError`）与指纹重验同语义重试一轮。动机：多窗口并发 SessionStart 抢同一把锁、锁内重写 200MB+ asar 长达十几秒，实测（2026-11-21）每轮排定全部空转、提示退化为命令行指引。renderer 桥补装（`renderer_bridge.ensure_deployed`）同款锁窗口模式；present/skipped-unknown 的只读短路在锁外即返回，受保护目录的 `permission` 标记语义不变。独立 `apply` CLI 的「不消费既有 pending」保证同样下沉到短锁内复查。
+
 插件链先按原有流程处理 renderer；若其产生 pending，mobile 延后至收尾后的下一次 SessionStart。首次注入自身 pending 时不叠补丁。转存出的 mobile pending 与主安装/桥 pending 生命周期一致：swap 时 `_replace_pending` 按该标记经 `publish_install` 记 `publishedAt`，下一次真正启动由 loader ack 销账。既有公共 journal、renderer 发布及其他调用方协议不变。
+
+**deferred 提示文案与限频**：「尚未就绪」分支面向普通用户给免终端路径——在 ZCode 输入框运行 `/install-overlay` 重试排定，提示「已排定」后点状态条 ⚙ 的「重启 ZCode」按钮（quit-only + monitor 收尾后自动拉起，见 [relaunch-after-pending-asar.md](relaunch-after-pending-asar.md)）；命令行指引从会话提示中移除，仅保留在显式 `/install-overlay` 的 CLI 输出（高级段）与用户指南。同一 deferred 状态 24 小时内只提示一次（运行目录 `.mobile-deferred-notice.json` 记 `lastShownAt`，读写失败静默照发提示）。`pending`「已排定」与 bridge pending 等待文案不限频。
 
 ## 生效提示
 
