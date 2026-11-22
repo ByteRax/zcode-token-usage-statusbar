@@ -866,15 +866,18 @@ test('CRLF reply also verifies when the bridge reads back verbatim (no host norm
   assert.equal(enh.getAttribute('aria-label'), '增强提示词');
 });
 
-test('main bridge exposes platformLimited and gates provider save symmetrically on win32', () => {
-  /* Windows 无 POSIX 安全落盘：视图层带 platformLimited 供渲染端区分文案（不再误导
-   * 「检查权限或重启」），save 分支与 models 分支同款早退门 */
-  assert.match(injectSource, /platformLimited: process\.platform === "win32"/);
-  const gate = injectSource.indexOf('if (req.action !== "enhance-provider-save"');
-  assert.ok(gate > 0, 'save branch anchor');
-  const seg = injectSource.slice(gate, gate + 300);
-  assert.match(seg, /process\.platform === "win32"\) \{ reply\(\{ ok: false, error: "unsupported platform" \}\); return; \}/, 'save gate mirrors models branch');
-  assert.match(source, /ep\.platformLimited/, 'renderer consumes the platform flag for the status copy');
+test('issue442: provider save delegates to the runtime lock on every platform; platformLimited is a legacy flag', () => {
+  /* issue #442：Windows 早退门移除——save 分支全平台统一委托 python 事务
+   * （runtime_lock.update_enhance_provider 已支持 nt，uid/0600 语义 POSIX 专属）；
+   * platformLimited 恒 false（字段保留供旧渲染端读旧主进程的 true 区分文案），
+   * available 不再按平台收窄。渲染端分支消费面保持（旧主进程兼容）。 */
+  assert.doesNotMatch(injectSource, /error: "unsupported platform"/, 'win32 save early-return removed');
+  /* round2-A：models 分支的 win32 恒拒门随 save 门同拆（Windows custom 模式「拉取模型」
+   * 不得恒 provider unavailable）——锚点锁回归，防止只拆一半的对称门回潮。 */
+  assert.doesNotMatch(injectSource, /settings\.unreadable \|\| process\.platform === "win32"/, 'win32 models gate removed too');
+  assert.match(injectSource, /platformLimited: false/);
+  assert.match(injectSource, /available: !!modelPuller && modelPuller\.enhanceProviderVersion === 1/);
+  assert.match(source, /ep\.platformLimited/, 'renderer keeps consuming the legacy flag for old-main compat');
 });
 
 test('issue440: platform-limited custom mode names the platform restriction, not a restart hint', () => {

@@ -44,14 +44,14 @@ test('enhanceProviderView: 配置缺 saveHistory 键（含文件不存在）归�
   assert.equal(api2.enhanceProviderView().saveHistory, true, '显式对象无键=缺省开启');
 });
 
-test('enhanceProviderView: 显式 false 关闭、显式 true 开启', { skip: process.platform === 'win32' && '夹具依赖 POSIX st_mode（Windows 宿主 fs 恒 0o666），win32 语义由平台门用例锁定' }, (t) => {
+test('enhanceProviderView: 显式 false 关闭、显式 true 开启', { skip: process.platform === 'win32' && '夹具沙箱 platform=darwin 但 Windows 宿主 fs 恒 0o666，POSIX 权限位夹具不可构造；win32 门语义由 issue442 用例锁定' }, (t) => {
   const { api } = makeRuntime(t, { version: 1, revision: 0, mode: 'default', saveHistory: false });
   assert.equal(api.enhanceProviderView().saveHistory, false);
   const { api: api2 } = makeRuntime(t, { version: 1, revision: 0, mode: 'default', saveHistory: true });
   assert.equal(api2.enhanceProviderView().saveHistory, true);
 });
 
-test('读盘门: 缺省开启时启动加载磁盘历史；显式 false 不读盘（关闭态重启即清空契约）', { skip: process.platform === 'win32' && '夹具依赖 POSIX st_mode（Windows 宿主 fs 恒 0o666），win32 语义由平台门用例锁定' }, (t) => {
+test('读盘门: 缺省开启时启动加载磁盘历史；显式 false 不读盘（关闭态重启即清空契约）', { skip: process.platform === 'win32' && '夹具沙箱 platform=darwin 但 Windows 宿主 fs 恒 0o666，POSIX 权限位夹具不可构造；win32 门语义由 issue442 用例锁定' }, (t) => {
   const records = [rec(0, 1), rec(1, 2), rec(2, 3)];
   const a = makeRuntime(t, { version: 1, revision: 0, mode: 'default' });
   writeHistory(a.here, records);
@@ -64,7 +64,7 @@ test('读盘门: 缺省开启时启动加载磁盘历史；显式 false 不读�
   assert.equal(b.api.enhanceHistory.length, 0, '显式关闭：不读盘');
 });
 
-test('读回裁剪: 超期（30 天）与超量（100 条）在读回时即裁剪并回写磁盘', { skip: process.platform === 'win32' && '夹具依赖 POSIX st_mode（Windows 宿主 fs 恒 0o666），win32 语义由平台门用例锁定' }, (t) => {
+test('读回裁剪: 超期（30 天）与超量（100 条）在读回时即裁剪并回写磁盘', { skip: process.platform === 'win32' && '夹具沙箱 platform=darwin 但 Windows 宿主 fs 恒 0o666，POSIX 权限位夹具不可构造；win32 门语义由 issue442 用例锁定' }, (t) => {
   const { api, here } = makeRuntime(t, { version: 1, revision: 0, mode: 'default' });
   const records = [];
   for (let i = 0; i < 105; i++) records.push(rec(0, i));      // 105 条新鲜
@@ -83,7 +83,7 @@ test('读回裁剪: 超期（30 天）与超量（100 条）在读回时即裁�
   assert.ok(!onDisk.some(r => r.id === 'h-200'), '超期记录从磁盘清除');
 });
 
-test('落盘门: 缺省开启写出历史文件；显式 false 只留内存不落盘', { skip: process.platform === 'win32' && '夹具依赖 POSIX st_mode（Windows 宿主 fs 恒 0o666），win32 语义由平台门用例锁定' }, (t) => {
+test('落盘门: 缺省开启写出历史文件；显式 false 只留内存不落盘', { skip: process.platform === 'win32' && '断言 POSIX 0600 文件位（Windows 宿主 fs 恒 0o666，落盘行为本身由 issue442 用例锁定）' }, (t) => {
   const a = makeRuntime(t, { version: 1, revision: 0, mode: 'default' });
   const r1 = a.api.addEnhanceHistory({ originalText: 'o', enhancedText: 'e' });
   assert.equal(r1.ok, true);
@@ -99,7 +99,7 @@ test('落盘门: 缺省开启写出历史文件；显式 false 只留内存不�
   assert.ok(!fs.existsSync(path.join(b.here, 'enhance-history.json')), '显式关闭：不写盘');
 });
 
-test('enhance-history-list 回执: saveHistory 字段同谓词归一化（缺省 true / 显式 false false）', { skip: process.platform === 'win32' && '夹具依赖 POSIX st_mode（Windows 宿主 fs 恒 0o666），win32 语义由平台门用例锁定' }, (t) => {
+test('enhance-history-list 回执: saveHistory 字段同谓词归一化（缺省 true / 显式 false false）', { skip: process.platform === 'win32' && '夹具沙箱 platform=darwin 但 Windows 宿主 fs 恒 0o666，POSIX 权限位夹具不可构造；win32 门语义由 issue442 用例锁定' }, (t) => {
   const a = makeRuntime(t, { version: 1, revision: 0, mode: 'default' });
   a.api.handleEnhanceHistoryAction({ action: 'enhance-history-list', requestId: 'r1' }, null);
   assert.equal(a.sandbox.__lastReply.result.saveHistory, true, '缺省视为开启');
@@ -108,18 +108,17 @@ test('enhance-history-list 回执: saveHistory 字段同谓词归一化（缺省
   assert.equal(b.sandbox.__lastReply.result.saveHistory, false, '显式关闭回执 false');
 });
 
-test('win32 平台门: 读盘/落盘链整体关闭（specs/prompt-enhance.md fail-closed 契约）', (t) => {
+test('issue442: win32 读盘/落盘链已启用（0600 语义 POSIX 专属，Windows 随 profile ACL）', (t) => {
   const a = makeRuntime(t, { version: 1, revision: 0, mode: 'default' }, 'win32');
   writeHistory(a.here, [rec(0, 1), rec(1, 2)]);
   a.api.loadEnhanceHistoryDisk();
-  assert.equal(a.api.enhanceHistory.length, 0, 'win32 恒不读盘（历史仅本次运行内存可用）');
+  assert.equal(a.api.enhanceHistory.length, 2, 'win32 读盘门已移除（旧平台门恒不读盘）');
   const b = makeRuntime(t, { version: 1, revision: 0, mode: 'default' }, 'win32');
   const r1 = b.api.addEnhanceHistory({ originalText: 'o', enhancedText: 'e' });
   assert.equal(r1.ok, true);
-  assert.equal(b.api.enhanceHistory.length, 1, '内存保留');
-  assert.ok(!fs.existsSync(path.join(b.here, 'enhance-history.json')), 'win32 恒不落盘（重启即清空）');
+  assert.ok(fs.existsSync(path.join(b.here, 'enhance-history.json')), 'win32 落盘门已移除');
   const c = makeRuntime(t, { version: 1, revision: 0, mode: 'default', saveHistory: false }, 'win32');
-  assert.equal(c.api.enhanceProviderView().saveHistory, false, 'win32 无权限位门，显式 false 直读生效');
+  assert.equal(c.api.enhanceProviderView().saveHistory, false, '显式 false 直读生效');
   c.api.handleEnhanceHistoryAction({ action: 'enhance-history-list', requestId: 'r3' }, null);
   assert.equal(c.sandbox.__lastReply.result.saveHistory, false, 'win32 回执同谓词');
 });

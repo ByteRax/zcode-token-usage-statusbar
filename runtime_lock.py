@@ -233,9 +233,13 @@ def update_config(runtime, changes, defaults=None, merge=None):
 
 
 def update_enhance_provider(runtime, revision, changes):
-    """Update the restricted enhancement settings under the shared runtime lock."""
-    if os.name == "nt":
-        raise ValueError("secure enhancement provider storage unavailable")
+    """Update the restricted enhancement settings under the shared runtime lock.
+
+    POSIX enforces owner-only access (uid + 0600 mode); Windows has no equivalent
+    owner semantics, so those checks are skipped there and the file relies on the
+    profile-directory ACL like quota-secrets.json (issue #442 lifted the old
+    unconditional fail-closed gate).
+    """
     if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0 or not isinstance(changes, dict):
         raise ValueError("invalid enhancement settings")
     fields = {"mode", "source", "providerId", "target", "baseUrl", "protocol", "model", "keyAction", "apiKey", "allowDowngrade", "saveHistory"}
@@ -243,7 +247,9 @@ def update_enhance_provider(runtime, revision, changes):
         raise ValueError("invalid enhancement settings")
     runtime = Path(runtime)
     info = runtime.stat()
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+    if not stat.S_ISDIR(info.st_mode):
+        raise ValueError("unsafe runtime directory")
+    if os.name != "nt" and info.st_uid != os.geteuid():
         raise ValueError("unsafe runtime directory")
     config = runtime / "enhance-provider.json"
     lock = runtime / "enhance-provider.lock"
@@ -258,7 +264,8 @@ def update_enhance_provider(runtime, revision, changes):
         else:
             with os.fdopen(fd, "r", encoding="utf-8") as stream:
                 st = os.fstat(stream.fileno())
-                if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_nlink != 1 or st.st_mode & 0o077:
+                if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or (
+                        os.name != "nt" and (st.st_uid != os.geteuid() or st.st_mode & 0o077)):
                     raise ValueError("unsafe enhancement settings")
                 current = json.load(stream)
             if not isinstance(current, dict) or current.get("version") != 1 or not isinstance(current.get("revision"), int):
@@ -290,7 +297,8 @@ def update_enhance_provider(runtime, revision, changes):
         updated["revision"] = revision + 1
         fd, name = bounded_mkstemp(prefix=".enhance-provider-", suffix=".tmp", dir=runtime)
         try:
-            os.fchmod(fd, 0o600)
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)   # POSIX：收紧到属主；Windows 无此调用，随目录 ACL（quota-secrets.json 同款取舍）
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
                 fd = None
                 json.dump(updated, stream, ensure_ascii=False)

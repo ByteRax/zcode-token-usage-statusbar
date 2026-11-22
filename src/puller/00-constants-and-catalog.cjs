@@ -20,6 +20,7 @@
  * 宽限 1s 内搭车（cc-switch 拉列表不等目录），失败另有 10 分钟短缓存，均不拖慢弹窗。 */
 "use strict";
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { createHash, randomUUID } = require("crypto");
 
@@ -99,6 +100,10 @@ var PLAN_SOURCES = {
     baseUrl: "https://open.bigmodel.cn/api/anthropic",
     fam: "bigmodel",
     credKey: "oauth:bigmodel:access_token",
+    /* issue #442：团队套餐是独立计费池——v2 条目 key 与 GLr location 都属个人项目
+     * （location 键名 team===null），对团队源绝不可用。增强凭据=团队项目 PAT
+     * （planTeamPatOf，额度链同款三步换发）；zai 团队未实测维持 planKeyOf 诚实尝试。 */
+    teamPat: true,
     v2ConfigKey: "builtin:bigmodel-coding-plan",
   },
   "account:bigmodel-start-plan": {
