@@ -79,7 +79,7 @@ class Element {
 function harness({ theme = 'compact', show } = {}) {
   const window = new Element(), body = new Element('body'), root = new Element('html');
   Object.assign(window, { innerWidth: 1000, innerHeight: 800 });
-  const store = new Map([['zusage3.theme', theme]]);
+  const store = new Map([['zusage3.theme', theme], ['zusage3.tipHoverMs', '0']]);   // v440：门槛关直通（本文件测开门后行为；门槛链由 overlay-tip-activation 锁）
   const localStorage = { getItem: k => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, v) };
   let panes = [];
   const document = new Element();

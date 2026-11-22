@@ -83,8 +83,10 @@ function harness({ quotaOn = true, prefs = {} } = {}) {
     elementFromPoint: () => panes[0] || body });
   const timers = new Map(), frames = new Map(), observers = []; let id = 0;
   /* v251：localStorage 桩改 map 承载，prefs 可预种子渲染端展示偏好（如 zusage3.quotaRemain）；
-   * 空表行为与旧桩一致（getItem 缺失返回 null） */
-  const lsStore = new Map(Object.entries(prefs));
+   * 空表行为与旧桩一致（getItem 缺失返回 null）。
+   * v440：默认种子 tipHoverMs=0（本夹具各用例直呼 mouseenter 验开门后行为；悬停门槛链
+   * 本体由 overlay-tip-activation.test.cjs 锁定，显式传 prefs 可覆盖回生产默认）。 */
+  const lsStore = new Map(Object.entries({ 'zusage3.tipHoverMs': '0', ...prefs }));
   const sandbox = vm.createContext({ window, document, console, innerHeight: 800, innerWidth: 1000,
     location: { href: 'file:///fixture' },
     localStorage: { getItem: k => (lsStore.has(k) ? lsStore.get(k) : null), setItem: (k, v) => { lsStore.set(String(k), String(v)); } },

@@ -83,7 +83,7 @@
   } catch (e) { }
 
   /* ---------- 共享状态（多实例一致）：显示项/语言/上下文覆盖/最近一次数据 ---------- */
-  var LS = { show: "zusage3.show", devKeepTip: "zusage3.devKeepTip", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum", sec: "zusage3.sec", rstCdh: "zusage3.rstCdh", projPath: "zusage3.projPath", theme: "zusage3.theme", ctxEnh: "zusage3.ctxEnh", cmdkW: "zusage3.cmdkW", cmpAnn: "zusage3.cmpAnn", updSeen: "zusage3.updSeen", forceKmb: "zusage3.forceKmb", ctxCpt: "zusage3.ctxCpt", cost: "zusage3.cost", barJust: "zusage3.barJust", barOrder: "zusage3.barOrder", barPriority: "zusage3.barPriority", autoCompact: "zusage3.autoCompact", tipClick: "zusage3.tipClick", quotaRemain: "zusage3.quotaRemain", sysmonCfg: "zusage3.sysmonCfg" };
+  var LS = { show: "zusage3.show", devKeepTip: "zusage3.devKeepTip", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum", sec: "zusage3.sec", rstCdh: "zusage3.rstCdh", projPath: "zusage3.projPath", theme: "zusage3.theme", ctxEnh: "zusage3.ctxEnh", cmdkW: "zusage3.cmdkW", cmpAnn: "zusage3.cmpAnn", updSeen: "zusage3.updSeen", forceKmb: "zusage3.forceKmb", ctxCpt: "zusage3.ctxCpt", cost: "zusage3.cost", barJust: "zusage3.barJust", barOrder: "zusage3.barOrder", barPriority: "zusage3.barPriority", autoCompact: "zusage3.autoCompact", tipClick: "zusage3.tipClick", tipHoverMs: "zusage3.tipHoverMs", quotaRemain: "zusage3.quotaRemain", sysmonCfg: "zusage3.sysmonCfg" };
   /* 状态条排序与优先级只作用于条面八个项目，不改变工具行 Git/额度等宿主按钮。 */
   var ZU_BAR_KEYS = ["speed", "turn", "win", "today", "proj", "tools", "sub", "sysmon"];
   /* 缺省优先级按「状态栏显示升级」设计稿：速度/本轮=高、会话/今日/项目=普通、工具/子代理=低。
@@ -595,6 +595,11 @@
        激活」；纯渲染端展示偏好存 localStorage，不进 config.json、不涉及主进程。常被滑过
        误触的用户可开开关，点击才打开统计卡/子代理面板（issue 用户反馈）。 */
     tipClick: 0,
+    /* v440 悬停门槛（issue #445）：条面悬停明细停留该毫秒数才打开，快速划过不再触发；
+       0=恢复 v246 划过即显（仅手改 localStorage，v440 起下拉不再提供「立即」档）。
+       v440 用户改档：默认 500ms，下拉档位 100/500/1000/1500/2000。纯渲染端展示偏好存
+       localStorage；手改允许任意 0–10000 整数（下拉不含的档位行为仍生效、仅回显缺预设）。 */
+    tipHoverMs: 500,
     devKeepTip: 0,
     /* v251 套餐额度显示口径：缺省关=已用%（v96 起原语义），仅显式 "1" 开启「剩余额度」
        （剩余%=100−已用%，同一窗口池补数）；chip 面与 tooltip 窗口行/Key 总额度行/其他源
@@ -715,6 +720,8 @@
     if (ls(LS.cmpAnn, "") === "0") state.cmpAnn = 0;
     if (ls(LS.forceKmb, "") === "1") state.forceKmb = 1;
     if (ls(LS.tipClick, "") === "1") state.tipClick = 1;
+    var thm0 = parseInt(ls(LS.tipHoverMs, ""), 10);
+    if (thm0 >= 0 && thm0 <= 10000) state.tipHoverMs = thm0;   // v440：非法/缺省保持默认（v440 起 500）；0=划过即显
     if (ls(LS.devKeepTip, "") === "1") state.devKeepTip = 1;
     if (ls(LS.quotaRemain, "") === "1") state.quotaRemain = 1;
     var cdh0 = parseInt(ls(LS.rstCdh, ""), 10);
@@ -740,6 +747,7 @@
     lsSet(LS.cmdkW, state.cmdkW ? "1" : "0");
     lsSet(LS.cmpAnn, state.cmpAnn ? "1" : "0");
     lsSet(LS.tipClick, state.tipClick ? "1" : "0");
+    lsSet(LS.tipHoverMs, String(parseInt(state.tipHoverMs, 10) || 0));
     lsSet(LS.quotaRemain, state.quotaRemain ? "1" : "0");
     lsSet(LS.devKeepTip, state.devKeepTip ? "1" : "0");
     lsSet(LS.rstCdh, String(state.resetCdh));

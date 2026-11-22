@@ -100,7 +100,7 @@ function harness() {
   ZuDate.now = () => Date.now() + clockOffset;
   const sandbox = vm.createContext({ window, document, console, innerHeight: 800, innerWidth: 1000,
     Date: ZuDate,
-    location: { href: 'file:///fixture' }, localStorage: { getItem: () => null, setItem() {} },
+    location: { href: 'file:///fixture' }, localStorage: { getItem: k => (k === 'zusage3.tipHoverMs' ? '0' : null), setItem() {} },   // v440：门槛关直通（本文件测开门后行为；门槛链由 overlay-tip-activation 锁）
     getComputedStyle: el => ({ borderTopWidth: '1px', backgroundColor: 'black', opacity: '1', display: 'block', visibility: 'visible', ...el.style }),
     setTimeout: (fn, ms) => { timers.set(++id, { fn, ms, interval: false }); return id; },
     clearTimeout: n => timers.delete(n),

@@ -83,7 +83,7 @@ function harness() {
     elementFromPoint: () => panes[0] || body });
   const timers = new Map(), frames = new Map(); let id = 0;
   const sandbox = vm.createContext({ window, document, console, innerHeight: 800, innerWidth: 1000,
-    location: { href: 'file:///fixture' }, localStorage: { getItem: () => null, setItem() {} },
+    location: { href: 'file:///fixture' }, localStorage: { getItem: k => (k === 'zusage3.tipHoverMs' ? '0' : null), setItem() {} },   // v440：门槛关直通（本文件测开门后行为；门槛链由 overlay-tip-activation 锁）
     getComputedStyle: () => ({ borderTopWidth: '1px', backgroundColor: 'black', opacity: '1', display: 'block', visibility: 'visible' }),
     setTimeout: (fn, ms) => { timers.set(++id, { fn, ms, interval: false }); return id; },
     clearTimeout: n => timers.delete(n),
@@ -466,7 +466,7 @@ test('interaction wiring: Esc close, hover bridge into tooltip, scroll position 
   assert.match(source, /function hideGitTipSoon\(\)/, '鼠标移入悬浮内容的宽限桥');
   assert.match(source, /gitTip\.addEventListener\("mouseenter", onGitTipEnter\)/);
   assert.match(source, /gitTip\.addEventListener\("mouseleave", function \(\) \{ if \(!state\.devKeepTip\) hideGitTip\(\); \}\)/, 'tip mouseleave 关闭；v424 devKeepTip 常驻时豁免');
-  assert.match(source, /chip\.addEventListener\("mouseleave", hideGitTipSoon\)/);
+  assert.match(source, /chip\.addEventListener\("mouseleave", function \(\) \{ zuChipHoverDisarm\(chip\); hideGitTipSoon\(\); \}\)/, 'v440 起先撤悬停门槛排程再走宽限桥');
   assert.match(source, /var keep = 0;/, '自动刷新保持滚动位置');
   assert.match(source, /rowsEl\.scrollTop = keep/, '重渲染后恢复滚动位置');
   assert.match(source, /if \(e && e\.key === "Escape"\) hideGitTip\(\)/);

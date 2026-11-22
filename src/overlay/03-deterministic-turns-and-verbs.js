@@ -357,6 +357,7 @@
     instances = [];
     quotaSelectionsSig = "";
     pluginRequest("quota-providers", { panes: {} });
+    zuChipHoverDisarm();   // v440：chip 悬停门槛在途排程随代际销毁（fire 的 isConnected 守卫是第二道）
     cleanupRateTip();
     cleanupGitTip();
     if (typeof cleanupSysTip === "function") cleanupSysTip();   // v356：系统状态 chip 浮层同链清理

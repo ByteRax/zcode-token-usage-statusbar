@@ -2020,6 +2020,8 @@
       if (cmpAnnBox) cmpAnnBox.checked = !!state.cmpAnn;
       var tipClickBox = panel.querySelector(".zu-tip-click");
       if (tipClickBox) tipClickBox.checked = !!state.tipClick;
+      var tipHoverMsSel = panel.querySelector(".zu-tip-hover-ms");
+      if (tipHoverMsSel) tipHoverMsSel.value = String(parseInt(state.tipHoverMs, 10) || 0);
       var devKeepTipBox = panel.querySelector(".zu-dev-keep-tip");
       if (devKeepTipBox) devKeepTipBox.checked = !!state.devKeepTip;
       var qrBox = panel.querySelector(".zu-quota-remain");
@@ -2890,6 +2892,16 @@
         /* v249：纯渲染偏好，即时生效（下一次 mousemove/click 即按新模式判定） */
         state.tipClick = t2.checked ? 1 : 0;
         persist();
+        return;
+      }
+      if (t2.classList.contains("zu-tip-hover-ms")) {
+        /* v439：纯渲染偏好，即时生效——撤掉在途排程，下一次 mousemove 按新门槛排程；
+         * v440：chip 单槽同撤（review 一致性：键盘改档时指针恰好停在 chip 上的边角） */
+        var thm1 = parseInt(t2.value, 10);
+        state.tipHoverMs = thm1 > 0 ? thm1 : 0;
+        persist();
+        tipHoverCancel();
+        zuChipHoverDisarm();
         return;
       }
       if (t2.classList.contains("zu-dev-keep-tip")) {
