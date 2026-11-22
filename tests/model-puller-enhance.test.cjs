@@ -1532,7 +1532,8 @@ test("issue440: v2 config.json custom provider entries enhance via host kind map
 const TEAM_ORG = "org-team-9";
 const TEAM_PROJECT = "proj-team-8";
 const TEAM_CUSTOMER_URL = "https://bigmodel.cn/api/biz/customer/getCustomerInfo";
-const TEAM_KEYS_URL = "https://bigmodel.cn/api/biz/v1/organization/" + TEAM_ORG + "/projects/" + TEAM_PROJECT + "/api_keys";
+const teamKeysUrlFor = (org, project) => "https://bigmodel.cn/api/biz/v1/organization/" + encodeURIComponent(org) + "/projects/" + encodeURIComponent(project) + "/api_keys";
+const TEAM_KEYS_URL = teamKeysUrlFor(TEAM_ORG, TEAM_PROJECT);
 const TEAM_PAT_URL = TEAM_KEYS_URL + "/tk-1/access_tokens";
 
 function teamFixture(opts) {
@@ -1540,6 +1541,9 @@ function teamFixture(opts) {
   const file = tmpCfgPath();
   fs.writeFileSync(file, JSON.stringify(sampleCfg()));
   const dir = path.dirname(file);
+  const coords = o.coords || { organizationId: TEAM_ORG, projectId: TEAM_PROJECT };
+  const keysUrl = teamKeysUrlFor(coords.organizationId, coords.projectId);
+  const patUrl = keysUrl + "/tk-1/access_tokens";
   const creds = {};
   creds["oauth:bigmodel:access_token"] = "enc:oauth-1";
   if (!o.noLocation) creds[GLR_LOC_KEY] = "enc:loc-1";   // 个人 location 在盘：团队链绝不能拿它换发
@@ -1547,7 +1551,9 @@ function teamFixture(opts) {
   if (!o.noSelection) {
     fs.writeFileSync(path.join(dir, "setting.json"), JSON.stringify(
       o.selectionJson !== undefined ? o.selectionJson
-        : { providerFamilyConnectionSelections: { bigmodel: { kind: "team-coding-plan", organizationId: TEAM_ORG, projectId: TEAM_PROJECT } } }));
+        : o.legacyOnly
+          ? { modelProviderFamilySelectedKeys: { bigmodel: "team-plan:builtin:bigmodel-coding-plan:团队显示:" + encodeURIComponent(coords.organizationId) + ":" + encodeURIComponent(coords.projectId) } }
+          : { providerFamilyConnectionSelections: { bigmodel: { kind: "team-coding-plan", organizationId: coords.organizationId, projectId: coords.projectId } } }));
   }
   const calls = [];
   const sse = ['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"team 增强"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n'];
@@ -1556,16 +1562,19 @@ function teamFixture(opts) {
     calls.push({ url, opts: requestOpts });
     if (url === TEAM_CUSTOMER_URL) {
       if (o.customerStatus) return { ok: false, status: o.customerStatus, text: async () => "", body: { cancel() { } } };
-      return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { organizations: o.customerOrgs || [{ organizationId: TEAM_ORG, projects: [{ projectId: TEAM_PROJECT }] }] } }) };
+      if (o.customerHuge) return { ok: true, status: 200, text: async () => "x".repeat(262145) };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { organizations: o.customerOrgs || [{ organizationId: coords.organizationId, projects: [{ projectId: coords.projectId }] }] } }) };
     }
-    if (url === TEAM_KEYS_URL) {
+    if (url === keysUrl) {
       if (o.keysStatus) return { ok: false, status: o.keysStatus, text: async () => "", body: { cancel() { } } };
+      if (o.keysHuge) return { ok: true, status: 200, text: async () => "x".repeat(262145) };
       return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: o.teamKeys || [{ name: "zcode-team-api-key", keyType: 2, apiKeyId: "tk-1", apiKey: "id.secret" }] }) };
     }
-    if (url === TEAM_PAT_URL) {
+    if (url === patUrl) {
       if (o.patStatus) return { ok: false, status: o.patStatus, text: async () => "", body: { cancel() { } } };
+      if (o.patHuge) return { ok: true, status: 200, text: async () => "x".repeat(65537) };
       if (o.patDisabled) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { enabled: false, accessToken: "x" } }) };
-      return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, msg: "操作成功", data: { enabled: true, accessToken: "team-pat-1", expiresAt: Date.now() + 3600 * 1000 } }) };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, msg: "操作成功", data: { enabled: true, accessToken: "team-pat-1", expiresIn: o.patShortTtl ? 60 : undefined, expiresAt: o.patShortTtl ? undefined : Date.now() + 3600 * 1000 } }) };
     }
     if (url === GLR_EXCHANGE_URL) {
       return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, msg: "操作成功", data: { enabled: true, accessToken: "glr-tok-1" } }) };
@@ -1579,7 +1588,7 @@ function teamFixture(opts) {
     decryptValue: (enc) => (enc === "enc:loc-1" ? GLR_LOC_JSON : String(enc).indexOf("enc:oauth-") === 0 ? "glr-oauth-1" : null),
     hostVersion: "3.19.1",
   });
-  return { mp, calls, dir };
+  return { mp, calls, dir, keysUrl, patUrl };
 }
 
 test("Team: bigmodel team enhance exchanges the team PAT and rides it on open.bigmodel.cn", async () => {
@@ -1630,18 +1639,62 @@ test("Team: PAT memo reused within expiry", async () => {
   assert.equal(f.calls.filter((c) => c.url === TEAM_CUSTOMER_URL).length, 1, "three-step chain not re-run either");
 });
 
+test("Team: PAT within the 2-minute refresh lead (or expired) forces re-exchange; expiresIn alias honored", async () => {
+  /* 短 TTL 经 expiresIn 别名下发（60s < 120s lead）：变异「memo 去掉过期检查」在此变红
+   * （review B-A4）——第二次 enhance 必须重跑三步链，否则过期 PAT 会被复用到 401。 */
+  const f = teamFixture({ patShortTtl: true });
+  const r1 = await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "第一次");
+  assert.equal(r1.ok, true);
+  const r2 = await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "第二次");
+  assert.equal(r2.ok, true, JSON.stringify(r2).slice(0, 160));
+  assert.equal(f.calls.filter((c) => c.url === TEAM_PAT_URL).length, 2, "PAT inside refresh lead re-exchanges");
+});
+
+test("Team: legacy modelProviderFamilySelectedKeys selection rides the same three-step chain", async () => {
+  /* review A/D：额度链 teamSelectionOf 认 legacy 键——仅写旧键的宿主上额度 chip 显示团队
+   * 额度，增强链不同门就会恒 plan_auth（两链读同一字段必须同口径）。 */
+  const f = teamFixture({ legacyOnly: true });
+  const r = await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r.ok, true, JSON.stringify(r).slice(0, 200));
+  assert.equal(f.calls.filter((c) => c.url === TEAM_PAT_URL).length, 1);
+  assert.equal(f.calls.find((c) => c.url.indexOf("/v1/messages") > 0).opts.headers.Authorization, "Bearer team-pat-1");
+});
+
+test("Team: org/project with reserved chars are percent-encoded into the api_keys URL", async () => {
+  /* review B-D12：坐标进 URL path 前必须 encodeURIComponent——夹具按编码后 URL 桩定，
+   * 生产编码不一致时请求落空（unexpected url → plan_auth），用例即红。 */
+  const f = teamFixture({ coords: { organizationId: "org team/evil", projectId: "proj+域" } });
+  const r = await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r.ok, true, JSON.stringify(r).slice(0, 200));
+  assert.equal(f.keysUrl, "https://bigmodel.cn/api/biz/v1/organization/org%20team%2Fevil/projects/proj%2B%E5%9F%9F/api_keys");
+  assert.ok(f.calls.some((c) => c.url === f.keysUrl), "encoded keys URL requested verbatim");
+  assert.ok(f.calls.some((c) => c.url === f.patUrl), "encoded PAT URL requested verbatim");
+});
+
+test("Team: oversized step responses fail closed (size caps)", async () => {
+  for (const variant of [{ customerHuge: true }, { keysHuge: true }, { patHuge: true }]) {
+    const f = teamFixture(variant);
+    const r = await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "写个脚本");
+    assert.equal(r.ok, false, JSON.stringify(variant));
+    assert.equal(r.kind, "plan_auth", JSON.stringify(variant));
+    assert.equal(f.calls.filter((c) => c.url.indexOf("/v1/messages") > 0).length, 0, "no messages after oversized body: " + JSON.stringify(variant));
+  }
+});
+
 test("Team: fail-closed matrix — no selection/bad org/missing team key/pat failures all plan_auth with zero messages", async () => {
   for (const variant of [
     { noSelection: true },
     { selectionJson: {} },
-    { selectionJson: { providerFamilyConnectionSelections: { bigmodel: { kind: "individual-coding-plan" } } } },
+    /* kind 判定的可观测变体必须带坐标（review B-A1：缺坐标时 org/project 门先拦，变异不可见） */
+    { selectionJson: { providerFamilyConnectionSelections: { bigmodel: { kind: "individual-coding-plan", organizationId: TEAM_ORG, projectId: TEAM_PROJECT } } } },
     { selectionJson: { providerFamilyConnectionSelections: { bigmodel: { kind: "team-coding-plan", organizationId: "", projectId: TEAM_PROJECT } } } },
     { customerStatus: 404 },
     { customerOrgs: [{ organizationId: "other-org", projects: [{ projectId: TEAM_PROJECT }] }] },
     { customerOrgs: [{ organizationId: TEAM_ORG, projects: [{ projectId: "other-project" }] }] },
     { keysStatus: 500 },
-    { teamKeys: [{ name: "other-key", keyType: 2, apiKeyId: "tk-9" }] },
-    { teamKeys: [{ name: "zcode-team-api-key", keyType: 1, apiKeyId: "tk-9" }] },
+    /* 形状错误条目复用 tk-1（review B-A3：不同 id 会被 URL 层 throw 掩盖选择层失效） */
+    { teamKeys: [{ name: "other-key", keyType: 2, apiKeyId: "tk-1" }] },
+    { teamKeys: [{ name: "zcode-team-api-key", keyType: 1, apiKeyId: "tk-1" }] },
     { teamKeys: [{ name: "zcode-team-api-key", keyType: 2 }] },
     { patStatus: 404 },
     { patDisabled: true },
@@ -1652,6 +1705,15 @@ test("Team: fail-closed matrix — no selection/bad org/missing team key/pat fai
     assert.equal(r.kind, "plan_auth", JSON.stringify(variant));
     assert.equal(f.calls.filter((c) => c.url.indexOf("/v1/messages") > 0).length, 0, "no messages call after team chain failure: " + JSON.stringify(variant));
   }
+});
+
+test("Team: planGLrTokenOf hard-guards teamPat sources (defense-in-depth anchor)", () => {
+  /* review B-B7：守卫行是闭包私有、公共面不可观测——用源码锚点锁「未来新增第二调用方
+   * 也不会对团队源拿个人 location 换发」（构建产物是提交物，build_puller --check 保证分片一致）。 */
+  const built = fs.readFileSync(path.join(__dirname, "..", "model-puller.cjs"), "utf8");
+  const i = built.indexOf("async function planGLrTokenOf");
+  assert.ok(i > 0, "planGLrTokenOf anchor");
+  assert.match(built.slice(i, i + 400), /src\.teamPat/, "teamPat guard inside planGLrTokenOf");
 });
 
 test("Team: individual coding plan still rides its own GLr location on the same fixture", async () => {

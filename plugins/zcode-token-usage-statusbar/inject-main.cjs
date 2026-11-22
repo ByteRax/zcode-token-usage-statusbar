@@ -1344,7 +1344,6 @@ function initModelPuller() {
       customCfgPath: pullPaths.customCfgPath,
       builtinCfgPath: pullPaths.builtinCfgPath,   // 模板供应商（如 opencode-go-chat）的 baseUrl/protocol 在打包 templateRules
       credentialsPath: pullPaths.credsPath,   // v229：迁移后 ~/.zcode/v2/credentials.json 是宿主不读的死目录（issue #205）
-      settingPath: pullPaths.settingPath,   // 团队套餐选择（issue #442）：恒在 HOME/.zcode/v2，不随 dataBaseDir 迁移
       decryptValue: (enc) => decryptValue(enc, deriveCipherKey(process.env)),   // 套餐源：内存解密，同额度链纪律
       cachePath: path.join(__dirname, "model-efforts-cache.json"),   // #236：档位索引落运行目录（pricing-cache.json 同款先例），跨重启复用
       log: (...a) => LOG("[model-pull]", ...a),
@@ -1927,7 +1926,9 @@ async function handleEnhanceProviderAction(req, wc) {
   }
   if (req.action === "enhance-provider-models") {
     const settings = readEnhanceProvider();
-    if (!settings || settings.unreadable || process.platform === "win32") { reply({ ok: false, error: "provider unavailable" }); return; }
+    /* issue #442 review A/D：win32 恒拒门随 save 门一并移除——Windows custom 模式已激活，
+     * 保留会让「拉取模型」按钮恒报 provider unavailable（listEnhanceModels 无平台依赖）。 */
+    if (!settings || settings.unreadable) { reply({ ok: false, error: "provider unavailable" }); return; }
     const draft = req.form && typeof req.form === "object" ? req.form : null;
     let provider = draft ? resolveEnhanceDraftProvider(settings, draft, typeof req.formApiKey === "string" ? req.formApiKey : "") : resolveEnhanceProvider(settings);
     if (!provider) { reply({ ok: false, error: "provider unavailable" }); return; }

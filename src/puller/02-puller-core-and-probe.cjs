@@ -18,7 +18,8 @@ function createModelPuller(opts) {
   const cachePath = String(o.cachePath || "");   // 档位索引落盘路径（运行目录，inject-main 传入）；空=仅内存（测试）
   const credentialsPath = String(o.credentialsPath || "");   // 宿主 OAuth 凭据（套餐源）
   /* 宿主 setting.json（团队套餐选择，issue #442）：恒在 HOME/.zcode/v2 不随 dataBaseDir
-   * 迁移（quota.md §4）；生产由 inject-main 传 resolveQuotaPaths 的 settingPath，缺省同源推导。 */
+   * 迁移（quota.md §4）；缺省同源推导，与额度链 teamSelectionOf 兜底同款（opts.settingPath
+   * 仅供测试注入；ZCODE_DESKTOP_HOME_DIR 场景两链同走 os.homedir()，不单独分叉）。 */
   const settingPath = String(o.settingPath || path.join(os.homedir(), ".zcode", "v2", "setting.json"));
   const decryptValue = typeof o.decryptValue === "function" ? o.decryptValue : null;   // 注入解密（主进程内存解密）
   const credEnv = o.env && typeof o.env === "object" ? o.env : process.env;   // v1 信封派生钥环境（生产缺省 process.env，同注入闭包口径）
@@ -408,7 +409,8 @@ function createModelPuller(opts) {
    * ① getCustomerInfo 校验 org/project 存在（裸业务 token）→ ② api_keys 列表（团队头）找
    * name=zcode-team-api-key 且 keyType=2（缺条目不创建——创建属宿主 App 内切换行为）→
    * ③ POST access_tokens 换项目级短期 PAT。PAT 打与 individual GLr token 同一 messages
-   * 端点（宿主团队对话同链路）。只在内存（过期前 2 分钟内复用 memo），绝不落盘/进日志。 */
+   * 端点（宿主团队对话同链路）。只在内存：距过期还有 2 分钟以上才复用 memo（lead 内与
+   * 过期后一律重换，review C 措辞对齐），绝不落盘/进日志。 */
   const TEAM_PAT_REFRESH_LEAD_MS = 120 * 1000;
   const TEAM_PAT_DEFAULT_TTL_MS = 3600 * 1000;
   const TEAM_PAT_TIMEOUT_MS = 15000;
@@ -418,11 +420,25 @@ function createModelPuller(opts) {
     let set = null;
     try { set = JSON.parse(fs.readFileSync(settingPath, "utf8")); } catch (e) { return null; }
     if (!set || typeof set !== "object") return null;
+    /* 与额度链 teamSelectionOf 同口径（含 legacy 键回退，review A/D：仅写旧键的宿主上
+     * 额度 chip 显示团队额度、增强若不认 legacy 会恒 plan_auth——两链读同一字段须同门）。 */
+    let org = "", project = "";
     const sel = (set.providerFamilyConnectionSelections || {}).bigmodel;
-    if (!sel || sel.kind !== "team-coding-plan") return null;
-    const org = String(sel.organizationId || "").trim();
-    const project = String(sel.projectId || "").trim();
-    return org && project ? { org: org, project: project } : null;
+    if (sel && sel.kind === "team-coding-plan") {
+      org = String(sel.organizationId || "").trim();
+      project = String(sel.projectId || "").trim();
+    } else {
+      const legacy = String((set.modelProviderFamilySelectedKeys || {}).bigmodel || "").trim();
+      const prefix = "team-plan:builtin:bigmodel-coding-plan:";
+      if (legacy.indexOf(prefix) === 0) {
+        const parts = legacy.slice(prefix.length).split(":");
+        if (parts.length === 3) {
+          try { org = decodeURIComponent(parts[1]); project = decodeURIComponent(parts[2]); } catch (e) { return null; }
+        }
+      }
+    }
+    if (!org || !project) return null;
+    return { org: org, project: project };
   }
   async function planTeamPatOf(providerId, externalSignal) {
     const src = PLAN_SOURCES[String(providerId || "")];
