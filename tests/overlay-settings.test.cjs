@@ -95,7 +95,7 @@ test('buildPanel initializes and rebuilds controls without losing state or scrol
     slot: 0,
     panel: {
       innerHTML: '',
-      querySelector: selector => selector === '.zu-settings-body' ? oldBody : input,
+      querySelector: selector => selector === '.zu-settings-body' ? oldBody : selector === '.zu-ctxov' ? input : null,
       querySelectorAll: selector => selector === 'input[name=zu-lang]' ? radios : checkboxes,
     },
     state: { lang: 'zh', show: { turn: 0, win: 1, tools: 1, today: 0, sub: 1 }, ctxOv: '200000' },
@@ -1678,6 +1678,7 @@ test('disposeOverlay clears a pending enhancement save timer before the regular 
   const disposeSource = sliceOverlay('  function disposeOverlay() {', '  window.__zusageDispose = disposeOverlay;',
     { file: 'src/overlay/03-deterministic-turns-and-verbs.js' });
   const cleared = [];
+  let chipDisarms = 0;
   const context = {
     disposed: false,
     state: { enhancePending: { enabled: false, timer: 7, id: 'save-x' } },
@@ -1691,11 +1692,13 @@ test('disposeOverlay clears a pending enhancement save timer before the regular 
     mpModalDispose: null, cleanupDeterministic() {},
     document: { removeEventListener() {} },
     subTipDocOver: () => {}, subTipDocOut: () => {},
+    zuChipHoverDisarm: () => { chipDisarms++; },   // v440：chip 悬停门槛单槽撤排程（01 分片模块级，dispose 切片作自由变量桩；v442 起断言确实被调）
     subTip: { parentElement: null },
     window: {},
   };
   vm.runInNewContext(disposeSource + '\ndisposeOverlay();', context);
   assert.deepEqual(cleared.slice(0, 2), [['t', 7], ['t', 1]], 'the pending save timer clears first, then bootTimer');
+  assert.equal(chipDisarms, 1, 'dispose 撤 chip 悬停门槛单槽（v442 review 行为级补防）');
   assert.equal(context.state.enhancePending, null);
   assert.equal(context.disposed, true);
   const len = cleared.length;

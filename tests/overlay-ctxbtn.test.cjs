@@ -88,7 +88,7 @@ function harness({ clock, ls } = {}) {
   const timers = new Map(), frames = new Map(), observers = []; let id = 0;
   class FixtureDate extends Date { static now() { return clock ? clock.now : Date.now(); } }
   const sandbox = vm.createContext({ window, document, console, Date: FixtureDate, innerHeight: 800, innerWidth: 1000,
-    location: { href: 'file:///fixture' }, localStorage: { getItem: k => (ls && k in ls ? ls[k] : null), setItem() {} },
+    location: { href: 'file:///fixture' }, localStorage: { getItem: k => (k === 'zusage3.tipHoverMs' && !(ls && 'zusage3.tipHoverMs' in ls) ? '0' : (ls && k in ls ? ls[k] : null)), setItem() {} },   // v440：门槛默认关直通（本文件测开门后行为；门槛链由 overlay-tip-activation 锁）
     getComputedStyle: () => ({ borderTopWidth: '1px', backgroundColor: 'black', opacity: '1', display: 'block', visibility: 'visible' }),
     setTimeout: (fn, ms) => { timers.set(++id, { fn, ms, interval: false }); return id; },
     clearTimeout: n => timers.delete(n),

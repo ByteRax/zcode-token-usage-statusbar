@@ -32,7 +32,7 @@ test('contract: renderer slices keep enhance button wiring anchors', () => {
   assert.match(source, /enhanceSid = enhanceCurSid\(\);/);   // 发起时会话身份锚定
   assert.match(source, /enhanceCurSid\(\) !== enhanceSid/);   // 回填/收窗的会话切换校验
   assert.match(source, /readPaneScope\(wantedEl, sid, pid, true\)/);   // v354：仅增强链显式放行 draft（其余消费面不传参维持拒绝）
-  assert.match(source, /b\.addEventListener\("mouseenter", function \(\) \{ showEnhanceTip\(this\); \}\)/);   // 悬停 tooltip
+  assert.match(source, /b\.addEventListener\("mouseenter", function \(\) \{ var bT = this; zuChipHoverArm\(bT, function \(\) \{ showEnhanceTip\(bT\); \}\); \}\)/);   // v440 悬停 tooltip（悬停门槛包门）
   assert.match(source, /b\.__zuEnhTip = label;/);   // 文案包随相位同步
   assert.doesNotMatch(source, /b\.title = label/);   // 禁原生 title（防与自绘 tooltip 双显）
   assert.match(source, /"enhance failed: "\.slice|Enhancing…|增强中…/);
@@ -128,6 +128,7 @@ function harness({ enhanceOn = true } = {}) {
   const timers = new Map(), frames = new Map(), observers = []; let id = 0;
   const lsStore = new Map();
   lsStore.set('zcode-v4-last-session:v1:ws', 'sid_main');   // pickCurrent 的宿主「工作区最后会话」记录（键名正则 ^zcode-v4-last-session:）
+  lsStore.set('zusage3.tipHoverMs', '0');   // v440：门槛关直通（本文件测开门后行为；门槛链由 overlay-tip-activation 锁）
   const sandbox = vm.createContext({ window, document, console, innerHeight: 800, innerWidth: 1000,
     location: { href: 'file:///fixture' },
     localStorage: (() => {   // Object.keys(localStorage) 需枚举到种子键（pickCurrent 的 zcode-v4-last-session 扫描）

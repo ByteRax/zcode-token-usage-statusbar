@@ -148,8 +148,8 @@
         el.className = "zu-ctxrst";
         el.tabIndex = 0;
         el.addEventListener("keydown", function (e) { if (e.key === "Escape") hideRstTip(); });   // v118 键盘可达契约
-        el.addEventListener("mouseenter", function () { cancelRstHide(); showRstTip(this); });
-        el.addEventListener("mouseleave", scheduleRstHide);   // 延迟收起：给指针移入 tooltip 点「如何重置」留窗口
+        el.addEventListener("mouseenter", function () { cancelRstHide(); var elT = this; zuChipHoverArm(elT, function () { showRstTip(elT); }); });   // v440：悬停门槛（路过不弹）
+        el.addEventListener("mouseleave", function () { zuChipHoverDisarm(el); scheduleRstHide(); });   // 延迟收起：给指针移入 tooltip 点「如何重置」留窗口
         el.addEventListener("focus", function () { showRstTip(this); });
         el.addEventListener("blur", hideRstTip);
         host.appendChild(el);
@@ -357,8 +357,8 @@
         if (subPopMode === "pinned") subPopClose(false, "chip");
         else subPopShow(chip, true);
       };
-      chip.addEventListener("mouseenter", function () { cancelTpsHide(); showTpsTip(chip); });
-      chip.addEventListener("mouseleave", scheduleTpsHide);   // 延迟收起：给指针移入 tooltip 留窗口（同重置卡桥）
+      chip.addEventListener("mouseenter", function () { cancelTpsHide(); zuChipHoverArm(chip, function () { showTpsTip(chip); }); });   // v440：悬停门槛（路过不弹）
+      chip.addEventListener("mouseleave", function () { zuChipHoverDisarm(chip); scheduleTpsHide(); });   // 延迟收起：给指针移入 tooltip 留窗口（同重置卡桥）
       chip.addEventListener("focus", function () { showTpsTip(chip); });
       chip.addEventListener("blur", hideTpsTip);
       chip.addEventListener("keydown", function (e) { if (e.key === "Escape") hideTpsTip(); });
@@ -834,8 +834,8 @@
           chip.setAttribute("role", "button");
           chip.setAttribute("aria-keyshortcuts", "Enter Space");
           chip.tabIndex = 0;
-          chip.addEventListener("mouseenter", onQuotaEnter);
-          chip.addEventListener("mouseleave", hideQuotaTip);
+          chip.addEventListener("mouseenter", function () { var qT = this; zuChipHoverArm(qT, function () { onQuotaEnter.call(qT); }); });   // v440：悬停门槛（路过不弹；focus 走 onQuotaEnter 原样即时）
+          chip.addEventListener("mouseleave", function () { zuChipHoverDisarm(chip); hideQuotaTip(); });
           chip.addEventListener("focus", onQuotaEnter);
           chip.addEventListener("blur", hideQuotaTip);
           chip.addEventListener("keydown", onRefreshKeydown);
@@ -1144,8 +1144,8 @@
             openEnhSettings();
           });
           /* v344 悬停 tooltip（rstTip 同款）：Esc 键盘可达契约 + focus/blur 对齐 */
-          b.addEventListener("mouseenter", function () { showEnhanceTip(this); });
-          b.addEventListener("mouseleave", scheduleEnhHide);   // 延迟收起：给移入历史面板留时间
+          b.addEventListener("mouseenter", function () { var bT = this; zuChipHoverArm(bT, function () { showEnhanceTip(bT); }); });   // v440：悬停门槛（路过不弹）
+          b.addEventListener("mouseleave", function () { zuChipHoverDisarm(b); scheduleEnhHide(); });   // 延迟收起：给移入历史面板留时间
           b.addEventListener("focus", function () { showEnhanceTip(this); });
           b.addEventListener("blur", hideEnhanceTip);
           b.addEventListener("keydown", function (e) { if (e.key === "Escape") hideEnhanceTip(); });
@@ -1666,8 +1666,8 @@
           chip.setAttribute("role", "button");
           chip.setAttribute("aria-keyshortcuts", "Enter Space");
           chip.tabIndex = 0;
-          chip.addEventListener("mouseenter", onGitEnter);
-          chip.addEventListener("mouseleave", hideGitTipSoon);
+          chip.addEventListener("mouseenter", function () { var gT = this; zuChipHoverArm(gT, function () { onGitEnter.call(gT); }); });   // v440：悬停门槛（路过不弹；focus 走 onGitEnter 原样即时）
+          chip.addEventListener("mouseleave", function () { zuChipHoverDisarm(chip); hideGitTipSoon(); });
           chip.addEventListener("focus", onGitEnter);
           chip.addEventListener("blur", function () { if (!state.devKeepTip) hideGitTip(); });   // v423 开发者常驻不自动收
           chip.addEventListener("keydown", onRefreshKeydown);
@@ -1806,8 +1806,8 @@
         }
         if (!chip.__zuWired) {   // v356 review：新建与遗留采纳统一接线（遗留节点可能来自旧代际未挂监听）
           chip.__zuWired = true;
-          chip.addEventListener("mouseenter", onSysChipEnter);
-          chip.addEventListener("mouseleave", hideSysTipSoon);
+          chip.addEventListener("mouseenter", function () { var sT = this; zuChipHoverArm(sT, function () { onSysChipEnter.call(sT); }); });   // v440：悬停门槛（路过不弹；focus 走 onSysChipEnter 原样即时）
+          chip.addEventListener("mouseleave", function () { zuChipHoverDisarm(chip); hideSysTipSoon(); });
           chip.addEventListener("focus", onSysChipEnter);
           /* v362：焦点移入浮层内部（点/Tab 到 ⓘ）不算离开——blur 先于 click 把浮层关掉，
            * ⓘ 的 click 永远收不到（Windows 上 button mousedown 即移焦，macOS 恰好幸存） */

@@ -1341,7 +1341,7 @@
       if (!item.__tip) return;   // v217：无 tooltip 的入口（.zu-sub）不进通用 tooltip 链
       mouseInBar = true;
       cancelTipGrace();
-      if (item !== tipFor) { showTipFor(item); focusTipAt = Date.now(); }
+      if (item !== tipFor) { tipHoverCancel(); showTipFor(item); focusTipAt = Date.now(); }   // v441：键盘优先，撤在途悬停排程（防 fire 复核抢回键盘刚开的格）
     });
     main.addEventListener("focusout", function (e) {
       var next = e.relatedTarget;
@@ -1417,6 +1417,7 @@
         /* 面板上不保留条面 tooltip（v42）：开设置的路上触发过条目 tooltip 的话，
          * 这分支若不清掉它，鼠标在面板里它就永不消失。 */
         mouseInBar = true;
+        tipHoverCancel();   // v439：进面板即放弃在途悬停排程
         if (tipFor && !state.devKeepTip) hideTip(true, "panel-hover");
         return;
       }
@@ -1450,6 +1451,7 @@
           return;
         }
         mouseInBar = false;
+        tipHoverCancel();   // v439：移开条面即放弃在途悬停排程（到点复核本也会拒绝，这里省一个空转定时器）
         if (tipFor && !state.devKeepTip) hideTip(true, "left-bar");   // v43：移开条面立即消失；v297.3 开发者常驻开关时不自动收
         return;
       }
@@ -1462,14 +1464,15 @@
        * 开关关闭（缺省）= v246 即时悬停原语义，下方逻辑与 v246 逐行为一致。 */
       if (state.tipClick) return;
       /* v217：悬停子代理入口 → preview 打开统一浮层（显式关闭后的短暂抑制内不开）。
-       * .zu-sub 的 __tip 为空不走通用 tooltip，命中判定在此处单独承接。 */
+       * .zu-sub 的 __tip 为空不走通用 tooltip，命中判定在此处单独承接。
+       * v439：preview 同走悬停门槛（issue #445），延迟与统计卡一致。 */
       if (subPopMode === "closed" && Date.now() >= subPopSuppressAt) {
         var se = t.closest(".zu-sub");
-        if (se) { subPopShow(se, false); return; }
+        if (se) { tipHoverSchedule(se, true); return; }
       }
       var el = hitItemFor(t, e.clientX);
       if (el) {
-        if (el !== tipFor) showTipFor(el);
+        if (el !== tipFor) tipHoverSchedule(el, false);   // v439：首悬停/换格走门槛排程（0ms 档在排程内即时打开）
         else if (state.theme === "pill" && el.__tip !== tipSig) drawTip(el, true);
       } else if (tipFor) {
         /* 条面内非命中区（⚙ 本体与空条面）：保持当前 tooltip 不动（此处刻意无操作，v33.2）。
@@ -1493,7 +1496,10 @@
        * 指针在 tooltip 上，点击引发的合成边界事件（win-leave，hideSeq 铁证：
        * 正常点击被打死）不得关闭进行中的交互；1.2s 外的真离开走原立即关闭
        * （headless pill 测试的启动期 blur 不受影响，全绿实证）。
-       * v275 的 pointermove 保活仍作为常规移动路径的兜底。 */
+       * v275 的 pointermove 保活仍作为常规移动路径的兜底。
+       * v442（review M-1）：撤销在途待开门排程在 1.2s 守卫之前——dwell 不是按压
+       * 交互，守卫内 blur 若不撤，后台窗口会按滞留 lastPt 的几何复核照弹新格。 */
+      tipHoverCancel();
       if (typeof lastTipDownAt !== "undefined" && lastTipDownAt &&
           Date.now() - lastTipDownAt < 1200) return;
       mouseInBar = false;
@@ -1501,14 +1507,7 @@
     }
     listenGlobal(window, "blur", function () { tipBoundaryHide("blur"); }, true);
     function tipLeaveAt(x, y) {
-      if (inactive() || !tipFor) return;
-      /* v329：按压硬保活窗（1.2s）内不触发任何离开（防止合成 leave / 边缘跳动误关） */
-      if (typeof lastTipDownAt !== "undefined" && lastTipDownAt &&
-          Date.now() - lastTipDownAt < 1200) return;
-      if (x <= 1 || x >= innerWidth - 2 || y <= 1 || y >= innerHeight - 2) {
-        tipBoundaryHide("edge");
-        return;
-      }
+      if (inactive()) return;
       /* 伪边界过滤（v99）：Chrome 在悬停链收缩/重算时会补发 DOM 内部的 mouseleave
        * （Playwright 实测：滑过格内 .v↔.dim 的 flex 空隙时 documentElement 级必发、
        * tooltip 子元素之间连 tip 本体级都发，坐标在视口内、relatedTarget 是文档内存活
@@ -1518,13 +1517,28 @@
        * 事件坐标与 relatedTarget 都不可信（真进 iframe 时 relatedTarget=宿主 body、坐标
        * 也可能落在门外），改问活体：取触发时刻最深 :hover 元素——仍是本档具体元素即伪
        * leave，忽略交给 mousemove 流接管；截断到 body（空档区/已进子文档，v47 宽限语义）、
-       * iframe/webview 或空链（甩出窗口）一律按真边界走原分流。 */
+       * iframe/webview 或空链（甩出窗口）一律按真边界走原分流。
+       * v441（review MAJOR）：此过滤提到 !tipFor 早退之前——悬停门槛排程在途时 tipFor 尚
+       * 为 null，伪 leave 不得撤排程（否则指针静止停在格上、流式重排补发的伪 leave 会把
+       * dwell 永远打断）；过滤后仍到达的才是真边界跃迁。 */
       try {
         var hs = document.querySelectorAll(":hover");
         var hovered = hs.length ? hs[hs.length - 1] : null;
         if (hovered && hovered !== document.body && hovered !== document.documentElement &&
             hovered.tagName !== "IFRAME" && hovered.tagName !== "WEBVIEW") return;
       } catch (e) { }
+      /* v441（review MAJOR）：待开门窗口内（tipFor 尚空、tipHoverPend 在途）的真边界跃迁
+       * 必须撤排程——指针已甩出窗口/进聊天子文档时无人观看，到点复核用的 lastPt 是窗内
+       * 最后坐标、elementFromPoint 仍命中原格，会照弹且无事件路径收起。 */
+      tipHoverCancel();
+      if (!tipFor) return;
+      /* v329：按压硬保活窗（1.2s）内不触发任何离开（防止合成 leave / 边缘跳动误关） */
+      if (typeof lastTipDownAt !== "undefined" && lastTipDownAt &&
+          Date.now() - lastTipDownAt < 1200) return;
+      if (x <= 1 || x >= innerWidth - 2 || y <= 1 || y >= innerHeight - 2) {
+        tipBoundaryHide("edge");
+        return;
+      }
       var r = tip.getBoundingClientRect();
       if (x >= r.left - 30 && x <= r.right + 30) {
         tipStats.grace++;
@@ -1564,6 +1578,57 @@
     }
     function cancelTipGrace() {
       if (tipGraceTimer) { clearTimeout(tipGraceTimer); tipGraceTimer = 0; }
+    }
+    /* v439 悬停门槛（issue #445）：条面悬停明细不再「划过即显」——鼠标停留
+     * state.tipHoverMs 毫秒（默认 500，v441 改档；⚙ 通用可调，0=恢复 v246 划过即显）才打开。
+     * 与 v247 的 1000ms 停留链（已按用户裁定整体移除）无代码关联：只在 mousemove
+     * 命中换格时排程一个定时器，到点按 lastPt 坐标 elementFromPoint 重命中复核——
+     * 150ms 节流间隙指针可能已离开/换格/进面板，不复核会在「已扫过」后仍弹出；
+     * 复核发现目标漂移则改靶重排，指针停在条面任意格最迟在停下后约一个门槛时长内弹出。
+     * 键盘 focusin 即时打开（v441 起并撤在途排程，键盘优先）、点击激活模式
+     * （tipClick）不排程均不受影响。 */
+    var tipHoverTimer = 0, tipHoverPend = null;
+    function tipHoverCancel() {
+      if (tipHoverTimer) { clearTimeout(tipHoverTimer); tipHoverTimer = 0; }
+      tipHoverPend = null;
+    }
+    function tipHoverOpen(pend) {
+      if (pend.sub) {
+        if (subPopMode === "closed" && Date.now() >= subPopSuppressAt) subPopShow(pend.el, false);
+        return;
+      }
+      if (pend.el !== tipFor) showTipFor(pend.el);
+    }
+    function tipHoverSchedule(el, isSub) {
+      var d = parseInt(state.tipHoverMs, 10) || 0;
+      if (!(d > 0)) { tipHoverCancel(); tipHoverOpen({ el: el, sub: !!isSub }); return; }   // 0=划过即显（v246 原语义）
+      if (tipHoverPend && tipHoverPend.el === el) return;   // 同格续期：定时器已在途，不重置已等待时长
+      tipHoverCancel();
+      tipHoverPend = { el: el, sub: !!isSub };
+      tipHoverTimer = setTimeout(tipHoverFire, d);
+    }
+    function tipHoverFire() {
+      tipHoverTimer = 0;
+      var pend = tipHoverPend;
+      tipHoverPend = null;
+      if (!pend || state.tipClick || inactive()) return;   // 等待期间切到点击模式/实例失活：放弃
+      var px = lastPt.x, py = lastPt.y;
+      if (!(px >= 0)) return;   // 无有效坐标（切片沙箱/未动过）不弹
+      var hit = null;
+      try { hit = document.elementFromPoint(px, py); } catch (eTH) { hit = null; }
+      if (!hit || !hit.closest) return;   // 复核不了不弹：不冒「已扫过仍弹」的险
+      if (panel.classList.contains("open") || morePanel.classList.contains("open")) return;
+      if (tip.style.display === "block" && tip.contains(hit)) return;   // 指针已在既有 tooltip 上：不换格弹新
+      var se = hit.closest(".zu-sub");
+      if (pend.sub) {
+        if (se === pend.el) tipHoverOpen(pend);
+        else if (se) tipHoverSchedule(se, true);   // 漂到别的子代理入口：改靶重排
+        return;   // 原排程是子代理入口而指针已不在其上：放弃，交下一轮采样
+      }
+      if (se) { tipHoverSchedule(se, true); return; }   // 漂移到子代理入口：改靶重排（子代理入口恒走 preview 链）
+      var el = hitItemFor(hit, px);
+      if (el === pend.el) { if (el !== tipFor) showTipFor(el); return; }
+      if (el) tipHoverSchedule(el, false);   // 漂移到别的格：改靶重排（指针已停在该格也能弹出）
     }
     /* v339（issue #297）：点击空白立即收起详情卡。此前唯一关闭途径是鼠标移开
      * （mousemove 采样/leave 分流/chip 的 180ms 延时），详情卡挡住下方消息流时必须

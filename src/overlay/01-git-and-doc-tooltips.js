@@ -1012,14 +1012,51 @@
     subTip.style.display = "none";
     subTipFor = null;
   }
+  /* v440 chip 悬停门槛（issue #445 扩展，用户规格）：工具行/流内 chip 的悬停明细与条面格
+   * 同门槛——共用 zusage3.tipHoverMs（默认 500ms，v441 改档；0=划过即显仅手改 LS），路过不弹、停留才看。
+   * chip 有精确 mouseenter/mouseleave 对（不走条面的 150ms 节流 hit-test），无需到点复核：
+   * enter 排程、leave 即撤即不弹。单槽 key=chip 元素本体——同时刻至多悬停一处，换 chip
+   * 自动作废旧排程，同 chip 内 mouseover 重入不重置已等待时长。focus/blur（键盘）不进门
+   * 保持即时；fxTip/档位说明（已开 tooltip 内的 ？ 小目标）、齿轮更新日志卡（红点+悬停
+   * 双门控）不在门内。VM 切片夹具的 state 无 tipHoverMs 时按 0=即时直通，既有 chip 测试不感知。 */
+  var zuChipHoverSlot = null;
+  function zuChipHoverArm(el, open) {
+    if (zuChipHoverSlot && zuChipHoverSlot.key === el) return;   // 同 chip 续期：已等待时长不重置
+    zuChipHoverDisarm();
+    var d = parseInt(state.tipHoverMs, 10) || 0;
+    if (!(d > 0)) { open(); return; }
+    var slot = { key: el, timer: 0 };
+    slot.timer = setTimeout(function () {
+      if (zuChipHoverSlot !== slot) return;   // 已被 disarm/换代：过期回调直接弃
+      zuChipHoverSlot = null;
+      if (el && el.isConnected === false) return;   // chip 已随实例销毁/重建摘除：不到点重挂
+      open();
+    }, d);
+    zuChipHoverSlot = slot;
+  }
+  function zuChipHoverDisarm(el) {
+    if (!zuChipHoverSlot || (el && zuChipHoverSlot.key !== el)) return;
+    clearTimeout(zuChipHoverSlot.timer);
+    zuChipHoverSlot = null;
+  }
   function subTipDocOver(e) {
     if (stale()) return;
     /* v332：工作流 run 卡 chip（.zu-wfrun）、v333 状态面板行 chip（.zu-substat）共用本浮层与委托——不加新监听（监听预算纪律） */
     var chip = e.target && e.target.closest ? e.target.closest(".zu-subrate,.zu-wfrun,.zu-substat") : null;
-    if (chip && chip.__zuT) { cancelSubHide(); showSubTip(chip); return; }
+    if (chip && chip.__zuT) {
+      cancelSubHide();
+      var chipT = chip;
+      zuChipHoverArm(chip, function () { showSubTip(chipT); });   // v440：同走悬停门槛
+      return;
+    }
     if (subTipFor && !(e.target && subTip.contains(e.target))) scheduleSubHide();
   }
   function subTipDocOut(e) {
+    var fromChip = e.target && e.target.closest ? e.target.closest(".zu-subrate,.zu-wfrun,.zu-substat") : null;
+    if (fromChip) {
+      var to0 = e.relatedTarget;
+      if (!(to0 && to0.closest && to0.closest(".zu-subrate,.zu-wfrun,.zu-substat") === fromChip)) zuChipHoverDisarm(fromChip);   // v440：真离开 chip 撤在途排程（chip 内子元素间移动不撤）
+    }
     if (!subTipFor) return;
     var to = e.relatedTarget;
     if (to && (subTip.contains(to) || (to.closest && (to.closest(".zu-subrate") === subTipFor ||

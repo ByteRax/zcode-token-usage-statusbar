@@ -1118,6 +1118,7 @@
       bridgeDetach(bridge.handle);
       cancelAnimationFrame(frame);
       cancelTipGrace();
+      tipHoverCancel();   // v439：悬停门槛排程随实例销毁，不留跨代定时器
       if (excCopied) clearTimeout(excCopied.timer);
       if (themeObserver) themeObserver.disconnect();
       clearPillSurface();
