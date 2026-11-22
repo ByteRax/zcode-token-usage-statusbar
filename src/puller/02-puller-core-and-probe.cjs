@@ -173,8 +173,11 @@ function createModelPuller(opts) {
    * 不进 provider_config.json 的 providerRules——增强链此前对这些 id 一律 provider not found。
    * 按 host 引擎同款 kind→api.type 映射（j8c：anthropic→anthropic-messages、openai→openai-responses、
    * openai-compatible/未知/缺省→openai-chat-completions）合成只读伪配置。fail-closed：条目缺失、
-   * 显式 enabled:false、key 空/enc: 密文、baseURL 空、builtin: 命名空间（套餐条目归 PLAN_SOURCES
-   * 专链）一律不可用。key 只发条目自带 baseURL 本域（宿主对话同款信任模型）。 */
+   * 显式 enabled:false、key 空/enc: 密文、baseURL 空、builtin:/account: 命名空间（builtin 归
+   * PLAN_SOURCES 套餐专链；account: 与宿主 B8c 准入同门，非套餐 account id 不是宿主背书的
+   * 自定义供应商）一律不可用。宿主 B8c 另有 source!=="custom" 过滤，插件有意不镜像：宿主各
+   * 版本对 config 条目的消费口径不一（3.19.0 报告者机器条目形状未实测），source 门可能误杀
+   * 宿主实际在用的条目；key 只发条目自带 baseURL 本域，命名空间闸已足够防混用。 */
   function readV2ProviderMap() {
     const out = new Map();
     if (!customCfgPath) return out;
@@ -185,7 +188,7 @@ function createModelPuller(opts) {
       if (!prov) return out;
       for (const id of Object.keys(prov)) {
         const entry = prov[id];
-        if (!id || !entry || typeof entry !== "object" || id.indexOf("builtin:") === 0) continue;
+        if (!id || !entry || typeof entry !== "object" || id.indexOf("builtin:") === 0 || id.indexOf("account:") === 0) continue;
         out.set(id, entry);
       }
     } catch (e) { }

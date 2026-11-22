@@ -1341,6 +1341,31 @@ const ZHIPU_PLAN_RULE = {
   },
 };
 
+test("issue440: enc:-shaped rule key is refused before any request (review A-1/D-1)", async () => {
+  const file = tmpCfgPath();
+  const cfg = sampleCfg();
+  cfg.config.providerConfigRules.providerRules.push({
+    providerId: "cipher-plan-rule",
+    providerName: "密文规则",
+    config: {
+      access: { type: "zhipu-coding-plan-api-key", apiKey: "enc:v1:cipher.text" },
+      api: { baseUrl: "https://open.bigmodel.cn/api/anthropic", type: "anthropic-messages" },
+    },
+  });
+  fs.writeFileSync(file, JSON.stringify(cfg));
+  const calls = [];
+  const mp = M.createModelPuller({
+    customCfgPath: file,
+    fetchImpl: async (url) => { calls.push(url); throw new Error("unexpected request " + url); },
+    modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "",
+  });
+  const r = await mp.enhanceText("cipher-plan-rule", "glm-4.6", "写个脚本");
+  assert.equal(r.ok, false);
+  assert.equal(r.kind, "auth", "ciphertext rule key reports auth, never sent");
+  assert.equal(mp.resolveEnhanceHost("cipher-plan-rule"), null, "ciphertext rule not listed / not direct-connectable");
+  assert.equal(calls.length, 0, "zero network");
+});
+
 test("issue440: zhipu-coding-plan-api-key rule enhances with its own key/baseUrl", async () => {
   const file = tmpCfgPath();
   const cfg = sampleCfg();
@@ -1403,7 +1428,14 @@ const V2_FIXTURE_ENTRIES = {
   "dddddddd-eeee-ffff-0000-111111111111": { name: "禁用条目", kind: "openai-compatible", enabled: false, options: { apiKey: "sk-v2-off", baseURL: "https://off.example.com/v1" } },
   "eeeeeeee-ffff-0000-1111-222222222222": { name: "密文条目", kind: "openai-compatible", options: { apiKey: "enc:v1:cipher.text", baseURL: "https://cipher.example.com/v1" } },
   "ffffffff-0000-1111-2222-333333333333": { name: "缺地址", kind: "openai-compatible", options: { apiKey: "sk-v2-nobase" } },
+  "00000000-1111-2222-3333-444444444444": { name: "空 key", kind: "openai-compatible", options: { apiKey: "   ", baseURL: "https://empty.example.com/v1" } },
+  "00000000-1111-2222-3333-555555555555": { name: "缺 options", kind: "openai-compatible" },
+  "00000000-1111-2222-3333-666666666666": { name: "未知协议 kind", kind: "gemini-cli", options: { apiKey: "sk-v2-unknown", baseURL: "https://unknown.example.com/v1" } },
+  "00000000-1111-2222-3333-777777777777": { name: "缺 kind", options: { apiKey: "sk-v2-nokind", baseURL: "https://nokind.example.com/v1" } },
   "builtin:not-a-plan": { name: "builtin 命名空间", kind: "openai-compatible", options: { apiKey: "sk-v2-builtin", baseURL: "https://builtin.example.com/v1" } },
+  "account:some-other-plan": { name: "account 命名空间", kind: "openai-compatible", options: { apiKey: "sk-v2-account", baseURL: "https://acct.example.com/v1" } },
+  "custom-relay": { name: "v2 同 id 条目", kind: "openai-compatible", options: { apiKey: "sk-v2-dup", baseURL: "https://dup.example.com/v1" } },
+  "disabled-relay": { name: "禁用规则同名条目", kind: "openai-compatible", options: { apiKey: "sk-v2-revive", baseURL: "https://revive.example.com/v1" } },
 };
 
 function writeV2Cfg(file) {
@@ -1412,7 +1444,13 @@ function writeV2Cfg(file) {
 
 test("issue440: v2 config.json custom provider entries enhance via host kind mapping", async () => {
   const file = tmpCfgPath();
-  fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+  const cfg = sampleCfg();
+  cfg.config.providerConfigRules.providerRules.push({
+    providerId: "disabled-relay",
+    providerName: "已禁用规则",
+    config: { enabled: false, access: { type: "api-key", apiKey: "sk-disabled" }, api: { baseUrl: "https://disabled.example.com", type: "openai-chat-completions" } },
+  });
+  fs.writeFileSync(file, JSON.stringify(cfg));
   writeV2Cfg(file);
   const calls = [];
   const mp = M.createModelPuller({
@@ -1440,8 +1478,27 @@ test("issue440: v2 config.json custom provider entries enhance via host kind map
   const r3 = await mp.enhanceText("cccccccc-dddd-eeee-ffff-000000000000", "gpt-5.1", "写个脚本");
   assert.equal(r3.ok, true, "openai entry rides /responses (host j8c mapping): " + JSON.stringify(r3).slice(0, 160));
   assert.ok(calls.some((c) => c.url === "https://v2resp.example.com/v1/responses"));
+  /* 未知 kind 与缺 kind 都按宿主 j8c 缺省落 chat-completions（review B 变异 M02 锁定） */
+  const r4 = await mp.enhanceText("00000000-1111-2222-3333-666666666666", "gpt-4o", "写个脚本");
+  assert.equal(r4.ok, true, "unknown kind falls back to chat-completions (host j8c default): " + JSON.stringify(r4).slice(0, 160));
+  assert.ok(calls.some((c) => c.url === "https://unknown.example.com/v1/chat/completions"));
+  const r5 = await mp.enhanceText("00000000-1111-2222-3333-777777777777", "gpt-4o", "写个脚本");
+  assert.equal(r5.ok, true, "missing kind falls back to chat-completions: " + JSON.stringify(r5).slice(0, 160));
+  assert.ok(calls.some((c) => c.url === "https://nokind.example.com/v1/chat/completions"));
+  /* 规则与 v2 条目同 id 时规则优先（enhanceText 与列表两口一致） */
+  const dup = await mp.enhanceText("custom-relay", "gpt-4o", "写个脚本");
+  assert.equal(dup.ok, true);
+  const dupCall = calls.find((c) => c.url === "https://relay.example.com/chat/completions");
+  assert.ok(dupCall, "rule keeps its own endpoint when a v2 entry shares the id");
+  assert.equal(dupCall.opts.headers.Authorization, "Bearer sk-secret-1", "rule key wins over the same-id v2 entry");
+  /* 禁用规则不再挡在 v2 条目前面（review A-3：与 resolveEnhanceHost 同门） */
+  const revived = await mp.enhanceText("disabled-relay", "gpt-4o", "写个脚本");
+  assert.equal(revived.ok, true, "disabled rule gives way to the same-id v2 entry: " + JSON.stringify(revived).slice(0, 160));
+  const revivedCall = calls.find((c) => c.url === "https://revive.example.com/v1/chat/completions");
+  assert.ok(revivedCall, "v2 entry endpoint used");
+  assert.equal(revivedCall.opts.headers.Authorization, "Bearer sk-v2-revive", "v2 entry key used, disabled rule key never sent");
   const before = calls.length;
-  for (const id of ["dddddddd-eeee-ffff-0000-111111111111", "eeeeeeee-ffff-0000-1111-222222222222", "ffffffff-0000-1111-2222-333333333333", "builtin:not-a-plan", "no-such-entry"]) {
+  for (const id of ["dddddddd-eeee-ffff-0000-111111111111", "eeeeeeee-ffff-0000-1111-222222222222", "ffffffff-0000-1111-2222-333333333333", "00000000-1111-2222-3333-444444444444", "00000000-1111-2222-3333-555555555555", "builtin:not-a-plan", "account:some-other-plan", "no-such-entry"]) {
     const bad = await mp.enhanceText(id, "gpt-4o", "写个脚本");
     assert.equal(bad.ok, false, id + " must fail closed");
     assert.equal(bad.kind, "provider", id + " reports provider not found");
@@ -1452,8 +1509,17 @@ test("issue440: v2 config.json custom provider entries enhance via host kind map
   assert.equal(byId.get("11111111-2222-3333-4444-555555555555").name, "宿主中转");
   assert.equal(byId.get("cccccccc-dddd-eeee-ffff-000000000000").protocol, "openai-responses");
   assert.equal(byId.get("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").protocol, "anthropic-messages");
+  assert.equal(byId.get("00000000-1111-2222-3333-666666666666").protocol, "openai-chat-completions", "unknown kind lists as chat-completions");
+  assert.equal(byId.get("00000000-1111-2222-3333-777777777777").protocol, "openai-chat-completions", "missing kind lists as chat-completions");
   assert.equal(byId.get("dddddddd-eeee-ffff-0000-111111111111"), undefined, "disabled entry not listed");
   assert.equal(byId.get("eeeeeeee-ffff-0000-1111-222222222222"), undefined, "cipher-key entry not listed");
   assert.equal(byId.get("ffffffff-0000-1111-2222-333333333333"), undefined, "baseURL-less entry not listed");
+  assert.equal(byId.get("00000000-1111-2222-3333-444444444444"), undefined, "blank-key entry not listed");
+  assert.equal(byId.get("00000000-1111-2222-3333-555555555555"), undefined, "options-less entry not listed");
   assert.equal(byId.get("builtin:not-a-plan"), undefined, "builtin: namespace stays with the plan chain");
+  assert.equal(byId.get("account:some-other-plan"), undefined, "account: namespace stays with the plan chain (host B8c admission)");
+  const dupHosts = mp.listEnhanceHosts().filter((h) => h.id === "custom-relay");
+  assert.equal(dupHosts.length, 1, "rule and same-id v2 entry never list twice");
+  assert.equal(dupHosts[0].name, "我的中转", "rule wins the listing");
+  assert.equal(byId.get("disabled-relay").name, "已禁用规则", "disabled rule still lends its display name; endpoint comes from the v2 entry");
 });

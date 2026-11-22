@@ -996,8 +996,11 @@ function createModelPuller(opts) {
    * 不进 provider_config.json 的 providerRules——增强链此前对这些 id 一律 provider not found。
    * 按 host 引擎同款 kind→api.type 映射（j8c：anthropic→anthropic-messages、openai→openai-responses、
    * openai-compatible/未知/缺省→openai-chat-completions）合成只读伪配置。fail-closed：条目缺失、
-   * 显式 enabled:false、key 空/enc: 密文、baseURL 空、builtin: 命名空间（套餐条目归 PLAN_SOURCES
-   * 专链）一律不可用。key 只发条目自带 baseURL 本域（宿主对话同款信任模型）。 */
+   * 显式 enabled:false、key 空/enc: 密文、baseURL 空、builtin:/account: 命名空间（builtin 归
+   * PLAN_SOURCES 套餐专链；account: 与宿主 B8c 准入同门，非套餐 account id 不是宿主背书的
+   * 自定义供应商）一律不可用。宿主 B8c 另有 source!=="custom" 过滤，插件有意不镜像：宿主各
+   * 版本对 config 条目的消费口径不一（3.19.0 报告者机器条目形状未实测），source 门可能误杀
+   * 宿主实际在用的条目；key 只发条目自带 baseURL 本域，命名空间闸已足够防混用。 */
   function readV2ProviderMap() {
     const out = new Map();
     if (!customCfgPath) return out;
@@ -1008,7 +1011,7 @@ function createModelPuller(opts) {
       if (!prov) return out;
       for (const id of Object.keys(prov)) {
         const entry = prov[id];
-        if (!id || !entry || typeof entry !== "object" || id.indexOf("builtin:") === 0) continue;
+        if (!id || !entry || typeof entry !== "object" || id.indexOf("builtin:") === 0 || id.indexOf("account:") === 0) continue;
         out.set(id, entry);
       }
     } catch (e) { }
@@ -2090,9 +2093,10 @@ function createModelPuller(opts) {
     const directDeviceMid = direct && typeof direct.deviceMid === "string" ? direct.deviceMid.trim() : "";
     const planSrc = direct ? null : PLAN_SOURCES[String(providerId || "")];
     /* issue #440 路径3：宿主设置页添加的供应商只落 v2/config.json 的 provider.<id>，
-     * 不进 provider_config 规则——规则查不到时按同目录 config.json 条目兜底（kind 映射
-     * 与 fail-closed 门见 v2ProviderCfgOf）。 */
-    const v2Cfg = !direct && !planSrc && !rule ? v2ProviderCfgOf(providerId) : null;
+     * 不进 provider_config 规则——规则查不到（或已禁用）时按同目录 config.json 条目兜底
+     * （kind 映射与 fail-closed 门见 v2ProviderCfgOf）；与 resolveEnhanceHost 同门：
+     * 禁用规则不再挡在 v2 条目前面（review A-3 对齐两口优先级）。 */
+    const v2Cfg = !direct && !planSrc && (!rule || !modelPullerRuleAllowed(rule)) ? v2ProviderCfgOf(providerId) : null;
     if (!direct && !planSrc && !rule && !v2Cfg) return { ok: false, kind: "provider", error: "provider not found" };
     const cfg = direct ? { access: { type: "api-key", apiKey: direct.apiKey }, api: { type: direct.protocol, baseUrl: direct.baseUrl } } : v2Cfg ? v2Cfg.cfg : effectiveRuleConfig(rule);
     const access = cfg.access || {}, api = cfg.api || {};
@@ -2146,6 +2150,10 @@ function createModelPuller(opts) {
       }
     } else {
       apiKey = String(access.apiKey || "").trim();
+      /* 规则路径同款「密文绝不外发」闸（review A-1/D-1）：provider_config 本设计只存明文，
+       * enc: 值是本地异常态（宿主换了信封代际等）——作废归零走既有无 key 门，绝不把密文
+       * 当凭据发出（planTokenOf/readV2BuiltinEntry 同纪律）。 */
+      if (apiKey.indexOf("enc:") === 0) apiKey = "";
     }
     if (!baseUrl) return { ok: false, kind: "provider", error: "no base url" };
     if (!apiKey) return { ok: false, kind: "auth", error: planSrc ? "plan token unavailable" : "no api key" };
@@ -2307,8 +2315,9 @@ function createModelPuller(opts) {
     const data = readProviderCfg(), rule = data ? findRule(data, providerId) : null;
     if (rule && modelPullerRuleAllowed(rule)) {
       const cfg = effectiveRuleConfig(rule), api = cfg.api || {}, access = cfg.access || {};
-      /* zhipu-coding-plan-api-key 与 api-key 同型放行（issue #440 路径2）；zhipu-account 仍拒。 */
-      if ((access.type === "api-key" || access.type === "zhipu-coding-plan-api-key") && access.apiKey && api.baseUrl && ["openai-chat-completions", "openai-responses", "anthropic-messages"].includes(api.type)) {
+      /* zhipu-coding-plan-api-key 与 api-key 同型放行（issue #440 路径2）；zhipu-account 仍拒。
+       * enc: 密文 key 不可用（review A-1/D-1，与 enhanceText 规则路径同闸）。 */
+      if ((access.type === "api-key" || access.type === "zhipu-coding-plan-api-key") && access.apiKey && String(access.apiKey).indexOf("enc:") !== 0 && api.baseUrl && ["openai-chat-completions", "openai-responses", "anthropic-messages"].includes(api.type)) {
         return { providerId, baseUrl: String(api.baseUrl).replace(/\/+$/, ""), protocol: api.type, apiKey: String(access.apiKey) };
       }
     }
