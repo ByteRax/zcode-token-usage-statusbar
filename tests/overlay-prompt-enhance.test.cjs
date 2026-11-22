@@ -871,6 +871,9 @@ test('issue442: provider save delegates to the runtime lock on every platform; p
    * platformLimited 恒 false（字段保留供旧渲染端读旧主进程的 true 区分文案），
    * available 不再按平台收窄。渲染端分支消费面保持（旧主进程兼容）。 */
   assert.doesNotMatch(injectSource, /error: "unsupported platform"/, 'win32 save early-return removed');
+  /* round2-A：models 分支的 win32 恒拒门随 save 门同拆（Windows custom 模式「拉取模型」
+   * 不得恒 provider unavailable）——锚点锁回归，防止只拆一半的对称门回潮。 */
+  assert.doesNotMatch(injectSource, /settings\.unreadable \|\| process\.platform === "win32"/, 'win32 models gate removed too');
   assert.match(injectSource, /platformLimited: false/);
   assert.match(injectSource, /available: !!modelPuller && modelPuller\.enhanceProviderVersion === 1/);
   assert.match(source, /ep\.platformLimited/, 'renderer keeps consuming the legacy flag for old-main compat');
