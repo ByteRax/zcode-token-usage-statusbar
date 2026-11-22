@@ -1523,3 +1523,143 @@ test("issue440: v2 config.json custom provider entries enhance via host kind map
   assert.equal(dupHosts[0].name, "我的中转", "rule wins the listing");
   assert.equal(byId.get("disabled-relay").name, "已禁用规则", "disabled rule still lends its display name; endpoint comes from the v2 entry");
 });
+
+/* ---------- 团队套餐 PAT 三步换发（issue #442）：GLr location 只承载个人项目三元组
+ * （键名 team===null），旧实现对团队 providerId 恒取个人凭据——团队会话增强打个人池，
+ * 个人池无资源包即 1113。团队链=额度链同款三步换发（setting.json 选择 → getCustomerInfo
+ * → api_keys 找 zcode-team-api-key → access_tokens 换 PAT），PAT 打 messages 端点。 */
+
+const TEAM_ORG = "org-team-9";
+const TEAM_PROJECT = "proj-team-8";
+const TEAM_CUSTOMER_URL = "https://bigmodel.cn/api/biz/customer/getCustomerInfo";
+const TEAM_KEYS_URL = "https://bigmodel.cn/api/biz/v1/organization/" + TEAM_ORG + "/projects/" + TEAM_PROJECT + "/api_keys";
+const TEAM_PAT_URL = TEAM_KEYS_URL + "/tk-1/access_tokens";
+
+function teamFixture(opts) {
+  const o = opts || {};
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+  const dir = path.dirname(file);
+  const creds = {};
+  creds["oauth:bigmodel:access_token"] = "enc:oauth-1";
+  if (!o.noLocation) creds[GLR_LOC_KEY] = "enc:loc-1";   // 个人 location 在盘：团队链绝不能拿它换发
+  fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify(creds));
+  if (!o.noSelection) {
+    fs.writeFileSync(path.join(dir, "setting.json"), JSON.stringify(
+      o.selectionJson !== undefined ? o.selectionJson
+        : { providerFamilyConnectionSelections: { bigmodel: { kind: "team-coding-plan", organizationId: TEAM_ORG, projectId: TEAM_PROJECT } } }));
+  }
+  const calls = [];
+  const sse = ['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"team 增强"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n'];
+  const impl = async (url, requestOpts) => {
+    if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
+    calls.push({ url, opts: requestOpts });
+    if (url === TEAM_CUSTOMER_URL) {
+      if (o.customerStatus) return { ok: false, status: o.customerStatus, text: async () => "", body: { cancel() { } } };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { organizations: o.customerOrgs || [{ organizationId: TEAM_ORG, projects: [{ projectId: TEAM_PROJECT }] }] } }) };
+    }
+    if (url === TEAM_KEYS_URL) {
+      if (o.keysStatus) return { ok: false, status: o.keysStatus, text: async () => "", body: { cancel() { } } };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: o.teamKeys || [{ name: "zcode-team-api-key", keyType: 2, apiKeyId: "tk-1", apiKey: "id.secret" }] }) };
+    }
+    if (url === TEAM_PAT_URL) {
+      if (o.patStatus) return { ok: false, status: o.patStatus, text: async () => "", body: { cancel() { } } };
+      if (o.patDisabled) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { enabled: false, accessToken: "x" } }) };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, msg: "操作成功", data: { enabled: true, accessToken: "team-pat-1", expiresAt: Date.now() + 3600 * 1000 } }) };
+    }
+    if (url === GLR_EXCHANGE_URL) {
+      return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, msg: "操作成功", data: { enabled: true, accessToken: "glr-tok-1" } }) };
+    }
+    if (url.indexOf("/v1/messages") > 0) return sseRes(sse);
+    throw new Error("unexpected url " + url);
+  };
+  const mp = M.createModelPuller({
+    customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "",
+    credentialsPath: path.join(dir, "credentials.json"), settingPath: path.join(dir, "setting.json"),
+    decryptValue: (enc) => (enc === "enc:loc-1" ? GLR_LOC_JSON : String(enc).indexOf("enc:oauth-") === 0 ? "glr-oauth-1" : null),
+    hostVersion: "3.19.1",
+  });
+  return { mp, calls, dir };
+}
+
+test("Team: bigmodel team enhance exchanges the team PAT and rides it on open.bigmodel.cn", async () => {
+  const f = teamFixture();
+  const r = await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r.ok, true, JSON.stringify(r).slice(0, 200));
+  assert.equal(r.text, "team 增强");
+  assert.equal(f.calls.filter((c) => c.url === GLR_EXCHANGE_URL).length, 0, "individual GLr location never used for team");
+  const msgs = f.calls.filter((c) => c.url.indexOf("/v1/messages") > 0);
+  assert.equal(msgs.length, 1);
+  assert.equal(msgs[0].url, "https://open.bigmodel.cn/api/anthropic/v1/messages");
+  assert.equal(msgs[0].opts.headers.Authorization, "Bearer team-pat-1");
+  assert.equal(msgs[0].opts.headers["x-api-key"], "team-pat-1", "anthropic dual header like the individual GLr leg");
+  /* 三步顺序与头形对齐额度链 ensureTeamPat（裸业务 token 查存在性、团队头列 key、Bearer 换 PAT） */
+  const ci = f.calls.findIndex((c) => c.url === TEAM_CUSTOMER_URL);
+  const ki = f.calls.findIndex((c) => c.url === TEAM_KEYS_URL);
+  const pi = f.calls.findIndex((c) => c.url === TEAM_PAT_URL);
+  assert.ok(ci >= 0 && ki > ci && pi > ki, "customer info -> api_keys -> access_tokens order");
+  assert.equal(f.calls[ci].opts.headers.authorization, "glr-oauth-1", "bare business token on getCustomerInfo (quota chain parity)");
+  assert.equal(f.calls[ki].opts.headers.authorization, "glr-oauth-1");
+  assert.equal(f.calls[ki].opts.headers["Bigmodel-Organization"], TEAM_ORG);
+  assert.equal(f.calls[ki].opts.headers["Bigmodel-Project"], TEAM_PROJECT);
+  assert.equal(f.calls[pi].opts.method, "POST");
+  assert.equal(f.calls[pi].opts.headers.Authorization, "Bearer glr-oauth-1");
+  assert.deepEqual(JSON.parse(f.calls[pi].opts.body), { clientType: "zcode", clientVersion: "3.19.1" });
+  assert.equal(f.mp.listEnhanceHosts().some((h) => /team/.test(h.id)), false, "team stays out of the sync host announcement list");
+});
+
+test("Team: v2 entry key is the individual project key and is never used for team enhance", async () => {
+  const f = teamFixture();
+  fs.writeFileSync(path.join(f.dir, "config.json"), JSON.stringify({ provider: {
+    "builtin:bigmodel-coding-plan": { options: { apiKey: "v2-entry-key" }, enabled: true },
+  } }));
+  const r = await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r.ok, true, JSON.stringify(r).slice(0, 200));
+  const msg = f.calls.find((c) => c.url.indexOf("/v1/messages") > 0);
+  assert.equal(msg.opts.headers.Authorization, "Bearer team-pat-1", "shared entry key (individual pool) bypassed for team");
+  assert.equal(f.calls.filter((c) => c.url === GLR_EXCHANGE_URL).length, 0, "individual GLr exchange never fires for team");
+});
+
+test("Team: PAT memo reused within expiry", async () => {
+  const f = teamFixture();
+  const r1 = await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "第一次");
+  assert.equal(r1.ok, true);
+  const r2 = await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "第二次");
+  assert.equal(r2.ok, true);
+  assert.equal(f.calls.filter((c) => c.url === TEAM_PAT_URL).length, 1, "second enhance reuses memoized PAT");
+  assert.equal(f.calls.filter((c) => c.url === TEAM_CUSTOMER_URL).length, 1, "three-step chain not re-run either");
+});
+
+test("Team: fail-closed matrix — no selection/bad org/missing team key/pat failures all plan_auth with zero messages", async () => {
+  for (const variant of [
+    { noSelection: true },
+    { selectionJson: {} },
+    { selectionJson: { providerFamilyConnectionSelections: { bigmodel: { kind: "individual-coding-plan" } } } },
+    { selectionJson: { providerFamilyConnectionSelections: { bigmodel: { kind: "team-coding-plan", organizationId: "", projectId: TEAM_PROJECT } } } },
+    { customerStatus: 404 },
+    { customerOrgs: [{ organizationId: "other-org", projects: [{ projectId: TEAM_PROJECT }] }] },
+    { customerOrgs: [{ organizationId: TEAM_ORG, projects: [{ projectId: "other-project" }] }] },
+    { keysStatus: 500 },
+    { teamKeys: [{ name: "other-key", keyType: 2, apiKeyId: "tk-9" }] },
+    { teamKeys: [{ name: "zcode-team-api-key", keyType: 1, apiKeyId: "tk-9" }] },
+    { teamKeys: [{ name: "zcode-team-api-key", keyType: 2 }] },
+    { patStatus: 404 },
+    { patDisabled: true },
+  ]) {
+    const f = teamFixture(variant);
+    const r = await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "写个脚本");
+    assert.equal(r.ok, false, JSON.stringify(variant));
+    assert.equal(r.kind, "plan_auth", JSON.stringify(variant));
+    assert.equal(f.calls.filter((c) => c.url.indexOf("/v1/messages") > 0).length, 0, "no messages call after team chain failure: " + JSON.stringify(variant));
+  }
+});
+
+test("Team: individual coding plan still rides its own GLr location on the same fixture", async () => {
+  const f = teamFixture();
+  const r = await f.mp.enhanceText("account:bigmodel-individual-coding-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r.ok, true, JSON.stringify(r).slice(0, 200));
+  assert.equal(f.calls.filter((c) => c.url === GLR_EXCHANGE_URL).length, 1, "individual exchange fires for individual provider");
+  assert.equal(f.calls.filter((c) => c.url === TEAM_CUSTOMER_URL).length, 0, "team chain never fires for individual provider");
+  const msg = f.calls.find((c) => c.url.indexOf("/v1/messages") > 0);
+  assert.equal(msg.opts.headers.Authorization, "Bearer glr-tok-1");
+});

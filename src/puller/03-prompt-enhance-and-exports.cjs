@@ -51,8 +51,12 @@
          * 属 open.bigmodel.cn 端点）→ 按路由分流：zcode.z.ai 仅认会话 JWT+设备号（会话不可得
          * 即以 entry key/GLr 迁移表值路由为主路由）；bigmodel.cn 用 GLr 换发 token（3.19.x
          * 宿主运行时解析对等）→ 均不可用诚实报 plan_auth。
-         * OAuth 直连兜底已移除——v344 实测被网关 500 code 1234 拒，绝不该作为 fallback 重现。 */
-        if (isZcodeSessionRoute) {
+         * OAuth 直连兜底已移除——v344 实测被网关 500 code 1234 拒，绝不该作为 fallback 重现。
+         * 团队套餐（issue #442）例外：条目 key 与 GLr location 都属个人项目，团队源绝不用
+         * ——凭据只走团队 PAT 三步换发（planTeamPatOf），未切团队/换发失败诚实 plan_auth。 */
+        if (planSrc.teamPat) {
+          apiKey = await planTeamPatOf(providerId, external);
+        } else if (isZcodeSessionRoute) {
           zcodeSession = readZcodeSessionCred();
           if (zcodeSession) {
             apiKey = zcodeSession.token;
@@ -216,7 +220,9 @@
   function resolveEnhanceHost(providerId) {
     const planSrc = PLAN_SOURCES[String(providerId || "")];
     if (planSrc) {   // 套餐源（BigModel/Start Plan 等）：凭据主进程内解析，协议恒 anthropic。
-      // 不沿用 planListable 的同族去重——增强选套餐是计费池选择，Start Plan 与个人档需分列；仅跳过 team（与个人同凭据同端点的纯重复）。
+      // 不沿用 planListable 的同族去重——增强选套餐是计费池选择，Start Plan 与个人档需分列。
+      // 团队源不公告（issue #442 起凭据已独立，但三步换发是异步链，同步公告门拿不到活凭据；
+      // 默认模式增强不经此列表，团队会话增强照常可用）。
       if (/team/.test(String(providerId))) return null;
       if (!planTokenOf(providerId)) return null;
       const isBigmodel = planSrc.fam === "bigmodel";

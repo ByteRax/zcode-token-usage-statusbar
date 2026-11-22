@@ -15,9 +15,9 @@ sys.path.insert(0, str(ROOT))
 import runtime_lock
 
 
-@unittest.skipIf(os.name == "nt", "update_enhance_provider 在 Windows 有意 fail-closed（POSIX 安全落盘），直接调用恒 raise")
 class EnhanceProviderTransactionTests(unittest.TestCase):
-    """POSIX 专属路径的直接调用覆盖；Windows 行为由 EnhanceProviderCliExitCodeTests 在平台门上覆盖。"""
+    """直接调用覆盖（issue #442 起 Windows 平台门移除，两平台同跑）：uid/0600 语义
+    POSIX 专属、Windows 随 profile 目录 ACL（quota-secrets.json 同款取舍）。"""
 
     def test_save_revision_key_actions_and_conflict(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -81,22 +81,9 @@ class EnhanceProviderTransactionTests(unittest.TestCase):
                 self.assertEqual(target.read_text(), "untouched")
 
 
-class EnhanceProviderWindowsGateTests(unittest.TestCase):
-    """Windows 平台门守护：update_enhance_provider 在 nt 恒 raise。上面的 POSIX 直调类
-    在 Windows 被 skip，若平台门被删则「门+skip」组合在 Windows 零覆盖（变异实证）——
-    本类在 nt 实跑、POSIX 跳过，删门即红。"""
-
-    @unittest.skipIf(os.name != "nt", "仅 Windows 平台门")
-    def test_update_enhance_provider_fails_closed_on_windows(self):
-        with tempfile.TemporaryDirectory() as directory:
-            with self.assertRaises(ValueError):
-                runtime_lock.update_enhance_provider(Path(directory), 0, {"keyAction": "keep"})
-
-
 class EnhanceProviderCliExitCodeTests(unittest.TestCase):
-    """CLI 退出码传播契约（两平台都跑，无平台跳过）：Windows 上 --update-enhance-provider
-    走平台门 fail-closed（raise → ok:false JSON + 退出码 1 + 配置不动），POSIX 上走
-    revision 冲突路径——断言的失败传播契约相同。"""
+    """CLI 退出码传播契约（两平台都跑，无平台跳过）：issue #442 后两平台都走
+    revision 冲突路径（raise → ok:false JSON + 退出码 1 + 配置不动），断言相同。"""
 
     def test_cli_conflict_exits_nonzero(self):
         # 回归：main() 的 return 1 曾未传播为退出码，主进程把事务失败当成功（假 ok:true）

@@ -17,6 +17,9 @@ function createModelPuller(opts) {
   const catalogGraceMs = Number.isFinite(Number(o.catalogGraceMs)) && Number(o.catalogGraceMs) >= 0 ? Number(o.catalogGraceMs) : CATALOG_GRACE_MS;
   const cachePath = String(o.cachePath || "");   // 档位索引落盘路径（运行目录，inject-main 传入）；空=仅内存（测试）
   const credentialsPath = String(o.credentialsPath || "");   // 宿主 OAuth 凭据（套餐源）
+  /* 宿主 setting.json（团队套餐选择，issue #442）：恒在 HOME/.zcode/v2 不随 dataBaseDir
+   * 迁移（quota.md §4）；生产由 inject-main 传 resolveQuotaPaths 的 settingPath，缺省同源推导。 */
+  const settingPath = String(o.settingPath || path.join(os.homedir(), ".zcode", "v2", "setting.json"));
   const decryptValue = typeof o.decryptValue === "function" ? o.decryptValue : null;   // 注入解密（主进程内存解密）
   const credEnv = o.env && typeof o.env === "object" ? o.env : process.env;   // v1 信封派生钥环境（生产缺省 process.env，同注入闭包口径）
   /* 宿主 appVersion：GLr 换发体 clientVersion（specs/plan-glr-credential.md）。本文件由
@@ -337,7 +340,10 @@ function createModelPuller(opts) {
    * （origin 已在 parseProjectLocationKeyName 校验）。 */
   async function planGLrTokenOf(providerId, externalSignal) {
     const src = PLAN_SOURCES[String(providerId || "")];
-    if (!src || src.fam !== "bigmodel" || !credentialsPath || !decryptValue) return null;
+    /* teamPat 源在此恒 null（issue #442）：location 只承载个人项目三元组，团队源走
+     * planTeamPatOf 三步换发——这里收紧防止任何调用方（如双路由降级腿）对团队源
+     * 拿个人 location 换发，重引「团队会话打个人池」的凭据归属错位。 */
+    if (!src || src.fam !== "bigmodel" || src.teamPat || !credentialsPath || !decryptValue) return null;
     const oauth = planTokenOf(providerId);
     if (!oauth) return null;
     let raw = null;
@@ -383,10 +389,99 @@ function createModelPuller(opts) {
       let text = "";
       try { text = await readEnhanceBody(res); } catch (e) { return null; }
       if (text.length > 65536) return null;
-      const token = parseGlrExchangePayload(text);
-      if (!token) return null;
-      glrMemo.fp = fp; glrMemo.token = token; glrMemo.at = Date.now();
-      return token;
+      const parsed = parseGlrExchangePayload(text);
+      if (!parsed) return null;
+      glrMemo.fp = fp; glrMemo.token = parsed.token; glrMemo.at = Date.now();
+      return parsed.token;
+    } catch (e) {
+      return null;
+    } finally {
+      clearTimeout(timer);
+      if (externalSignal && typeof externalSignal.removeEventListener === "function") externalSignal.removeEventListener("abort", onAbort);
+    }
+  }
+  /* ---------- 团队套餐 PAT 三步换发（issue #442）：GLr location 只承载个人项目三元组
+   * （键名 team===null），团队 providerId 照旧取个人凭据会把团队会话的增强请求打到个人池
+   * （个人池无资源包即 1113）。团队凭据走额度链同款三步换发（src/quota/03-adapters-plan.cjs
+   * ensureTeamPat，宿主 ProjectAccessTokenClient 只读子集）：setting.json 的
+   * providerFamilyConnectionSelections 读 {org,project}（未切团队 fail-closed 不发请求）→
+   * ① getCustomerInfo 校验 org/project 存在（裸业务 token）→ ② api_keys 列表（团队头）找
+   * name=zcode-team-api-key 且 keyType=2（缺条目不创建——创建属宿主 App 内切换行为）→
+   * ③ POST access_tokens 换项目级短期 PAT。PAT 打与 individual GLr token 同一 messages
+   * 端点（宿主团队对话同链路）。只在内存（过期前 2 分钟内复用 memo），绝不落盘/进日志。 */
+  const TEAM_PAT_REFRESH_LEAD_MS = 120 * 1000;
+  const TEAM_PAT_DEFAULT_TTL_MS = 3600 * 1000;
+  const TEAM_PAT_TIMEOUT_MS = 15000;
+  const BIGMODEL_BIZ_ORIGIN = "https://bigmodel.cn";
+  const teamMemo = { fp: "", pat: "", expiresAt: 0 };
+  function bigmodelTeamSelection() {
+    let set = null;
+    try { set = JSON.parse(fs.readFileSync(settingPath, "utf8")); } catch (e) { return null; }
+    if (!set || typeof set !== "object") return null;
+    const sel = (set.providerFamilyConnectionSelections || {}).bigmodel;
+    if (!sel || sel.kind !== "team-coding-plan") return null;
+    const org = String(sel.organizationId || "").trim();
+    const project = String(sel.projectId || "").trim();
+    return org && project ? { org: org, project: project } : null;
+  }
+  async function planTeamPatOf(providerId, externalSignal) {
+    const src = PLAN_SOURCES[String(providerId || "")];
+    if (!src || src.fam !== "bigmodel" || !src.teamPat || !credentialsPath || !decryptValue) return null;
+    const oauth = planTokenOf(providerId);
+    if (!oauth) return null;
+    const sel = bigmodelTeamSelection();
+    if (!sel) return null;
+    const fp = createHash("sha256").update(oauth + "|" + sel.org + "|" + sel.project).digest("hex");
+    if (teamMemo.fp === fp && teamMemo.pat && Date.now() + TEAM_PAT_REFRESH_LEAD_MS < teamMemo.expiresAt) return teamMemo.pat;
+    const teamHeaders = { "Bigmodel-Organization": sel.org, "Bigmodel-Project": sel.project, "set-language": "zh" };
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), TEAM_PAT_TIMEOUT_MS);
+    if (timer && typeof timer.unref === "function") timer.unref();   // 超时兜底定时器契约
+    const onAbort = () => ctl.abort();
+    if (externalSignal && typeof externalSignal.addEventListener === "function") externalSignal.addEventListener("abort", onAbort, { once: true });
+    /* 三步共用同一 15s 预算与外部 signal；任一步形状不符/网络失败/非 2xx 一律 null
+     * （enhanceText 回 plan_auth）——不重试（同 planGLrTokenOf：enhance 自身已有二次尝试）。 */
+    try {
+      const infoRes = await fetchImpl(BIGMODEL_BIZ_ORIGIN + "/api/biz/customer/getCustomerInfo",
+        { headers: { "authorization": oauth, "User-Agent": "ZCode" }, signal: ctl.signal, redirect: "error" });
+      if (!infoRes || !infoRes.ok) { dropBody(infoRes); return null; }
+      let infoText = "";
+      try { infoText = await readEnhanceBody(infoRes); } catch (e) { return null; }
+      if (infoText.length > 262144) return null;
+      let info = null;
+      try { info = JSON.parse(infoText); } catch (e) { return null; }
+      const orgs = info && info.data && Array.isArray(info.data.organizations) ? info.data.organizations : [];
+      const orgHit = orgs.some((x) => x && x.organizationId === sel.org &&
+        Array.isArray(x.projects) && x.projects.some((pj) => pj && pj.projectId === sel.project));
+      if (!orgHit) return null;
+      const keysUrl = BIGMODEL_BIZ_ORIGIN + "/api/biz/v1/organization/" + encodeURIComponent(sel.org) +
+        "/projects/" + encodeURIComponent(sel.project) + "/api_keys";
+      const keysRes = await fetchImpl(keysUrl, { headers: Object.assign({ "authorization": oauth, "User-Agent": "ZCode" }, teamHeaders), signal: ctl.signal, redirect: "error" });
+      if (!keysRes || !keysRes.ok) { dropBody(keysRes); return null; }
+      let keysText = "";
+      try { keysText = await readEnhanceBody(keysRes); } catch (e) { return null; }
+      if (keysText.length > 262144) return null;
+      let keys = null;
+      try { keys = JSON.parse(keysText); } catch (e) { return null; }
+      const keyList = keys && keys.data && Array.isArray(keys.data) ? keys.data : [];
+      const teamKey = keyList.find((k) => k && k.name === "zcode-team-api-key" &&
+        k.keyType === 2 && typeof k.apiKeyId === "string" && k.apiKeyId.trim());
+      if (!teamKey) return null;
+      const patRes = await fetchImpl(keysUrl + "/" + encodeURIComponent(teamKey.apiKeyId.trim()) + "/access_tokens", {
+        method: "POST",
+        headers: { "Authorization": "Bearer " + oauth, "Content-Type": "application/json", "User-Agent": "ZCode" },
+        body: JSON.stringify(hostVersion ? { clientType: "zcode", clientVersion: hostVersion } : { clientType: "zcode" }),
+        signal: ctl.signal, redirect: "error",
+      });
+      if (!patRes || !patRes.ok) { dropBody(patRes); return null; }
+      let patText = "";
+      try { patText = await readEnhanceBody(patRes); } catch (e) { return null; }
+      if (patText.length > 65536) return null;
+      const parsed = parseGlrExchangePayload(patText);
+      if (!parsed) return null;
+      teamMemo.fp = fp; teamMemo.pat = parsed.token;
+      teamMemo.expiresAt = parsed.expiresAt > 0 ? parsed.expiresAt : Date.now() + TEAM_PAT_DEFAULT_TTL_MS;
+      return teamMemo.pat;
     } catch (e) {
       return null;
     } finally {

@@ -20,6 +20,7 @@
  * 宽限 1s 内搭车（cc-switch 拉列表不等目录），失败另有 10 分钟短缓存，均不拖慢弹窗。 */
 "use strict";
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { createHash, randomUUID } = require("crypto");
 
@@ -99,6 +100,10 @@ var PLAN_SOURCES = {
     baseUrl: "https://open.bigmodel.cn/api/anthropic",
     fam: "bigmodel",
     credKey: "oauth:bigmodel:access_token",
+    /* issue #442：团队套餐是独立计费池——v2 条目 key 与 GLr location 都属个人项目
+     * （location 键名 team===null），对团队源绝不可用。增强凭据=团队项目 PAT
+     * （planTeamPatOf，额度链同款三步换发）；zai 团队未实测维持 planKeyOf 诚实尝试。 */
+    teamPat: true,
     v2ConfigKey: "builtin:bigmodel-coding-plan",
   },
   "account:bigmodel-start-plan": {
@@ -808,7 +813,8 @@ function agreedCapabilities(entries, id) {
   /* 换发响应信封：{code:200|0|"200"|"0", msg, data:{enabled, accessToken}}——wire 字段是
    * accessToken（2026-11-21 真实端点实测："操作成功"信封；#431 误把宿主缓存内层的 token
    * 字段名当 wire 形状，真机上恒 parse 失败回 plan_auth）；兼容 token 别名。
-   * enabled===false 或凭据非非空字符串一律按失败。 */
+   * enabled===false（含团队端点的 enable 别名，额度链同款形状）或凭据非非空字符串一律按
+   * 失败。expiresAt/expiresIn 供团队 PAT 记忆过期（个人 GLr 记忆走固定 10 分钟 TTL，不用）。 */
   function parseGlrExchangePayload(text) {
     let obj = null;
     try { obj = JSON.parse(String(text || "")); } catch (e) { return null; }
@@ -816,10 +822,13 @@ function agreedCapabilities(entries, id) {
     const code = obj.code;
     if (!(code === 200 || code === 0 || code === "200" || code === "0")) return null;
     const data = obj.data && typeof obj.data === "object" ? obj.data : null;
-    if (!data || data.enabled === false) return null;
+    if (!data || data.enabled === false || data.enable === false) return null;
     const token = typeof data.accessToken === "string" && data.accessToken.trim() ? data.accessToken.trim()
       : typeof data.token === "string" ? data.token.trim() : "";
-    return token || null;
+    if (!token) return null;
+    const expiresAt = typeof data.expiresAt === "number" && data.expiresAt > 0 ? data.expiresAt
+      : typeof data.expiresIn === "number" && data.expiresIn > 0 ? Date.now() + data.expiresIn * 1000 : 0;
+    return { token: token, expiresAt: expiresAt };
   }
 
 function createModelPuller(opts) {
@@ -840,6 +849,9 @@ function createModelPuller(opts) {
   const catalogGraceMs = Number.isFinite(Number(o.catalogGraceMs)) && Number(o.catalogGraceMs) >= 0 ? Number(o.catalogGraceMs) : CATALOG_GRACE_MS;
   const cachePath = String(o.cachePath || "");   // 档位索引落盘路径（运行目录，inject-main 传入）；空=仅内存（测试）
   const credentialsPath = String(o.credentialsPath || "");   // 宿主 OAuth 凭据（套餐源）
+  /* 宿主 setting.json（团队套餐选择，issue #442）：恒在 HOME/.zcode/v2 不随 dataBaseDir
+   * 迁移（quota.md §4）；生产由 inject-main 传 resolveQuotaPaths 的 settingPath，缺省同源推导。 */
+  const settingPath = String(o.settingPath || path.join(os.homedir(), ".zcode", "v2", "setting.json"));
   const decryptValue = typeof o.decryptValue === "function" ? o.decryptValue : null;   // 注入解密（主进程内存解密）
   const credEnv = o.env && typeof o.env === "object" ? o.env : process.env;   // v1 信封派生钥环境（生产缺省 process.env，同注入闭包口径）
   /* 宿主 appVersion：GLr 换发体 clientVersion（specs/plan-glr-credential.md）。本文件由
@@ -1160,7 +1172,10 @@ function createModelPuller(opts) {
    * （origin 已在 parseProjectLocationKeyName 校验）。 */
   async function planGLrTokenOf(providerId, externalSignal) {
     const src = PLAN_SOURCES[String(providerId || "")];
-    if (!src || src.fam !== "bigmodel" || !credentialsPath || !decryptValue) return null;
+    /* teamPat 源在此恒 null（issue #442）：location 只承载个人项目三元组，团队源走
+     * planTeamPatOf 三步换发——这里收紧防止任何调用方（如双路由降级腿）对团队源
+     * 拿个人 location 换发，重引「团队会话打个人池」的凭据归属错位。 */
+    if (!src || src.fam !== "bigmodel" || src.teamPat || !credentialsPath || !decryptValue) return null;
     const oauth = planTokenOf(providerId);
     if (!oauth) return null;
     let raw = null;
@@ -1206,10 +1221,99 @@ function createModelPuller(opts) {
       let text = "";
       try { text = await readEnhanceBody(res); } catch (e) { return null; }
       if (text.length > 65536) return null;
-      const token = parseGlrExchangePayload(text);
-      if (!token) return null;
-      glrMemo.fp = fp; glrMemo.token = token; glrMemo.at = Date.now();
-      return token;
+      const parsed = parseGlrExchangePayload(text);
+      if (!parsed) return null;
+      glrMemo.fp = fp; glrMemo.token = parsed.token; glrMemo.at = Date.now();
+      return parsed.token;
+    } catch (e) {
+      return null;
+    } finally {
+      clearTimeout(timer);
+      if (externalSignal && typeof externalSignal.removeEventListener === "function") externalSignal.removeEventListener("abort", onAbort);
+    }
+  }
+  /* ---------- 团队套餐 PAT 三步换发（issue #442）：GLr location 只承载个人项目三元组
+   * （键名 team===null），团队 providerId 照旧取个人凭据会把团队会话的增强请求打到个人池
+   * （个人池无资源包即 1113）。团队凭据走额度链同款三步换发（src/quota/03-adapters-plan.cjs
+   * ensureTeamPat，宿主 ProjectAccessTokenClient 只读子集）：setting.json 的
+   * providerFamilyConnectionSelections 读 {org,project}（未切团队 fail-closed 不发请求）→
+   * ① getCustomerInfo 校验 org/project 存在（裸业务 token）→ ② api_keys 列表（团队头）找
+   * name=zcode-team-api-key 且 keyType=2（缺条目不创建——创建属宿主 App 内切换行为）→
+   * ③ POST access_tokens 换项目级短期 PAT。PAT 打与 individual GLr token 同一 messages
+   * 端点（宿主团队对话同链路）。只在内存（过期前 2 分钟内复用 memo），绝不落盘/进日志。 */
+  const TEAM_PAT_REFRESH_LEAD_MS = 120 * 1000;
+  const TEAM_PAT_DEFAULT_TTL_MS = 3600 * 1000;
+  const TEAM_PAT_TIMEOUT_MS = 15000;
+  const BIGMODEL_BIZ_ORIGIN = "https://bigmodel.cn";
+  const teamMemo = { fp: "", pat: "", expiresAt: 0 };
+  function bigmodelTeamSelection() {
+    let set = null;
+    try { set = JSON.parse(fs.readFileSync(settingPath, "utf8")); } catch (e) { return null; }
+    if (!set || typeof set !== "object") return null;
+    const sel = (set.providerFamilyConnectionSelections || {}).bigmodel;
+    if (!sel || sel.kind !== "team-coding-plan") return null;
+    const org = String(sel.organizationId || "").trim();
+    const project = String(sel.projectId || "").trim();
+    return org && project ? { org: org, project: project } : null;
+  }
+  async function planTeamPatOf(providerId, externalSignal) {
+    const src = PLAN_SOURCES[String(providerId || "")];
+    if (!src || src.fam !== "bigmodel" || !src.teamPat || !credentialsPath || !decryptValue) return null;
+    const oauth = planTokenOf(providerId);
+    if (!oauth) return null;
+    const sel = bigmodelTeamSelection();
+    if (!sel) return null;
+    const fp = createHash("sha256").update(oauth + "|" + sel.org + "|" + sel.project).digest("hex");
+    if (teamMemo.fp === fp && teamMemo.pat && Date.now() + TEAM_PAT_REFRESH_LEAD_MS < teamMemo.expiresAt) return teamMemo.pat;
+    const teamHeaders = { "Bigmodel-Organization": sel.org, "Bigmodel-Project": sel.project, "set-language": "zh" };
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), TEAM_PAT_TIMEOUT_MS);
+    if (timer && typeof timer.unref === "function") timer.unref();   // 超时兜底定时器契约
+    const onAbort = () => ctl.abort();
+    if (externalSignal && typeof externalSignal.addEventListener === "function") externalSignal.addEventListener("abort", onAbort, { once: true });
+    /* 三步共用同一 15s 预算与外部 signal；任一步形状不符/网络失败/非 2xx 一律 null
+     * （enhanceText 回 plan_auth）——不重试（同 planGLrTokenOf：enhance 自身已有二次尝试）。 */
+    try {
+      const infoRes = await fetchImpl(BIGMODEL_BIZ_ORIGIN + "/api/biz/customer/getCustomerInfo",
+        { headers: { "authorization": oauth, "User-Agent": "ZCode" }, signal: ctl.signal, redirect: "error" });
+      if (!infoRes || !infoRes.ok) { dropBody(infoRes); return null; }
+      let infoText = "";
+      try { infoText = await readEnhanceBody(infoRes); } catch (e) { return null; }
+      if (infoText.length > 262144) return null;
+      let info = null;
+      try { info = JSON.parse(infoText); } catch (e) { return null; }
+      const orgs = info && info.data && Array.isArray(info.data.organizations) ? info.data.organizations : [];
+      const orgHit = orgs.some((x) => x && x.organizationId === sel.org &&
+        Array.isArray(x.projects) && x.projects.some((pj) => pj && pj.projectId === sel.project));
+      if (!orgHit) return null;
+      const keysUrl = BIGMODEL_BIZ_ORIGIN + "/api/biz/v1/organization/" + encodeURIComponent(sel.org) +
+        "/projects/" + encodeURIComponent(sel.project) + "/api_keys";
+      const keysRes = await fetchImpl(keysUrl, { headers: Object.assign({ "authorization": oauth, "User-Agent": "ZCode" }, teamHeaders), signal: ctl.signal, redirect: "error" });
+      if (!keysRes || !keysRes.ok) { dropBody(keysRes); return null; }
+      let keysText = "";
+      try { keysText = await readEnhanceBody(keysRes); } catch (e) { return null; }
+      if (keysText.length > 262144) return null;
+      let keys = null;
+      try { keys = JSON.parse(keysText); } catch (e) { return null; }
+      const keyList = keys && keys.data && Array.isArray(keys.data) ? keys.data : [];
+      const teamKey = keyList.find((k) => k && k.name === "zcode-team-api-key" &&
+        k.keyType === 2 && typeof k.apiKeyId === "string" && k.apiKeyId.trim());
+      if (!teamKey) return null;
+      const patRes = await fetchImpl(keysUrl + "/" + encodeURIComponent(teamKey.apiKeyId.trim()) + "/access_tokens", {
+        method: "POST",
+        headers: { "Authorization": "Bearer " + oauth, "Content-Type": "application/json", "User-Agent": "ZCode" },
+        body: JSON.stringify(hostVersion ? { clientType: "zcode", clientVersion: hostVersion } : { clientType: "zcode" }),
+        signal: ctl.signal, redirect: "error",
+      });
+      if (!patRes || !patRes.ok) { dropBody(patRes); return null; }
+      let patText = "";
+      try { patText = await readEnhanceBody(patRes); } catch (e) { return null; }
+      if (patText.length > 65536) return null;
+      const parsed = parseGlrExchangePayload(patText);
+      if (!parsed) return null;
+      teamMemo.fp = fp; teamMemo.pat = parsed.token;
+      teamMemo.expiresAt = parsed.expiresAt > 0 ? parsed.expiresAt : Date.now() + TEAM_PAT_DEFAULT_TTL_MS;
+      return teamMemo.pat;
     } catch (e) {
       return null;
     } finally {
@@ -2124,8 +2228,12 @@ function createModelPuller(opts) {
          * 属 open.bigmodel.cn 端点）→ 按路由分流：zcode.z.ai 仅认会话 JWT+设备号（会话不可得
          * 即以 entry key/GLr 迁移表值路由为主路由）；bigmodel.cn 用 GLr 换发 token（3.19.x
          * 宿主运行时解析对等）→ 均不可用诚实报 plan_auth。
-         * OAuth 直连兜底已移除——v344 实测被网关 500 code 1234 拒，绝不该作为 fallback 重现。 */
-        if (isZcodeSessionRoute) {
+         * OAuth 直连兜底已移除——v344 实测被网关 500 code 1234 拒，绝不该作为 fallback 重现。
+         * 团队套餐（issue #442）例外：条目 key 与 GLr location 都属个人项目，团队源绝不用
+         * ——凭据只走团队 PAT 三步换发（planTeamPatOf），未切团队/换发失败诚实 plan_auth。 */
+        if (planSrc.teamPat) {
+          apiKey = await planTeamPatOf(providerId, external);
+        } else if (isZcodeSessionRoute) {
           zcodeSession = readZcodeSessionCred();
           if (zcodeSession) {
             apiKey = zcodeSession.token;
@@ -2289,7 +2397,9 @@ function createModelPuller(opts) {
   function resolveEnhanceHost(providerId) {
     const planSrc = PLAN_SOURCES[String(providerId || "")];
     if (planSrc) {   // 套餐源（BigModel/Start Plan 等）：凭据主进程内解析，协议恒 anthropic。
-      // 不沿用 planListable 的同族去重——增强选套餐是计费池选择，Start Plan 与个人档需分列；仅跳过 team（与个人同凭据同端点的纯重复）。
+      // 不沿用 planListable 的同族去重——增强选套餐是计费池选择，Start Plan 与个人档需分列。
+      // 团队源不公告（issue #442 起凭据已独立，但三步换发是异步链，同步公告门拿不到活凭据；
+      // 默认模式增强不经此列表，团队会话增强照常可用）。
       if (/team/.test(String(providerId))) return null;
       if (!planTokenOf(providerId)) return null;
       const isBigmodel = planSrc.fam === "bigmodel";

@@ -361,7 +361,8 @@ function agreedCapabilities(entries, id) {
   /* 换发响应信封：{code:200|0|"200"|"0", msg, data:{enabled, accessToken}}——wire 字段是
    * accessToken（2026-11-21 真实端点实测："操作成功"信封；#431 误把宿主缓存内层的 token
    * 字段名当 wire 形状，真机上恒 parse 失败回 plan_auth）；兼容 token 别名。
-   * enabled===false 或凭据非非空字符串一律按失败。 */
+   * enabled===false（含团队端点的 enable 别名，额度链同款形状）或凭据非非空字符串一律按
+   * 失败。expiresAt/expiresIn 供团队 PAT 记忆过期（个人 GLr 记忆走固定 10 分钟 TTL，不用）。 */
   function parseGlrExchangePayload(text) {
     let obj = null;
     try { obj = JSON.parse(String(text || "")); } catch (e) { return null; }
@@ -369,8 +370,11 @@ function agreedCapabilities(entries, id) {
     const code = obj.code;
     if (!(code === 200 || code === 0 || code === "200" || code === "0")) return null;
     const data = obj.data && typeof obj.data === "object" ? obj.data : null;
-    if (!data || data.enabled === false) return null;
+    if (!data || data.enabled === false || data.enable === false) return null;
     const token = typeof data.accessToken === "string" && data.accessToken.trim() ? data.accessToken.trim()
       : typeof data.token === "string" ? data.token.trim() : "";
-    return token || null;
+    if (!token) return null;
+    const expiresAt = typeof data.expiresAt === "number" && data.expiresAt > 0 ? data.expiresAt
+      : typeof data.expiresIn === "number" && data.expiresIn > 0 ? Date.now() + data.expiresIn * 1000 : 0;
+    return { token: token, expiresAt: expiresAt };
   }

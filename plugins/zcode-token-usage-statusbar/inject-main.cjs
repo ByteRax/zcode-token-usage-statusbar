@@ -1344,6 +1344,7 @@ function initModelPuller() {
       customCfgPath: pullPaths.customCfgPath,
       builtinCfgPath: pullPaths.builtinCfgPath,   // 模板供应商（如 opencode-go-chat）的 baseUrl/protocol 在打包 templateRules
       credentialsPath: pullPaths.credsPath,   // v229：迁移后 ~/.zcode/v2/credentials.json 是宿主不读的死目录（issue #205）
+      settingPath: pullPaths.settingPath,   // 团队套餐选择（issue #442）：恒在 HOME/.zcode/v2，不随 dataBaseDir 迁移
       decryptValue: (enc) => decryptValue(enc, deriveCipherKey(process.env)),   // 套餐源：内存解密，同额度链纪律
       cachePath: path.join(__dirname, "model-efforts-cache.json"),   // #236：档位索引落运行目录（pricing-cache.json 同款先例），跨重启复用
       log: (...a) => LOG("[model-pull]", ...a),
@@ -1711,7 +1712,10 @@ function readEnhanceProvider() {
 }
 function enhanceProviderView() {
   const d = readEnhanceProvider();
-  return { capability: 1, allowDowngrade: d.allowDowngrade !== false, saveHistory: d.saveHistory !== false, available: process.platform !== "win32" && !!modelPuller && modelPuller.enhanceProviderVersion === 1, platformLimited: process.platform === "win32", version: 1, revision: d.revision, mode: d.mode, unreadable: !!d.unreadable, source: d.source || "manual", providerId: d.providerId || "", target: d.target || "", baseUrl: d.baseUrl || "", protocol: d.protocol || "openai-chat-completions", model: d.model || "", keyConfigured: !!d.apiKey };
+  /* issue #442：Windows 平台门移除——runtime_lock.update_enhance_provider 已支持 nt
+   * （uid/0600 语义 POSIX 专属，Windows 随 profile 目录 ACL，quota-secrets.json 同款取舍）。
+   * platformLimited 字段保留供旧渲染端兼容（旧主进程才发 true），本主进程恒 false。 */
+  return { capability: 1, allowDowngrade: d.allowDowngrade !== false, saveHistory: d.saveHistory !== false, available: !!modelPuller && modelPuller.enhanceProviderVersion === 1, platformLimited: false, version: 1, revision: d.revision, mode: d.mode, unreadable: !!d.unreadable, source: d.source || "manual", providerId: d.providerId || "", target: d.target || "", baseUrl: d.baseUrl || "", protocol: d.protocol || "openai-chat-completions", model: d.model || "", keyConfigured: !!d.apiKey };
 }
 function validEnhanceUrl(value) {
   try {
@@ -1822,12 +1826,14 @@ async function handlePromptEnhanceRequest(req, wc) {
 const enhanceHistory = [];   // 内存常驻；saveHistory 开启时才落盘 enhance-history.json
 let enhanceHistoryLoaded = false;
 function loadEnhanceHistoryDisk() {
-  if (enhanceHistoryLoaded || process.platform === "win32") return;
+  if (enhanceHistoryLoaded) return;
   if (readEnhanceProvider().saveHistory === false) return;   // 显式关闭时不读盘：契约=关闭态重启即清空（缺省视为开启，v363）
   enhanceHistoryLoaded = true;
   try {
     const st = fs.lstatSync(path.join(HERE, "enhance-history.json"));
-    if (!st.isFile() || st.isSymbolicLink() || st.mode & 0o077) return;
+    /* 0600 语义 POSIX 专属：Windows 宿主 fs 恒 0o666，mode 门跳过（issue #442，
+     * readEnhanceProvider 同款平台守卫；落盘保护随 profile 目录 ACL） */
+    if (!st.isFile() || st.isSymbolicLink() || (process.platform !== "win32" && st.mode & 0o077)) return;
     const arr = JSON.parse(fs.readFileSync(path.join(HERE, "enhance-history.json"), "utf8"));
     if (Array.isArray(arr)) {
       // 读回同走 30 天/100 条裁剪（v363 review：缺省开启后该文件对全体用户生效，清理时机不再依赖下一次成功增强）
@@ -1839,7 +1845,7 @@ function loadEnhanceHistoryDisk() {
   } catch (e) { }
 }
 function persistEnhanceHistory() {
-  if (readEnhanceProvider().saveHistory === false || process.platform === "win32") return;
+  if (readEnhanceProvider().saveHistory === false) return;   // issue #442：Windows 落盘门移除（读盘链同批）
   try {
     const file = path.join(HERE, "enhance-history.json");
     const tmp = file + ".tmp";
@@ -1941,7 +1947,8 @@ async function handleEnhanceProviderAction(req, wc) {
     return;
   }
   if (req.action !== "enhance-provider-save" || !req.changes || typeof req.changes !== "object") return;
-  if (process.platform === "win32") { reply({ ok: false, error: "unsupported platform" }); return; }   // 与 models 分支对称：Windows 无 POSIX 安全落盘（runtime_lock 平台门恒拒），早退省一次必败 python 子进程
+  /* issue #442：Windows 早退门移除——runtime_lock.update_enhance_provider 已支持 nt，
+   * 全平台统一委托 python 事务（失败回执 save failed; refresh settings 不变）。 */
   const changes = req.changes;
   if (changes.source === "host") {
     const host = modelPuller.resolveEnhanceHost(changes.providerId);
