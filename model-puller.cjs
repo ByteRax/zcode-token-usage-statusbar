@@ -2150,9 +2150,10 @@ function createModelPuller(opts) {
       }
     } else {
       apiKey = String(access.apiKey || "").trim();
-      /* 规则路径同款「密文绝不外发」闸（review A-1/D-1）：provider_config 本设计只存明文，
-       * enc: 值是本地异常态（宿主换了信封代际等）——作废归零走既有无 key 门，绝不把密文
-       * 当凭据发出（planTokenOf/readV2BuiltinEntry 同纪律）。 */
+      /* 「密文绝不外发」闸（review A-1/D-1，R2 收口）：本分支同时服务规则路径与设置页
+       * 直连（custom 模式）key——enc: 形态（宿主迁移信封代际、误贴密文）一律作废归零走
+       * 既有无 key 门回 auth，绝不把密文当凭据发出（planTokenOf/readV2BuiltinEntry 同
+       * 纪律；已知厂商无 enc: 前缀真实 key，误伤趋近零，防御方向正确）。 */
       if (apiKey.indexOf("enc:") === 0) apiKey = "";
     }
     if (!baseUrl) return { ok: false, kind: "provider", error: "no base url" };
