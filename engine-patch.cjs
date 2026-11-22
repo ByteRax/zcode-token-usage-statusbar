@@ -27,8 +27,8 @@ const anchorFor = (fn, dflt) => "n=" + fn + "(e.bufferTokens)??" + dflt + ";retu
 const replacementFor = (fn, dflt) => "n=" + fn + "(e.bufferTokens)??" + dflt +
   ";return (globalThis." + MARK + "&&globalThis." + MARK + "(t,n))??Math.max(0,t-n)";
 /* 最新登记版本的锚点对；旧版本符号轮换见 ENGINE_TARGETS 各条目。 */
-const ANCHOR = anchorFor("Uue", "KKo");
-const REPLACEMENT = replacementFor("Uue", "KKo");
+const ANCHOR = anchorFor("$ue", "fZo");
+const REPLACEMENT = replacementFor("$ue", "fZo");
 
 /* hook 本体：插入引擎文件头。优先级 enabled:false > thresholdPercent(30-99，
  * v194 起总窗口口径：引擎判定只认扣除输出预留后的有效窗口 eff，按 eff+21K 近似
@@ -78,10 +78,17 @@ const PROLOGUE_V2 = (() => {
  * 不在/多处仍拒绝并明示，等登记跟上。 */
 const ENGINE_TARGETS = [
   {
-    build: "3.19.1",
-    engineSha256: "4b90ae046753be9f5ba63dee14b8fd2cdb07b5540e9bfe348ba127504b8cf8da",
+    build: "4.0.0",
+    engineSha256: "0de95ddd65d7712a3beeccc8ee6de53ea0ce96338eb427e52b2717ba2f3afe19",
     anchor: ANCHOR,
     replacement: REPLACEMENT,
+    prologue: PROLOGUE,
+  },
+  {
+    build: "3.19.1",
+    engineSha256: "4b90ae046753be9f5ba63dee14b8fd2cdb07b5540e9bfe348ba127504b8cf8da",
+    anchor: anchorFor("Uue", "KKo"),
+    replacement: replacementFor("Uue", "KKo"),
     prologue: PROLOGUE,
   },
   {
