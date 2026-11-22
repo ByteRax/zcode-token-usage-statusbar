@@ -40,10 +40,10 @@ test('v249 setting: LS key, default-off state seed, boot read, persist and both 
   assert.ok(clickIdx > 0 && genericIdx > 0 && clickIdx < genericIdx, '新分支先于通用 checkbox 分支（不落 show[undefined]）');
 });
 
-/* ---------- 2b. v439 悬停门槛接线：LS/state（默认 50）/启动读/persist/下拉/两处回填/change 分支 ---------- */
-test('v441 setting: LS key, default-500 state seed, boot read, persist, select markup and both panel backfills', () => {
+/* ---------- 2b. v440 悬停门槛接线：LS/state（默认 50）/启动读/persist/下拉/两处回填/change 分支 ---------- */
+test('v440 setting: LS key, default-500 state seed, boot read, persist, select markup and both panel backfills', () => {
   assert.match(source, /tipHoverMs: "zusage3\.tipHoverMs"/);
-  assert.match(source, /tipHoverMs: 500,/);   // v441 改档：默认 500ms（issue #445）
+  assert.match(source, /tipHoverMs: 500,/);   // v440 改档：默认 500ms（issue #445）
   assert.match(source, /var thm0 = parseInt\(ls\(LS\.tipHoverMs, ""\), 10\);/);
   assert.match(source, /if \(thm0 >= 0 && thm0 <= 10000\) state\.tipHoverMs = thm0;/);
   assert.match(source, /lsSet\(LS\.tipHoverMs, String\(parseInt\(state\.tipHoverMs, 10\) \|\| 0\)\);/);
@@ -87,10 +87,10 @@ test('v439 setting: change handler stores the delay, persists and cancels pendin
   handler({ target: { type: 'select-one', value: '0', dataset: {}, classList: { contains: c => c === 'zu-tip-hover-ms' } } });
   assert.equal(state.tipHoverMs, 0, '0=划过即显（v246 原语义）');
   handler({ target: { type: 'select-one', value: '-5', dataset: {}, classList: { contains: c => c === 'zu-tip-hover-ms' } } });
-  assert.equal(state.tipHoverMs, 0, '负数归零（v442 review M9 变异补防）');
+  assert.equal(state.tipHoverMs, 0, '负数归零（v440 review M9 变异补防）');
   handler({ target: { type: 'select-one', value: 'abc', dataset: {}, classList: { contains: c => c === 'zu-tip-hover-ms' } } });
-  assert.equal(state.tipHoverMs, 0, 'NaN 归零（v442 review M9 变异补防）');
-  assert.ok(chipDisarms >= 1, '改档同步撤 chip 单槽（v442 一致性）');
+  assert.equal(state.tipHoverMs, 0, 'NaN 归零（v440 review M9 变异补防）');
+  assert.ok(chipDisarms >= 1, '改档同步撤 chip 单槽（v440 一致性）');
 });
 
 test('v249 setting: change handler flips state and persists without touching show cells', () => {
@@ -192,7 +192,7 @@ test('v249 click mode: hover neither opens cells nor previews the sub-agent popo
   assert.deepEqual(sched, [], '点击模式不排程悬停门槛');
 });
 
-/* ---------- 3b. v439 悬停门槛链本体：排程/复核/改靶重排/取消 ---------- */
+/* ---------- 3b. v440 悬停门槛链本体：排程/复核/改靶重排/取消 ---------- */
 function makeHoverChain(extra = {}) {
   const chainSrc = sliceOverlay('var tipHoverTimer = 0, tipHoverPend = null;', 'function tipOutsideDown(e) {');
   const cellA = { __tip: 'tip-a', closest: () => null };
@@ -232,7 +232,7 @@ test('v439 chain: default 500ms arms a timer instead of opening; same-cell resch
   h.handler.schedule(h.cellA, false);
   assert.equal(opened, 0, '门槛内不直开');
   assert.equal(h.timers.length, 1);
-  assert.equal(h.timers[0].ms, 500, '默认 500ms（v441 改档）');
+  assert.equal(h.timers[0].ms, 500, '默认 500ms（v440 改档）');
   h.handler.schedule(h.cellA, false);
   assert.equal(h.timers.length, 1, '同格续期不重置已等待时长');
   h.handler.schedule(h.cellB, false);
@@ -390,7 +390,7 @@ test('v249 click mode: first click opens (focusin race), re-click closes; dwell 
   const s = session(1);
   s.clickOnce();   // 真实点击 span[tabindex=0] 的事件序：focusin 先于 click
   assert.equal(s.st.tipFor && s.st.tipFor.__tip, 'tip', '首击后 tooltip 保持打开（hidden=' + 0 + ' 预期）');
-  assert.equal(s.cancels(), 1, 'v442：focusin 打开前撤在途悬停排程（review 变异 c 补防）');
+  assert.equal(s.cancels(), 1, 'v440：focusin 打开前撤在途悬停排程（review 变异 c 补防）');
   assert.equal(s.st.focusTipAt > 0, true, 'focusin 记录 focusTipAt');
   // 再击：焦点已在同格不会重新 focusin，直接 click，且距 focusTipAt 已超 300ms 守卫窗口
   s.st.focusTipAt = 0;
@@ -421,7 +421,7 @@ test('v249 keyboard: focusin opens immediately in BOTH modes (accessibility unch
     vm.runInNewContext(focusSrc, vm.createContext(st));
     focusHandler({ target: it });
     assert.equal(shown, 1, 'tipClick=' + tipClick + '：键盘 Tab 聚焦即时打开');
-    assert.equal(focusCancels, 1, 'v442：键盘打开同时撤在途排程（两模式一致）');
+    assert.equal(focusCancels, 1, 'v440：键盘打开同时撤在途排程（两模式一致）');
     assert.ok(st.focusTipAt > 0, 'focusTipAt 被记录（点击模式首击防抵消依赖它）');
   }
 });
@@ -508,8 +508,8 @@ test('v440 gate: single slot keyed by element — keep on same, switch cancels, 
   assert.deepEqual(opened, ['A0', 'B2'], '正常到点打开并清槽');
 });
 
-/* ---------- 3d. v442 收口审查修复批：真离开撤排程 / fail-closed / 流内委托行为级 ---------- */
-test('v442 fire: invalid lastPt fails closed even when elementFromPoint would hit (review M2)', () => {
+/* ---------- 3d. v440 收口审查修复批：真离开撤排程 / fail-closed / 流内委托行为级 ---------- */
+test('v440 fire: invalid lastPt fails closed even when elementFromPoint would hit (review M2)', () => {
   let opened = 0;
   const h = makeHoverChain({
     showTipFor: () => { opened++; },
@@ -522,7 +522,7 @@ test('v442 fire: invalid lastPt fails closed even when elementFromPoint would hi
   assert.equal(opened, 0, 'px<0（切片沙箱/未动过）不弹——elementFromPoint 命中也不复核放行');
 });
 
-test('v442 tipLeaveAt: genuine boundary during pending dwell cancels the schedule; pseudo-leave keeps it (review MAJOR)', () => {
+test('v440 tipLeaveAt: genuine boundary during pending dwell cancels the schedule; pseudo-leave keeps it (review MAJOR)', () => {
   const leaves = sliceOverlay('    function tipLeaveAt(x, y) {', '    listenGlobal(document.documentElement, "mouseleave"');
   const cell = { tagName: 'SPAN' };
   function session({ hovered, tipFor, withinGuard }) {
@@ -559,17 +559,17 @@ test('v442 tipLeaveAt: genuine boundary during pending dwell cancels the schedul
   assert.deepEqual(s3.calls.boundary, ['edge'], '贴边真离开仍走 tipBoundaryHide');
   let s4 = session({ hovered: [], tipFor: true, withinGuard: true });
   s4.ctx.tipLeaveAt(600, 899);   // 按压保活窗内真边界
-  assert.equal(s4.calls.cancel, 1, 'v442 复审 M-2：撤排程先于 1.2s 守卫（保活窗内也撤）');
+  assert.equal(s4.calls.cancel, 1, 'v440 复审 M-2：撤排程先于 1.2s 守卫（保活窗内也撤）');
   assert.deepEqual(s4.calls.boundary, [], '守卫内不触发 tipBoundaryHide（v277 语义不变）');
 });
 
-test('v442 boundaryHide and dispose lock the cancel paths in source (review MAJOR follow-up)', () => {
+test('v440 boundaryHide and dispose lock the cancel paths in source (review MAJOR follow-up)', () => {
   const bh = sliceOverlay('    function tipBoundaryHide(src) {', '    listenGlobal(window, "blur"');
   assert.match(bh, /tipHoverCancel\(\);/, 'win-leave/edge/blur 入口撤在途排程');
   assert.match(source, /cancelAnimationFrame\(frame\);\s*cancelTipGrace\(\);\s*tipHoverCancel\(\);/, '12 分片 dispose 撤条面链');
 });
 
-test('v442 flow delegation: leaving the chip disarms the pending open; inner moves keep it (review M7)', () => {
+test('v440 flow delegation: leaving the chip disarms the pending open; inner moves keep it (review M7)', () => {
   const gateSrc = sliceOverlay('var zuChipHoverSlot = null;', 'document.addEventListener("mouseover", subTipDocOver, true);');
   const chip = { __zuT: { k: 1 }, isConnected: true, closest: (sel) => (/\.zu-subrate|\.zu-wfrun|\.zu-substat/.test(sel) ? chip : null) };
   const timers = [];

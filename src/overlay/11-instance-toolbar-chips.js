@@ -973,7 +973,15 @@
       var providerId = (quotaSelection && quotaSelection.providerId) ? quotaSelection.providerId : (quotaProvider || "");
       var modelId = (quotaSelection && quotaSelection.modelId) ? quotaSelection.modelId : (quotaModel || "");
       var ep = state.pluginUpdate && state.pluginUpdate.enhanceProvider;
-      if (!ep || ep.capability !== 1 || ep.mode === "custom" && ep.available !== true) { enhanceWarn(L("请完全重启 ZCode 以加载增强配置支持", "Fully restart ZCode to load enhancement settings support")); return; }
+      if (!ep || ep.capability !== 1) { enhanceWarn(L("请完全重启 ZCode 以加载增强配置支持", "Fully restart ZCode to load enhancement settings support")); return; }
+      if (ep.mode === "custom" && ep.available !== true) {
+        /* issue #440：win32 平台门（v357）下 available 恒 false——「完全重启」文案方向误导
+         * （重启不会解除平台限制），按 platformLimited 如实提示，与设置页 EP 分区同口径。 */
+        enhanceWarn(ep.platformLimited
+          ? L("当前平台暂不支持自定义增强供应商", "Custom enhancement providers are not supported on this platform")
+          : L("请完全重启 ZCode 以加载增强配置支持", "Fully restart ZCode to load enhancement settings support"));
+        return;
+      }
       if (ep.unreadable) { enhanceWarn(L("增强配置文件不可读，请检查权限", "Enhancement settings unreadable; check permissions")); return; }
       var useCustom = ep.mode === "custom";
       if (!useCustom && (!providerId || !modelId)) { enhanceWarn(L("未识别当前模型，暂不能增强", "Current model not identified")); return; }

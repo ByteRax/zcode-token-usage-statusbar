@@ -2896,7 +2896,7 @@
       }
       if (t2.classList.contains("zu-tip-hover-ms")) {
         /* v439：纯渲染偏好，即时生效——撤掉在途排程，下一次 mousemove 按新门槛排程；
-         * v441：chip 单槽同撤（review 一致性：键盘改档时指针恰好停在 chip 上的边角） */
+         * v440：chip 单槽同撤（review 一致性：键盘改档时指针恰好停在 chip 上的边角） */
         var thm1 = parseInt(t2.value, 10);
         state.tipHoverMs = thm1 > 0 ? thm1 : 0;
         persist();

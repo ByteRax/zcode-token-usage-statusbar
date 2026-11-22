@@ -595,9 +595,9 @@
        激活」；纯渲染端展示偏好存 localStorage，不进 config.json、不涉及主进程。常被滑过
        误触的用户可开开关，点击才打开统计卡/子代理面板（issue 用户反馈）。 */
     tipClick: 0,
-    /* v439 悬停门槛（issue #445）：条面悬停明细停留该毫秒数才打开，快速划过不再触发；
-       0=恢复 v246 划过即显（仅手改 localStorage，v441 起下拉不再提供「立即」档）。
-       v441 用户改档：默认 500ms，下拉档位 100/500/1000/1500/2000。纯渲染端展示偏好存
+    /* v440 悬停门槛（issue #445）：条面悬停明细停留该毫秒数才打开，快速划过不再触发；
+       0=恢复 v246 划过即显（仅手改 localStorage，v440 起下拉不再提供「立即」档）。
+       v440 用户改档：默认 500ms，下拉档位 100/500/1000/1500/2000。纯渲染端展示偏好存
        localStorage；手改允许任意 0–10000 整数（下拉不含的档位行为仍生效、仅回显缺预设）。 */
     tipHoverMs: 500,
     devKeepTip: 0,
@@ -721,7 +721,7 @@
     if (ls(LS.forceKmb, "") === "1") state.forceKmb = 1;
     if (ls(LS.tipClick, "") === "1") state.tipClick = 1;
     var thm0 = parseInt(ls(LS.tipHoverMs, ""), 10);
-    if (thm0 >= 0 && thm0 <= 10000) state.tipHoverMs = thm0;   // v439：非法/缺省保持默认（v441 起 500）；0=划过即显
+    if (thm0 >= 0 && thm0 <= 10000) state.tipHoverMs = thm0;   // v440：非法/缺省保持默认（v440 起 500）；0=划过即显
     if (ls(LS.devKeepTip, "") === "1") state.devKeepTip = 1;
     if (ls(LS.quotaRemain, "") === "1") state.quotaRemain = 1;
     var cdh0 = parseInt(ls(LS.rstCdh, ""), 10);

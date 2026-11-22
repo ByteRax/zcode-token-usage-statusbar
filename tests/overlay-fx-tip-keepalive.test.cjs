@@ -22,7 +22,7 @@ function makeHandler(ctxExtra = {}) {
     subPopCancelHide: () => {},
     subPopScheduleHide: () => {},
     cancelTipGrace: () => {},
-    tipHoverCancel: () => {}, tipHoverSchedule: () => {},   // v439 悬停门槛链桩（本文件只测 fxTip 保活路径）
+    tipHoverCancel: () => {}, tipHoverSchedule: () => {},   // v440 悬停门槛链桩（本文件只测 fxTip 保活路径）
     hideTip: () => {},
     lastMoveAt: 0,
     mouseInBar: true,

@@ -1013,7 +1013,7 @@
     subTipFor = null;
   }
   /* v440 chip 悬停门槛（issue #445 扩展，用户规格）：工具行/流内 chip 的悬停明细与条面格
-   * 同门槛——共用 zusage3.tipHoverMs（默认 500ms，v441 改档；0=划过即显仅手改 LS），路过不弹、停留才看。
+   * 同门槛——共用 zusage3.tipHoverMs（默认 500ms，v440 改档；0=划过即显仅手改 LS），路过不弹、停留才看。
    * chip 有精确 mouseenter/mouseleave 对（不走条面的 150ms 节流 hit-test），无需到点复核：
    * enter 排程、leave 即撤即不弹。单槽 key=chip 元素本体——同时刻至多悬停一处，换 chip
    * 自动作废旧排程，同 chip 内 mouseover 重入不重置已等待时长。focus/blur（键盘）不进门

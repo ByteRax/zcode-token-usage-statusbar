@@ -1692,13 +1692,13 @@ test('disposeOverlay clears a pending enhancement save timer before the regular 
     mpModalDispose: null, cleanupDeterministic() {},
     document: { removeEventListener() {} },
     subTipDocOver: () => {}, subTipDocOut: () => {},
-    zuChipHoverDisarm: () => { chipDisarms++; },   // v440：chip 悬停门槛单槽撤排程（01 分片模块级，dispose 切片作自由变量桩；v442 起断言确实被调）
+    zuChipHoverDisarm: () => { chipDisarms++; },   // v440：chip 悬停门槛单槽撤排程（01 分片模块级，dispose 切片作自由变量桩；v440 起断言确实被调）
     subTip: { parentElement: null },
     window: {},
   };
   vm.runInNewContext(disposeSource + '\ndisposeOverlay();', context);
   assert.deepEqual(cleared.slice(0, 2), [['t', 7], ['t', 1]], 'the pending save timer clears first, then bootTimer');
-  assert.equal(chipDisarms, 1, 'dispose 撤 chip 悬停门槛单槽（v442 review 行为级补防）');
+  assert.equal(chipDisarms, 1, 'dispose 撤 chip 悬停门槛单槽（v440 review 行为级补防）');
   assert.equal(context.state.enhancePending, null);
   assert.equal(context.disposed, true);
   const len = cleared.length;

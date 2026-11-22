@@ -1341,7 +1341,7 @@
       if (!item.__tip) return;   // v217：无 tooltip 的入口（.zu-sub）不进通用 tooltip 链
       mouseInBar = true;
       cancelTipGrace();
-      if (item !== tipFor) { tipHoverCancel(); showTipFor(item); focusTipAt = Date.now(); }   // v441：键盘优先，撤在途悬停排程（防 fire 复核抢回键盘刚开的格）
+      if (item !== tipFor) { tipHoverCancel(); showTipFor(item); focusTipAt = Date.now(); }   // v440：键盘优先，撤在途悬停排程（防 fire 复核抢回键盘刚开的格）
     });
     main.addEventListener("focusout", function (e) {
       var next = e.relatedTarget;
@@ -1497,7 +1497,7 @@
        * 正常点击被打死）不得关闭进行中的交互；1.2s 外的真离开走原立即关闭
        * （headless pill 测试的启动期 blur 不受影响，全绿实证）。
        * v275 的 pointermove 保活仍作为常规移动路径的兜底。
-       * v442（review M-1）：撤销在途待开门排程在 1.2s 守卫之前——dwell 不是按压
+       * v440（review M-1）：撤销在途待开门排程在 1.2s 守卫之前——dwell 不是按压
        * 交互，守卫内 blur 若不撤，后台窗口会按滞留 lastPt 的几何复核照弹新格。 */
       tipHoverCancel();
       if (typeof lastTipDownAt !== "undefined" && lastTipDownAt &&
@@ -1518,7 +1518,7 @@
        * 也可能落在门外），改问活体：取触发时刻最深 :hover 元素——仍是本档具体元素即伪
        * leave，忽略交给 mousemove 流接管；截断到 body（空档区/已进子文档，v47 宽限语义）、
        * iframe/webview 或空链（甩出窗口）一律按真边界走原分流。
-       * v441（review MAJOR）：此过滤提到 !tipFor 早退之前——悬停门槛排程在途时 tipFor 尚
+       * v440（review MAJOR）：此过滤提到 !tipFor 早退之前——悬停门槛排程在途时 tipFor 尚
        * 为 null，伪 leave 不得撤排程（否则指针静止停在格上、流式重排补发的伪 leave 会把
        * dwell 永远打断）；过滤后仍到达的才是真边界跃迁。 */
       try {
@@ -1527,7 +1527,7 @@
         if (hovered && hovered !== document.body && hovered !== document.documentElement &&
             hovered.tagName !== "IFRAME" && hovered.tagName !== "WEBVIEW") return;
       } catch (e) { }
-      /* v441（review MAJOR）：待开门窗口内（tipFor 尚空、tipHoverPend 在途）的真边界跃迁
+      /* v440（review MAJOR）：待开门窗口内（tipFor 尚空、tipHoverPend 在途）的真边界跃迁
        * 必须撤排程——指针已甩出窗口/进聊天子文档时无人观看，到点复核用的 lastPt 是窗内
        * 最后坐标、elementFromPoint 仍命中原格，会照弹且无事件路径收起。 */
       tipHoverCancel();
@@ -1579,13 +1579,13 @@
     function cancelTipGrace() {
       if (tipGraceTimer) { clearTimeout(tipGraceTimer); tipGraceTimer = 0; }
     }
-    /* v439 悬停门槛（issue #445）：条面悬停明细不再「划过即显」——鼠标停留
-     * state.tipHoverMs 毫秒（默认 500，v441 改档；⚙ 通用可调，0=恢复 v246 划过即显）才打开。
+    /* v440 悬停门槛（issue #445）：条面悬停明细不再「划过即显」——鼠标停留
+     * state.tipHoverMs 毫秒（默认 500，v440 改档；⚙ 通用可调，0=恢复 v246 划过即显）才打开。
      * 与 v247 的 1000ms 停留链（已按用户裁定整体移除）无代码关联：只在 mousemove
      * 命中换格时排程一个定时器，到点按 lastPt 坐标 elementFromPoint 重命中复核——
      * 150ms 节流间隙指针可能已离开/换格/进面板，不复核会在「已扫过」后仍弹出；
      * 复核发现目标漂移则改靶重排，指针停在条面任意格最迟在停下后约一个门槛时长内弹出。
-     * 键盘 focusin 即时打开（v441 起并撤在途排程，键盘优先）、点击激活模式
+     * 键盘 focusin 即时打开（v440 起并撤在途排程，键盘优先）、点击激活模式
      * （tipClick）不排程均不受影响。 */
     var tipHoverTimer = 0, tipHoverPend = null;
     function tipHoverCancel() {
