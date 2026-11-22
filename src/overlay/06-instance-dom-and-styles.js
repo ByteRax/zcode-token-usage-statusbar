@@ -316,8 +316,9 @@
      * → v436 压缩阈值行两处易用性（用户规格）：①数值控件组贴行右缘——.zu-ac-pair 是 span 被 label>span{flex:1} 拉伸占满整行使控件停在中部，改 flex:0 0 auto+margin-left:auto 缩为内容宽并推到行末（输入框居最右）；②模式下拉切换数值自动换算（percent↔tokens 双向）——acConvertOnModeSwitch 按当前会话上下文窗口（lastBand.cw，acWarningText 同源，取不到按 1,000,000 兜底）换算：percent×cw→tokens（65%→650k）、tokens÷cw→percent（300k→30%），仅本侧合法值才换算（空/非法保持原样交状态行提示），结果钳对侧合法域（tokens≥100k、percent 30-99），只改显示不提交（input change 落盘，v426 语义不变）；说明行补换算依据句；09 分片换算调用 try 包裹记 acPanelErr（同 ：210 先例）。**换算时序契约（真机实报回归）：委托分支必须先 syncAutoCompactInputs 再 acConvertOnModeSwitch——sync 会把输入框回写为已保存配置的回显，先换算会被抹回原值（65→切 Token 数仍显 65）；集成序列回归锁在 tests/overlay-autocompact.test.cjs v436 用例尾段**。
      * → v437 压缩标注缓存行去除（爸爸点名）：L3「未缓存输入/缓存读取/缓存创建/缓存命中率」整行不渲染，四行版式回三行（v428 形态减一行）；zusage 侧 cr/cw 字段保留（未来费用/首答估算仍需未缓存口径），仅前端不渲染。
      * → v438 Token 数低于下限失焦自动钳 100k（用户规格）：sendAutoCompactConfig 非法分支分叉——tokens 模式输入纯数字/kM 后缀（如 65、65k、0.05m）低于 100k 时回显规整 100k 并按 thresholdTokens=100000 提交（替代红字提示），非数字（abc 等）与 percent 模式非法仍提示不提交；钳制值与主进程 writeConfig/引擎 hook 下限同源。收口审查批：用例桩去同步回执（回执回调 syncAutoCompactInputs 回写真值会掩盖钳制即时回显，回显断言原未锁到新行为）、状态行 tokens 提示与 README 三语/user-guide 补钳制说明。
+     * → v439 增强链 OAuth-only 死路修复（issue #440，外部详报；路径1 网关 500 与路径5 kindMap 缺 server/auth/timeout 已随 v1.5.22 的 GLr 批落地，本批收余下三路）：①model-puller 规则路径同型放行宿主「Coding Plan API-Key」登录的 access.type=zhipu-coding-plan-api-key（宿主 schema 与 api-key 同枚举、合并同分支处理；zhipu-account 运行时换发型仍拒）；②规则查不到时按 v2/config.json provider.<id> 自定义供应商条目兜底（宿主设置页供应商只落该文件不进 provider_config 规则；kind→api.type 镜像宿主 j8c 映射：anthropic→anthropic-messages、openai→openai-responses、openai-compatible/未知/缺省→openai-chat-completions；fail-closed：enabled:false/enc: 密文/缺 baseURL/builtin: 命名空间不可用；enhanceText/resolveEnhanceHost/listEnhanceHosts 三口同门）；③增强按钮点击入口 custom 模式 win32 平台锁文案如实化（原「请完全重启 ZCode」方向误导——v357 平台门不因重启解除，按 platformLimited 提示「当前平台暂不支持自定义增强供应商」，与设置页 EP 分区同口径）。
      */
-    var VERSION = "v438";
+    var VERSION = "v439";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */

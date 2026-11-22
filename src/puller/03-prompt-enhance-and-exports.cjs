@@ -19,10 +19,17 @@
      * 直连请求同样必须带 X-Device-Mid（review R3 复审 A 相邻 MAJOR）。 */
     const directDeviceMid = direct && typeof direct.deviceMid === "string" ? direct.deviceMid.trim() : "";
     const planSrc = direct ? null : PLAN_SOURCES[String(providerId || "")];
-    if (!direct && !planSrc && !rule) return { ok: false, kind: "provider", error: "provider not found" };
-    const cfg = direct ? { access: { type: "api-key", apiKey: direct.apiKey }, api: { type: direct.protocol, baseUrl: direct.baseUrl } } : effectiveRuleConfig(rule);
+    /* issue #440 路径3：宿主设置页添加的供应商只落 v2/config.json 的 provider.<id>，
+     * 不进 provider_config 规则——规则查不到时按同目录 config.json 条目兜底（kind 映射
+     * 与 fail-closed 门见 v2ProviderCfgOf）。 */
+    const v2Cfg = !direct && !planSrc && !rule ? v2ProviderCfgOf(providerId) : null;
+    if (!direct && !planSrc && !rule && !v2Cfg) return { ok: false, kind: "provider", error: "provider not found" };
+    const cfg = direct ? { access: { type: "api-key", apiKey: direct.apiKey }, api: { type: direct.protocol, baseUrl: direct.baseUrl } } : v2Cfg ? v2Cfg.cfg : effectiveRuleConfig(rule);
     const access = cfg.access || {}, api = cfg.api || {};
-    if (!planSrc && access.type !== "api-key") return { ok: false, kind: "provider", error: "provider is not api-key type" };
+    /* issue #440 路径2：zhipu-coding-plan-api-key 是宿主「Coding Plan API-Key」登录的原生
+     * access.type（schema 与 api-key 同型枚举、合并同分支处理），同型放行；zhipu-account 是
+     * OAuth 运行时换发型、本地无明文 key，继续拒绝。 */
+    if (!planSrc && access.type !== "api-key" && access.type !== "zhipu-coding-plan-api-key") return { ok: false, kind: "provider", error: "provider is not api-key type" };
     const apiType = planSrc ? "anthropic-messages" : String(api.type || "");
     if (!planSrc && apiType !== "openai-chat-completions" && apiType !== "openai-responses" && apiType !== "anthropic-messages") {
       return { ok: false, kind: "unsupported", error: "unsupported api type: " + (apiType || "(empty)") };
@@ -228,18 +235,34 @@
       return { providerId: String(providerId), baseUrl: base, protocol: "anthropic-messages", apiKey: apiKey, deviceMid: zcodeSession ? zcodeSession.deviceMid : undefined, plan: true };
     }
     const data = readProviderCfg(), rule = data ? findRule(data, providerId) : null;
-    if (!rule || !modelPullerRuleAllowed(rule)) return null;
-    const cfg = effectiveRuleConfig(rule), api = cfg.api || {}, access = cfg.access || {};
-    if (access.type !== "api-key" || !access.apiKey || !api.baseUrl || !["openai-chat-completions", "openai-responses", "anthropic-messages"].includes(api.type)) return null;
-    return { providerId, baseUrl: String(api.baseUrl).replace(/\/+$/, ""), protocol: api.type, apiKey: String(access.apiKey) };
+    if (rule && modelPullerRuleAllowed(rule)) {
+      const cfg = effectiveRuleConfig(rule), api = cfg.api || {}, access = cfg.access || {};
+      /* zhipu-coding-plan-api-key 与 api-key 同型放行（issue #440 路径2）；zhipu-account 仍拒。 */
+      if ((access.type === "api-key" || access.type === "zhipu-coding-plan-api-key") && access.apiKey && api.baseUrl && ["openai-chat-completions", "openai-responses", "anthropic-messages"].includes(api.type)) {
+        return { providerId, baseUrl: String(api.baseUrl).replace(/\/+$/, ""), protocol: api.type, apiKey: String(access.apiKey) };
+      }
+    }
+    /* issue #440 路径3：v2/config.json 自定义供应商条目不在规则里，同门兜底。 */
+    const v2 = v2ProviderCfgOf(providerId);
+    if (v2) return { providerId: v2.id, baseUrl: v2.cfg.api.baseUrl.replace(/\/+$/, ""), protocol: v2.cfg.api.type, apiKey: v2.cfg.access.apiKey };
+    return null;
   }
   function modelPullerRuleAllowed(rule) { return rule && rule.enabled !== false && (!rule.config || rule.config.enabled !== false); }
   function listEnhanceHosts() {
     const data = readProviderCfg();
     const hosts = [];
+    const seen = new Set();
     for (const rule of rulesOf(data)) {
       const d = resolveEnhanceHost(String(rule.providerId || ""));
-      if (d && !PLAN_SOURCES[String(rule.providerId || "")]) hosts.push({ id: d.providerId, name: String(rule.providerName || d.providerId).slice(0, 160), baseUrl: d.baseUrl, protocol: d.protocol });
+      if (d && !PLAN_SOURCES[String(rule.providerId || "")]) { seen.add(d.providerId); hosts.push({ id: d.providerId, name: String(rule.providerName || d.providerId).slice(0, 160), baseUrl: d.baseUrl, protocol: d.protocol }); }
+    }
+    /* v2/config.json 自定义供应商条目（issue #440 路径3）：宿主设置页供应商不在规则里，
+     * 补列；与规则同 id 时规则让位（seen）。 */
+    const v2Map = readV2ProviderMap();
+    for (const id of v2Map.keys()) {
+      if (seen.has(id)) continue;
+      const d = resolveEnhanceHost(id);
+      if (d) hosts.push({ id: d.providerId, name: String(v2Map.get(id).name || d.providerId).slice(0, 160), baseUrl: d.baseUrl, protocol: d.protocol });
     }
     for (const planId of Object.keys(PLAN_SOURCES)) {   // 套餐源（BigModel/Start Plan 等）凭据可用即列出，与 listProviders 同门控
       const d = resolveEnhanceHost(planId);

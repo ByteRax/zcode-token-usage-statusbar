@@ -875,3 +875,39 @@ test('main bridge exposes platformLimited and gates provider save symmetrically 
   assert.match(seg, /process\.platform === "win32"\) \{ reply\(\{ ok: false, error: "unsupported platform" \}\); return; \}/, 'save gate mirrors models branch');
   assert.match(source, /ep\.platformLimited/, 'renderer consumes the platform flag for the status copy');
 });
+
+test('issue440: platform-limited custom mode names the platform restriction, not a restart hint', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: 'draft' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  h.window.enhanceTest.state().pluginUpdate = { enhanceProvider: { capability: 1, available: false, platformLimited: true, mode: 'custom', revision: 0 } };
+  h.enhOf(ui.wrap).listeners.get('click')[0]();
+  const label = h.enhOf(ui.wrap).getAttribute('aria-label');
+  assert.match(label, /平台/, 'names the platform restriction');
+  assert.doesNotMatch(label, /重启/, 'no misleading restart hint (issue #440: platform gate never lifts by restarting)');
+  assert.equal(h.takeRequests().filter(r => /^prompt-enhance/.test(r.action)).length, 0, 'no request leaves in custom mode');
+  assert.equal(ui.editor.__zuDraft, 'draft');
+});
+
+test('issue440: unavailable custom mode on a capable platform still points at a restart', () => {
+  /* 非 win32（platformLimited 缺省 false）下 available false 仍是旧主进程/热模块缺位：
+   * 「完全重启」文案在该场景保持正确，平台特判不得扩大化 */
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: 'draft' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  h.window.enhanceTest.state().pluginUpdate = { enhanceProvider: { capability: 1, available: false, mode: 'custom', revision: 0 } };
+  h.enhOf(ui.wrap).listeners.get('click')[0]();
+  assert.match(h.enhOf(ui.wrap).getAttribute('aria-label'), /重启/);
+  assert.equal(h.takeRequests().filter(r => /^prompt-enhance/.test(r.action)).length, 0);
+});
+
+test('contract: custom-mode click gate branches on platformLimited before the restart hint', () => {
+  assert.match(source, /ep\.mode === "custom" && ep\.available !== true/);
+  /* 09 分片设置页另有 platformLimited 状态文案（配置与历史落盘措辞）——锚点必须含
+   * 点击入口专属的英文对句，否则断言会被设置页行误满足（红测阶段实证） */
+  assert.match(source, /当前平台暂不支持自定义增强供应商"[\s\S]{0,120}"Custom enhancement providers are not supported on this platform/);
+});

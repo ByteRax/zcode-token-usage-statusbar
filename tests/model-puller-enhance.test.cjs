@@ -1325,3 +1325,135 @@ test("R3: host-source direct path carries X-Device-Mid from the announced host (
   assert.equal(msg.opts.headers.Authorization, "Bearer zc-session-jwt-1");
   assert.equal(msg.opts.headers["X-Device-Mid"], "dev-mid-1", "direct requests carry the announced device mid (was the 400 dead-end)");
 });
+
+/* ---------- issue #440：OAuth-only + Windows 增强链死路修复 ----------
+ * 路径2：宿主「Coding Plan API-Key」登录规则的 access.type 是 zhipu-coding-plan-api-key
+ * （宿主 schema 与 api-key 同型枚举、合并同分支处理），此前被「provider is not api-key type」
+ * 拒之门外；路径3：宿主设置页添加的供应商只落 v2/config.json 的 provider.<id> 条目，
+ * 不进 provider_config.json 规则——增强链此前一律 provider not found。 */
+
+const ZHIPU_PLAN_RULE = {
+  providerId: "bigmodel-api",
+  providerName: "Coding Plan Key",
+  config: {
+    access: { type: "zhipu-coding-plan-api-key", apiKey: "zplan-key-1" },
+    api: { baseUrl: "https://open.bigmodel.cn/api/anthropic", type: "anthropic-messages" },
+  },
+};
+
+test("issue440: zhipu-coding-plan-api-key rule enhances with its own key/baseUrl", async () => {
+  const file = tmpCfgPath();
+  const cfg = sampleCfg();
+  cfg.config.providerConfigRules.providerRules.push(ZHIPU_PLAN_RULE);
+  fs.writeFileSync(file, JSON.stringify(cfg));
+  const calls = [];
+  const mp = M.createModelPuller({
+    customCfgPath: file,
+    fetchImpl: async (url, requestOpts) => {
+      if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
+      calls.push({ url, opts: requestOpts });
+      return sseRes([
+        'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"润色"}}\n\n',
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+        'data: {"type":"message_stop"}\n\n',
+      ]);
+    },
+    modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "",
+  });
+  const r = await mp.enhanceText("bigmodel-api", "glm-4.6", "写个脚本");
+  assert.equal(r.ok, true, "coding-plan api-key rule enhances: " + JSON.stringify(r).slice(0, 160));
+  assert.equal(calls[0].url, "https://open.bigmodel.cn/api/anthropic/v1/messages");
+  assert.equal(calls[0].opts.headers["x-api-key"], "zplan-key-1");
+  const host = mp.resolveEnhanceHost("bigmodel-api");
+  assert.ok(host && host.apiKey === "zplan-key-1" && host.protocol === "anthropic-messages"
+    && host.baseUrl === "https://open.bigmodel.cn/api/anthropic", "custom picker resolves the coding-plan rule");
+  assert.ok(mp.listEnhanceHosts().some((h) => h.id === "bigmodel-api" && h.protocol === "anthropic-messages"),
+    "host list surfaces the coding-plan rule");
+});
+
+test("issue440: unsupported access types stay rejected", async () => {
+  const file = tmpCfgPath();
+  const cfg = sampleCfg();
+  cfg.config.providerConfigRules.providerRules.push({
+    providerId: "oauth-plan",
+    providerName: "OAuth 型",
+    config: {
+      access: { type: "zhipu-account", apiKey: "should-not-leave" },
+      api: { baseUrl: "https://open.bigmodel.cn/api/anthropic", type: "anthropic-messages" },
+    },
+  });
+  fs.writeFileSync(file, JSON.stringify(cfg));
+  const calls = [];
+  const mp = M.createModelPuller({
+    customCfgPath: file,
+    fetchImpl: async (url) => { calls.push(url); throw new Error("unexpected request " + url); },
+    modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "",
+  });
+  const r = await mp.enhanceText("oauth-plan", "glm-4.6", "写个脚本");
+  assert.equal(r.ok, false);
+  assert.equal(r.kind, "provider", "zhipu-account (OAuth runtime exchange) stays out of the rule path");
+  assert.equal(mp.resolveEnhanceHost("oauth-plan"), null);
+  assert.equal(calls.length, 0, "zero network for unsupported access types");
+});
+
+const V2_FIXTURE_ENTRIES = {
+  "11111111-2222-3333-4444-555555555555": { name: "宿主中转", kind: "openai-compatible", options: { apiKey: "sk-v2-1", baseURL: "https://v2.example.com/v1" } },
+  "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee": { name: "宿主 anthropic", kind: "anthropic", options: { apiKey: "sk-v2-ant", baseURL: "https://v2ant.example.com" } },
+  "cccccccc-dddd-eeee-ffff-000000000000": { name: "宿主 responses", kind: "openai", options: { apiKey: "sk-v2-resp", baseURL: "https://v2resp.example.com/v1" } },
+  "dddddddd-eeee-ffff-0000-111111111111": { name: "禁用条目", kind: "openai-compatible", enabled: false, options: { apiKey: "sk-v2-off", baseURL: "https://off.example.com/v1" } },
+  "eeeeeeee-ffff-0000-1111-222222222222": { name: "密文条目", kind: "openai-compatible", options: { apiKey: "enc:v1:cipher.text", baseURL: "https://cipher.example.com/v1" } },
+  "ffffffff-0000-1111-2222-333333333333": { name: "缺地址", kind: "openai-compatible", options: { apiKey: "sk-v2-nobase" } },
+  "builtin:not-a-plan": { name: "builtin 命名空间", kind: "openai-compatible", options: { apiKey: "sk-v2-builtin", baseURL: "https://builtin.example.com/v1" } },
+};
+
+function writeV2Cfg(file) {
+  fs.writeFileSync(path.join(path.dirname(file), "config.json"), JSON.stringify({ provider: V2_FIXTURE_ENTRIES }));
+}
+
+test("issue440: v2 config.json custom provider entries enhance via host kind mapping", async () => {
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+  writeV2Cfg(file);
+  const calls = [];
+  const mp = M.createModelPuller({
+    customCfgPath: file,
+    fetchImpl: async (url, requestOpts) => {
+      if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
+      calls.push({ url, opts: requestOpts });
+      if (url.indexOf("/chat/completions") > 0) return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: "润色" } }] }) };
+      if (url.indexOf("/responses") > 0) return { ok: true, status: 200, text: async () => JSON.stringify({ status: "completed", output_text: "resp 结果" }) };
+      return sseRes([
+        'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"流式"}}\n\n',
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+        'data: {"type":"message_stop"}\n\n',
+      ]);
+    },
+    modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "",
+  });
+  const r = await mp.enhanceText("11111111-2222-3333-4444-555555555555", "gpt-4o", "写个脚本");
+  assert.equal(r.ok, true, "openai-compatible entry rides chat-completions: " + JSON.stringify(r).slice(0, 160));
+  assert.equal(calls[0].url, "https://v2.example.com/v1/chat/completions");
+  assert.equal(calls[0].opts.headers.Authorization, "Bearer sk-v2-1");
+  const r2 = await mp.enhanceText("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "glm-4.6", "写个脚本");
+  assert.equal(r2.ok, true, "anthropic entry rides /v1/messages: " + JSON.stringify(r2).slice(0, 160));
+  assert.ok(calls.some((c) => c.url === "https://v2ant.example.com/v1/messages"));
+  const r3 = await mp.enhanceText("cccccccc-dddd-eeee-ffff-000000000000", "gpt-5.1", "写个脚本");
+  assert.equal(r3.ok, true, "openai entry rides /responses (host j8c mapping): " + JSON.stringify(r3).slice(0, 160));
+  assert.ok(calls.some((c) => c.url === "https://v2resp.example.com/v1/responses"));
+  const before = calls.length;
+  for (const id of ["dddddddd-eeee-ffff-0000-111111111111", "eeeeeeee-ffff-0000-1111-222222222222", "ffffffff-0000-1111-2222-333333333333", "builtin:not-a-plan", "no-such-entry"]) {
+    const bad = await mp.enhanceText(id, "gpt-4o", "写个脚本");
+    assert.equal(bad.ok, false, id + " must fail closed");
+    assert.equal(bad.kind, "provider", id + " reports provider not found");
+  }
+  assert.equal(calls.length, before, "fail-closed entries never hit the network");
+  const byId = new Map(mp.listEnhanceHosts().map((h) => [h.id, h]));
+  assert.equal(byId.get("11111111-2222-3333-4444-555555555555").protocol, "openai-chat-completions");
+  assert.equal(byId.get("11111111-2222-3333-4444-555555555555").name, "宿主中转");
+  assert.equal(byId.get("cccccccc-dddd-eeee-ffff-000000000000").protocol, "openai-responses");
+  assert.equal(byId.get("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").protocol, "anthropic-messages");
+  assert.equal(byId.get("dddddddd-eeee-ffff-0000-111111111111"), undefined, "disabled entry not listed");
+  assert.equal(byId.get("eeeeeeee-ffff-0000-1111-222222222222"), undefined, "cipher-key entry not listed");
+  assert.equal(byId.get("ffffffff-0000-1111-2222-333333333333"), undefined, "baseURL-less entry not listed");
+  assert.equal(byId.get("builtin:not-a-plan"), undefined, "builtin: namespace stays with the plan chain");
+});
