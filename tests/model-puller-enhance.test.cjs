@@ -1562,17 +1562,19 @@ function teamFixture(opts) {
     calls.push({ url, opts: requestOpts });
     if (url === TEAM_CUSTOMER_URL) {
       if (o.customerStatus) return { ok: false, status: o.customerStatus, text: async () => "", body: { cancel() { } } };
-      if (o.customerHuge) return { ok: true, status: 200, text: async () => "x".repeat(262145) };
+      /* 超限载荷必须是合法 JSON（review round2-B A7）：非法体会被 JSON.parse 兜住，上限成为
+       * plan_auth 与采信之间唯一屏障时，变异「上限放大/删除」才会红。 */
+      if (o.customerHuge) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { organizations: o.customerOrgs || [{ organizationId: coords.organizationId, projects: [{ projectId: coords.projectId }] }], pad: "x".repeat(262145) } }) };
       return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { organizations: o.customerOrgs || [{ organizationId: coords.organizationId, projects: [{ projectId: coords.projectId }] }] } }) };
     }
     if (url === keysUrl) {
       if (o.keysStatus) return { ok: false, status: o.keysStatus, text: async () => "", body: { cancel() { } } };
-      if (o.keysHuge) return { ok: true, status: 200, text: async () => "x".repeat(262145) };
+      if (o.keysHuge) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: [{ name: "zcode-team-api-key", keyType: 2, apiKeyId: "tk-1", pad: "x".repeat(262145) }] }) };
       return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: o.teamKeys || [{ name: "zcode-team-api-key", keyType: 2, apiKeyId: "tk-1", apiKey: "id.secret" }] }) };
     }
     if (url === patUrl) {
       if (o.patStatus) return { ok: false, status: o.patStatus, text: async () => "", body: { cancel() { } } };
-      if (o.patHuge) return { ok: true, status: 200, text: async () => "x".repeat(65537) };
+      if (o.patHuge) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, msg: "操作成功", data: { enabled: true, accessToken: "team-pat-1", pad: "x".repeat(65537) } }) };
       if (o.patDisabled) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { enabled: false, accessToken: "x" } }) };
       return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, msg: "操作成功", data: { enabled: true, accessToken: "team-pat-1", expiresIn: o.patShortTtl ? 60 : undefined, expiresAt: o.patShortTtl ? undefined : Date.now() + 3600 * 1000 } }) };
     }
