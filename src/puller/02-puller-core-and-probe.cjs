@@ -168,6 +168,50 @@ function createModelPuller(opts) {
       return d && d.provider && typeof d.provider === "object" ? d.provider[src.v2ConfigKey] || null : null;
     } catch (e) { return null; }
   }
+  /* v2/config.json 的自定义供应商条目（issue #440）：宿主设置页添加的 API-Key 供应商只落
+   * config.json 的 provider.<id>（UUID 键，schema 形状 kind/name/options{apiKey,baseURL}/enabled），
+   * 不进 provider_config.json 的 providerRules——增强链此前对这些 id 一律 provider not found。
+   * 按 host 引擎同款 kind→api.type 映射（j8c：anthropic→anthropic-messages、openai→openai-responses、
+   * openai-compatible/未知/缺省→openai-chat-completions）合成只读伪配置。fail-closed：条目缺失、
+   * 显式 enabled:false、key 空/enc: 密文、baseURL 空、builtin:/account: 命名空间（builtin 归
+   * PLAN_SOURCES 套餐专链；account: 与宿主 B8c 准入同门，非套餐 account id 不是宿主背书的
+   * 自定义供应商）一律不可用。宿主 B8c 另有 source!=="custom" 过滤，插件有意不镜像：宿主各
+   * 版本对 config 条目的消费口径不一（3.19.0 报告者机器条目形状未实测），source 门可能误杀
+   * 宿主实际在用的条目；key 只发条目自带 baseURL 本域，命名空间闸已足够防混用。 */
+  function readV2ProviderMap() {
+    const out = new Map();
+    if (!customCfgPath) return out;
+    try {
+      const cfgPath = customCfgPath.replace(/provider_config\.json$/, "config.json");
+      const d = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+      const prov = d && d.provider && typeof d.provider === "object" ? d.provider : null;
+      if (!prov) return out;
+      for (const id of Object.keys(prov)) {
+        const entry = prov[id];
+        if (!id || !entry || typeof entry !== "object" || id.indexOf("builtin:") === 0 || id.indexOf("account:") === 0) continue;
+        out.set(id, entry);
+      }
+    } catch (e) { }
+    return out;
+  }
+  function v2ProviderCfgOf(providerId, map) {
+    const id = String(providerId || "");
+    if (!id || PLAN_SOURCES[id]) return null;
+    const m = map || readV2ProviderMap();
+    const entry = m.get(id);
+    if (!entry || typeof entry !== "object" || entry.enabled === false) return null;
+    const opts = entry.options && typeof entry.options === "object" ? entry.options : null;
+    const key = opts && typeof opts.apiKey === "string" ? opts.apiKey.trim() : "";
+    const base = opts && typeof opts.baseURL === "string" ? opts.baseURL.trim() : "";
+    if (!key || key.indexOf("enc:") === 0 || !base) return null;
+    const kind = typeof entry.kind === "string" ? entry.kind : "";
+    const apiType = kind === "anthropic" ? "anthropic-messages" : kind === "openai" ? "openai-responses" : "openai-chat-completions";
+    return {
+      id: id,
+      name: typeof entry.name === "string" ? entry.name : "",
+      cfg: { access: { type: "api-key", apiKey: key }, api: { type: apiType, baseUrl: base } },
+    };
+  }
   /* 套餐增强鉴权（issue #336）：「宿主 v2/config.json 的 builtin provider options.apiKey
    * 优先（明文 key，宿主对话同款——同目录 config.json 与 provider_config.json 并置），
    * OAuth 兜底」——bigmodel coding plan 实测口径（OAuth 直连 messages 被网关 500 拒，
