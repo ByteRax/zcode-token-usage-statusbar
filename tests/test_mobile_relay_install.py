@@ -560,6 +560,32 @@ class MobileInstallTests(unittest.TestCase):
                 self.assertEqual(self.installer._mobile_pending_notice(out, self.pi, {"status": "pending"}),
                                  {"suppressOutput": True})
 
+    def test_mobile_notice_silent_for_non_notifiable_status_when_enabled(self):
+        # 开关开启时也只提示 pending / deferred：补丁已成功、失败或状态未知都不发会话
+        # 文字。逐个状态先清限频文件——否则前一个状态留下的 24h 时间戳会把本应报错的
+        # 状态挡成静默，变成碰巧通过
+        self._enable_mobile_relay()
+        limit = self.runtime / ".mobile-deferred-notice.json"
+        for state in ({"status": "patched"}, {"status": "skipped-error", "detail": "boom"},
+                      {"status": "unknown"}, {}, None):
+            with self.subTest(state=state):
+                limit.unlink(missing_ok=True)
+                out = {"suppressOutput": True}
+                self.assertIs(self.installer._mobile_pending_notice(out, self.pi, state), out)
+                self.assertEqual(out, {"suppressOutput": True})
+                self.assertFalse(limit.exists())
+
+    def test_pending_notice_uses_scheduled_text(self):
+        # pending 走「已排定」文案，不落到「尚未就绪」的手动重试分支
+        self._enable_mobile_relay()
+        limit = self.runtime / ".mobile-deferred-notice.json"
+        limit.unlink(missing_ok=True)
+        out = {"suppressOutput": True}
+        self.installer._mobile_pending_notice(out, self.pi, {"status": "pending"})
+        self.assertTrue(out["systemMessage"].endswith(self.installer._mobile_pending_scheduled_message()))
+        self.assertNotIn(self.installer._mobile_deferred_message(), out["systemMessage"])
+        self.assertFalse(limit.exists())
+
     def _run_hook_while_asar_locked(self):
         """真实 hook 链 + asar 被运行中客户端占用：桥补装转存 pending，手机补丁按
         「bridge pending」让位——issue #455 报告的会话路径。"""

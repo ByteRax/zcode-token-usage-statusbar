@@ -920,7 +920,9 @@ class RealHookChainTests(unittest.TestCase):
                 outcome = self.installer.run_hook()
         self.assertEqual(stdout.getvalue(), "", "hook stdout 只能是 hook JSON")
         # 桥 publish pending → mobile 延后（detail=bridge pending）：推送开关未开启
-        # （缺省）时整条会话静默（issue #455）——重启需求由下方 ⚙ 红点标记承载
+        # （缺省）时整条会话静默（issue #455）——重启需求由下方 ⚙ 红点标记承载。
+        # 开启开关后「提示等待自动补装、不含手动命令」的对照已移到
+        # tests/test_mobile_relay_install.py 的 hook 链用例（同为真实 pending 链）
         self.assertNotIn("systemMessage", outcome)
         self.assertTrue(self.pi.TMP.is_file())
         self.assertEqual(self.pi.pending_tmp(operation="install")["operation"], "install")
