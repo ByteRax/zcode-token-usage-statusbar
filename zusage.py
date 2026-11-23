@@ -63,6 +63,26 @@ def _adopt_migration_candidate(candidate, home):
     return _db_write_fresh(candidate) >= _db_write_fresh(home_db)
 
 
+def _data_base_dir(env=None, home=None):
+    """宿主数据根（dataBaseDir）迁移标记：setting.json 的绝对 dataBaseDir 优先，否则 env
+    ZCODE_DATA_BASE_DIR；读不出/非绝对路径返回空串。resolve_db_path 第 3 级与受管 worktree
+    根候选（_managed_worktree_roots）共用，改次序三处同步。"""
+    env = os.environ if env is None else env
+    home = Path.home() if home is None else Path(home)
+    try:
+        file = home / ".zcode" / "v2" / "setting.json"
+        if file.exists():
+            raw = json.loads(file.read_text(encoding="utf-8-sig"))
+            base = str((raw.get("dataBaseDir") if isinstance(raw, dict) else "") or "").strip()
+        else:
+            base = ""
+    except Exception:
+        base = ""   # 损坏按无迁移处理；env 迁移标记不受其连累（与 Node 侧同构）
+    if not base or not _DB_BASE_ABS_RE.match(base):
+        base = str(env.get("ZCODE_DATA_BASE_DIR") or "").strip()
+    return base if base and _DB_BASE_ABS_RE.match(base) else ""
+
+
 def resolve_db_path(env=None, home=None):
     """本地用量库路径（issue #279 及查漏补缺）：镜像宿主 agent 会话库解析
     （v3.17.1 onboarding/localUsageEvidence.resolveAgentSessionDbPath——写库方是
@@ -99,18 +119,8 @@ def resolve_db_path(env=None, home=None):
                 return candidate
     except Exception:
         pass   # 缺文件/损坏忽略（宿主读不出按默认），不拖垮查询链
-    try:
-        file = home / ".zcode" / "v2" / "setting.json"
-        if file.exists():
-            raw = json.loads(file.read_text(encoding="utf-8-sig"))
-            base = str((raw.get("dataBaseDir") if isinstance(raw, dict) else "") or "").strip()
-        else:
-            base = ""
-    except Exception:
-        base = ""   # 损坏按无迁移处理；env 迁移标记不受其连累（与 Node 侧同构）
-    if not base or not _DB_BASE_ABS_RE.match(base):
-        base = str(env.get("ZCODE_DATA_BASE_DIR") or "").strip()
-    if base and _DB_BASE_ABS_RE.match(base):
+    base = _data_base_dir(env, home)
+    if base:
         candidate = Path(base) / ".zcode" / "cli" / "db" / "db.sqlite"
         if candidate.exists() and _adopt_migration_candidate(candidate, home):
             return candidate
@@ -1131,40 +1141,57 @@ def _all_projects_usage_safe(con):
 
 # ---------- 受管 worktree（specs/worktree-branch.md）----------
 # ZCode 受管 worktree 只是会话 cwd，布局固定 <数据根>/.zcode/worktrees/<4位hex bucket>/<源仓库名>
-# （宿主 managed-worktree/layout.ts 同规则；数据根 ZCODE_DATA_BASE_DIR 优先否则主目录，宿主 §6.3）。
-# 快照只给路径与创建记录（cwd/root/bucket/name/ref/sha），分支名由主进程既有 git 轮询按覆写路径实时给出。
+# （宿主 managed-worktree/layout.ts 同规则）。根候选见 _managed_worktree_roots：当前数据根优先，
+# 其次主目录根。快照只给路径与创建记录（cwd/root/bucket/name/ref/sha），分支名由主进程既有 git
+# 查询（fs.watch 60s 防抖与点击刷新触发）按覆写路径实时给出。
 _MANAGED_WT_BUCKET_RE = re.compile(r"[0-9a-f]{4}")
 _WT_FACT_CACHE = {}      # sid → 事实 dict（受管）或 None（已判定非受管）
 _WT_FACT_CACHE_CAP = 512
 
 
-def _managed_worktree_root():
-    base = str(os.environ.get("ZCODE_DATA_BASE_DIR") or "").strip()
-    try:
-        root = Path(base).expanduser() if base else Path.home()
-        return Path(os.path.realpath(str(root / ".zcode" / "worktrees")))
-    except OSError:
-        return None
+def _managed_worktree_roots(env=None, home=None):
+    """受管 worktree 根候选（realpath 归一、去重，当前数据根在前）。
+    数据根与 resolve_db_path 第 3 级同序（setting.json 的 dataBaseDir 优先、否则 ZCODE_DATA_BASE_DIR、
+    都没有即主目录）：桌面端把数据目录迁到别处时，是在拉起 agent 子进程那一刻才注入该 env（宿主
+    desktopRuntimeEnv），主进程自身环境里没有；本查询链由主进程拉起，只读 env 会把根错判到主目录
+    （v445 修复）。数据根不在主目录时再补主目录根——迁移数据目录之前建的受管 worktree 留在原地
+    （宿主 copyDataDirectory 只搬 .zcode/v2，任务 cwd 创建后固定），只认当前数据根会漏认它们。"""
+    env = os.environ if env is None else env
+    home = Path(Path.home() if home is None else home)
+    base = _data_base_dir(env, home)
+    roots = []
+    for candidate in ([base] if base else []) + [str(home)]:
+        try:
+            root = Path(os.path.realpath(str(Path(candidate) / ".zcode" / "worktrees")))
+        except OSError:
+            continue
+        if root not in roots:
+            roots.append(root)
+    return roots
 
 
 def _worktree_fact(directory):
     """会话目录 → 受管 worktree 路径事实；非受管布局返回 None。
     只做纯路径布局匹配（宿主 parseManagedWorktreePath 同规则：realpath 归一 + 前缀 + 两级
     结构），不读 .git、不执行 git；目录已删除照常报告（realpath 宽容），降级交渲染端。"""
-    root = _managed_worktree_root()
     directory = str(directory or "").strip()
-    if root is None or not directory:
+    if not directory:
         return None
     try:
         real_dir = Path(os.path.realpath(directory))
-        rel = real_dir.relative_to(root)
-    except (OSError, ValueError):
+    except OSError:
         return None
-    parts = rel.parts
-    if len(parts) < 2 or not _MANAGED_WT_BUCKET_RE.fullmatch(parts[0]):
-        return None
-    return {"cwd": str(real_dir), "root": str(root / parts[0] / parts[1]),
-            "bucket": parts[0], "name": parts[1]}
+    for root in _managed_worktree_roots():
+        try:
+            rel = real_dir.relative_to(root)
+        except ValueError:
+            continue
+        parts = rel.parts
+        if len(parts) < 2 or not _MANAGED_WT_BUCKET_RE.fullmatch(parts[0]):
+            continue
+        return {"cwd": str(real_dir), "root": str(root / parts[0] / parts[1]),
+                "bucket": parts[0], "name": parts[1]}
+    return None
 
 
 def _worktree_origin(con, sid):

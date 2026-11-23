@@ -251,7 +251,7 @@
       const cfg = effectiveRuleConfig(rule), api = cfg.api || {}, access = cfg.access || {};
       /* zhipu-coding-plan-api-key 与 api-key 同型放行（issue #440 路径2）；zhipu-account 仍拒。
        * enc: 密文 key 不可用（review A-1/D-1，与 enhanceText 规则路径同闸）。 */
-      if ((access.type === "api-key" || access.type === "zhipu-coding-plan-api-key") && access.apiKey && String(access.apiKey).indexOf("enc:") !== 0 && api.baseUrl && ["openai-chat-completions", "openai-responses", "anthropic-messages"].includes(api.type)) {
+      if ((access.type === "api-key" || access.type === "zhipu-coding-plan-api-key") && access.apiKey && String(access.apiKey).trim().indexOf("enc:") !== 0 && api.baseUrl && ["openai-chat-completions", "openai-responses", "anthropic-messages"].includes(api.type)) {
         return { providerId, baseUrl: String(api.baseUrl).replace(/\/+$/, ""), protocol: api.type, apiKey: String(access.apiKey) };
       }
     }
@@ -286,11 +286,20 @@
   async function listEnhanceModels(config, signal) {
     const base = config.protocol === "anthropic-messages" ? anthropicBaseWithV1(config.baseUrl) : config.baseUrl.replace(/\/+$/, "");
     const url = new URL(base + "/models");
+    /* 设置页手填或规则里的 key 可能是 enc: 密文（宿主加密信封）：不是可用凭据，按未配置处理、
+     * 零外发——规则路径的闸不 trim，带前导空白的密文此前会被公告为 host 并随头发往供应商 */
+    const apiKey = String((config && config.apiKey) || "").trim();
+    if (!apiKey || apiKey.indexOf("enc:") === 0) return { ok: false, error: "provider unavailable" };
     const headers = { Accept: "application/json", "User-Agent": "ZCode" };
+    /* zcode.z.ai 路由必带 X-Device-Mid（缺头 400 code 3001，与直连增强同口径）：host 公告
+     * 携带的设备号随 provider 配置进来。此前只给直连增强补了这一口，设置页「拉取模型」
+     * 对 zcode 路由恒 400（复盘修复）。设备号只发给官方路由主机，第三方中转不得带上。 */
+    const deviceMid = typeof config.deviceMid === "string" ? config.deviceMid.trim() : "";
+    if (deviceMid && url.hostname === "zcode.z.ai") headers["X-Device-Mid"] = deviceMid;
     if (config.protocol === "anthropic-messages") {
-      headers["x-api-key"] = config.apiKey;
+      headers["x-api-key"] = apiKey;
       headers["anthropic-version"] = "2023-06-01";
-    } else headers.Authorization = "Bearer " + config.apiKey;
+    } else headers.Authorization = "Bearer " + apiKey;
     const controller = new AbortController();
     const abort = () => controller.abort();
     if (signal) signal.addEventListener("abort", abort, { once: true });
@@ -302,7 +311,7 @@
       if (!res.ok) { dropBody(res); return { ok: false, error: "HTTP " + res.status }; }
       const data = await readJsonBounded(res, RESPONSE_MAX_BYTES);
       const ids = sanitizeModelIds(parseModelsPayload(data).map(item => typeof item === "string" ? item : rawModelId(asObject(item))));
-      return { ok: true, models: ids.filter(id => !config.apiKey || !id.includes(config.apiKey)) };
+      return { ok: true, models: ids.filter(id => !apiKey || !id.includes(apiKey)) };
     } catch (e) { return { ok: false, error: "model list unavailable" }; }
     finally { clearTimeout(timer); if (signal) signal.removeEventListener("abort", abort); }
   }

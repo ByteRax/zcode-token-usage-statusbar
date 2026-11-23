@@ -205,6 +205,35 @@ test("stepfun: non-subscription bucket falls back; empty buckets → noPlan; inc
   assert.throws(() => Q.normalizeStepfun([]), (e) => e.code === "parse_error");
 });
 
+test("stepfun: a leading top-up bucket without remaining no longer shadows a valid one; expires_at_ms digit string becomes validEnd", () => {
+  // 复盘 MINOR：无 subscription 桶时 buckets[0] 抢占——前一个加油包桶缺 remaining，紧随其后的
+  // 有效桶也跟着报 parse_error。规格写的是「取首个有效桶」。
+  const shadowed = Q.normalizeStepfun({
+    plan: { state: "known", name: "x" },
+    quota: { credit_buckets: [ { type: "topup", total: "400000000", remaining: null, used_percent: 75 },
+      { type: "topup", total: "600000000", remaining: "150000000", used_percent: 25 } ] },
+  });
+  assert.equal(shadowed.windows.monthly.percent, 25, "取首个 remaining 可解析的桶");
+  // 全都解析不了：仍落 buckets[0] → parse_error 退避自愈（不误冻结 noPlan）
+  assert.throws(() => Q.normalizeStepfun({
+    plan: { state: "known", name: "x" },
+    quota: { credit_buckets: [ { type: "topup", total: "400000000", remaining: "" }, { type: "topup", total: "600000000", remaining: null } ] },
+  }), (e) => e.code === "parse_error", "全都缺 remaining 才按 parse_error 退避");
+  // 订阅到期：毫秒数字串与数字同口径（此前数字串落不进 validEnd，而 resets_at_ms 的数字串会转）
+  const ms = 1769875200000;
+  for (const expires of [ms, String(ms)]) {
+    const v = Q.normalizeStepfun({ plan: { state: "known", name: "p", subscription: { expires_at_ms: expires } },
+      quota: { credit_buckets: [ { type: "subscription", total: "10", remaining: "5" } ] } });
+    assert.equal(v.plan.validEnd, localDay(ms), "expires_at_ms=" + JSON.stringify(expires));
+  }
+  // 到期只认毫秒：日期串、玩具数值、超长数字串都不冒充日历日
+  for (const junk of ["12345", 12345, "not-a-date", "2027-01-01T00:00:00Z", "9".repeat(400)]) {
+    const v = Q.normalizeStepfun({ plan: { state: "known", name: "p", subscription: { expires_at_ms: junk } },
+      quota: { credit_buckets: [ { type: "subscription", total: "10", remaining: "5" } ] } });
+    assert.equal(v.plan.validEnd, "", "垃圾到期值不冒充日历日：" + JSON.stringify(junk).slice(0, 24));
+  }
+});
+
 test("stepfun: 401 classifies auth_failed and freezes until credential fingerprint change", async () => {
   const { client, calls } = stepfunClient({ cfgEntries: [["new-provider", "https://api.stepfun.com/step_plan", "bad-key"]] });
   client.noteProvider("new-provider");

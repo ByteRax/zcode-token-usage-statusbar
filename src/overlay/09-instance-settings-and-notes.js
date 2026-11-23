@@ -437,6 +437,15 @@
       }
       return align;
     }
+    /* 标题文本收尾（关闭 # 串）：去尾部空白 → 去关闭 # 串 → 再去其前空白。纯循环，无回溯。 */
+    function notesHeadingText(text) {
+      var end = text.length;
+      while (end > 0 && /\s/.test(text.charAt(end - 1))) end--;
+      var body = end;
+      while (body > 0 && text.charAt(body - 1) === "#") body--;
+      while (body > 0 && /\s/.test(text.charAt(body - 1))) body--;
+      return text.slice(0, body > 0 ? body : end);   // 整段只有 #（如「# #」）没有正文可剥：保留，不出空标题
+    }
     function notesBlocks(md) {
       var lines = String(md || "").replace(/\r\n?/g, "\n").split("\n");
       var blocks = [], para = null, list = null, quote = null, code = null, codeText = null;
@@ -455,8 +464,11 @@
         }
         if (/^\s*(```|~~~)/.test(line)) { closeAll(); code = "```"; codeText = null; continue; }
         if (/^\s*$/.test(line)) { closeAll(); continue; }
-        var heading = /^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
-        if (heading) { closeAll(); blocks.push({ type: "h", level: Math.min(3, heading[1].length), text: heading[2] }); continue; }
+        /* v445：标题行改「线性捕获 + JS 收尾」。旧式 /(.+?)\s*#*\s*$/ 对「# 字 + 长串空格 + 尾字」
+         * 是三次方回溯（4000 空格约 10 秒、65532 空格按外推约 70 分钟）；红点预取即同步渲染，
+         * 一条这样的标题行就能把渲染进程卡死。 */
+        var heading = /^(\s{0,3})(#{1,6})\s+([\s\S]+)$/.exec(line);   // [\s\S]：`.` 过不了 U+2028/2029，那会让 `.+` 回退成二次方重扫
+        if (heading) { closeAll(); blocks.push({ type: "h", level: Math.min(3, heading[2].length), text: notesHeadingText(heading[3]) }); continue; }
         if (/^\s{0,3}(?:-\s*){3,}$/.test(line) || /^\s{0,3}(?:\*\s*){3,}$/.test(line) || /^\s{0,3}(?:_\s*){3,}$/.test(line)) { closeAll(); blocks.push({ type: "hr" }); continue; }
         /* GFM 表格：表头行含管道 + 次行为合法分隔行才成表；表体收到空行或首个无管道行为止，
          * 单元格补齐/截断到表头列数（列钳即表头列数，行钳 200），其余行交回主循环重处理 */
@@ -826,8 +838,15 @@
       /* v190：注入开关关闭时数值行没有意义，整行隐藏 */
       var acRow = input && input.closest ? input.closest("label") : null;
       if (acRow) acRow.hidden = !!(state.enginePatch && state.enginePatch.enabled === false) || state.enginePatch == null;
+      acRefreshStatusLine();
+    }
+    /* v445：状态行（引擎状态 + 数值行按当前模式的实时校验提示）单独成函数——切模式
+     * 换算后只重算它，不回写输入框（整段 sync 会把换算结果抹回已保存值；而换算前的
+     * sync 是按新模式校验旧值，留下的「百分比需在 30-99」红字会挂在已合法的新值旁）。 */
+    function acRefreshStatusLine() {
       var node = panel.querySelector(".zu-ac-status");
       if (!node) return;
+      var input = panel.querySelector(".zu-ac-value"), modeSel = panel.querySelector(".zu-ac-mode");
       var ep = state.enginePatch;
       var text = "";
       if (!ep) text = L("主进程补丁模块未加载；完全重启 ZCode 后可用。", "Engine patch module not loaded; fully restart ZCode first.");
@@ -1595,38 +1614,46 @@
       box.innerHTML = html;
     }
     /* ---------- issue #399 千问设备码登录（面板侧）：start → openExternal 授权页 →
-     * 每 2s 轮询 state 直至 done/failed；行节点失连（面板重建/实例销毁）即停。 ---------- */
-    var qianwenSignin = { timer: 0, waiting: false };
+     * 每 2s 轮询 state 直至 done/failed。轮询不绑定按钮节点：源列表按签名整表重建（点击
+     * 写入的「等待浏览器授权…」反馈本身就会翻转签名，面板重开/切语言也重建），旧节点一
+     * 断连，旧实现的轮询就静默停摆、起流回执也不再开授权页，反馈卡在「等待」。存活只看
+     * waiting + 代际 gen（新一轮点击、实例销毁都让旧回调自弃）；面板关着也照常轮询，
+     * done/failed 的反馈写进 sourceFeedback，重开面板随行重建显示。 ---------- */
+    var qianwenSignin = { timer: 0, waiting: false, gen: 0 };
     function stopQianwenPoll() {
+      qianwenSignin.gen += 1;
       if (qianwenSignin.timer) { clearTimeout(qianwenSignin.timer); qianwenSignin.timer = 0; }
       qianwenSignin.waiting = false;
     }
-    function pollQianwenState(btn) {
+    function pollQianwenState(gen) {
       qianwenSignin.timer = setTimeout(function () {
         qianwenSignin.timer = 0;
-        if (!btn || !btn.isConnected || !qianwenSignin.waiting) return;
+        if (gen !== qianwenSignin.gen || !qianwenSignin.waiting) return;
         pluginRequest("quota-qianwen-signin-state", {}, function (res) {
-          if (!btn.isConnected || !qianwenSignin.waiting) return;
+          if (gen !== qianwenSignin.gen || !qianwenSignin.waiting) return;
           if (!res || res.ok !== true) { stopQianwenPoll(); showSourceFeedback("qianwen", true, false, L("登录状态查询不可用", "Sign-in status unavailable")); return; }
-          if (res.state === "pending") { pollQianwenState(btn); return; }
+          if (res.state === "pending") { pollQianwenState(gen); return; }
           stopQianwenPoll();
           if (res.state === "done") showSourceFeedback("qianwen", false, false, res.account ? L("已登录 ", "Signed in: ") + res.account : L("已登录", "Signed in"));
           else if (res.state === "failed") showSourceFeedback("qianwen", true, false, res.error || L("登录失败", "Sign-in failed"));
-          /* idle：流被取消或主进程刚重启，静默停止不给假错误 */
+          /* idle：流已不在（关额度开关会取消在途登录；主进程重启后同样如此）——给中性终态，
+           * 否则行上一直停在「等待浏览器授权…」 */
+          else showSourceFeedback("qianwen", false, false, L("登录已取消", "Sign-in cancelled"));
         });
       }, 2000);
     }
-    function onQianwenSigninClick(btn) {
+    function onQianwenSigninClick() {
       stopQianwenPoll();
       showSourceFeedback("qianwen", false, true, L("等待浏览器授权…", "Waiting for approval in the browser…"));
+      var gen = qianwenSignin.gen;
       pluginRequest("quota-qianwen-signin", {}, function (res) {
-        if (!btn.isConnected) return;
+        if (gen !== qianwenSignin.gen) return;   // 回执迟到：期间又点了一次或实例已销毁，旧流作废
         if (res && res.ok && res.url) {
           var zu = window.zcode;   // 客户端 openExternal 桥优先（系统默认浏览器），window.open 被内置浏览器接管仅兜底
           if (zu && typeof zu.openExternal === "function") zu.openExternal(res.url);
           else window.open(res.url, "_blank", "noopener");
           qianwenSignin.waiting = true;
-          pollQianwenState(btn);
+          pollQianwenState(gen);
         } else {
           /* 主进程回执是英文固定串：已知串映射本地化，未知串脱敏兜底（错误正文可能来自桥层） */
           var msg = String((res && res.error) || "");
@@ -2453,7 +2480,7 @@
         return;
       }
       var signinBtn = e.target.closest && e.target.closest(".zu-src-signin");
-      if (signinBtn) { onQianwenSigninClick(signinBtn); return; }   // issue #399：千问设备码登录
+      if (signinBtn) { onQianwenSigninClick(); return; }   // issue #399：千问设备码登录（不传节点：轮询按代际存活，见 onQianwenSigninClick）
     });
     gear.addEventListener("click", function (e) {
       e.stopPropagation();
@@ -2938,7 +2965,7 @@
          * 仍不提交——改值后由 input change 落盘。换算必须在 sync 之后：sync 会把输入框回写为
          * 已保存配置的回显（真机实报：先换算会被 sync 抹回原值，65→切 Token 数仍显 65）。 */
         syncAutoCompactInputs();
-        try { acConvertOnModeSwitch(t2); } catch (eAcCvt) { try { window.__zusageDiag.acPanelErr = String((eAcCvt && eAcCvt.stack) || eAcCvt); } catch (_) { } }
+        try { acConvertOnModeSwitch(t2); acRefreshStatusLine(); } catch (eAcCvt) { try { window.__zusageDiag.acPanelErr = String((eAcCvt && eAcCvt.stack) || eAcCvt); } catch (_) { } }
         return;
       }
       if (t2.type === "checkbox") {

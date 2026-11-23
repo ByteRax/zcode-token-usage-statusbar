@@ -41,6 +41,9 @@
   if (window.__zusageOverlay) return;
   /* 代际守卫保底；正常热更新先主动释放上一代资源。 */
   if (window.__zusageDispose) window.__zusageDispose();
+  /* v445：上一代 dispose 刚把「取消在途增强」推进旧队列；主桥按 tick 取走前，若旧队列被下方的
+   * 整表重置换成空数组，取消就丢了（主进程那条在途请求只能等超时）。先留引用，重置后只把 cancel 带回来。 */
+  var prevRequests = window.__zusagePluginRequests;
   window.__zusageOverlay = true;
   var disposed = false, coordinatorTimer = 0, bootTimer = 0;
   /* 只有远控接收端在注入前显式开启；帧内字段不能改变普通桌面的身份选择。 */
@@ -1000,6 +1003,11 @@
     }
   };
   window.__zusagePluginRequests = [];
+  for (var ci = 0; Array.isArray(prevRequests) && ci < prevRequests.length; ci++) {
+    if (prevRequests[ci] && prevRequests[ci].action === "prompt-enhance-cancel" && typeof prevRequests[ci].requestId === "string") {
+      window.__zusagePluginRequests.push(prevRequests[ci]);
+    }
+  }
   var pluginRequestSeq = 0, pluginRequestCallbacks = {};
   function pluginRequest(action, extra, done) {
     var o = { action: action };

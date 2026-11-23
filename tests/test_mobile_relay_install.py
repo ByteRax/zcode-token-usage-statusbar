@@ -224,6 +224,51 @@ class MobileInstallTests(unittest.TestCase):
                 self.assertEqual(list(self.root.glob(".mobile-relay-*")), [])
         self.monitor.assert_not_called()
 
+    def test_mobile_publish_rename_denied_leaves_no_journal_residue(self):
+        # 复盘 MAJOR：不 mock publish，让真实 publish_external_pending 在 journal 落定后
+        # rename(stage→TMP) 被拒（Windows 杀软占住刚写完的 stage）。此前 except 只删 stage，
+        # 留下 cancelled+publishing 的 sidecar：之后每次 SessionStart 都被判「已有待替换
+        # 操作」永久 deferred，提示却写「完全退出后会自动完成」，而没有任何包可收尾。
+        # 锁两层：失败当轮不留残留（也不写重启标记）；占用解除后下一轮照常排定。
+        real_replace = os.replace
+
+        def deny_asar_and_tmp(src, dst):
+            if Path(dst) in (self.pi.ASAR, self.pi.TMP):
+                raise PermissionError("locked")
+            return real_replace(src, dst)
+
+        def deny_asar(src, dst):
+            if Path(dst) == self.pi.ASAR:
+                raise PermissionError("locked")
+            return real_replace(src, dst)
+        for owner in (self.installer, self.standalone):
+            with self.subTest(owner=owner.__name__):
+                # 每个 owner 自带复位：前一个 subTest 断言失败时不把残留 monitor 调用与 pending 带进下一个
+                self.monitor.reset_mock()
+                for leftover in (self.pi.TMP, self.pi.TMP_META):
+                    leftover.unlink(missing_ok=True)
+                (self.runtime / ".plugin-restart-required").unlink(missing_ok=True)
+                self._write_legacy_asar()   # 前一个 owner 已收尾成 patched：复位为旧代目标
+                with mock.patch.object(os, "replace", side_effect=deny_asar_and_tmp), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    result = owner.ensure_mobile_relay_stash(self.pi)
+                self.assertEqual(result["status"], "skipped-error")
+                self.assertIn("pending publish failed", result["detail"])
+                self.assertFalse(self.pi.TMP.exists())
+                self.assertFalse(self.pi.TMP_META.exists())
+                self.assertIsNone(self.pi.pending_operation())
+                self.assertEqual(list(self.root.glob(".mobile-relay-*")), [])
+                self.assertFalse((self.runtime / ".plugin-restart-required").exists(),
+                                 "转存没成功不得记 pending-install 标记（无包可收尾，红点会常亮）")
+                self.monitor.assert_not_called()
+                # 占用解除后的下一轮：不再 deferred，照常转存排定并收尾
+                with mock.patch.object(os, "replace", side_effect=deny_asar), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(owner.ensure_mobile_relay_stash(self.pi)["status"], "pending")
+                self.assertEqual(self.pi.pending_operation(), "install")
+                self.assertTrue(self.pi.finalize_tmp())
+                self.assertEqual(mobile.check_deployed(self.target)["uplink_generation"], 2)
+
     def test_mobile_quiet_monitor_env_set_and_restored_for_hook_chain(self):
         # 外层环境可能自带这两个变量（维护机 shell 预设过 ZUSAGE_MONITOR_QUIET=1）：
         # patch.dict 隔离出受控前值，测试不随执行环境漂移

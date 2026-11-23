@@ -8,7 +8,7 @@ SessionStart、显式插件安装和独立安装在状态条已注入或安装�
 
 ## 保守串行与状态
 
-仅 mobile relay 路径在目标锁内检查 pending 并尝试就地补丁。只要存在待替换包或 sidecar（包括 install、remove、损坏、孤立或 publishing/Busy 状态），返回 `deferred`，不读取、合并、重发、修复或改写已有待替换包及 journal。锁不可用同样延后。无 pending 时允许就地替换；`os.replace` 被拒（Windows 客户端运行中持有 asar、杀毒扫描、受保护目录）时不再要求手动重跑：把已构建的 stage 经 `patch_install.publish_external_pending` 转存为待替换包（renderer 桥 v359 同款链；publish 自持目标锁，必须在 `pi._target_lock()` 之外调用，锁内调用会死锁），插件链先按 `entry_bytes_of(stage)` 预取入口指纹、转存成功后记录 `pending-install` 重启标记（指纹取不到宁缺勿假；独立链无 `restart_notice.py` 分发，不写标记，终端输出即用户提示），并 `launch_monitor` 拉起收尾监控，返回 `pending`——用户完全退出 ZCode 后自动收尾生效。publish 在锁内拒绝覆盖 remove 意图（PendingTmpError）；转存失败一律由 publish 负责清理 stage，调用方返回 `skipped-error`（publish 的 finally 在锁体内，锁获取超时等锁外前置失败的窗口由调用方兜底清理 stage）。已在位时只读检查，不创建 stage、清扫文件或重写整包。独立 `mobile_relay_patch.py apply` 是手动兜底通道，契约不变：replace-failed 只清理本次 stage 并返回 `deferred`，不发布 pending。
+仅 mobile relay 路径在目标锁内检查 pending 并尝试就地补丁。只要存在待替换包或 sidecar（包括 install、remove、损坏、孤立或 publishing/Busy 状态），返回 `deferred`，不读取、合并、重发、修复或改写已有待替换包及 journal；唯一例外是进程被杀留下的无包空壳 journal（`cancelled`+`publishing` 且 TMP 不在），超龄后先回收再判定。锁不可用同样延后。无 pending 时允许就地替换；`os.replace` 被拒（Windows 客户端运行中持有 asar、杀毒扫描、受保护目录）时不再要求手动重跑：把已构建的 stage 经 `patch_install.publish_external_pending` 转存为待替换包（renderer 桥 v359 同款链；publish 自持目标锁，必须在 `pi._target_lock()` 之外调用，锁内调用会死锁），插件链先按 `entry_bytes_of(stage)` 预取入口指纹、转存成功后记录 `pending-install` 重启标记（指纹取不到宁缺勿假；独立链无 `restart_notice.py` 分发，不写标记，终端输出即用户提示），并 `launch_monitor` 拉起收尾监控，返回 `pending`——用户完全退出 ZCode 后自动收尾生效。publish 在锁内拒绝覆盖 remove 意图（PendingTmpError）；转存失败一律由 publish 负责清理 stage，调用方返回 `skipped-error`（publish 的 finally 在锁体内，锁获取超时等锁外前置失败的窗口由调用方兜底清理 stage）。已在位时只读检查，不创建 stage、清扫文件或重写整包。独立 `mobile_relay_patch.py apply` 是手动兜底通道，契约不变：replace-failed 只清理本次 stage 并返回 `deferred`，不发布 pending。
 
 移除路径与安装共用同一把目标锁与同一份 stage 约定：只清理由本次调用创建的 `.mobile-relay-*` stage，绝不碰其他调用留下的同名文件；成功/absent 由调用方视为完成，`deferred` 或失败不是卸载失败。
 
@@ -35,7 +35,7 @@ SessionStart 的兼容性提示优先于手机中继未就绪提示：兼容性�
 ## 验收
 
 - 已注入旧代 relay 的隔离 asar 可升级，现有注入尾缀保留；已经是当前代时不复制或重写整包。
-- 无 pending 时就地替换；`os.replace` 被拒时 stage 经 publish 转存为待替换包（`pending`，TMP+META 在位、operation=install、目标 asar 字节不变、无 `.mobile-relay-*` 残留），写入带 stage 入口指纹的 `pending-install` 标记并拉起监控；finalize 后补丁落位。转存失败（含 remove 冲突）返回 `skipped-error`，stage 由 publish 清理，不落地半发布状态。
+- 无 pending 时就地替换；`os.replace` 被拒时 stage 经 publish 转存为待替换包（`pending`，TMP+META 在位、operation=install、目标 asar 字节不变、无 `.mobile-relay-*` 残留），写入带 stage 入口指纹的 `pending-install` 标记并拉起监控；finalize 后补丁落位。转存失败（含 remove 冲突）返回 `skipped-error`，stage 由 publish 清理，不落地半发布状态。publish 在 journal 落定后以普通异常失败（rename 被拒、终版写入失败）时由 `patch_install._publish_pending` 自行回滚到发布前——不留 sidecar 或半发布包，本链据此在占用解除后的下一次 SessionStart 重新排定，而不是被残留 journal 永久判成「已有待替换操作」。`KeyboardInterrupt` 等硬中断同样回滚；只有进程被杀（SIGKILL）留下的无包空壳 journal 会残留，超龄（`STALE_STAGE_SECONDS`）后由 `patch_install.reclaim_stale_journal` 回收，本链判定 `deferred` 之前先做这一步。rename 后已有旧 pending 的现场保留 journal，交下一次发布认领重发。
 - install、remove、损坏、孤立和 publishing/Busy 以及锁忙均不触碰已有包或 journal；renderer 原有发布、监控及失败清理回归不变。
 - 首次注入 pending 时不叠补丁；bridge pending 时 mobile 延后至收尾后的下一次 SessionStart，推送开关开启时提示等待自动收尾补装、不出现手动命令文案（未开启时静默，见下方门控条）。
 - 推送开关开启时的提示分流：`pending`=已排定自动完成（无需重试）；`existing pending operation`/`bridge pending`=等待自动补装（无手动命令）；其余 `deferred`=完全退出+独立命令；`patched` CLI 打印已写入确认（运行中=要求完全重启）；`skipped-error/unknown` SessionStart 静默。

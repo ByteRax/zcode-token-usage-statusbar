@@ -699,6 +699,30 @@ test("custom provider: official host (DeepSeek) hits its balance endpoint; view 
   assert.equal(v.balance.parts, undefined, "granted=0 不拆分（parts 字段缺省，与 0 区分）");
 });
 
+test("custom provider: an enc: envelope in provider_config is not a credential — nothing is sent (gate mirrors model-puller, issue #440)", async () => {
+  /* 复盘第 2 轮（增强链）：额度链读 provider_config 时此前不拦 enc:——密文会原样进 Authorization
+   * 发往中转或官方域，换回 401 后冻结到凭据指纹变化。与 model-puller 规则路径同闸：按未配置处理。 */
+  for (const key of ["enc:v2:os:k:iv.tag.ct", "  enc:v2:os:k:iv.tag.ct "]) {
+    const { client, calls } = adapterClient({ cfgEntries: [["ds", "https://api.deepseek.com/v1", key]] });
+    client.noteProvider("ds");
+    client.tick();
+    assert.equal(calls.length, 0, JSON.stringify({ key, urls: calls.map((c) => c.url) }));
+    assert.equal(client.view().status, "not_configured", JSON.stringify({ key, status: client.view().status }));
+  }
+  /* 真实 key 两侧的空白被裁掉再发（宿主 schema 不 trim，粘贴常带尾随空白）： */
+  const { client, calls } = adapterClient({ cfgEntries: [["ds", "https://api.deepseek.com/v1", "  sk-ds  "]] });
+  client.noteProvider("ds");
+  client.tick();
+  assert.equal(calls.length, 1, JSON.stringify(calls.map((c) => c.url)));
+  assert.equal(calls[0].url, "https://api.deepseek.com/user/balance");
+  assert.equal(calls[0].auth, "Bearer sk-ds", "padded real key is trimmed before it is sent");
+  calls[0].d.resolve(fakeRes(200, JSON.stringify({ is_available: true, balance_infos: [
+    { currency: "CNY", total_balance: "1.00", granted_balance: "0.00", topped_up_balance: "1.00" },
+  ] })));
+  await flush();
+  assert.equal(client.view().status, "ok");
+});
+
 test("custom provider: OpenAI legacy gateway with a finite pool computes remaining; unlimited pool stays hidden", async () => {
   const mk = (hard, totalUsage) => {
     const client = Q.createQuotaClient({
@@ -741,9 +765,9 @@ function adapterClient({ cfgEntries, secrets, env } = {}) {
       return customCfgFile(cfgEntries || []);
     },
     customCfgPath: "/virtual/provider_config.json",
-    fetchImpl: (url) => {
+    fetchImpl: (url, opts) => {
       const d = deferred();
-      calls.push({ url, d });
+      calls.push({ url, d, auth: opts && opts.headers && (opts.headers.authorization || opts.headers.Authorization) });
       return d.promise;
     },
   });
@@ -2936,6 +2960,154 @@ test("qianwen sign-in: cancel drops state and stops the poll chain", async () =>
   client.dispose();
 });
 
+const QN_CODE = (fields) => JSON.stringify(Object.assign({ Data: Object.assign({ Token: "devtok1", ExpiresIn: 300,
+  VerificationUrl: "https://account.qianwenai.com/sso/OIDCAuth?auth_token=devtok1", Interval: 0.001 }, fields), Success: true }));
+const QN_POLL_PENDING = JSON.stringify({ Data: { Status: "authorization_pending" }, Success: true });
+const QN_POLL_COMPLETE = JSON.stringify({ Data: { Status: "complete",
+  Credentials: { AccessToken: "acc-9", ExpireTime: "2099-01-02T03:04:05Z", User: { Id: "u1", Email: "a@example.com" } } }, Success: true });
+
+test("qianwen sign-in: authorization URL is judged on the parsed URL, handed out normalized, and cleared once the flow ends", async () => {
+  const cases = [
+    { raw: "  https://account.qianwenai.com/sso/OIDCAuth?auth_token=devtok1\n", want: "https://account.qianwenai.com/sso/OIDCAuth?auth_token=devtok1" },
+    { raw: "https://account.qianwenai.com/x\t.evil.com", want: "https://account.qianwenai.com/x.evil.com" },   // 控制字符被解析器吃掉，不随原始串出门
+    { raw: "https://evil.com@account.qianwenai.com/sso?auth_token=devtok1", want: "" },   // userinfo 形（地址栏可误导）拒
+    { raw: "http://account.qianwenai.com/sso?auth_token=devtok1", want: "" },             // 明文协议拒（设备码不得走 http）
+    { raw: "https://qianwenai.com/sso", want: "" },                                        // 裸域拒
+  ];
+  for (const c of cases) {
+    const client = qnClient({
+      fetchImpl: () => Promise.resolve(fakeRes(200, QN_CODE({ VerificationUrl: c.raw }))),
+    });
+    const r = await client.qianwenSignInStart();
+    if (!c.want) {
+      assert.equal(r.ok, false, "拒绝: " + JSON.stringify(c.raw));
+      assert.equal(r.url, undefined, "拒绝时不回任何地址");
+      assert.equal(client.qianwenSignInState().state, "failed");
+    } else {
+      assert.equal(r.ok, true, JSON.stringify(c.raw));
+      assert.equal(r.url, c.want, "交给 openExternal 的是解析归一后的 href");
+      assert.equal(client.qianwenSignInState().url, c.want, "pending 态取到同一归一地址");
+    }
+    client.dispose();
+  }
+  // done 之后地址清空：授权页 URL 带设备码 auth_token，终态不再对外提供
+  const calls = [];
+  const client = qnClient({
+    fetchImpl: (url) => { const d = deferred(); calls.push({ url: String(url), d }); return d.promise; },
+    saveSecrets: () => { },
+  });
+  client.qianwenSignInStart();
+  await waitFor(() => calls.length >= 1);
+  calls[0].d.resolve(fakeRes(200, QN_CODE()));
+  await waitFor(() => calls.length >= 2, 3000);
+  assert.ok(client.qianwenSignInState().url, "前置：pending 态有地址");
+  calls[1].d.resolve(fakeRes(200, QN_POLL_COMPLETE));
+  await waitFor(() => client.qianwenSignInState().state === "done", 3000);
+  assert.equal(client.qianwenSignInState().url, "", "done 后地址清空");
+  client.dispose();
+});
+
+test("qianwen sign-in: slow_down lengthens the interval and the longer interval persists (RFC 8628)", async () => {
+  const calls = [];
+  const client = qnClient({
+    fetchImpl: (url) => { const d = deferred(); calls.push({ url: String(url), t: Date.now(), d }); return d.promise; },
+  });
+  client.qianwenSignInStart();
+  await waitFor(() => calls.length >= 1);
+  calls[0].d.resolve(fakeRes(200, QN_CODE({ Interval: 0.1 })));   // 基准间隔 100ms
+  await waitFor(() => calls.length >= 2, 3000);
+  calls[1].d.resolve(fakeRes(200, JSON.stringify({ Data: { Status: "slow_down" }, Success: true })));
+  await waitFor(() => calls.length >= 3, 3000);                  // 期望 ≥ 200ms
+  calls[2].d.resolve(fakeRes(200, JSON.stringify({ Data: { Status: "slow_down" }, Success: true })));
+  await waitFor(() => calls.length >= 4, 3000);                  // 期望 ≥ 400ms
+  calls[3].d.resolve(fakeRes(200, QN_POLL_PENDING));
+  await waitFor(() => calls.length >= 5, 3000);                  // 期望仍 ≥ 400ms（不回落基准）
+  client.dispose();
+  const gap = (i) => calls[i + 1].t - calls[i].t;                 // 定时器只会晚不会早：下界断言不受机器负载影响
+  assert.ok(gap(1) >= 170, "slow_down 后间隔翻倍到 ≥200ms，实际 " + gap(1));
+  assert.ok(gap(2) >= 370, "再次 slow_down 继续翻倍到 ≥400ms，实际 " + gap(2));
+  assert.ok(gap(3) >= 370, "加长后的间隔沿用、不回落基准，实际 " + gap(3));
+});
+
+test("qianwen sign-in: a complete reply arriving after cancel is discarded (no token saved)", async () => {
+  const saves = [];
+  const calls = [];
+  const client = qnClient({
+    fetchImpl: (url) => { const d = deferred(); calls.push({ url: String(url), d }); return d.promise; },
+    saveSecrets: (mutate) => { const sec = { sources: {} }; mutate(sec.sources); saves.push(sec.sources); },
+  });
+  client.qianwenSignInStart();
+  await waitFor(() => calls.length >= 1);
+  calls[0].d.resolve(fakeRes(200, QN_CODE()));
+  await waitFor(() => calls.length >= 2, 3000);
+  client.qianwenSignInCancel();
+  calls[1].d.resolve(fakeRes(200, QN_POLL_COMPLETE));   // 用户取消后平台才回 complete
+  await waitMs(300);
+  assert.equal(saves.length, 0, "取消后迟到的 complete 不落盘");
+  assert.equal(client.qianwenSignInState().state, "idle");
+  assert.equal(calls.length, 2, "也不再续拍");
+  client.dispose();
+});
+
+test("qianwen sign-in: each poll's 15s kill timer is cleared once that poll settles", async () => {
+  const realSet = globalThis.setTimeout, realClear = globalThis.clearTimeout;
+  const kills = new Set(), cleared = new Set();
+  globalThis.setTimeout = function (fn, ms, ...rest) { const h = realSet.call(globalThis, fn, ms, ...rest); if (ms === 15 * 1000) kills.add(h); return h; };
+  globalThis.clearTimeout = function (h) { cleared.add(h); return realClear.call(globalThis, h); };
+  const calls = [];
+  const saves = [];
+  let client;
+  try {
+    client = qnClient({
+      fetchImpl: (url) => { const d = deferred(); calls.push({ url: String(url), d }); return d.promise; },
+      saveSecrets: (mutate) => { const sec = { sources: {} }; mutate(sec.sources); saves.push(sec.sources); },
+    });
+    client.qianwenSignInStart();
+    await waitFor(() => calls.length >= 1);
+    calls[0].d.resolve(fakeRes(200, QN_CODE()));
+    await waitFor(() => calls.length >= 2, 3000);
+    calls[1].d.resolve(fakeRes(200, QN_POLL_PENDING));
+    await waitFor(() => calls.length >= 3, 3000);
+    calls[2].d.resolve(fakeRes(200, QN_POLL_COMPLETE));
+    await waitFor(() => saves.length >= 1, 3000);
+  } finally {
+    globalThis.setTimeout = realSet;
+    globalThis.clearTimeout = realClear;
+    if (client) client.dispose();
+  }
+  assert.ok(kills.size >= 2, "每拍都挂了 15s 兜底，实际 " + kills.size);
+  assert.ok([...kills].every((h) => cleared.has(h)), "结算后兜底定时器全部清掉（不悬挂事件循环）");
+});
+
+test("qianwen: negative window percentage is parse_error (never rendered as 0%); server errorMsg never reaches the error text", async () => {
+  // 每次换一个 token：失败态按凭据指纹冻结，同指纹的下一个 client 实例不会再发请求
+  const run = async (usageBody, token) => {
+    const calls = [];
+    const client = qnClient({
+      cfgEntries: [["p1", QN_BASE, "sk-sp-k"]],
+      secrets: { sources: { qianwen: { token } } },
+      fetchImpl: (url) => { const d = deferred(); calls.push({ url: String(url), d }); return d.promise; },
+    });
+    client.noteProvider("p1");
+    client.tick();
+    calls[0].d.resolve(fakeRes(200, JSON.stringify({ code: "200", successResponse: true, data: { cliAccessToken: "cli-1" } })));
+    await flush();
+    calls[1].d.resolve(fakeRes(200, usageBody));
+    await flush();
+    const row = JSON.parse(JSON.stringify(client.view().sources["qianwen:p1"]));
+    client.dispose();
+    return row;
+  };
+  const negative = await run(JSON.stringify({ code: "200", successResponse: true, data: { success: true,
+    DataV2: { data: { data: { per1WeekPercentage: -0.1 } } } } }), "acc-5");
+  assert.equal(negative.status, "parse_error", "负值窗口不解析、不冒充 0%");
+  const boom = await run(JSON.stringify({ code: "500", successResponse: false, data: { success: false,
+    errorCode: "ConsoleBoom", errorMsg: "SENTINEL_SERVER_TEXT token=abc" } }), "acc-6");
+  assert.equal(boom.status, "network_error");
+  assert.ok(!JSON.stringify(boom).includes("SENTINEL_SERVER_TEXT"), "服务端 errorMsg 不进错误链: " + JSON.stringify(boom));
+  assert.ok(/ConsoleBoom/.test(JSON.stringify(boom)), "只回 errorCode，足以定位");
+});
+
 test("qianwen sign-in: complete reply tolerated in lowercase, numeric and BOM forms", async () => {
   const forms = [
     { body: JSON.stringify({ status: "COMPLETE", credentials: { access_token: "a4", expire_time: "2026-11-16T10:33:07Z", user: { id: "u4", email: "f@x.com" } } }), token: "a4", account: "f@x.com" },
@@ -3139,4 +3311,19 @@ test("qianwen sign-in: saveSecrets failure ends failed instead of reporting done
   await waitFor(() => client.qianwenSignInState().state === "failed", 3000);
   assert.ok(client.qianwenSignInState().error.indexOf("保存失败") >= 0);
   client.dispose();
+});
+
+test("retro: both fetch gateways in the bundled quota client pin redirect \"manual\" (credentials never ride a 3xx)", () => {
+  /* 额度链全部请求只经两个 fetch 入口；跟随重定向会把 Authorization/cookie 带到别的源。
+   * 结构锁扫拼接产物（行为锁在各自适配器用例里）。 */
+  const { callSites, requiredModules } = require("./helpers/js-scan.cjs");
+  const src = require("fs").readFileSync(path.join(__dirname, "..", "quota-client.cjs"), "utf8");
+  const calls = callSites(src, "fetchImpl");
+  assert.equal(calls.length, 2, "额度链 fetch 入口数: " + calls.length);
+  for (const c of calls) assert.match(c.text, /redirect: "manual"/, "line " + c.line + " 必须钉 redirect:manual");
+  /* 网络入口只有注入的 fetchImpl：不得直调全局 fetch，也不得自带 http/net 模块 */
+  assert.equal(callSites(src, "fetch").length, 0, "不得直调 fetch(");
+  for (const mod of requiredModules(src)) {
+    assert.ok(["crypto", "fs", "os", "path"].includes(mod), "意外的模块依赖: " + mod);
+  }
 });

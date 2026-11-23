@@ -722,23 +722,90 @@ def cancel_pending_install():
         _cancel_pending_install()
 
 
+def _tmp_stamp():
+    """TMP 的廉价身份戳（dev/ino/size/mtime…）；不存在或非普通文件返回 None。"""
+    try:
+        return file_stamp(TMP)
+    except (OSError, ValueError):
+        return None
+
+
+def _rollback_publication(old_stamp, previous):
+    """发布没落成时把盘面还原到发布前。是否已 rename 以盘上 TMP 的身份戳为准（发布前
+    记下的 old_stamp），不看调用方的标志位——信号可以落在 os.replace 返回之后、标志位
+    赋值之前，按标志位回滚会把新包留成无主 TMP。没 rename：无旧 pending 删 journal，
+    有则原样写回 previous。rename 后且原先无 pending：新包已落 TMP 但终版 sidecar 没写成，
+    连同 journal 一并撤掉，下次按需重建（待替换包是可再生的派生物）。rename 后且原先有
+    pending：旧包已被 rename 覆盖、无从还原，保留 journal 交 _owned_tmp_metadata 认领
+    （下一次 publish 重发）。新包撤不掉时同样保留 journal 作所有权凭证。"""
+    try:
+        if _tmp_stamp() != old_stamp:
+            if previous is not None:
+                return
+            try:
+                TMP.unlink(missing_ok=True)
+            except OSError:
+                return
+            try:
+                TMP_META.unlink(missing_ok=True)
+            except OSError:
+                pass   # journal 留成无包的 publishing 空壳：由 reclaim_stale_journal 超龄回收
+        elif previous is None:
+            TMP_META.unlink(missing_ok=True)
+        else:
+            _atomic_tmp_metadata(previous)
+    except OSError:
+        pass
+
+
 def _publish_pending(stage, source, operation, previous):
     """校验 stage 后按 journal→原子发布→sidecar 的次序落成 TMP（prepare 与桥链共用）。"""
     meta = _checked_tmp_metadata(stage, source, operation)
     # Two files cannot be atomically published together. Persist a cancelled
     # ownership journal first, so any interruption is safe and recoverable.
+    old_stamp = _tmp_stamp()
     journal = dict(meta, operation="cancelled", publishing=True)
     if previous is not None and TMP.exists():
         journal["previous_tmp"] = source_fingerprint(TMP)
     _atomic_tmp_metadata(journal)
-    _same_stamp(ASAR, source)
-    _same_stamp(stage, meta["tmp"])
-    os.replace(stage, TMP)
-    meta["tmp"] = source_fingerprint(TMP)
-    _same_stamp(ASAR, source)
-    _atomic_tmp_metadata(meta)
+    try:
+        _same_stamp(ASAR, source)
+        _same_stamp(stage, meta["tmp"])
+        os.replace(stage, TMP)
+        meta["tmp"] = source_fingerprint(TMP)
+        _same_stamp(ASAR, source)
+        _atomic_tmp_metadata(meta)
+    except BaseException:
+        # 没落成就还原盘面，不留「cancelled+publishing」半发布残留——只读 sidecar 就让位的
+        # 调用链（手机中继补丁）会因此永久 deferred，提示「会自动完成」却无包可收尾。
+        # 普通异常（rename 被杀软拒绝、来源 stamp 失效、写终版失败）与键盘中断/退出同待遇：
+        # 此前 BaseException 留 journal「作崩溃恢复凭证」，但代码里没有消费它的恢复链，
+        # 留下的只是残留。进程被 SIGKILL 走不到这里，那种残留由 reclaim_stale_journal 回收。
+        _rollback_publication(old_stamp, previous)
+        raise
     return meta
 
+
+def reclaim_stale_journal():
+    """回收被硬杀的发布留下的空 journal（cancelled+publishing、无 TMP、早于
+    STALE_STAGE_SECONDS）。发布窗口只有秒级且全程持目标锁：锁内看到超龄的 publishing
+    journal 必然无主；没有 TMP 就没有可收尾的包，留着只会让只读 sidecar 让位的调用链
+    （手机中继补丁）永久 deferred。带 TMP 的（rename 后被杀）不在此列——那是可认领的完整
+    包，交 _owned_tmp_metadata 由下一次 publish 重发；空壳对 publish 本身无碍（同样被认领后
+    改写），所以只有「只读 sidecar 就让位」的链需要在让位前调用本函数。调用方必须已持有
+    _target_lock。"""
+    try:
+        meta = _load_tmp_metadata()
+        if meta.get("operation") != "cancelled" or meta.get("publishing") is not True:
+            return False
+        if TMP.exists() or TMP.is_symlink():
+            return False
+        if time.time() - TMP_META.lstat().st_mtime <= STALE_STAGE_SECONDS:
+            return False
+        TMP_META.unlink()
+    except (OSError, PendingTmpError):
+        return False
+    return True
 
 STALE_STAGE_SECONDS = 600
 

@@ -100,6 +100,37 @@ function fixtureLegacyMixed() {
       msl: [[0, 100], [1, 400]], c: 0.02, cf: 1 }] };
 }
 
+// v445 降级帧夹具一：turns 完全不带 msl（v384 之前远端 zusage.py 的帧形），今天 3 个小时
+// 与近 7 天 3 个自然日都有整轮值。t 与线格式一致=相对上一行完成时刻的增量（首行绝对），
+// b=绝对开始时刻（同 fixture18）
+function fixtureLegacyNoMsl() {
+  const at = (day, h) => new Date(2026, 10, day, h).getTime();
+  let prev = 0;
+  const turns = [[3, 10], [4, 15], [5, 9], [5, 10], [5, 11]].map(([day, h]) => {
+    const abs = at(day, h);
+    const row = { s: 0, t: abs - prev, b: abs - 60000, out: 500, ms: 4000, i: 160, o: 500, n: 2, c: 0.02, cf: 1 };
+    prev = abs;
+    return row;
+  });
+  return { sid: 's', source: 'local', truncated: false, sids: ['s'], snames: ['S'],
+    pids: [['p', 'P']], mnames: ['GLM-A', 'Claude-B'], mkeys: [KEYS.a, KEYS.b], turns };
+}
+
+// v445 降级帧夹具二：二元组 msl 多轮（今天 3 个小时），用于叠「只选一个模型」筛选
+function fixtureLegacyMulti() {
+  const at = (day, h) => new Date(2026, 10, day, h).getTime();
+  let prev = 0;
+  const turns = [[5, 9], [5, 10], [5, 11]].map(([day, h]) => {
+    const abs = at(day, h);
+    const row = { s: 0, t: abs - prev, b: abs - 60000, out: 500, ms: 4000, i: 160, o: 500, n: 2,
+      msl: [[0, 100], [1, 400]], c: 0.02, cf: 1 };
+    prev = abs;
+    return row;
+  });
+  return { sid: 's', source: 'local', truncated: false, sids: ['s'], snames: ['S'],
+    pids: [['p', 'P']], mnames: ['GLM-A', 'Claude-B'], mkeys: [KEYS.a, KEYS.b], turns };
+}
+
 // 18 轮单模型夹具（数值稀疏化用）
 function fixture18() {
   const t0 = new Date(2026, 10, 5, 8).getTime();
@@ -719,6 +750,50 @@ test('v389 §13.2 槽位卡: today 空小时/week 空日出「无有效速度记
   assert.equal((p8.match(/zu-sv3-mi"/g) || []).length, 6, '模型明细 ≤6 行');
   assert.match(p8, /zu-sv3-more">另有 2 个模型/, '截断汇总行');
   assert.match(p8, /data-i="2"/, '卡根携带悬停序号');
+});
+
+// ---------- ⑪b v445 降级帧：整轮值线不过 models 门（today / week 不得假空态） ----------
+test('v445 降级帧: today/week 无模型明细（帧不带 msl / 二元组 msl 叠单选筛选）仍画整轮值中性线，不出空态', () => {
+  const ctx = makeCtx();
+  const noMsl = fixtureLegacyNoMsl();
+  for (const period of ['today', 'week']) {
+    const an = analyze(ctx, noMsl, { range: 'session', period, sid: 's' });
+    assert.equal(an.msAvail, false, period + ' 降级模式（无模型级窗口）');
+    assert.equal(an.perModel.length, 0, period + ' 无模型明细 → perModel=0');
+    assert.ok(an.items.some(it => !it.empty && it.v > 0), period + ' 有整轮值实桶');
+    assert.ok(an.items.every(it => it.empty || !(it.models && it.models.length)), period + ' 实桶 models 为空（降级帧形态）');
+    const dom = domOf(chart(ctx, an, -1));
+    assert.doesNotMatch(dom, /zu-sv-empty/, period + ' 不得出「当前筛选无有效速度数据」假空态');
+    assert.match(dom, /<g class="zu-sv3-lineg zu-sv3-line zu-sv3-nline">/, period + ' 一条中性整轮值线（spec §6 降级形态）');
+    assert.match(dom, /<line x1="[\d.]+%" y1="[\d.]+%" x2="[\d.]+%" y2="[\d.]+%"\/>/, period + ' 相邻实点连线');
+    assert.equal((dom.match(/<circle class="zu-sv3-pt zu-sv3-npt"/g) || []).length, 3, period + ' 数据点只落真实点（3 桶）');
+  }
+  // 二元组 msl 叠「只选一个模型」：筛选把桶 models 清空 → perModel=0，同样走中性整轮值线
+  const an2 = analyze(ctx, fixtureLegacyMulti(), { range: 'session', period: 'today', sid: 's', filt: { mode: 'sel', keys: [KEYS.a] } });
+  assert.equal(an2.perModel.length, 0, '单选筛选下 perModel=0');
+  const dom2 = domOf(chart(ctx, an2, -1));
+  assert.doesNotMatch(dom2, /zu-sv-empty/, '单选筛选的降级帧不得假空态');
+  assert.match(dom2, /<g class="zu-sv3-lineg zu-sv3-line zu-sv3-nline">/, '走中性整轮值线');
+  // 逐模型线仍要求 models 在场：给一条带四元组 msl 的多模型帧，空 models 的桶不得凭整轮值冒充该模型分量
+  const full = analyze(ctx, fixture(), { range: 'all', period: 'today', sid: 'sess_main' });
+  const ptsA = vm.runInContext('spd3SeriesPts(__an.items, ' + JSON.stringify(KEYS.a) + ')', Object.assign(ctx, { __an: full }));
+  assert.equal(ptsA.filter(v => v != null).length, 3, 'A 模型分量只落带 models 且含 A 的 3 个实桶');
+});
+
+test('v445 spd3SeriesPts: 整轮值线对 models 为空的实桶照样出点（与带 models 时逐点相等）；逐模型线对同一批桶全空', () => {
+  const ctx = makeCtx();
+  const full = analyze(ctx, fixture(), { range: 'all', period: 'today', sid: 'sess_main' }).items;
+  const bare = full.map(it => Object.assign({}, it, { models: [] }));   // 同一批桶抹掉模型明细（降级帧形态）
+  const run = (items, key) => JSON.parse(JSON.stringify(vm.runInContext('spd3SeriesPts(__items, ' + (key === null ? 'null' : JSON.stringify(key)) + ')',
+    Object.assign(ctx, { __items: items }))));
+  assert.ok(full.some(it => !it.empty && it.v > 0), '前置：有整轮值实桶');
+  assert.deepEqual(run(bare, null), run(full, null), '整轮值只看桶整值 v，不看 models 在场');
+  assert.ok(run(bare, null).some(v => v != null), 'models 为空的实桶照样出点（不出假空态）');
+  assert.ok(run(bare, KEYS.a).every(v => v === null), '逐模型线仍要求 models 在场：抹掉后全空');
+  assert.equal(run(full, KEYS.a).filter(v => v != null).length, 3, '对照组：带 models 时 A 分量 3 点');
+  // 门的另两半与修复前一致：空桶、整值非正的实桶都不出点（不被降级放宽）
+  assert.deepEqual(run([{ v: 100, empty: true, label: '0', models: [] }], null), [null], '空桶不出点');
+  assert.deepEqual(run([{ v: 0, empty: false, label: '0', models: [] }, { v: -3, empty: false, label: '1', models: [] }], null), [null, null], '整值非正的实桶不出点');
 });
 
 // ---------- ⑫ v389 §13.2/§13.3 折线两级 hover CSS 与 lineg 分组串锁 ----------

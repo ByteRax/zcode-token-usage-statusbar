@@ -23,7 +23,7 @@
 
 两代套餐形状同端点返回，逐字段独立解析、可并存：
 
-- **新套餐（月度额度池）**：`included.allowance_usd > 0` 且 `included.balance_usd` 为数字时输出金额窗（`used = allowance − balance`，`percent = used/allowance×100`，双向钳 [0, allowance]——超支后由充值余额垫付时钳满格）。`period.until` 为**可解析日期**才带 `resetsAt` 并入 `windows.monthly`（chip「月」标签）；`period` 缺失、形状漂移或 until 非日期（如 `"TBD"`）落 `windows.plan`（「套餐」标签，不带 resetsAt），不冒充月窗。`resetOf` 对非空字符串透传是全仓基线，ollama 侧以 `Date.parse` 门内敛加固。
+- **新套餐（月度额度池）**：`included.allowance_usd > 0` 且 `included.balance_usd` 为数字时输出金额窗（`used = allowance − balance`，`percent = used/allowance×100`，双向钳 [0, allowance]——超支后由充值余额垫付时钳满格）。`period.until` 为**可解析日期**（或 ≥ 1e11 的毫秒值：数字 / 全数字字符串）才带 `resetsAt` 并入 `windows.monthly`（chip「月」标签）；`period` 缺失、形状漂移或 until 非日期（如 `"TBD"`）落 `windows.plan`（「套餐」标签，不带 resetsAt），不冒充月窗。`resetOf` 对非空字符串透传是全仓基线，ollama 侧以 `Date.parse` 门内敛加固。
 - **旧套餐（百分比窗）**：`included.session` / `included.weekly` 的 `remaining_percent` 是剩余制（75 = 还剩 75%），翻转为已用 `100 − x` 并钳 [0, 100]，映射 `windows.fiveHour` / `windows.weekly`，`resetsAt` 取各窗 `resets_at`。session 窗映射 5 小时窗是**近似**：响应无时长字段，官方未声明 session 周期长度。字段缺失（非数字）不猜 0%，该窗缺席。
 - **充值余额**：`purchased.balance_usd` 是套餐外充值。有窗口时**不进顶层 `balance`**——渲染端 chip 对 `balance` 字段形态优先，会把窗口段挤掉；仅无任何窗口时退化为 `{kind:"balance", balance:{amount, currency:"USD"}}`。负值视为无充值。
 - **防除零**：`allowance_usd <= 0`（含 0 档）无月窗。

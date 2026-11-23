@@ -146,17 +146,18 @@ function planPullerWithCreds(t, creds, decryptValue, env, cfg) {
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const credentialsPath = path.join(dir, "credentials.json");
   fs.writeFileSync(credentialsPath, JSON.stringify(creds));
-  const requests = [];
+  const requests = [], redirects = [];
   const mp = M.createModelPuller({
     customCfgPath: file, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath, decryptValue, env,   // 档位目录与本用例无关
     fetchImpl: async (url, o) => {
       if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
       requests.push({ url, auth: o && o.headers && o.headers.Authorization });
+      redirects.push(o && o.redirect);
       return { ok: true, status: 200, json: async () => ({ data: [{ id: "glm-5.3" }] }), body: null };
     },
   });
   t.after(() => mp.dispose());
-  return { mp, requests, credentialsPath };
+  return { mp, requests, redirects, credentialsPath };
 }
 function planPullerWithCredential(t, credential, decryptValue, env) {
   return planPullerWithCreds(t, { "oauth:bigmodel:access_token": credential }, decryptValue, env);
@@ -173,13 +174,14 @@ function bindDecryptCtx(opts) { Q_FOR_PULLER.setDefaultDecryptCtx(opts); }
 test("plan source: enc:v2 credential is decrypted through the dispatcher and requests carry the plaintext token", async (t) => {
   const secret = "model-puller-secret-0123456789abcdef";
   t.after(() => bindDecryptCtx({ env: process.env }));
-  const { mp, requests, credentialsPath } = planPullerWithCredential(t, v2EnvCredential("plan.v2.token", secret),
+  const { mp, requests, redirects, credentialsPath } = planPullerWithCredential(t, v2EnvCredential("plan.v2.token", secret),
     INJECTED_DECRYPT_GENERATIONS["dispatcher (quota-client decryptValue)"], { ZCODE_CREDENTIAL_SECRET: secret });
   bindDecryptCtx({ env: { ZCODE_CREDENTIAL_SECRET: secret }, credsPath: credentialsPath, credsDir: path.dirname(credentialsPath) });
   await Q_FOR_PULLER.ensureDefaultV2Key();
   assert.equal((await mp.listProviders()).providers.length, 1);
   assert.equal((await mp.fetchModels(PLAN_ID)).ok, true);
   assert.deepEqual(requests, [{ url: "https://open.bigmodel.cn/api/anthropic/v1/models", auth: "Bearer plan.v2.token" }]);
+  assert.deepEqual(redirects, ["error"], "套餐列表带凭据：不跟随重定向（行为锁，不只是结构锁）");
 });
 
 test("plan source: an enc:v2 credential that cannot be decrypted is not a token — ciphertext never leaves", async (t) => {
@@ -1877,4 +1879,21 @@ test("plan source: 每次用户触达都越过取钥重试窗——钥匙串解�
   await new Promise((r) => setImmediate(r));
   assert.equal((await mp.listProviders()).providers.length, 1);
   assert.equal((await mp.fetchModels(PLAN_ID)).ok, true);
+});
+
+test("retro: every credentialed fetch in the bundled puller pins redirect \"error\" (only the public catalog fetch may follow)", () => {
+  const { callSites, requiredModules } = require("./helpers/js-scan.cjs");
+  const src = fs.readFileSync(path.join(__dirname, "..", "model-puller.cjs"), "utf8");
+  /* 带凭据的请求不跟随重定向：否则 Authorization/x-api-key 会随 3xx 被带到别的源。
+   * 结构锁扫拼接产物里每个 fetchImpl( 调用；各请求另有 redirect 行为断言，结构锁只是兜底。 */
+  const calls = callSites(src, "fetchImpl");
+  assert.ok(calls.length >= 1, "fetch 调用数: " + calls.length);   // 不钉下界：合法地增删调用不该假红
+  const following = calls.filter((c) => !/redirect: "error"/.test(c.text));
+  assert.equal(following.length, 1, "只有无凭据的目录请求可以跟随重定向，越界的行: " + following.map((c) => c.line).join(","));
+  assert.match(following[0].text, /^fetchImpl\(url, \{ headers: headers, signal: AbortSignal\.timeout\(timeout/, "豁免的必须是无凭据目录请求");
+  /* 网络入口只有注入的 fetchImpl：不得绕开它直调全局 fetch，也不得自带 http/net 模块 */
+  assert.equal(callSites(src, "fetch").length, 0, "不得直调 fetch(");
+  for (const mod of requiredModules(src)) {
+    assert.ok(["crypto", "electron", "fs", "os", "path", "./quota-client.cjs"].includes(mod), "意外的模块依赖: " + mod);
+  }
 });

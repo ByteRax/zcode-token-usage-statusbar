@@ -435,14 +435,14 @@ test('panel retains all controls, scroll position and settings-only styling', ()
 
 function relaySettingsHarness(initial = {}, lang = 'zh', options = {}) {
   const store = new Map(), context = {
-    window: { __zusagePluginState: initial }, MY_GEN: 1, FATAL: {},
+    window: { __zusagePluginState: initial, __zusagePluginRequests: [] }, MY_GEN: 1, FATAL: {},
     localStorage: { getItem: key => store.get(key) ?? null, setItem: (key, value) => store.set(key, String(value)) },
     stale: () => false, inactive: () => false, scanRateLines() {},
   };
   if (options.mobileMode === true) context.mobileMode = true;
   vm.createContext(context);
   vm.runInContext(extract('  var LS = {', '  /* ---------- 多实例注册表') +
-    '\nvar instances = [];\n' + sliceOverlay('  window.__zusagePluginRequests = [];', '\n  };\n', { file: 'src/overlay/00-boot-state-i18n.js', includeEnd: true }) +
+    '\nvar instances = [];\n' + sliceOverlay('  var pluginRequestSeq = 0', '\n  };\n', { file: 'src/overlay/00-boot-state-i18n.js', includeEnd: true }) +
     extract('  window.__zusagePluginUpdate = function (s) {', '  /* 工作区身份来自当前会话节点'), context);
   context.state.lang = lang;
   function panel() {

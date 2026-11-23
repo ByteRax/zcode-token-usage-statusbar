@@ -167,6 +167,169 @@ test('quota source requests write quota-secrets.json atomically with whitelist a
   assert.equal(first.opts.mode, 0o600, "凭据文件 0600 创建");
 });
 
+test('quota source token edit for qianwen drops the stale device-login expiry and account (manual token after expiry stays usable; clear is a full sign-out)', async () => {
+  const intervals = [], acknowledgements = [], windows = [];
+  const writes = [];
+  // 设备码登录过一次且登录态已过期：面板只写得到 token，写不到 tokenExpiresAt/account——
+  // 残留的到期时间会让之后手填的有效 token 被判「登录态已过」（复盘 MINOR）
+  // 另放一个带设备登录派生字段的无关源：清派生字段只许动 qianwen
+  const secretsState = { json: JSON.stringify({ sources: {
+    qianwen: { enabled: true, token: "expired", account: "a@example.com", tokenExpiresAt: 1 },
+    other: { enabled: true, token: "old", account: "keep@example.com", tokenExpiresAt: 999 } } }) };
+  const path = require("path");
+  const { pathToFileURL } = require("url");
+  const resources = "/fixture/resources";
+  const status = {};
+  const makeWindow = (url, queue) => ({
+    getURL: () => url,
+    isDestroyed: () => false,
+    getType: () => "window",
+    isLoading: () => false,
+    on: () => {},
+    executeJavaScript: async (script) => {
+      if (script.includes("q.splice")) return queue.splice(0, 8);
+      if (script.includes("__zusagePluginState")) return JSON.stringify(status);
+      return "null";
+    },
+  });
+  const queue = [{ action: "quota-src-key", id: "qianwen", field: "token", value: "manual-token" }];
+  windows.push(makeWindow(pathToFileURL(path.join(resources, "app.asar", "out", "renderer", "index.html")).href, queue));
+  const mockFs = {
+    readFileSync: (file) => {
+      if (String(file).endsWith("quota-secrets.json")) {
+        if (secretsState.json == null) throw new Error("ENOENT");
+        return secretsState.json;
+      }
+      return String(file).endsWith("overlay.js") ? "/* overlay */" : "{}";
+    },
+    statSync: () => ({ mtimeMs: 1 }), existsSync: () => true, watch: () => ({ on: () => {} }),
+    writeFileSync: (file, data, opts) => { writes.push({ file: String(file), data: String(data), opts }); },
+    renameSync: (from, to) => {
+      const w = writes[writes.length - 1];
+      if (w && w.file === String(from)) secretsState.json = w.data;   // 原子替换语义：rename 后读得到
+    },
+    chmodSync: () => {},
+    unlinkSync: () => { throw new Error("unexpected"); },
+  };
+  const sandbox = {
+    __dirname: "/fixture/runtime", console: { error: () => {} },
+    process: { resourcesPath: resources, execPath: process.execPath, uptime: () => 1 },
+    setInterval: (fn, delay) => { intervals.push({ fn, delay }); },
+    setTimeout: () => 1, clearTimeout: () => {},
+    require: (id) => {
+      if (id === "path") return path;
+      if (id === "fs") return mockFs;
+      if (id === "url") return require("url");
+      if (id === "crypto") return require("crypto");
+      if (id === "child_process") return { spawn: () => { throw new Error("no spawn"); }, execFile: (c, a, o, cb) => { acknowledgements.push({ args: a }); cb(null); } };
+      if (id === "./plugin-updater.cjs") return { createUpdater: (o) => { o.notify(status); return { request: async () => {}, tick: async () => {}, status: () => status }; }, updateConfig: async () => {} };
+      /* 缺 resolveQuotaPaths 时 createQuotaClientInstance 在装配前就抛、quotaClient 恒为 null——
+       * 这个桩就成了死桩（复盘 MINOR）：路径函数补齐，客户端才真的被装上 */
+      if (id === "./quota-client.cjs") return { resolveQuotaPaths: () => ({ credsPath: '/fixture/home/credentials.json', credsDir: '/fixture/home', customCfgPath: '/fixture/home/provider.json', customCfgDir: '/fixture/home', builtinCfgPath: '/fixture/home/builtin.json', builtinCfgDir: '/fixture/home' }), createQuotaClient: () => ({ tick: () => {}, view: () => ({}), refresh: () => {}, refreshSource: () => {}, noteProvider: () => {}, credentialsChanged: () => {}, noteSnapshotExtras: () => {}, sourcesConfig: () => [], dispose: () => {} }) };
+      if (id === "electron") return { app: { getPath: () => "/fixture/home", on: () => {} }, webContents: { getAllWebContents: () => windows }, ipcMain: { on: () => {} } };
+      throw new Error(id);
+    },
+  };
+  const vm = require("vm");
+  const fs = require("fs");
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, "..", "inject-main.cjs"), "utf8"), sandbox);
+  await new Promise((r) => setImmediate(r));
+  const poll = intervals.find((i) => i.delay === 1000);
+  await poll.fn();
+  assert.deepEqual(JSON.parse(secretsState.json).sources.qianwen, { enabled: true, token: "manual-token" },
+    "手填 token：到期时间与账号一并清掉，开关保留");
+  queue.push({ action: "quota-src-key", id: "qianwen", field: "token", value: "" });
+  await poll.fn();
+  assert.deepEqual(JSON.parse(secretsState.json).sources.qianwen, { enabled: true },
+    "清空 token = 退出登录：邮箱与到期时间不留");
+  // 其它源不受牵连：只动被写的那个字段，设备登录留下的派生字段原样保留
+  queue.push({ action: "quota-src-key", id: "other", field: "token", value: "x" });
+  await poll.fn();
+  assert.deepEqual(JSON.parse(secretsState.json).sources.other,
+    { enabled: true, token: "x", account: "keep@example.com", tokenExpiresAt: 999 }, "派生字段只对 qianwen 清");
+});
+
+
+test('turning the quota switch off cancels an in-flight qianwen sign-in; while off, start is refused and state/cancel still answer', async () => {
+  const intervals = [], windows = [], scripts = [], queue = [], cancelled = [], starts = [];
+  const cfgState = { json: JSON.stringify({ quota_enabled: true }) };
+  const path = require("path");
+  const { pathToFileURL } = require("url");
+  const resources = "/fixture/resources";
+  windows.push({
+    getURL: () => pathToFileURL(path.join(resources, "app.asar", "out", "renderer", "index.html")).href,
+    isDestroyed: () => false, getType: () => "window", isLoading: () => false, on: () => {},
+    executeJavaScript: async (script) => { scripts.push(script); return script.includes("q.splice") ? queue.splice(0, 8) : "null"; },
+  });
+  const mockFs = {
+    readFileSync: (file) => {
+      if (String(file).endsWith("config.json")) return cfgState.json;
+      if (String(file).endsWith("quota-secrets.json")) throw new Error("ENOENT");
+      return "{}";
+    },
+    statSync: () => ({ mtimeMs: 1, size: 1 }), existsSync: () => true, watch: () => ({ on: () => {}, close: () => {} }),
+    writeFileSync: () => {}, renameSync: () => {}, chmodSync: () => {}, unlinkSync: () => {},
+  };
+  const quotaPaths = { credsPath: '/fixture/home/credentials.json', credsDir: '/fixture/home', customCfgPath: '/fixture/home/provider.json', customCfgDir: '/fixture/home', builtinCfgPath: '/fixture/home/builtin.json', builtinCfgDir: '/fixture/home' };
+  const quotaClient = {
+    tick: () => {}, view: () => ({ sources: {}, byProvider: {} }), refresh: () => {}, refreshSource: () => true,
+    noteProvider: () => {}, credentialsChanged: () => {}, noteSnapshotExtras: () => {}, sourcesConfig: () => [], dispose: () => {},
+    qianwenSignInStart: () => { starts.push(1); return new Promise(() => {}); },   // 起流后一直挂着（在途）
+    qianwenSignInState: () => ({ ok: true, state: starts.length ? "polling" : "idle" }),
+    qianwenSignInCancel: () => { cancelled.push(1); },
+  };
+  const sandbox = {
+    __dirname: "/fixture/runtime", console: { error: () => {} },
+    process: { resourcesPath: resources, execPath: process.execPath, uptime: () => 1 },
+    setInterval: (fn, delay) => { intervals.push({ fn, delay }); },
+    setTimeout: () => 1, clearTimeout: () => {},
+    require: (id) => {
+      if (id === "path") return path;
+      if (id === "fs") return mockFs;
+      if (id === "url") return require("url");
+      if (id === "crypto") return require("crypto");
+      if (id === "child_process") return { spawn: () => { throw new Error("no spawn"); }, execFile: (c, a, o, cb) => { cb(null); } };
+      if (id === "./plugin-updater.cjs") return { createUpdater: () => ({ status: () => ({}), tick: async () => {}, request: async () => {} }), updateConfig: async () => { cfgState.json = JSON.stringify({ quota_enabled: false }); } };
+      if (id === "./quota-client.cjs") return { resolveQuotaPaths: () => quotaPaths, createQuotaClient: () => quotaClient };
+      if (id === "electron") return { app: { getPath: () => "/fixture/home", on: () => {} }, webContents: { getAllWebContents: () => windows }, ipcMain: { on: () => {} } };
+      throw new Error(id);
+    },
+  };
+  const vm = require("vm");
+  const fs = require("fs");
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, "..", "inject-main.cjs"), "utf8"), sandbox);
+  await new Promise((r) => setImmediate(r));
+  const poll = () => intervals.find((i) => i.delay === 1000).fn();
+  const settle = async () => { await poll(); await new Promise((r) => setImmediate(r)); await new Promise((r) => setImmediate(r)); };
+  /* deliverPluginRequest 的脚本形如 window.__zusagePluginResult && window.__zusagePluginResult({...}) */
+  const results = () => scripts.filter((s) => s.includes("__zusagePluginResult")).map((s) => JSON.parse(s.slice(s.indexOf("(", s.indexOf("&&")) + 1, s.lastIndexOf(")"))));
+  const last = () => results().at(-1) || null;
+
+  queue.push({ action: "quota-qianwen-signin", requestId: "q1" });
+  await settle();
+  assert.deepEqual(starts, [1], "开关开着：发起登录");
+  queue.push({ action: "quota-qianwen-signin-state", requestId: "q2" });
+  await settle();
+  assert.deepEqual(last(), { id: "q2", ok: true, state: "polling" });
+
+  queue.push({ action: "quota", enabled: false, requestId: "q3" });
+  await settle();
+  assert.deepEqual(cancelled, [1], "关额度即取消在途登录（轮询不再打到 t.qianwenai.com、不再落凭据）");
+  assert.deepEqual(last(), { id: "q3", ok: true });
+
+  queue.push({ action: "quota-qianwen-signin", requestId: "q4" });
+  await settle();
+  assert.deepEqual(last(), { id: "q4", ok: false, error: "quota disabled" }, "关闭期间发起被拒");
+  assert.deepEqual(starts, [1], "被拒不起新流");
+  queue.push({ action: "quota-qianwen-signin-state", requestId: "q5" });
+  await settle();
+  assert.deepEqual(last(), { id: "q5", ok: true, state: "polling" }, "关闭期间 state 照常应答（设置页轮询靠它收尾）");
+  queue.push({ action: "quota-qianwen-signin-cancel", requestId: "q6" });
+  await settle();
+  assert.deepEqual(cancelled, [1, 1], "关闭期间 cancel 照常应答");
+  assert.deepEqual(last(), { id: "q6", ok: true });
+});
+
 
 test('quota source write failures are returned without echoing credential values', async () => {
   const path = require('path');

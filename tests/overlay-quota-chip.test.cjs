@@ -571,6 +571,133 @@ test('issue #399: source-row feedback text is HTML-escaped on row rebuild (serve
   void ui;
 });
 
+test('issue #399: sign-in polling survives source-row rebuilds; a stale start reply is dropped (generation guard)', () => {
+  // 复盘 MINOR：轮询曾绑定点击时的按钮节点。源列表按签名整表重建（点击写入的反馈就会翻转
+  // 签名），旧节点一断连轮询即静默停摆、起流回执也不再开授权页，反馈卡在「等待浏览器授权…」
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ quota: QUOTA_OK }));
+  h.window.__zusagePluginUpdate({ quotaEnabled: true, quotaSources: [
+    { id: 'qianwen', label: '千问 Token Plan', kind: 'plan', enabled: true, unverified: true, credentialFields: ['token'], keyConfigured: false, status: 'not_configured' },
+  ] });
+  const panel = h.body.children.find(e => e.classList.contains('zu-settings'));
+  const opened = [];
+  h.window.zcode = { openExternal: (url) => opened.push(url) };
+  const click = () => {
+    const btn = new Element('button');
+    btn.classList.add('zu-src-signin'); btn.dataset.src = 'qianwen';
+    btn.isConnected = true;
+    btn.closest = (sel) => (sel === '.zu-src-signin' ? btn : null);
+    panel.listeners.get('click')[0]({ target: btn });
+    btn.isConnected = false;   // 真实 DOM 语义：点击后源列表因反馈签名变化而重建，旧按钮断连
+  };
+  const starts = () => h.window.__zusagePluginRequests.filter(r => r.action === 'quota-qianwen-signin');
+  const states = () => h.window.__zusagePluginRequests.filter(r => r.action === 'quota-qianwen-signin-state');
+  click();
+  assert.equal(starts().length, 1);
+  h.window.__zusagePluginResult({ id: starts()[0].requestId, ok: true, url: 'https://account.qianwenai.com/sso/OIDCAuth?x=1' });
+  assert.deepEqual([...opened], ['https://account.qianwenai.com/sso/OIDCAuth?x=1'], '按钮已断连仍打开授权页');
+  for (let i = 0; i < 3; i++) {   // 连续三拍 pending：每拍都续，不再因节点断连而停
+    h.pumpTimers(2000);
+    const cur = states();
+    assert.equal(cur.length, i + 1, '第 ' + (i + 1) + ' 拍轮询照常发出');
+    h.window.__zusagePluginResult({ id: cur[cur.length - 1].requestId, ok: true, state: 'pending' });
+  }
+  // 第二次点击让旧流作废：旧流的迟到回执不得再开页、不得续拍
+  click();
+  assert.equal(starts().length, 2);
+  h.window.__zusagePluginResult({ id: starts()[0].requestId, ok: true, url: 'https://account.qianwenai.com/sso/stale' });
+  assert.equal(opened.length, 1, '旧代起流回执被丢弃');
+  const before = states().length;
+  h.pumpTimers(2000);
+  assert.equal(states().length, before, '旧代不再续拍');
+  h.window.__zusagePluginResult({ id: starts()[1].requestId, ok: true, url: 'https://account.qianwenai.com/sso/fresh' });
+  assert.equal(opened[1], 'https://account.qianwenai.com/sso/fresh', '新流照常开页');
+  h.pumpTimers(2000);
+  h.window.__zusagePluginResult({ id: states()[states().length - 1].requestId, ok: true, state: 'done', account: 'a@example.com' });
+  const n = states().length;
+  h.pumpTimers(6000);
+  assert.equal(states().length, n, 'done 后停止轮询');
+  void ui;
+});
+
+test('issue #399: a late state reply from the previous generation does not add a second polling loop after a re-click', () => {
+  // 复盘第 2 轮：代际守卫的另一半。旧代的 state 请求在途时再点一次，且新流的起流回执先到
+  // （waiting 已重新置真）——此时旧代的 pending 回包只靠 waiting 挡不住，必须靠代际号作废，
+  // 否则会多出一条轮询循环（两条循环各自续拍）。
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ quota: QUOTA_OK }));
+  h.window.__zusagePluginUpdate({ quotaEnabled: true, quotaSources: [
+    { id: 'qianwen', label: '千问 Token Plan', kind: 'plan', enabled: true, unverified: true, credentialFields: ['token'], keyConfigured: false, status: 'not_configured' },
+  ] });
+  const panel = h.body.children.find(e => e.classList.contains('zu-settings'));
+  const opened = [];
+  h.window.zcode = { openExternal: (url) => opened.push(url) };
+  const click = () => {
+    const btn = new Element('button');
+    btn.classList.add('zu-src-signin'); btn.dataset.src = 'qianwen';
+    btn.isConnected = true;
+    btn.closest = (sel) => (sel === '.zu-src-signin' ? btn : null);
+    panel.listeners.get('click')[0]({ target: btn });
+    btn.isConnected = false;
+  };
+  const starts = () => h.window.__zusagePluginRequests.filter(r => r.action === 'quota-qianwen-signin');
+  const states = () => h.window.__zusagePluginRequests.filter(r => r.action === 'quota-qianwen-signin-state');
+  click();
+  h.window.__zusagePluginResult({ id: starts()[0].requestId, ok: true, url: 'https://account.qianwenai.com/sso/OIDCAuth?x=1' });
+  h.pumpTimers(2000);
+  assert.equal(states().length, 1, '旧代第一拍已发、尚未回包');
+  click();                                                // 旧代 state 请求还在途
+  assert.equal(starts().length, 2);
+  h.window.__zusagePluginResult({ id: starts()[1].requestId, ok: true, url: 'https://account.qianwenai.com/sso/fresh' });
+  h.window.__zusagePluginResult({ id: states()[0].requestId, ok: true, state: 'pending' });   // 旧代迟到回包
+  h.pumpTimers(2000);
+  assert.equal(states().length, 2, '新流续一拍；旧代的迟到 pending 回包不得再开一条循环');
+  const n = states().length;
+  h.pumpTimers(2000);
+  assert.equal(states().length, n, '未应答的在途拍不叠发');
+  void ui;
+});
+
+test('issue #399: an idle poll reply (flow cancelled by the quota switch or a main-process restart) settles as "Sign-in cancelled"', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ quota: QUOTA_OK }));
+  h.window.__zusagePluginUpdate({ quotaEnabled: true, quotaSources: [
+    { id: 'qianwen', label: '千问 Token Plan', kind: 'plan', enabled: true, unverified: true, credentialFields: ['token'], keyConfigured: false, status: 'not_configured' },
+  ] });
+  const panel = h.body.children.find(e => e.classList.contains('zu-settings'));
+  const opened = [];
+  h.window.zcode = { openExternal: (url) => opened.push(url) };
+  const click = () => {
+    const btn = new Element('button');
+    btn.classList.add('zu-src-signin'); btn.dataset.src = 'qianwen';
+    btn.isConnected = true;
+    btn.closest = (sel) => (sel === '.zu-src-signin' ? btn : null);
+    panel.listeners.get('click')[0]({ target: btn });
+    btn.isConnected = false;
+  };
+  const starts = () => h.window.__zusagePluginRequests.filter(r => r.action === 'quota-qianwen-signin');
+  const states = () => h.window.__zusagePluginRequests.filter(r => r.action === 'quota-qianwen-signin-state');
+  click();
+  h.window.__zusagePluginResult({ id: starts()[0].requestId, ok: true, url: 'https://account.qianwenai.com/sso/OIDCAuth?x=1' });
+  h.pumpTimers(2000);
+  h.window.__zusagePluginResult({ id: states()[0].requestId, ok: true, state: 'idle' });
+  const n = states().length;
+  h.pumpTimers(6000);
+  assert.equal(states().length, n, 'idle 是终态：停止轮询');
+  h.window.__zusagePluginUpdate({ quotaEnabled: true, quotaSources: [
+    { id: 'qianwen', label: '千问 Token Plan', kind: 'plan', enabled: true, unverified: true, credentialFields: ['token'], keyConfigured: true, status: 'ok' },
+  ] });   // 签名变化强制重建源列表（等值推送会被短路）
+  const html = panel.queries.get('.zu-src-list').innerHTML || '';
+  assert.match(html, /登录已取消|Sign-in cancelled/, '行上给出中性终态，不再停在「等待浏览器授权…」');
+  assert.match(html, /<span class="zu-src-feedback" role="status"[^>]*>(?:登录已取消|Sign-in cancelled)/,
+    '取消不是失败：反馈不带 zu-feedback-error（不报红）');
+  assert.doesNotMatch(html, /等待浏览器授权|Waiting for approval/);
+  void ui;
+});
+
 test('issue #399: sign-in reply URL outside *.qianwenai.com is rejected by the main-process flow', async () => {
   const Q = require(path.join(__dirname, '..', 'quota-client.cjs'));
   for (const u of ['https://evil.com/sso', 'https://qianwenai.com.evil.com/sso', 'javascript://x']) {

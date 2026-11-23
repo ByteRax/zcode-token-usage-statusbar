@@ -1,5 +1,5 @@
   /* ---------- v384 生成速度 Tooltip V3：卡外壳视图层（spd3 纯字符串构建器，零 DOM） ----------
-   * spec = specs/speed-tooltip-v3.md §6（920×480 布局）+ §3（chips/弹出层）+ §7（i18n/转义）。
+   * spec = specs/speed-tooltip-v3.md §6（920 宽布局；高 450，v393 起）+ §3（chips/弹出层）+ §7（i18n/转义）。
    * 本分片是 V3 卡的全部 HTML/CSS 外壳：头部双 Tab 组、模型筛选条与搜索弹出层、左摘要卡
    * （单/多模型两态）、图表标题栏与整卡装配。图表本体（柱/线/热力）由 charts/heat 分片
    * 产出，经 spd3CardHTML 的 <!--CHART--> 占位替换注入——本文件恒原样保留该占位符。
@@ -207,13 +207,14 @@
     var CAP = 60, capped = rows.length > CAP;
     if (capped) rows = rows.slice(0, CAP);
     var isOn = function (k) { return !!(filt && filt.mode === "sel" && filt.keys && filt.keys.indexOf(k) >= 0); };
-    var list = "";
+    var list = "", poolN = 0;
+    for (var pn = 0; pn < pool.length; pn++) poolN += pool[pn].n || 0;   // v445：降级帧不带请求数（Σn=0）→ 行尾计数显「—」不显 0
     for (var j = 0; j < rows.length; j++) {
       var r = rows[j], on = isOn(r.key);
       list += '<button type="button" class="zu-sv3-fpop-row' + (on ? " on" : "") + '" data-k="' + spdEsc(r.key) + '"' +
         (on ? ' aria-pressed="true"' : ' aria-pressed="false"') + ' title="' + spdEsc(spd3ModelTitle(r)) + '">' +
         spd3ModelLabel(r, rows) +
-        '<span class="zu-sv3-fpop-n">' + spdEsc(String(spdNum(r.n))) + "</span></button>";
+        '<span class="zu-sv3-fpop-n">' + (poolN > 0 ? spdEsc(String(spdNum(r.n))) : "—") + "</span></button>";
     }
     var box = '<input type="text" class="zu-sv3-fpop-input" aria-label="' + spdEsc(SPD_L("搜索模型", "Search models")) +
       '" placeholder="' + spdEsc(SPD_L("搜索模型…", "Search models…")) + '" value="' +
@@ -261,9 +262,9 @@
   }
   /* 主数字构建函数（§11.3 单/多/空三态共用同一结构）：overall.v 档位色 + t/s 单位，
    * v 缺席显 — 绝不造 0 t/s */
-  function spd3MainNumHTML(v) {
+  function spd3MainNumHTML(v, title) {
     var bd = v != null ? tpsBand(v) : null;
-    return '<div class="zu-sv3-main-num"><span class="' + (bd ? bd.cls : "dim") + '">' + spdEsc(spd3FmtV(v)) +
+    return '<div class="zu-sv3-main-num"' + (title ? ' title="' + spdEsc(title) + '"' : "") + '><span class="' + (bd ? bd.cls : "dim") + '">' + spdEsc(spd3FmtV(v)) +
       '</span><span class="zu-sv3-unit">t/s</span></div>';
   }
   function spd3LeftHTML(an, live, poolSingle, fmtTok) {
@@ -289,7 +290,12 @@
       spd3StatHTML(SPD_L("峰值", "Peak"), an.peak, dayLbl ? SPD_L("最高日均", "Best daily") : "") +
       spd3StatHTML(SPD_L("最低", "Low"), an.low, dayLbl ? SPD_L("最低日均", "Worst daily") : "") +
       spd3StatHTML(SPD_L("最新", "Latest"), an.latest, dayLbl ? SPD_L("最近日均", "Latest daily") : "") + "</div>";
-    if (!models.length || !overall) {
+    /* v445：空态判据对齐图表区的 an.real（spec §11.4 字面，见 spd3CardHTML）——降级帧
+     * （旧二元组 msl）+模型筛选时 core 保留整行 out/ms（图表有真实柱）而 perModel 为空，
+     * 旧判据 `!models.length` 把它误判成空池并伪造「请求轮次 0 轮 / 有效模型 0」
+     * （a751485 的 MAJOR-1 只修了图表区，左卡漏改）。 */
+    var hasReal = !!(an.real && an.real.length);
+    if (!hasReal || !overall) {
       /* 空池/显式空筛选（§11.4）：标题 + — 主数字 + 请求轮次 0 / 有效模型 0 +
        * 峰最低新 —，绝不造 0 t/s；图表区由 spd3CardHTML 换居中空态块 */
       return '<div class="zu-sv3-left">' + headRow + spd3MainNumHTML(null) +
@@ -297,6 +303,17 @@
         spdEsc(spdNum(0) + SPD_L("轮", " turns")) + "</b></div>" +
         '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("有效模型", "Active models")) + "</i><b>0</b></div>" +
         stats + "</div>";
+    }
+    if (!models.length) {
+      /* 降级帧无模型分量可分发（筛选选中的模型在旧帧里对不上分量）：如实显示整轮值
+       * 主数字与真实轮数，不拼 count（无「N 模型」可报）、不渲染分布块。主数字是含未选中
+       * 模型的整轮值，与筛选条的「无数据」并排容易误读——title 点明口径（§6：整轮混合
+       * 速度不得冠以该模型名）。 */
+      return '<div class="zu-sv3-left">' + headRow + spd3MainNumHTML(overall.v,
+        SPD_L("整轮值：这段历史没有模型级耗时，含未选中的模型", "Whole-turn value: this history has no per-model timing and includes unselected models")) +
+        (bd ? spd3BandHTML(bd) : "") +
+        '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("请求轮次", "Turns")) + "</i><b>" +
+        spdEsc(turns + SPD_L("轮", " turns")) + "</b></div>" + stats + "</div>";
     }
     /* v396 §19：单模型不再早返回单行 .zu-sv3-model——落入下方分布块构建器，
      * 与多模型同构（count + dist-h + dbar + dwrap 表），1 模型时天然 1 段 100%、
@@ -315,6 +332,9 @@
     var shareSorted = models.slice().sort(function (a, b) { return (b.share || 0) - (a.share || 0); });
     var TOP_SEGS = 6, totalN = 0, tni;
     for (tni = 0; tni < models.length; tni++) totalN += models[tni].n || 0;
+    /* v445：降级帧（旧帧二元组 msl）不带请求数，totalN=0 时占比无从谈起——分布条整条不画、
+     * 表的占比列显「—」。此前 0 宽段配「<0.1%」，是把「未知」伪装成「极小」。 */
+    var hasShare = totalN > 0;
     var bar = "";
     for (var bi = 0; bi < shareSorted.length && bi < TOP_SEGS; bi++) {
       var bm = shareSorted[bi];
@@ -352,13 +372,16 @@
       rowsHtml += '<div class="zu-sv3-drow" role="row"><span class="zu-sv3-dcell zu-sv3-dname" role="cell" title="' + spdEsc(spd3ModelTitle(rm)) + '">' +
         spd3ModelLabel(rm, shareSorted) + "</span>" +
         (msAvail ? '<span class="zu-sv3-dcell zu-sv3-dnum" role="cell">' + (rm.tps != null ? spdEsc(spd3FmtV(rm.tps) + SPD_L(" t/s", " t/s")) : "—") + "</span>" : "") +
-        '<span class="zu-sv3-dcell zu-sv3-dnum zu-sv3-pct" role="cell">' + spdEsc(spd3PctTxt(rm.share)) + "</span></div>";
+        '<span class="zu-sv3-dcell zu-sv3-dnum zu-sv3-pct" role="cell">' + (hasShare ? spdEsc(spd3PctTxt(rm.share)) : "—") + "</span></div>";
     }
     var top6Pct = 0;
     for (var t6 = 0; t6 < Math.min(6, shareSorted.length); t6++) top6Pct += (shareSorted[t6].share || 0) * 100;
     top6Pct = Math.round(top6Pct);
+    var dbar = hasShare ? '<div class="zu-sv3-dbar" role="img" aria-label="' +
+      spdEsc(SPD_L("模型分布：" + models.length + " 个模型，前 " + Math.min(6, models.length) + " 占 " + top6Pct + "%",
+        "Distribution: " + models.length + " models, top " + Math.min(6, models.length) + " at " + top6Pct + "%")) + '">' + bar + "</div>" : "";
     /* v396 §19：单模型分布块后保留「有效输出」kv（fmtTok 在场才显示，绝不虚构）；
-     * 「请求轮次」已由 count 行（v401 起在标题行）承载不再单列；多模型态不追加本行。 */
+     * 「请求轮次」已由 count 行（v402 起并入标题行）承载不再单列；多模型态不追加本行。 */
     var outKv = "";
     if (models.length === 1 && typeof fmtTok === "function") {
       outKv = '<div class="zu-sv3-kv"><i>' + spdEsc(SPD_L("有效输出", "Effective output")) + "</i><b>" +
@@ -367,10 +390,7 @@
     return '<div class="zu-sv3-left">' + headRow +
       spd3MainNumHTML(overall.v) +
       (bd ? spd3BandHTML(bd) : "") +
-      '<div class="zu-sv3-dist-h">' + spdEsc(SPD_L("所选模型分布 · 按请求数", "Selected models · by requests")) + "</div>" +
-      '<div class="zu-sv3-dbar" role="img" aria-label="' +
-      spdEsc(SPD_L("模型分布：" + models.length + " 个模型，前 " + Math.min(6, models.length) + " 占 " + top6Pct + "%",
-        "Distribution: " + models.length + " models, top " + Math.min(6, models.length) + " at " + top6Pct + "%")) + '">' + bar + "</div>" +
+      '<div class="zu-sv3-dist-h">' + spdEsc(SPD_L("所选模型分布 · 按请求数", "Selected models · by requests")) + "</div>" + dbar +
       '<div class="zu-sv3-dwrap"><div class="zu-sv3-dtab' + (msAvail ? "" : " zu-sv3-dtab-noms") +
       '" role="table">' + thead + rowsHtml + "</div></div>" + outKv + stats + "</div>";
   }
