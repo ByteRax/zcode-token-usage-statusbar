@@ -8,7 +8,7 @@
 - 接口契约（hook 侧）：
   - 守卫位于读 stdin、计算 `PLUGIN_ROOT` 与任何 3.8+ 语法/API 之前，自身保持 3.7 可解析。旧解释器不消费 hook 入参，下一候选拿到的 stdin 与宿主写入一致。
   - 不达标时向 stderr 写一行 ASCII 诊断（`[zusage-plugin] Python x.y is too old; zusage needs 3.8+`），退出码固定 `9`。退出码不得为 `0`（链在此终止）或 `2`（宿主语义 = 阻断）。
-  - 宿主侧语义：链尾退出码非 0 非 2 时按单个 hook 失败处理，fail-open，不阻断会话与提问。「本机只有旧 Python」由「自检失败（已忽略）」文字变为 hook 摘要里的失败状态；失败原因只在 stderr（引擎日志与事件载荷），界面不展开 stderr，只有退出码 2 的阻断才显示原因文字。
+  - 宿主侧语义：链尾退出码非 0 非 2 时按单个 hook 失败处理，fail-open，不阻断会话与提问。「本机只有旧 Python」由「自检失败（已忽略）」文字变为 hook 摘要里的失败状态；失败原因只在 stderr（引擎日志与事件载荷），界面不展开 stderr，只有退出码 2 的阻断才显示原因文字。SSH/WSL 远端主机上只有旧 Python 时同理：hook 由静默 no-op 变为失败状态，同样不阻断。
   - 下限本身放行：恰为 3.8 的解释器不得被让位。
 - 接口契约（MCP 侧）：`mcp-launch.cjs` 的探测须 `--version` 退出码 0 且 stdout 行首为 `Python 3.N`、`N ≥ 8`。3.7 及以下与 Store 桩、Python 2 残留同样跳过，落到下一候选。
 - `python_path` 不参与解释器发现：hook 由宿主 shell 按命令名解析解释器，没有「先读配置再选解释器」的执行点。`python_path` 仍是安装后的记录（安装与每次 SessionStart 写回 `sys.executable`，主桥与更新器消费）。

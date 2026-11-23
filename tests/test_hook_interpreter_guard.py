@@ -113,8 +113,9 @@ class EntryGuardTests(IsolatedHookTestCase):
                 self.assertTrue(process.stdout.strip(), "hook 主体没有运行")
 
 
-@unittest.skipIf(os.name == "nt", "假解释器是 sh 脚本；Windows 由 cmd.exe 执行同一 || 命令串，"
-                                "退出码语义由上面的跨平台入口用例守住")
+@unittest.skipIf(os.name == "nt", "假解释器是 sh 脚本；Windows 由 cmd.exe 执行同一 || 命令串，本机"
+                                "无法验证——cmd.exe 的接力与 stdin 传递在 Windows 上零覆盖，"
+                                "入口用例只守住守卫自身的退出码")
 class FallbackChainTests(IsolatedHookTestCase):
     def setUp(self):
         super().setUp()
