@@ -476,6 +476,9 @@ class MobileInstallTests(unittest.TestCase):
                 config.unlink(missing_ok=True)
             else:
                 config.write_text(raw, encoding="utf-8")
+            # 每种配置开头清掉限频文件：否则前一种配置泄露的 24h 时间戳会把后面的
+            # 「尚未就绪」子用例挡成静默，变成碰巧通过
+            (self.runtime / ".mobile-deferred-notice.json").unlink(missing_ok=True)
             for state in states:
                 with self.subTest(config=raw, state=state):
                     out = {"suppressOutput": True}
@@ -526,28 +529,65 @@ class MobileInstallTests(unittest.TestCase):
         return result
 
     def test_hook_mobile_waiting_notice_follows_relay_toggle(self):
-        # 已注入与刚安装成功两条 hook 分支：推送开关未开启时整条会话静默，开启时照旧提示
+        # 已注入与刚安装成功两条 hook 分支：推送开关未开启（缺配置，或在 ⚙ 面板里关掉后
+        # 写入的显式 false）时整条会话静默；开启时照旧提示等待自动补装，不带手动命令
+        config = self.runtime / "config.json"
+        marker = self.runtime / ".plugin-restart-required"
         for injected in (True, False):
-            for enabled in (False, True):
-                with self.subTest(injected=injected, enabled=enabled):
+            for relay in (None, False, True):
+                with self.subTest(injected=injected, relay=relay):
                     self.pi.TMP.unlink(missing_ok=True)
                     self.pi.TMP_META.unlink(missing_ok=True)
-                    marker = self.runtime / ".plugin-restart-required"
                     marker.unlink(missing_ok=True)
-                    if enabled:
-                        self._enable_mobile_relay()
+                    if relay is None:
+                        config.unlink(missing_ok=True)
                     else:
-                        (self.runtime / "config.json").unlink(missing_ok=True)
+                        config.write_text(json.dumps({"mobile_relay": {"enabled": relay}}), encoding="utf-8")
                     with mock.patch.object(self.installer, "injected_status", return_value=injected), \
                          mock.patch.object(self.installer, "_install_overlay", return_value=True):
                         result = self._run_hook_while_asar_locked()
                     # 门控只管会话文字：待替换包与 ⚙ 红点标记照常落定
                     self.assertTrue(self.pi.TMP.is_file())
                     self.assertTrue(marker.is_file())
-                    if enabled:
+                    if relay:
                         self.assertIn("手机中继补丁暂缓", result["systemMessage"])
+                        self.assertIn("自动补装", result["systemMessage"])
+                        self.assertNotIn("mobile_relay_patch.py", result["systemMessage"])
+                        self.assertIn("自动补装", result["hookSpecificOutput"]["additionalContext"])
                     else:
                         self.assertEqual(result, {"suppressOutput": True})
+
+    def test_hook_fresh_install_keeps_mobile_patch_logic_while_relay_disabled(self):
+        # 门控只管会话文字：刚安装成功分支在推送未开启（缺配置）时仍补手机补丁；补丁
+        # 就地写入且客户端在运行时仍写 ⚙ 红点标记，只是不再发会话文字
+        marker = self.runtime / ".plugin-restart-required"
+        for running in (False, True):
+            with self.subTest(client_running=running), contextlib.ExitStack() as stack:
+                marker.unlink(missing_ok=True)
+                (self.runtime / "config.json").unlink(missing_ok=True)
+                out = io.StringIO()
+                for patcher in (
+                    mock.patch.object(self.installer, "resolve_paths", return_value=(self.runtime, self.pi)),
+                    mock.patch.object(self.installer, "sync_runtime"),
+                    mock.patch.object(self.installer, "injected_status", return_value=False),
+                    mock.patch.object(self.installer, "_install_overlay", return_value=True),
+                    mock.patch.object(self.installer, "save_runtime_config"),
+                    mock.patch.object(self.installer, "ensure_renderer_bridge", return_value={"status": "present"}),
+                    mock.patch.object(self.installer, "ensure_mobile_relay_stash", return_value={"status": "patched"}),
+                    mock.patch.object(self.pi, "client_running", return_value=running),
+                    mock.patch.dict(sys.modules, {"plugin_auto_update": mock.Mock()}),
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()),
+                ):
+                    stack.enter_context(patcher)
+                result = self.installer.run_hook()
+                self.assertEqual(out.getvalue(), "")
+                self.installer.ensure_mobile_relay_stash.assert_called_once_with(self.pi, quiet_monitor=True)
+            self.assertEqual(result, {"suppressOutput": True})
+            if running:
+                recorded = json.loads(marker.read_text(encoding="utf-8"))
+                self.assertEqual((recorded["state"], recorded["asarPatch"]), ("installed", True))
+            else:
+                self.assertFalse(marker.exists())
 
     def test_standalone_remove_clears_mobile_injection(self):
         with mock.patch.object(sys, "argv", ["install.py", "--remove", "--asar", str(self.target),
