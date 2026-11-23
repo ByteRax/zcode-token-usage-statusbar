@@ -906,6 +906,7 @@
           trackVw = innerWidth || 0; trackVh = innerHeight || 0;
           trackDirty = true; trackFastUntil = trackNow + TRACK_FAST_MS;
         }
+        if (trackNow < trackAt) trackFastUntil = 0;   // 时钟回拨：保持期截止时刻只在此前的视口变化时写入，回拨后会落在「未来」，不作废则门被撑开、逐帧执行到时钟追上
         trackFrames++;
         if (cardMode && trackNow >= trackFastUntil && !panel.classList.contains("open") && !subPopOpen() && !morePanel.classList.contains("open") &&
             cardMode === trackCard && !trackDirty) {

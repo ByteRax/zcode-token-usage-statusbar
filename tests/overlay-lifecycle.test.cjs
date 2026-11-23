@@ -157,7 +157,11 @@ test('v146 compact theme: bar hides on body, heavy keeps it alive, no pads; leav
 test('v177 dedup: track frames cannot re-show a bar suppressed by a smaller-slot rival', () => {
   const h = harness(), cards = h.setPanes(['a', 'b'], { toolbar: true });
   /* issue #452 起几何段受空闲门控：断言帧前手动推进满一个兜底节奏，保证几何段真的执行——
-   * 否则这些帧被门控跳过，`!dupSuppress &&` 守卫改坏了也不会红（review 变异实证）。 */
+   * 否则这些帧被门控跳过，`!dupSuppress &&` 守卫改坏了也不会红（review 变异实证）。
+   * 推进量与兜底节奏常量恰好相等、余量为 0：所以每一帧都断言几何段确实执行，常量一改就在这里
+   * 大声变红，而不是悄悄回到假绿。 */
+  const geoB = countComposerRects(cards[1]);
+  const frameB = () => { const before = geoB.reads; now.v += 100; h.runFrame(); assert.ok(geoB.reads > before, 'harness sanity: 该帧确实执行了几何段（被空闲门跳过=后面的断言是假绿）'); };
   const now = fakeClock(h, Date.now()); h.inject(); h.boot();
   const barB = cards[1].children.find(e => /zusage-root/.test(e.className || ''));
   assert.ok(barB, 'instance b bar mounted in card');
@@ -167,7 +171,7 @@ test('v177 dedup: track frames cannot re-show a bar suppressed by a smaller-slot
   const paneB = cards[1].children.find(e => e.tagName === 'TEXTAREA');
   h.document.elementFromPoint = () => paneB;
   h.tick();
-  now.v += 100; h.runFrame();
+  frameB();
   assert.equal(barB.style.display, 'flex', 'track frame shows the bar before any rival');
   // 同卡对手（slot 更小、可见）：heavy 让位隐藏
   const rival = cards[1].appendChild(new Element('div'));
@@ -176,9 +180,9 @@ test('v177 dedup: track frames cannot re-show a bar suppressed by a smaller-slot
   cards[1].querySelectorAll = (sel) => sel === '.zusage-root' && rival.isConnected ? [rival] : [];
   h.tick();
   assert.equal(barB.style.display, 'none', 'heavy hides the higher-slot bar');
-  now.v += 100; h.runFrame();
+  frameB();
   assert.equal(barB.style.display, 'none', 'track frame must not re-show while suppressed');
-  h.tick(); now.v += 100; h.runFrame();
+  h.tick(); frameB();
   assert.equal(barB.style.display, 'none', 'suppression persists across heavy+track cycles');
   // 对手退场：heavy 解除抑制，下一帧复显（时钟不推进——靠解除抑制的脏标，不靠兜底节奏）
   rival.remove();
@@ -312,6 +316,7 @@ test('v408 elicitation dedup: panel wrapper rivals are matched via cardHost, not
   // 面板打开时两 pane 候选都锚到同一面板卡（v169「宿主保留旧视图副本」的双实例形态）
   taA.closest = taB.closest = sel => sel === '[data-elicitation-dialog-card]' ? cards[0] : null;
   cards[0].queries.set('[data-elicitation-dialog-footer]', footer);
+  const geoB = countComposerRects(cards[1]);   // 实例 b 的 composer（taB）矩形读取计数
   const now = fakeClock(h, Date.now());   // issue #452：冻结时钟；末尾断言帧前推进满一个兜底节奏
   h.inject(); h.boot(); h.runFrame();
   const barsIn = () => wrapper.children.filter(e => /zusage-root/.test(e.className || '') && e.parentElement === wrapper);
@@ -324,7 +329,9 @@ test('v408 elicitation dedup: panel wrapper rivals are matched via cardHost, not
   const [barA, barB] = barsIn();
   assert.equal(barB.getAttribute('data-zusage-slot'), '1', 'harness sanity: bar b owns slot 1');
   assert.equal(barB.style.display, 'none', '同宿主对手经 cardHost 判定：slot 1 让位隐藏');
-  now.v += 100; h.runFrame();
+  const beforeFrame = geoB.reads;
+  now.v += 100; h.runFrame();   // 推进量与兜底节奏常量恰好相等、余量为 0：常量一改要在下一行大声变红，不能悄悄假绿
+  assert.ok(geoB.reads > beforeFrame, 'harness sanity: 该帧确实执行了几何段（被空闲门跳过=下一行的断言是假绿）');
   assert.equal(barB.style.display, 'none', 'dupSuppress 不被 track 复显打穿（v177 规则沿袭）');
   h.window.__zusageDispose();
 });
@@ -855,11 +862,44 @@ test('issue #452: a viewport change re-evaluates geometry on the spot and holds 
   h.sandbox.innerHeight = 700;
   h.runFrame();
   assert.ok(geo.reads > beforeHeight, '仅视口高度变化也当帧执行几何段');
+  // 仅高度变化同样武装保持期（改成只在宽度变化时武装在此变红）：60ms 步进的每一帧都执行
+  let heldHeight = geo.reads;
+  for (let t = 60; t <= 180; t += 60) {
+    now.v += 60; h.runFrame();
+    assert.ok(geo.reads > heldHeight, `仅高度变化后保持期内 +${t}ms（距上次几何段 60ms）仍逐帧执行`);
+    heldHeight = geo.reads;
+  }
   // 高度基线必须回写（删掉 trackVh 回写在此变红）：保持期过后回到空闲门，而不是此后每帧都判成视口变化
   now.v += 401; h.runFrame();
   const settledHeight = geo.reads;
   now.v += 16; h.runFrame();
   assert.equal(geo.reads, settledHeight, '高度变化被消化后回到空闲门（基线未回写=此后每帧都逐帧执行）');
+  assertTrackClean(h);
+  h.window.__zusageDispose();
+});
+
+test('issue #452: a clock rollback after a viewport change does not leave tracking per-frame', () => {
+  const h = harness(), [card] = h.setPanes(['a'], { toolbar: true }); h.inject(); h.boot();
+  const geo = countComposerRects(card);
+  const now = fakeClock(h, Date.now());
+  h.runFrame();
+  h.runFrame();
+  // 视口变化会留下一个保持期截止时刻（trackFastUntil）；保持期过后系统时钟被校正回 1 小时前
+  h.sandbox.innerWidth = 900; h.runFrame();
+  now.v += 401; h.runFrame();   // 保持期已满
+  const settled = geo.reads;
+  h.runFrame();
+  assert.equal(geo.reads, settled, 'harness sanity: 保持期过后回到空闲门');
+  now.v -= 3600000;
+  h.runFrame();
+  assert.ok(geo.reads > settled, '回拨当帧视为到期，执行一次几何段（不冻结对账）');
+  const afterRollback = geo.reads;
+  for (let i = 0; i < 12; i++) h.runFrame();
+  assert.equal(geo.reads, afterRollback, '回拨后空闲门照常：时钟不动的帧不读几何（截止时刻落在回拨后的未来、门被撑开在此变红）');
+  now.v += 99; h.runFrame();
+  assert.equal(geo.reads, afterRollback, '回拨后兜底节奏照常（99ms 不执行）');
+  now.v += 1; h.runFrame();
+  assert.ok(geo.reads > afterRollback, '回拨后兜底节奏到期执行');
   assertTrackClean(h);
   h.window.__zusageDispose();
 });
