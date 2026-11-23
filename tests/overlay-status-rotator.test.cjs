@@ -1517,13 +1517,152 @@ test('v347 panel: append-duration checkbox rendered, synced and saved through th
   window.__adPanel = null;
 });
 
+/* 实时速度段（specs/status-rotator-work-duration.md 实时速度段）：逐行绑定窗格会话——
+ * 子代理行取 subRate 槽位实时估算（3s 新鲜度），主会话行取字符流估算；无会话均值回退
+ * （静态 avg 曾让全部行恒显同值，用户实报「一直是 76」已撤）。 */
+function pushLiveRotatorInstance(ctx, characterRate, avgTps, slots, mainSid) {
+  ctx.__tCharRate = characterRate;
+  ctx.__tAvg = avgTps;
+  ctx.__tSlots = slots || {};
+  ctx.__tMainSid = mainSid || '';
+  vm.runInContext('instances.length = 0; instances.push({ rotatorStats: function () { return { stats: { complete: false, characterRate: __tCharRate, startedAt: Date.now() }, session: { sid: __tMainSid, avg_tps: __tAvg } }; }, subRateSlots: function () { return __tSlots; } })', ctx);
+}
+
+test('live speed segment binds per pane: sub-agent rows use their slot estimate, main rows use streaming, static avg never shows', () => {
+  const env = makeRotatorEnv('zh');
+  const { ctx, window, body, advanceNow } = env;
+  const api = window.__zusageStatusRotator;
+  const mainBits = buildChatRow3180(body, '工作中');   // 无窗格祖先 → 按主会话行处理
+  const pane = makeFakeElement('div');
+  pane.setAttribute('data-session-id', 'sess_subagent_X');
+  const subBits = buildChatRow3180(pane, '工作中');
+  body.appendChild(pane);
+
+  const tNow = vm.runInContext('Date.now()', ctx);   // VM 假时钟：槽位新鲜度按 VM 时间算
+  ctx.tpsBand = function (v) { return v >= 88 ? { cls: 'ok' } : { cls: 'warm' }; };   // tpsBand plumbing 桩（02 分片不在本切片；真实档位映射由 overlay-tps-band 锁）
+  pushLiveRotatorInstance(ctx, 137, 76, { sess_subagent_X: { rate: 88.8, at: tNow } }, 'sess_main');
+  api.setConfig({ enabled: true, whaleTail: false, typeSpeedMs: 0 });
+  assert.equal(mainBits.label.nextElementSibling.className, 'zu-rotator-elapsed', 'elapsed span still first');
+  assert.equal(mainBits.label.nextElementSibling.nextElementSibling.firstChild.textContent, '68.5 t/s', 'main pane row uses the streaming estimate (characterRate/2)');
+  assert.equal(mainBits.label.nextElementSibling.nextElementSibling.firstChild.className, 'warm', 'tpsBand plumbing: stub cls lands on the inner span');
+  assert.equal(subBits.label.nextElementSibling.nextElementSibling.firstChild.textContent, '88.8 t/s', 'sub-agent row uses its own slot estimate, not the global context');
+  assert.equal(subBits.label.nextElementSibling.nextElementSibling.firstChild.className, 'ok', 'tpsBand plumbing: per-row rate drives the stub cls (88.8 ≥ 88)');
+  assert.equal(mainBits.label.nextElementSibling.nextElementSibling.classList.contains('zu-light'), false, 'dark theme keeps the deep band colors');
+  vm.runInContext('document.documentElement.classList.remove("dark")', ctx);
+  api.setConfig({ appendWorkDuration: true });
+  assert.equal(mainBits.label.nextElementSibling.nextElementSibling.classList.contains('zu-light'), true, 'light theme adds zu-light for the deepened band group');
+  vm.runInContext('document.documentElement.classList.add("dark")', ctx);
+  api.setConfig({ appendWorkDuration: true });
+  assert.equal(mainBits.label.nextElementSibling.nextElementSibling.classList.contains('zu-light'), false, 'dark toggle removes zu-light (contains-gated writes)');
+
+  /* 串值负向锁（变异②）：主会话在流式 + 该子代理槽位过期——子行必须保持隐藏（不得
+   * 回退主会话字符流），主行照显；全文档仅主行一枚速度段 */
+  pushLiveRotatorInstance(ctx, 137, 76, { sess_subagent_X: { rate: 88.8, at: tNow - 4000 } }, 'sess_main');
+  api.setConfig({ appendWorkDuration: true });
+  const spdAll = body.querySelectorAll('.zu-rotator-speed');
+  assert.equal(spdAll.length, 1, 'stale sub slot with streaming main: only the main pane row keeps a speed segment');
+  assert.equal(spdAll[0], mainBits.label.nextElementSibling.nextElementSibling, 'the surviving segment belongs to the main pane row');
+  assert.equal(spdAll[0].firstChild.textContent, '68.5 t/s', 'main row still shows its own streaming estimate');
+  assert.equal(subBits.label.nextElementSibling.classList.contains('zu-rotator-speed'), false, 'independent per-row lock: the sub pane carries no speed segment (not folded into the count assertion)');
+
+  /* 静态均值回归锁（变异③）：字符流停、槽位过期（4s 前）——即便会话 avg_tps=76 也不显示 */
+  pushLiveRotatorInstance(ctx, 0, 76, { sess_subagent_X: { rate: 88.8, at: tNow - 4000 } }, 'sess_main');
+  api.setConfig({ appendWorkDuration: true });
+  assert.equal(body.querySelectorAll('.zu-rotator-speed').length, 0, 'no live rate on either row → both segments absent despite session avg_tps=76');
+
+  /* 静态均值回归锁：字符流停、槽位过期（4s 前）——即便会话 avg_tps=76 也不显示 */
+  pushLiveRotatorInstance(ctx, 0, 76, { sess_subagent_X: { rate: 88.8, at: tNow - 4000 } }, 'sess_main');
+  api.setConfig({ appendWorkDuration: true });
+  assert.equal(body.querySelectorAll('.zu-rotator-speed').length, 0, 'no live rate on either row → both segments absent despite session avg_tps=76');
+
+  /* 主会话窗格 sid 行走 liveTps；子代理行新鲜槽位恢复即显示 */
+  pushLiveRotatorInstance(ctx, 137, 76, { sess_subagent_X: { rate: 88.8, at: tNow } }, 'sess_main');
+  const paneMain = makeFakeElement('div');
+  paneMain.setAttribute('data-session-id', 'sess_main');
+  const paneMainBits = buildChatRow3180(paneMain, '工作中');
+  body.appendChild(paneMain);
+  api.setConfig({ appendWorkDuration: true });
+  assert.equal(paneMainBits.label.nextElementSibling.nextElementSibling.firstChild.textContent, '68.5 t/s', 'pane carrying the main session id falls to the streaming estimate');
+  assert.equal(subBits.label.nextElementSibling.nextElementSibling.firstChild.textContent, '88.8 t/s', 'fresh slot estimate returns');
+
+  /* 每行至多 1 次写/秒（固定时钟下跨值不重写；门控释放半程：推进 1s 后恰好补写新值） */
+  pushLiveRotatorInstance(ctx, 200, 76, { sess_subagent_X: { rate: 88.8, at: tNow } }, 'sess_main');
+  api.setConfig({ appendLiveSpeed: true });
+  assert.equal(paneMainBits.label.nextElementSibling.nextElementSibling.firstChild.textContent, '68.5 t/s', 'value change inside the same second does not rewrite (1 write/s per row)');
+  advanceNow(1000);
+  api.setConfig({ appendLiveSpeed: true });
+  assert.equal(paneMainBits.label.nextElementSibling.nextElementSibling.firstChild.textContent, '100.0 t/s', 'gate releases after 1s and rewrites to the pending value exactly once');
+
+  api.setConfig({ appendLiveSpeed: false });
+  assert.equal(body.querySelectorAll('.zu-rotator-speed').length, 0, 'config toggle removes every speed span');
+
+  pushLiveRotatorInstance(ctx, 137, 76, {}, 'sess_main');
+  api.setConfig({ appendLiveSpeed: true, labelSource: 'host' });
+  assert.equal(body.querySelectorAll('.zu-rotator-speed').length, 0, 'host mode never appends');
+
+  pushLiveRotatorInstance(ctx, 0, 76, { sess_subagent_X: { rate: 11.1, at: tNow } }, 'sess_main');
+  api.setConfig({ appendWorkDuration: false, labelSource: 'phrases' });
+  assert.equal(subBits.label.nextElementSibling.className, 'zu-rotator-speed', 'speed span falls back to right after the label when the elapsed span is off');
+
+  api.setConfig({ enabled: false });
+  assert.equal(body.querySelectorAll('.zu-rotator-speed').length, 0, 'restore clears every speed span');
+});
+
+/* v443 词包池覆盖锁：本轮修复的原始缺口=long 相全库零条 {tps}——各相×语言至少一条，
+ * 防后续词包整理再次把速度占位符清零（变异⑨锁）。 */
+test('pack pool carries {tps} phrases in every phase and language', () => {
+  const { ctx } = makeRotatorEnv('zh');
+  for (const lang of ['zh', 'en']) {
+    for (const phase of ['thinking', 'running', 'long']) {
+      const pool = vm.runInContext('getMergedPhrasePool(' + JSON.stringify(phase) + ',' + JSON.stringify(lang) + ', new Date())', ctx);
+      const tps = pool.filter(p => typeof p.text === 'string' && p.text.indexOf('{tps}') >= 0);
+      assert.ok(tps.length >= 1, lang + '/' + phase + ' pool carries at least one {tps} phrase');
+    }
+  }
+});
+
+test('live speed segment panel: checkbox rendered, synced and saved through the change chain', () => {
+  const env = makeRotatorEnv('zh');
+  const { ctx, window, storage } = env;
+  const html = vm.runInContext('zuRotatorSectionHtml(true)', ctx);
+  assert.ok(html.indexOf('zu-rot-append-speed') > 0, 'checkbox present in the rotator section');
+  assert.ok(html.indexOf('追加实时速度') > 0, 'zh label present');
+  assert.ok(html.indexOf('zu-rot-append-speed') > html.indexOf('zu-rot-append-duration'), 'speed checkbox follows the duration checkbox');
+  assert.equal(html.indexOf(' title='), -1, 'no native title attributes');
+
+  const panel = makeFakeElement('div');
+  const stage = makeFakeElement('div'); stage.className = 'zu-rot-prev-stage';
+  panel.appendChild(stage);
+  const cb = makeFakeElement('input');
+  cb.className = 'zu-rot-append-speed';
+  panel.appendChild(cb);
+  window.__spPanel = panel;
+  vm.runInContext('zuRotatorSyncPanel(window.__spPanel)', ctx);
+  assert.equal(cb.checked, true, 'syncPanel checks the box per the default-on config');
+
+  cb.checked = false;
+  window.__spCb = cb;
+  assert.equal(vm.runInContext('zuRotatorPanelChange({ target: window.__spCb }, window.__spPanel)', ctx), true, 'change handled');
+  window.__spCb = null;
+  assert.equal(vm.runInContext('rotatorCfg.appendLiveSpeed', ctx), false, 'config updated');
+  const saved = JSON.parse(storage['zusage3.rotator2'] || '{}');
+  assert.equal(saved.appendLiveSpeed, false, 'persisted through saveRotatorConfig');
+  window.__spPanel = null;
+});
+
 test('v347 source contracts: zero queries/listeners/timers in the surface sync, static CSS bubble, folded restore selector', () => {
   const { ctx } = makeRotatorEnv('zh');
   const fnSrc = rotatorSlice.match(/function syncWorkDurationSurface\([\s\S]*?\n  \}/);
   assert.ok(fnSrc, 'syncWorkDurationSurface present in the shard');
   assert.ok(!/querySelector/.test(fnSrc[0]), 'span locating is nextElementSibling-only (zero document queries)');
   assert.ok(!/addEventListener|setInterval|setTimeout|MutationObserver/.test(fnSrc[0]), 'zero listeners/timers/observers');
-  assert.ok(/querySelectorAll\("\.zu-whale-tail-wrap,[^"]*\.zu-rotator-elapsed"\)/.test(rotatorSlice), 'span removal folded into the existing restore selector');
+  /* v443 实时速度段同款纪律：判位 nextElementSibling、零查询/监听/定时器（rowPaneSid 走
+   * parentElement 上行 + contains 复验，不含 document 级调用）——两函数体拼接后统一断言 */
+  const fnSpeed = rotatorSlice.match(/function rowPaneSid\([\s\S]*?\n  \}/);
+  const fnSpeed2 = rotatorSlice.match(/function syncLiveSpeedSurface\([\s\S]*?\n  \}/);
+  assert.ok(fnSpeed && fnSpeed2, 'rowPaneSid and syncLiveSpeedSurface present in the shard');
+  assert.ok(!/querySelector|addEventListener|setInterval|setTimeout|MutationObserver/.test(fnSpeed[0] + fnSpeed2[0]), 'live-speed surface: nextElementSibling + parentElement walk only, zero queries/listeners/timers');
+  assert.ok(/querySelectorAll\("\.zu-whale-tail-wrap,[^"]*\.zu-rotator-elapsed,\.zu-rotator-speed"\)/.test(rotatorSlice), 'span removal folded into the existing restore selector (elapsed + live speed)');
   assert.ok(!/label\.setAttribute\("data-tip"/.test(rotatorSlice), 'tip never written back onto the gradient label (v349 filter scope)');
   assert.ok(/row\.setAttribute\("data-tip"/.test(fnSrc[0]) && /row\.getAttribute\("data-tip"\) !== text/.test(fnSrc[0]), 'tooltip lives on the row, attr compare-gated');
   assert.ok(/contains\("zu-rot-livetip"\)\) row\.classList\.add/.test(fnSrc[0]) && /contains\("zu-rot-livetip"\)\) row\.classList\.remove/.test(fnSrc[0]), 'tooltip class ops are contains-gated (no unconditional class writes)');

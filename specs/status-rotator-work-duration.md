@@ -35,3 +35,14 @@
 5. 面板：checkbox 存在、`zuRotatorSyncPanel` 回填、change 写回并保存（既有尾缀链触发 masterTick 即时生效）。
 6. 性能（perf-lag §17 / 验收 12）：同一秒内连续 tick → textContent/data-tip/classList 零写入；秒跨变首个 tick → 恰各 1 次；`document.querySelectorAll` 调用计数不增；主开关关闭态 1s 节流不变。
 7. 实机：追加文案与宿主 turn 折叠头「工作中」数值逐秒一致；悬停出气泡不被消息流容器裁剪；开关切换即时生效；中英文跟随。
+
+## 实时速度段（appendLiveSpeed，2026-11-23 用户规格）
+
+背景：loading 行的 t/s 速度原本只能经词包短语 `{tps}` 占位符出现；实测 16 个内置包仅 4 条带该占位符（2 条中文），且分布锁在 thinking 相（<15s）与 running 相（15–30s），**long 相（>30s，长加载的主形态）全库零条**——子代理长审查期间速度永远不出现（语录包 429 条/相进一步稀释）。短语补量属概率方案，用户复测仍不可见，改确定性承载。
+
+1. **开关 `appendLiveSpeed`**：默认 `true`；存 `zusage3.rotator2` 整包（布尔守卫同规则 1）。生效条件与开关①同款 = `enabled` 且 `labelSource:"phrases"` 且 label 命中；**附加条件：本行测得实时速率**。取值链**逐行绑定窗格会话**（2026-11-23 二轮，用户实报「切换子代理都显示同一个 76」后定案）：行祖先 `[data-session-id]`（expando `__zuRotSid` 缓存 + 祖先元素 contains 复验，宿主节点复用/移挂时重走防错归属）→ 子代理行取该子会话的 subRate 槽位实时估算（3s 新鲜度，与状态栏「估 X t/s」同源，实例经 `subRateSlots()` 只读引用下发；多实例（分屏/辅助对话）各持本 pane 槽位表，取数侧按存活实例**浅合并到临时表**（每 tick 新建、绝不回写实例自身表——`subRateTick` 会对不在本 pane 运行清单的键 detach，混入他实例键会被误解绑；子会话 sid 全局唯一无碰撞）→ 主会话行回退 `activeStats` 字符流估算÷2；**没有会话均值回退**——首版曾回退 `sess.avg_tps`，主会话非流式期间全部行恒显同一静态值（76=会话均），已撤；`{tps}` 占位符短语链不变（仍含 avg 回退）。测不到实时速率整段缺席，绝不渲染 0 或「—」。
+2. **承载**：`.zu-rotator-speed` span，插在 `.zu-rotator-elapsed` 之后（时长段缺席时插 label 后），样式并入 `.zu-rotator-elapsed` 同一条 CSS 规则（同色同字号同 tabular-nums）；**2026-11-23 三轮（用户规格）：数值染色与速度格同源**——内层 span 挂 `tpsBand(rate).cls` 档位类（TPS_BANDS 唯一事实源；档位类是 06 实例样式表的全局规则，tip 图例同款直接生效，零新增 CSS；切片沙箱无 tpsBand 时 typeof 守卫回退中性色），浅色主题外层加 `.zu-light` 走加深组；Ultra 档连带 ✦ 星点与渐变。文案 `rate.toFixed(1) + " t/s"`（`L()` 同串双语）。
+3. **写纪律（规则 17 同款收紧）**：textContent 带比较前置判断 + 每行至多 1 次写/秒（row expando `__zuRotSpeed={at}` 记账（同值比较走内层实时态，expando 不存 str）；速率流式期逐拍变化也不越预算）；判位 `nextElementSibling` O(1)、不缓存节点引用（宿主重建行内节点下一拍自愈）；零文档级查询（sid 走 parentElement 上行）。
+4. **还原**：`.zu-rotator-speed` 并入 `restoreChatLoadingRow` 既有选择器串；开关关/host 模式/tps≤0 时 span 存在才摘除；`zuRotatorDisposeAll` 自动覆盖。
+5. **⚙ 面板**：checkbox `.zu-rot-append-speed`（紧跟「追加工作时长」），回填/写回走既有尾缀统一保存链；底部预览卡不联动（同规则 6）。
+6. **验收**：①默认 true、显式 false 保留、脏值回 true；②子代理行（祖先带该子会话 sid）→ 显示该槽位实时估算，主会话行 → 显示字符流估算，**槽位过期/无实时速率 → 摘除，即便会话 avg_tps > 0 也不显示（静态值回归锁）**；③时长段缺席时插 label 后；④还原无残留；⑤同值零写、跨值每行 1 写/秒；⑥面板回填与写回；⑦还原选择器串含 `.zu-rotator-speed`；⑧多窗格并行时各行显示各自速率（全局 ctx 不串值）。

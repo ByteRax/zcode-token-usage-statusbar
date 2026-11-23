@@ -60,7 +60,7 @@
     var curDisplay = "none", lastPos = [-1, -1], hideSince = 0;
     /* v80：true=条挂在输入卡片内部（group/toolbar 工具行之后）；false=旧 below-card 悬浮兜底 */
     var cardMode = false;
-    /* v441（issue #452，specs/perf-lag-reduction.md 规则 19）：track 空闲门状态。trackAt=上次几何段时刻；
+    /* v444（issue #452，specs/perf-lag-reduction.md 规则 19）：track 空闲门状态。trackAt=上次几何段时刻；
      * trackCard=上次几何段时的 cardMode（翻转后的首帧必读）；trackDirty=脏标（render 重建条面——切档尾部
      * 同走 render——与解除让位抑制时置位）；trackVw/trackVh=上一帧视口（无 window 尺寸的环境恒 0，永不误判
      * 变化）；trackFastUntil=视口变化后的逐帧保持期截止；trackFrames/trackPasses=走到门的帧数/执行几何段的次数。 */
@@ -481,7 +481,7 @@
         if (!dupSuppress) { dupSuppress = true; hideBar(); }
         return;
       }
-      if (dupSuppress) { dupSuppress = false; trackDirty = true; }   // v441：解除让位抑制后的下一帧复显，不等兜底节奏
+      if (dupSuppress) { dupSuppress = false; trackDirty = true; }   // v444：解除让位抑制后的下一帧复显，不等兜底节奏
     }
     function hideBar() {
       if (curDisplay !== "none") { bar.style.display = "none"; curDisplay = "none"; }
@@ -893,7 +893,7 @@
         } else if (cardCache && (state.theme === "pill" || !paddedCard || paddedCard.style.marginBottom !== CARD_MARGIN)) {
           ensureCardPad();   // 流式期间 React 重置内联边距时立刻补回（仅 below-card 兜底形态）
         }
-        /* v441（issue #452，specs/perf-lag-reduction.md 规则 19）：内嵌形态的条随输入卡片排版，逐帧读
+        /* v444（issue #452，specs/perf-lag-reduction.md 规则 19）：内嵌形态的条随输入卡片排版，逐帧读
          * 几何只服务于显隐与溢出对账；宿主每帧改 DOM（流式输出/打字/虚拟列表滚动）时，这些读取会把
          * 本帧的样式重算与布局强制进本回调（本机实测 1.3ms/帧、占主线程 7.8%，其中约 87% 是嵌套的
          * 强制样式重算与布局）。
@@ -1062,7 +1062,7 @@
             nativeCtx: nativeCtxVal,
             quota: { providerId: effectiveQuotaProvider(), modelId: quotaModel, sourceId: quotaSourceId,
               selected: !!quotaSelection, status: lastQuota ? lastQuota.status : "unavailable", chip: !!quotaChipCache },
-            trackFrames: trackFrames, trackPasses: trackPasses,   // v441：空闲门是否生效的现场证据（内嵌空闲态执行次数远小于帧数）
+            trackFrames: trackFrames, trackPasses: trackPasses,   // v444：空闲门是否生效的现场证据（内嵌空闲态执行次数远小于帧数）
             picked: pickedSid,
             exc: excOn ? (excGone ? "on-gone" : "on") : 0,
             href: String(location.href).slice(0, 120),
@@ -1104,7 +1104,7 @@
       }
     }
 
-    /* v441：条面横向滚动后的下一帧重判裁剪渐隐（zu-clip/zu-clip-left）——事件只置脏标、不读几何；
+    /* v444：条面横向滚动后的下一帧重判裁剪渐隐（zu-clip/zu-clip-left）——事件只置脏标、不读几何；
      * 监听挂在条内 main 上，经 listenGlobal 登记，随实例 dispose 摘除。 */
     listenGlobal(main, "scroll", function () { trackDirty = true; });
 
@@ -1280,6 +1280,10 @@
         return info;
       },
       rotatorStats: function () { return inactive() ? null : { stats: liveStatsCur, model: quotaModel, provider: quotaProvider, session: lastView && lastView.session }; },
+      /* 轮播实时速度段（specs/status-rotator-work-duration.md）：把子代理速率槽位（08 分片
+       * subRate.slots，键=子会话 sid）原引用交给轮播按 loading 行所属窗格逐行取数——
+       * 只读引用零拷贝，槽位值由既有 store 通知链原地更新。 */
+      subRateSlots: function () { return inactive() ? null : subRate.slots; },
       liveEl: function () { return liveEl; },   // 测试缝：实时段节点引用
       liveIconKind: function () { return liveIconCur; },   // 测试缝：当前 chip 图标（think/bolt/空）
       /* v356 系统状态：帧驱动的原地格面刷新 + 订阅意愿上报（格可见/格 tooltip/设置页/精简

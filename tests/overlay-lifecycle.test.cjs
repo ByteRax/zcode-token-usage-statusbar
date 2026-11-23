@@ -116,6 +116,15 @@ test('padding release touches only the owning card and dispose restores original
   h.window.__zusageDispose(); assert.equal(cards[1].style.marginBottom, 'bpx');
 });
 
+test('v443 rotator live speed: instance exposes subRateSlots() as a stable zero-copy slot reference', () => {
+  const h = harness(); h.setPanes(['a']); h.inject(); h.boot();
+  const api = h.window.lifecycleTest.instances()[0];
+  assert.equal(typeof api.subRateSlots, 'function', 'subRateSlots accessor exported on the instance interface');
+  const s1 = api.subRateSlots();
+  assert.ok(s1 && typeof s1 === 'object', 'returns the slot table object while the instance is live');
+  assert.strictEqual(api.subRateSlots(), s1, 'same reference across calls (read-through, not a per-call snapshot)');
+});
+
 test('v146 compact theme: bar hides on body, heavy keeps it alive, no pads; leaving remounts in-card', () => {
   const store = new Map([['zusage3.theme', 'compact']]);
   const h = harness({ getItem: k => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) });

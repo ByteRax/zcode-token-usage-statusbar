@@ -850,7 +850,7 @@
 
     var mobileViewKey = "";
     function render(d) {
-      trackDirty = true;   // v441（规则 19）：条面重建后下一帧重判几何（宽度/溢出可能已变），不等 100ms 兜底
+      trackDirty = true;   // v444（规则 19）：条面重建后下一帧重判几何（宽度/溢出可能已变），不等 100ms 兜底
       /* v262：只有真实快照帧才更新共享数据。空对象兜底渲染（实例 spawn 首渲染/桥空窗的
        * `render(state.data || {session:{},...})`）若覆盖 state.data，会把统一轮表连同整帧
        * 抹掉——下一次 hover 的整条渲染读不到 speed_history，走 fb-html 旧版整卡（v261
