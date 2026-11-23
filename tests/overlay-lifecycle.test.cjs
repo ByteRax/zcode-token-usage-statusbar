@@ -158,8 +158,10 @@ test('v177 dedup: track frames cannot re-show a bar suppressed by a smaller-slot
   const h = harness(), cards = h.setPanes(['a', 'b'], { toolbar: true });
   /* issue #452 起几何段受空闲门控：断言帧前手动推进满一个兜底节奏，保证几何段真的执行——
    * 否则这些帧被门控跳过，`!dupSuppress &&` 守卫改坏了也不会红（review 变异实证）。
-   * 推进量与兜底节奏常量恰好相等、余量为 0：所以每一帧都断言几何段确实执行，常量一改就在这里
-   * 大声变红，而不是悄悄回到假绿。 */
+   * 推进量与兜底节奏常量恰好相等、余量为 0：所以每一帧都断言该帧确实读了几何，常量一改就在这里
+   * 大声变红，而不是悄悄回到假绿。计数按 composer 矩形的读取次数算——另一个实例的命中判定也会读
+   * 同一个矩形，所以它只用来发现「帧被门控跳过」，不单独证明实例 b 自己的几何段执行了（那由末尾
+   * 不推进时钟的复显断言兜住）。 */
   const geoB = countComposerRects(cards[1]);
   const frameB = () => { const before = geoB.reads; now.v += 100; h.runFrame(); assert.ok(geoB.reads > before, 'harness sanity: 该帧确实执行了几何段（被空闲门跳过=后面的断言是假绿）'); };
   const now = fakeClock(h, Date.now()); h.inject(); h.boot();
@@ -333,6 +335,11 @@ test('v408 elicitation dedup: panel wrapper rivals are matched via cardHost, not
   now.v += 100; h.runFrame();   // 推进量与兜底节奏常量恰好相等、余量为 0：常量一改要在下一行大声变红，不能悄悄假绿
   assert.ok(geoB.reads > beforeFrame, 'harness sanity: 该帧确实执行了几何段（被空闲门跳过=下一行的断言是假绿）');
   assert.equal(barB.style.display, 'none', 'dupSuppress 不被 track 复显打穿（v177 规则沿袭）');
+  // 上面的自检计数会被另一个实例的命中判定读到，不足以证明实例 b 自己的几何段在跑：对手退场后，
+  // 不推进时钟的下一帧必须由实例 b 自己复显（靠解除抑制的脏标）——实例 b 的几何段根本不执行时在此变红
+  cards[0].querySelectorAll = sel => sel === '.zusage-root' ? [] : [];
+  h.tick(); h.runFrame();
+  assert.equal(barB.style.display, 'flex', '对手退场后实例 b 在下一帧复显（时钟不推进；实例 b 的几何段不执行时变红）');
   h.window.__zusageDispose();
 });
 
