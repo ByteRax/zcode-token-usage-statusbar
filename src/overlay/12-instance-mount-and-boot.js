@@ -1248,6 +1248,10 @@
         return info;
       },
       rotatorStats: function () { return inactive() ? null : { stats: liveStatsCur, model: quotaModel, provider: quotaProvider, session: lastView && lastView.session }; },
+      /* 轮播实时速度段（specs/status-rotator-work-duration.md）：把子代理速率槽位（08 分片
+       * subRate.slots，键=子会话 sid）原引用交给轮播按 loading 行所属窗格逐行取数——
+       * 只读引用零拷贝，槽位值由既有 store 通知链原地更新。 */
+      subRateSlots: function () { return inactive() ? null : subRate.slots; },
       liveEl: function () { return liveEl; },   // 测试缝：实时段节点引用
       liveIconKind: function () { return liveIconCur; },   // 测试缝：当前 chip 图标（think/bolt/空）
       /* v356 系统状态：帧驱动的原地格面刷新 + 订阅意愿上报（格可见/格 tooltip/设置页/精简
