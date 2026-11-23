@@ -424,11 +424,7 @@
     out += '<div class="qt-note">' + (foot ? foot + "<br>" : "") +
       (isBalance
         ? L("余额属于当前供应商账号或 API Key，不是单模型独享。点击 chip 立即刷新。", "Balance belongs to the provider account or API key, not one model. Click the chip to refresh.")
-        : q.modelBasis   // v385 OpenCode Go 模型口径：窗口总额已按模型换算，页脚换成模型口径披露（11 分片 quotaOpencodeModelView 置入）
-          ? L("窗口总额已按当前模型 ", "Window totals are scaled to the current model ") + '<span class="qt-cur">' + esc(q.modelBasis) + "</span>" +
-            L(" 的月度额度换算（opencode.ai/go 快照，官方调价以官网为准）；已用为账号实际花费。点击 chip 立即刷新。",
-              "'s monthly allowance (opencode.ai/go snapshot; official prices govern); used is the account's actual spend. Click the chip to refresh.")
-          : L("套餐池为账号级：同账号所有模型共用，不是单个模型独享。点击 chip 立即刷新。", "The pool is account-level: shared by every model on this account, not per model. Click the chip to refresh.")) + "</div>";
+        : L("套餐池为账号级：同账号所有模型共用，不是单个模型独享。点击 chip 立即刷新。", "The pool is account-level: shared by every model on this account, not per model. Click the chip to refresh.")) + "</div>";
     return out;
   }
   function showQuotaTip(el) {

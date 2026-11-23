@@ -473,52 +473,11 @@
      * main_turn（provider_id 已知）+ provider 为内置套餐档；自定义 provider 隐藏，团队档给
      * 不支持提示。数据账号级（快照 quota 字段），同套餐换模型只换 tooltip 高亮不重查。 */
     function quotaBandOf(pct) { return bandOf(QUOTA_BANDS, pct); }
-    /* v385 OpenCode Go 模型口径换算（issue #382）：官方按模型给月度额度（opencode.ai/go
-     * "allowances vary by model"），而 /console/api/go/status 的 meters 是账户基线池
-     * （Go 档实测 $60/月、5h 20%、周 50%），用 DeepSeek V4.1 Flash（$100/月）时 chip 会
-     * 少显示 40%。换算只在渲染端：meters 数据模型无关，不进额度链、不触发重查（「模型
-     * 不入键」取舍不变），模型切换即时生效。门槛（任一不满足原样返回，绝不伪造）：
-     *  - 当前源 id 是 opencode（复合源 opencode:<providerId>）且模型命中下表（小写精确）；
-     *  - 月窗 total 恰等于 Go 档账户基线 60（档位锚定）；Plus 档基线官方页面未明示，
-     *    不验证不换算；官方调基线后表过期同样回落基线显示。
-     * 公式：各窗总额 = 模型月度额度 × (该窗基线总额 / 月窗基线总额)——窗占比跟活接口
-     * 走，不硬编码 20%/50%；used 是账户窗口内实际花费、模型无关，保留原值；percent 按
-     * used/新总额重算并钳 [0,100]（账户花费超过小额度模型上限时语义即「已到顶」）；
-     * remaining 同步重算。兜底链（public usage 端点）窗口只有基线 percent、无金额锚点，
-     * 不换算。表为 2026-11-17 抓取自 opencode.ai/go 的快照（28 款，官方调价/上新需同步）。 */
-    var OPENCODE_GO_BASELINE_MONTHLY = 60;   // Go 档账户基线月度额度 USD（issue #382 实测 meters）
-    var OPENCODE_MODEL_MONTHLY = {   // 模型月度额度 USD（Go 档），2026-11-17 抓取自 opencode.ai/go
-      "kimi-k3": 15, "kimi-k3.1-pro": 15, "qwen3.8-max": 15, "grok-4.7": 15, "glm-5.3": 15,
-      "step-5-preview": 15, "qwen4-max": 15, "gemini-4-argon": 30, "glm-5.2": 60, "kimi-k2.7-code": 60,
-      "deepseek-v4-pro": 15, "hy4-preview": 30, "gpt-5.6-luna": 15, "hy4": 60, "minimax-m3": 60,
-      "mimo-v2.6-pro": 15, "claude-haiku-5-5": 15, "minimax-m3.1-flash": 20, "gpt-6-luna": 15, "hy3": 60,
-      "qwen3.7-plus": 60, "qwen3.8-flash": 30, "glm-5.3-flash": 60, "longcat-2.0": 60, "mimo-v2.6-flash": 60,
-      "deepseek-v4.1-flash": 100, "muse-spark-1.2-contributor": 60, "muse-spark-1.3-contributor": 60,
-    };
-    function quotaOpencodeModelView(q) {
-      var sid = String(quotaSourceId || "");
-      if (sid !== "opencode" && sid.indexOf("opencode:") !== 0) return q;
-      var m = String(quotaModel || "").toLowerCase();
-      if (!Object.prototype.hasOwnProperty.call(OPENCODE_MODEL_MONTHLY, m)) return q;
-      var monthly = q && q.windows && q.windows.monthly;
-      if (!monthly || typeof monthly.total !== "number" || monthly.total !== OPENCODE_GO_BASELINE_MONTHLY) return q;
-      var mm = OPENCODE_MODEL_MONTHLY[m], out = Object.assign({}, q);
-      out.windows = Object.assign({}, q.windows);
-      out.modelBasis = m;   // tooltip 口径披露（quotaTipHTML 消费）；展示层字段，不回传主进程
-      var defs = ["fiveHour", "weekly", "monthly"];
-      for (var wi = 0; wi < defs.length; wi++) {
-        var w = out.windows[defs[wi]];
-        if (!w || typeof w.total !== "number" || !(w.total > 0) ||
-            typeof w.used !== "number" || !(w.used >= 0)) continue;
-        var total = Math.round(mm * (w.total / monthly.total) * 100) / 100;
-        var pct = Math.round(Math.min(100, Math.max(0, w.used / total * 100)) * 100) / 100;
-        out.windows[defs[wi]] = Object.assign({}, w, {
-          total: total, used: w.used, percent: pct,
-          remaining: Math.max(0, Math.round((total - w.used) * 100) / 100),
-        });
-      }
-      return out;
-    }
+    /* OpenCode Go 不按模型换算（v442 撤回 v385，issue #453）：/console/api/go/status 的 meters
+     * 是账号共享额度池本身（额度口径金额，请求按各模型月度额度折算计入同一池），窗口的
+     * total、used、percent 一律原样展示。官方各模型「月度额度」只是整月单用该模型时的标价
+     * 用量覆盖，不是独立池；按它放大总额会把官方已用比例改坏（issue #453：月窗已用 40.33%
+     * 曾被显示成 24.2%）。规格 specs/opencode-model-allowance.md。 */
     /* chip 分段：每个窗口一段（5时/7天/月；2026-11-17 用户规格：5小时→5时、本月→月，
      * 全档统一短标签，tooltip 保留「5小时窗口/本月窗口」全称），各自按已用 % 上档位色；余额类型一段（阶段 3 数据源接入即用） */
     function quotaSegs(q) {
@@ -772,7 +731,7 @@
       if (!lastQuota) return null;
       /* 按 provider 选源：内置 account:* → family 源；自定义 → byProvider 映射（主进程
        * noteProvider 时记录），未映射的自定义退 custom 源。多窗异 provider 各取各的源。 */
-      var q = quotaOpencodeModelView(lastQuota), st = q.status;
+      var q = lastQuota, st = q.status;
       if (st === "disabled") return null;   // 源被 ⚙ 显式关闭：尊重显式关闭，不展示
       if (st === "not_configured" || st === "unsupported") {   // v111 不再静默隐藏：中性灰提示引导去 ⚙ 配置
         var dimTxt = st === "not_configured" ? L("额度 未配置", "Quota unset") : L("额度 暂不支持", "Quota unsupported");
@@ -854,7 +813,7 @@
       var srcLabels = {};
       for (var si = 0; si < (state.quotaSources || []).length; si++) srcLabels[state.quotaSources[si].id] = state.quotaSources[si].label;
       var all = lastQuotaAll && lastQuotaAll.sources ? Object.assign({}, lastQuotaAll, { active: quotaSourceId }) : lastQuotaAll;
-      chip.__zuQ = { q: quotaOpencodeModelView(lastQuota), all: all, srcLabels: srcLabels, provider: quotaProvider, model: quotaModel, mode: mode };
+      chip.__zuQ = { q: lastQuota, all: all, srcLabels: srcLabels, provider: quotaProvider, model: quotaModel, mode: mode };
       var shown = quotaApplyLevel(chip, mode, btn);   // v382：按真实工具栏可用宽度选显示等级
       if (!shown) {   // 极限降级：连图标都放不下→摘除 chip（保留 __zuQ 数据，恢复宽度即重现），不遮挡原生控件
         if (quotaTipFor === chip) hideQuotaTip();
