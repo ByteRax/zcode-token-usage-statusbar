@@ -85,6 +85,9 @@ class MobileInstallTests(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.env.stop)
 
+    def _enable_mobile_relay(self):
+        (self.runtime / "config.json").write_text('{"mobile_relay": {"enabled": true}}', encoding="utf-8")
+
     def test_real_hook_upgrades_already_injected_legacy(self):
         with mock.patch.object(self.installer, "resolve_paths", return_value=(self.runtime, self.pi)), \
              mock.patch.object(self.installer, "sync_runtime"), \
@@ -397,6 +400,7 @@ class MobileInstallTests(unittest.TestCase):
                 self.assertNotIn("手机远控增强尚未就绪", result["systemMessage"])
 
     def test_mobile_notice_preserves_existing_output_or_reports_deferral(self):
+        self._enable_mobile_relay()
         existing = {"hookSpecificOutput": {"additionalContext": "original"}}
         self.assertIs(self.installer._mobile_pending_notice(existing, self.pi, {"status": "deferred"}), existing)
         self.assertEqual(existing, {"hookSpecificOutput": {"additionalContext": "original"}})
@@ -410,6 +414,7 @@ class MobileInstallTests(unittest.TestCase):
         self.assertIn("手机远控增强尚未就绪", output["hookSpecificOutput"]["additionalContext"])
 
     def test_mobile_notice_splits_pending_and_waiting_from_manual_command(self):
+        self._enable_mobile_relay()
         # pending：已排定自动收尾，不给手动命令
         scheduled = {"suppressOutput": True}
         self.installer._mobile_pending_notice(scheduled, self.pi, {"status": "pending"})
@@ -438,6 +443,7 @@ class MobileInstallTests(unittest.TestCase):
         self.assertNotIn("systemMessage", quiet)
 
     def test_deferred_notice_rate_limited_within_24h(self):
+        self._enable_mobile_relay()
         first = {"suppressOutput": True}
         self.installer._mobile_pending_notice(first, self.pi,
                                               {"status": "deferred", "detail": "lock busy"})
@@ -453,6 +459,77 @@ class MobileInstallTests(unittest.TestCase):
         self.installer._mobile_pending_notice(third, self.pi,
                                               {"status": "deferred", "detail": "lock busy"})
         self.assertIn("手机远控增强尚未就绪", third["systemMessage"])
+
+    def test_mobile_notice_silent_while_relay_disabled(self):
+        # issue #455：推送开关未开启（缺省）时手机补丁提示一律静默——口径同主桥
+        # mobileEnabled()，仅 mobile_relay.enabled 对象内显式 true 算开启。
+        config = self.runtime / "config.json"
+        states = ({"status": "pending"},
+                  {"status": "deferred", "detail": "existing pending operation"},
+                  {"status": "deferred", "detail": "bridge pending"},
+                  {"status": "deferred", "detail": "lock busy"})
+        for raw in (None, "{}", '{"mobile_relay": {"enabled": false}}', '{"mobile_relay": {}}',
+                    '{"mobile_relay": true}', '{"mobile_relay": []}', '{"mobile_relay": "on"}',
+                    '{"mobile_relay": {"enabled": "true"}}', '{"mobile_relay": {"enabled": 1}}',
+                    "[1, 2]", "{not json"):
+            if raw is None:
+                config.unlink(missing_ok=True)
+            else:
+                config.write_text(raw, encoding="utf-8")
+            for state in states:
+                with self.subTest(config=raw, state=state):
+                    out = {"suppressOutput": True}
+                    self.assertIs(self.installer._mobile_pending_notice(out, self.pi, state), out)
+                    self.assertEqual(out, {"suppressOutput": True})
+        # 静默不占用 24h 限频：之后开启开关，提示不受此前静默影响
+        self.assertFalse((self.runtime / ".mobile-deferred-notice.json").exists())
+        self._enable_mobile_relay()
+        enabled = {"suppressOutput": True}
+        self.installer._mobile_pending_notice(enabled, self.pi, {"status": "deferred", "detail": "lock busy"})
+        self.assertIn("手机远控增强尚未就绪", enabled["systemMessage"])
+
+    def _run_hook_while_asar_locked(self):
+        """真实 hook 链 + asar 被运行中客户端占用：桥补装转存 pending，手机补丁按
+        「bridge pending」让位——issue #455 报告的会话路径。"""
+        real_replace = os.replace
+
+        def replace(src, dst):
+            if Path(dst) == self.pi.ASAR:
+                raise PermissionError("locked")
+            return real_replace(src, dst)
+        with mock.patch.object(os, "replace", side_effect=replace), \
+             mock.patch.object(self.installer, "resolve_paths", return_value=(self.runtime, self.pi)), \
+             mock.patch.object(self.installer, "sync_runtime"), \
+             mock.patch.object(self.installer, "save_runtime_config"), \
+             mock.patch.dict(sys.modules, {"plugin_auto_update": mock.Mock()}), \
+             contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+            result = self.installer.run_hook()
+        self.assertEqual(out.getvalue(), "")
+        return result
+
+    def test_hook_mobile_waiting_notice_follows_relay_toggle(self):
+        # 已注入与刚安装成功两条 hook 分支：推送开关未开启时整条会话静默，开启时照旧提示
+        for injected in (True, False):
+            for enabled in (False, True):
+                with self.subTest(injected=injected, enabled=enabled):
+                    self.pi.TMP.unlink(missing_ok=True)
+                    self.pi.TMP_META.unlink(missing_ok=True)
+                    marker = self.runtime / ".plugin-restart-required"
+                    marker.unlink(missing_ok=True)
+                    if enabled:
+                        self._enable_mobile_relay()
+                    else:
+                        (self.runtime / "config.json").unlink(missing_ok=True)
+                    with mock.patch.object(self.installer, "injected_status", return_value=injected), \
+                         mock.patch.object(self.installer, "_install_overlay", return_value=True):
+                        result = self._run_hook_while_asar_locked()
+                    # 门控只管会话文字：待替换包与 ⚙ 红点标记照常落定
+                    self.assertTrue(self.pi.TMP.is_file())
+                    self.assertTrue(marker.is_file())
+                    if enabled:
+                        self.assertIn("手机中继补丁暂缓", result["systemMessage"])
+                    else:
+                        self.assertEqual(result, {"suppressOutput": True})
 
     def test_standalone_remove_clears_mobile_injection(self):
         with mock.patch.object(sys, "argv", ["install.py", "--remove", "--asar", str(self.target),

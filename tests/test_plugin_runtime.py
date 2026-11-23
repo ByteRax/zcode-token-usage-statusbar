@@ -703,9 +703,9 @@ class PluginRuntimeTests(unittest.TestCase):
         patch_install.launch_monitor.assert_not_called()
         installer.ensure_mobile_relay_stash.assert_not_called()
         self.assertTrue(result["suppressOutput"])
-        # bridge pending → mobile 延后（detail=bridge pending）：提示等待收尾后自动补装，不给手动命令
-        self.assertIn("自动补装", result["systemMessage"])
-        self.assertNotIn("mobile_relay_patch.py", result["systemMessage"])
+        # bridge pending → mobile 延后（detail=bridge pending）：推送开关未开启（缺省）
+        # 时不发会话文字（issue #455），重启需求由 ⚙ 红点标记承载
+        self.assertNotIn("systemMessage", result)
 
     def test_hook_revive_skips_without_legal_pending_operation(self):
         for op in (None, "cancelled"):

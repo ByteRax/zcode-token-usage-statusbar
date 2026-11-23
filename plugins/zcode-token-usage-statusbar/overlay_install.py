@@ -1098,14 +1098,29 @@ def _mark_deferred_notice_shown(runtime):
         pass
 
 
+def _mobile_relay_enabled(runtime):
+    """手机远控推送开关，口径同主桥 mobileEnabled()：config.mobile_relay.enabled 仅
+    对象内显式 true 开启；缺文件/损坏/非布尔/非对象都按未开启。"""
+    try:
+        cfg = json.loads((Path(runtime) / "config.json").read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — 读不出按未开启：提示跟随功能的真实生效状态
+        return False
+    relay = cfg.get("mobile_relay") if isinstance(cfg, dict) else None
+    return isinstance(relay, dict) and relay.get("enabled") is True
+
+
 def _mobile_pending_notice(out, pi, mobile):
-    """SessionStart 静默链：pending=已排定自动收尾；deferred 按成因分流——已有
+    """SessionStart 静默链：推送开关未开启（缺省）时一律静默（issue #455）——未用
+    手机远控的用户不应因待替换包未收尾而每个会话被红字打扰，待重启由 ⚙ 红点承载。
+    开启后：pending=已排定自动收尾；deferred 按成因分流——已有
     待替换操作（含 bridge pending）等收尾后自动补装，不给手动命令；其余给免终端
     重试路径（/install-overlay → ⚙「重启 ZCode」）并按 24h 限频，命令行仅保留在
     CLI 高级选项。skipped-error/unknown 属可选增强不可用（宿主不支持/夹具无有效
     asar），不得每会话打扰；显式 /install-overlay 的失败仍走 CLI 分支自行打印。
     已有 systemMessage 优先保留。"""
     if "systemMessage" in out or "hookSpecificOutput" in out:
+        return out
+    if not _mobile_relay_enabled(pi.RUNTIME):
         return out
     status = (mobile or {}).get("status")
     if status not in ("pending", "deferred"):
