@@ -1102,7 +1102,8 @@ def _mobile_relay_enabled(runtime):
     """手机远控推送开关，口径同主桥 mobileEnabled()（配置按 readCfg 的 utf8 解码 +
     JSON.parse）：config.mobile_relay.enabled 仅对象内显式 true 开启；缺文件/损坏/
     非布尔/非对象都按未开启。非法 UTF-8 字节按替换字符解码（配置仍有效）；NaN/Infinity
-    字面量或 BOM 让整份配置按损坏处理（顶层 __proto__ 键的原型链怪癖不对齐）。"""
+    字面量或 BOM 让整份配置按损坏处理（顶层 __proto__ 键的原型链怪癖、4301 位以上
+    超长整数两处有意不对齐，见 specs/mobile-relay-install-upgrade.md）。"""
 
     def reject(value):
         raise ValueError(f"non-finite JSON constant: {value}")

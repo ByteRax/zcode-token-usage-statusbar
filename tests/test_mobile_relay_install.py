@@ -484,8 +484,9 @@ class MobileInstallTests(unittest.TestCase):
                     out = {"suppressOutput": True}
                     self.assertIs(self.installer._mobile_pending_notice(out, self.pi, state), out)
                     self.assertEqual(out, {"suppressOutput": True})
-        # 静默不占用 24h 限频：之后开启开关，提示不受此前静默影响
-        self.assertFalse((self.runtime / ".mobile-deferred-notice.json").exists())
+                    # 静默不占用 24h 限频：逐个状态断言，避免被下一种配置开头的清理掩盖
+                    self.assertFalse((self.runtime / ".mobile-deferred-notice.json").exists())
+        # 之后开启开关，提示不受此前的静默影响
         self._enable_mobile_relay()
         enabled = {"suppressOutput": True}
         self.installer._mobile_pending_notice(enabled, self.pi, {"status": "deferred", "detail": "lock busy"})
@@ -493,15 +494,20 @@ class MobileInstallTests(unittest.TestCase):
 
     def test_mobile_notice_gate_mirrors_host_config_parsing(self):
         # 配置解析口径对齐主桥 readCfg（fs.readFileSync utf8 + JSON.parse）：别处的非法
-        # UTF-8 字节按替换字符解码、配置仍有效；NaN/Infinity 字面量或 BOM 让 JSON.parse
-        # 抛出，整份配置按损坏处理（推送未开启）。
+        # UTF-8 字节按替换字符（不是丢弃）解码、配置仍有效；NaN/Infinity 字面量、字符串内
+        # 裸控制字符或 BOM 让 JSON.parse 抛出，整份配置按损坏处理（推送未开启）。
         config = self.runtime / "config.json"
         config.write_bytes(b'{"mobile_relay": {"enabled": true}, "note": "\xff\xfe"}')
         decoded = {"suppressOutput": True}
         self.installer._mobile_pending_notice(decoded, self.pi, {"status": "pending"})
         self.assertIn("已排定", decoded["systemMessage"])
+        # 丢弃非法字节会把 tr\xffue 拼成 true、把尾随垃圾吞掉；两条都必须仍判未开启
         for raw in (b'{"mobile_relay": {"enabled": true}, "x": NaN}',
                     b'{"mobile_relay": {"enabled": true}, "x": -Infinity}',
+                    b'{"mobile_relay": {"enabled": true}, "x": Infinity}',
+                    b'{"mobile_relay": {"enabled": true}, "x": "a\nb"}',
+                    b'{"mobile_relay": {"enabled": tr\xffue}}',
+                    b'{"mobile_relay": {"enabled": true}}\xff',
                     b"\xef\xbb\xbf" + b'{"mobile_relay": {"enabled": true}}'):
             with self.subTest(config=raw):
                 config.write_bytes(raw)
@@ -582,12 +588,36 @@ class MobileInstallTests(unittest.TestCase):
                 result = self.installer.run_hook()
                 self.assertEqual(out.getvalue(), "")
                 self.installer.ensure_mobile_relay_stash.assert_called_once_with(self.pi, quiet_monitor=True)
-            self.assertEqual(result, {"suppressOutput": True})
-            if running:
-                recorded = json.loads(marker.read_text(encoding="utf-8"))
-                self.assertEqual((recorded["state"], recorded["asarPatch"]), ("installed", True))
-            else:
-                self.assertFalse(marker.exists())
+                self.assertEqual(result, {"suppressOutput": True})
+                if running:
+                    self.assertTrue(marker.is_file())   # ⚙ 红点标记照常写
+                    recorded = json.loads(marker.read_text(encoding="utf-8"))
+                    self.assertEqual((recorded["state"], recorded["asarPatch"]), ("installed", True))
+                else:
+                    self.assertFalse(marker.exists())
+
+    def test_hook_injected_branch_keeps_mobile_patch_call_quiet(self):
+        # 已注入分支：门控只管会话文字，手机补丁调用及其静默参数（quiet_monitor：子链
+        # 输出转 stderr、拉监控不弹窗）照旧，补丁就地写入且客户端在运行时仍写 ⚙ 红点标记
+        marker = self.runtime / ".plugin-restart-required"
+        marker.unlink(missing_ok=True)
+        (self.runtime / "config.json").unlink(missing_ok=True)
+        with mock.patch.object(self.installer, "resolve_paths", return_value=(self.runtime, self.pi)), \
+             mock.patch.object(self.installer, "sync_runtime"), \
+             mock.patch.object(self.installer, "injected_status", return_value=True), \
+             mock.patch.object(self.installer, "save_runtime_config"), \
+             mock.patch.object(self.installer, "ensure_renderer_bridge", return_value={"status": "present"}), \
+             mock.patch.object(self.installer, "ensure_mobile_relay_stash",
+                               return_value={"status": "patched"}) as stash, \
+             mock.patch.object(self.pi, "client_running", return_value=True), \
+             mock.patch.dict(sys.modules, {"plugin_auto_update": mock.Mock()}), \
+             contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+            result = self.installer.run_hook()
+        self.assertEqual(out.getvalue(), "")
+        stash.assert_called_once_with(self.pi, quiet_monitor=True)
+        self.assertEqual(result, {"suppressOutput": True})
+        recorded = json.loads(marker.read_text(encoding="utf-8"))
+        self.assertEqual((recorded["state"], recorded["asarPatch"]), ("installed", True))
 
     def test_standalone_remove_clears_mobile_injection(self):
         with mock.patch.object(sys, "argv", ["install.py", "--remove", "--asar", str(self.target),
