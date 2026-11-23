@@ -907,6 +907,33 @@ test('issue #452: a clock rollback after a viewport change does not leave tracki
   assert.equal(geo.reads, afterRollback, '回拨后兜底节奏照常（99ms 不执行）');
   now.v += 1; h.runFrame();
   assert.ok(geo.reads > afterRollback, '回拨后兜底节奏到期执行');
+  // 回拨与脏标（render 重建条面）落在同一帧：作废不看脏标（「只在无脏标时作废」在此变红）
+  h.sandbox.innerWidth = 1000; now.v += 100; h.runFrame();   // 视口变化重新留下一个保持期截止时刻
+  now.v += 401; h.runFrame();                                 // 保持期已满
+  h.window.lifecycleTest.instances()[0].render({ session: {}, last_turn: {}, today: {}, context_window: 0 });
+  now.v -= 3600000; h.runFrame();                             // 脏标帧 + 回拨：当帧执行
+  const afterDirtyRollback = geo.reads;
+  h.runFrame(); h.runFrame();
+  assert.equal(geo.reads, afterDirtyRollback, '回拨落在脏标帧时同样作废保持期，随后的空闲帧不读几何');
+  assertTrackClean(h);
+  h.window.__zusageDispose();
+});
+
+test('issue #452: a clock rollback in the same frame as a viewport change still arms the hold', () => {
+  const h = harness(), [card] = h.setPanes(['a'], { toolbar: true }); h.inject(); h.boot();
+  const geo = countComposerRects(card);
+  const now = fakeClock(h, Date.now());
+  h.runFrame();
+  h.runFrame();
+  // 回拨与视口变化落在同一帧：先作废旧保持期，再由本帧的视口变化重新武装
+  // （作废放在视口判断之后=这次视口变化没有保持期、只剩 100ms 兜底，在下面的步进变红）
+  now.v -= 3600000; h.sandbox.innerWidth = 900; h.runFrame();
+  let armed = geo.reads;
+  for (let t = 16; t <= 96; t += 16) {
+    now.v += 16; h.runFrame();
+    assert.ok(geo.reads > armed, `同帧回拨+视口变化后 +${t}ms（距上次几何段 16ms）仍逐帧执行（保持期已武装）`);
+    armed = geo.reads;
+  }
   assertTrackClean(h);
   h.window.__zusageDispose();
 });

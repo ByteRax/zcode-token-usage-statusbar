@@ -902,11 +902,13 @@
          * 期间或视口保持期内逐帧；否则按 TRACK_IDLE_MS 兜底对账（宿主自发的布局变化没有插件侧事件）。
          * 药丸与 below-card 悬浮形态（cardMode 为假）不设门——条不随卡片排版，必须逐帧跟随。 */
         var trackNow = Date.now();
+        /* 时钟回拨：保持期截止时刻只在此前的视口变化时写入，回拨后会落在「未来」，不作废则门被撑开、逐帧执行到
+         * 时钟追上。先于视口判断作废——回拨与视口变化落在同一帧时，本帧的视口变化照常重新武装保持期。 */
+        if (trackNow < trackAt) trackFastUntil = 0;
         if ((innerWidth || 0) !== trackVw || (innerHeight || 0) !== trackVh) {
           trackVw = innerWidth || 0; trackVh = innerHeight || 0;
           trackDirty = true; trackFastUntil = trackNow + TRACK_FAST_MS;
         }
-        if (trackNow < trackAt) trackFastUntil = 0;   // 时钟回拨：保持期截止时刻只在此前的视口变化时写入，回拨后会落在「未来」，不作废则门被撑开、逐帧执行到时钟追上
         trackFrames++;
         if (cardMode && trackNow >= trackFastUntil && !panel.classList.contains("open") && !subPopOpen() && !morePanel.classList.contains("open") &&
             cardMode === trackCard && !trackDirty) {
