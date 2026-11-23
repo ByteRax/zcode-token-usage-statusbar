@@ -846,6 +846,11 @@ test('issue #452: a viewport change re-evaluates geometry on the spot and holds 
   h.sandbox.innerHeight = 700;
   h.runFrame();
   assert.ok(geo.reads > beforeHeight, '仅视口高度变化也当帧执行几何段');
+  // 高度基线必须回写（删掉 trackVh 回写在此变红）：保持期过后回到空闲门，而不是此后每帧都判成视口变化
+  now.v += 401; h.runFrame();
+  const settledHeight = geo.reads;
+  now.v += 16; h.runFrame();
+  assert.equal(geo.reads, settledHeight, '高度变化被消化后回到空闲门（基线未回写=此后每帧都逐帧执行）');
   assertTrackClean(h);
   h.window.__zusageDispose();
 });
