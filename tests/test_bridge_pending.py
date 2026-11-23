@@ -243,33 +243,261 @@ class BridgePendingTests(unittest.TestCase):
         self.assertEqual(result["status"], "skipped-error")
         self.assertEqual(bridge.ensure_deployed(self.target)["status"], "present")
 
-    def test_publish_crash_keeps_previous_tmp_in_journal(self):
-        # 已有合法 TMP 时再次 publish 崩溃于 rename 前：journal 必须记 previous_tmp，
-        # 恢复链（_owned_tmp_metadata）才能认领旧包而不是丢弃重装（变异审查补网）
+    def _two_stages_over_valid_pending(self):
+        """第一轮 publish 成 valid pending，第二轮 ensure 再产一个 stage（asar 仍缺桥）。"""
         self.real_replace = bridge.os.replace
         with mock.patch.object(bridge.os, "replace", side_effect=self.replace_refused):
             first = bridge.ensure_deployed(self.target)
         self.pi.publish_external_pending(Path(first["stage"]), source=first["source"])
-        first_tmp = self.pi.pending_tmp(operation="install")
-        # 第二轮：asar 未变仍缺桥 → 再次 replace 被拒 → 新 stage → publish 在
-        # rename(stage→TMP) 前崩溃（journal 已写、rename 未发生窗口）
         with mock.patch.object(bridge.os, "replace", side_effect=self.replace_refused):
             second = bridge.ensure_deployed(self.target)
-        stage2 = Path(second["stage"])
-        real_publish_replace = os.replace
+        return self.pi.pending_tmp(operation="install"), Path(second["stage"])
 
-        def crash_before_tmp(stage, destination):
+    def _fresh_stage_without_previous(self):
+        """桥链 replace 被拒产出的 stage（当前无任何 pending）。"""
+        self.real_replace = bridge.os.replace
+        with mock.patch.object(bridge.os, "replace", side_effect=self.replace_refused):
+            result = bridge.ensure_deployed(self.target)
+        return Path(result["stage"]), result["source"]
+
+    def _asar_stamp_failing_on(self, nth):
+        """_same_stamp 对目标 asar 的第 nth 次调用抛 PendingTmpError（ValueError 子类）。
+        _checked_tmp_metadata 先调两次；_publish_pending 里 rename 前是第 3 次、rename 后是第 4 次。"""
+        real_same = self.pi._same_stamp
+        calls = []
+
+        def same_stamp(path, fingerprint):
+            real_same(path, fingerprint)
+            if Path(path).resolve() == self.target.resolve():
+                calls.append(1)
+                if len(calls) == nth:
+                    raise self.pi.PendingTmpError("asar replaced during publication")
+        return mock.patch.object(self.pi, "_same_stamp", side_effect=same_stamp)
+
+    def test_publish_hard_interrupt_rolls_back_like_any_other_failure(self):
+        # 键盘中断/退出与普通异常同待遇（复盘二轮：此前 BaseException 留 journal「作崩溃恢复
+        # 凭证」，但代码里没有消费它的恢复链，留下的只是让手机补丁链永久 deferred 的残留）。
+        # rename 前被中断且原先有 pending：sidecar 还原、旧包原样可用。
+        first_tmp, stage2 = self._two_stages_over_valid_pending()
+        before_meta = self.pi.TMP_META.read_bytes()
+        before_tmp = self.pi.TMP.read_bytes()
+        real_replace = os.replace
+
+        def interrupt_before_tmp(stage, destination):
             if Path(destination) == self.pi.TMP:
-                raise OSError(5, "拒绝访问", str(destination))
-            return real_publish_replace(stage, destination)
-        with mock.patch.object(self.pi.os, "replace", side_effect=crash_before_tmp):
-            with self.assertRaises(OSError):
-                self.pi.publish_external_pending(stage2, source=second["source"])
+                raise KeyboardInterrupt("killed mid-publish")
+            return real_replace(stage, destination)
+        with mock.patch.object(self.pi.os, "replace", side_effect=interrupt_before_tmp):
+            with self.assertRaises(KeyboardInterrupt):
+                self.pi.publish_external_pending(stage2, source=None)
+        self.assertFalse(stage2.exists())
+        self.assertEqual(self.pi.TMP.read_bytes(), before_tmp, "旧待替换包未被触碰")
+        self.assertEqual(self.pi.TMP_META.read_bytes(), before_meta, "journal 回滚为发布前的终版")
+        self.assertEqual(self.pi.pending_operation(), "install")
+        self.assertEqual(self.pi.pending_tmp(operation="install")["tmp"]["sha256"],
+                         first_tmp["tmp"]["sha256"])
+
+    def test_publish_signal_right_after_rename_retracts_new_package(self):
+        # 信号落在 os.replace 返回之后：原先无 pending 时新包连同 journal 一并撤掉。回滚以盘上
+        # TMP 的身份戳判断「是否已 rename」——按标志位判断在此会把新包留成无主 TMP。
+        stage, source = self._fresh_stage_without_previous()
+        real_replace = os.replace
+
+        def replace_then_interrupt(src, dst):
+            real_replace(src, dst)
+            if Path(dst) == self.pi.TMP:
+                raise KeyboardInterrupt("signal landed right after os.replace")
+        with mock.patch.object(self.pi.os, "replace", side_effect=replace_then_interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.pi.publish_external_pending(stage, source=source)
+        self.assertFalse(self.pi.TMP.exists(), "新包已撤")
+        self.assertFalse(self.pi.TMP_META.exists(), "journal 已撤")
+        self.assertIsNone(self.pi.pending_operation())
+
+    def test_publish_source_change_after_rename_retracts_new_package(self):
+        # rename 后来源 asar 被并发换掉（_same_stamp 抛 PendingTmpError）：原先无 pending 时新包
+        # 与 journal 一并撤掉——不留基于旧 asar 构建的半发布包
+        stage, source = self._fresh_stage_without_previous()
+        with self._asar_stamp_failing_on(4):
+            with self.assertRaises(self.pi.PendingTmpError):
+                self.pi.publish_external_pending(stage, source=source)
+        self.assertFalse(self.pi.TMP.exists())
+        self.assertFalse(self.pi.TMP_META.exists())
+        self.assertIsNone(self.pi.pending_operation())
+
+    def test_publish_stamp_failure_before_rename_restores_previous(self):
+        # rename 前来源 stamp 失效：有旧 pending 时 sidecar 还原、旧包不动
+        first_tmp, stage2 = self._two_stages_over_valid_pending()
+        before_meta = self.pi.TMP_META.read_bytes()
+        before_tmp = self.pi.TMP.read_bytes()
+        with self._asar_stamp_failing_on(3):
+            with self.assertRaises(self.pi.PendingTmpError):
+                self.pi.publish_external_pending(stage2, source=None)
+        self.assertFalse(stage2.exists())
+        self.assertEqual(self.pi.TMP.read_bytes(), before_tmp)
+        self.assertEqual(self.pi.TMP_META.read_bytes(), before_meta)
+        self.assertEqual(self.pi.pending_tmp(operation="install")["tmp"]["sha256"],
+                         first_tmp["tmp"]["sha256"])
+
+    def test_publish_tmp_fingerprint_failure_retracts_new_package(self):
+        # rename 已落、给新包取指纹失败：新包与 journal 一并撤掉（此前该点失败只删 journal，
+        # 新包留成无主 TMP，之后每次 publish 都抛 untrusted pending TMP）
+        stage, source = self._fresh_stage_without_previous()
+        real_fp = self.pi.source_fingerprint
+
+        def fingerprint_tmp_fails(path):
+            if Path(path) == self.pi.TMP:
+                raise self.pi.PendingTmpError("tmp changed while hashing")
+            return real_fp(path)
+        with mock.patch.object(self.pi, "source_fingerprint", side_effect=fingerprint_tmp_fails):
+            with self.assertRaises(self.pi.PendingTmpError):
+                self.pi.publish_external_pending(stage, source=source)
+        self.assertFalse(self.pi.TMP.exists())
+        self.assertFalse(self.pi.TMP_META.exists())
+        self.assertIsNone(self.pi.pending_operation())
+
+    def test_publish_retraction_failure_keeps_claimable_journal(self):
+        # rename 已落、新包撤不掉（杀软占住）：journal 保留为所有权凭证，下一次 publish 能认领重发
+        stage, source = self._fresh_stage_without_previous()
+        real_unlink = Path.unlink
+
+        def unlink_tmp_denied(self_path, *args, **kwargs):
+            if self_path == self.pi.TMP:
+                raise PermissionError(13, "antivirus", str(self_path))
+            return real_unlink(self_path, *args, **kwargs)
+        real_write = self.pi._atomic_tmp_metadata
+        writes = []
+
+        def journal_then_fail(meta):
+            writes.append(meta["operation"])
+            if len(writes) == 2:
+                raise OSError(28, "No space left on device")   # 终版 sidecar 写失败
+            return real_write(meta)
+        with mock.patch.object(self.pi, "_atomic_tmp_metadata", side_effect=journal_then_fail):
+            with mock.patch.object(Path, "unlink", unlink_tmp_denied):
+                with self.assertRaises(OSError):
+                    self.pi.publish_external_pending(stage, source=source)
+        self.assertTrue(self.pi.TMP.is_file())
         journal = json.loads(self.pi.TMP_META.read_text(encoding="utf-8"))
+        self.assertEqual(journal["operation"], "cancelled")
+        self.assertIs(journal["publishing"], True)
+        self.pi._owned_tmp_metadata()   # 不抛：认领链完好
+        self.real_replace = bridge.os.replace
+        with mock.patch.object(bridge.os, "replace", side_effect=self.replace_refused):
+            again = bridge.ensure_deployed(self.target)
+        self.pi.publish_external_pending(Path(again["stage"]), source=again["source"])
+        self.assertEqual(self.pi.pending_operation(), "install")
+        self.assertTrue(self.pi.finalize_tmp(operation="install"))
+
+    def test_publish_rename_denied_restores_previous_pending(self):
+        # 复盘 MAJOR：已有合法 TMP 时再次 publish，rename(stage→TMP) 被普通异常拒绝
+        # （Windows 杀软占住刚写完的 stage）——journal 必须回滚成发布前的 sidecar，旧待
+        # 替换包原样可用。此前留下 cancelled+publishing 残留：只读 sidecar 就让位的手机
+        # 补丁链从此永久 deferred，提示「会自动完成」却无包可收尾。
+        first_tmp, stage2 = self._two_stages_over_valid_pending()
+        before_meta = self.pi.TMP_META.read_bytes()
+        before_tmp = self.pi.TMP.read_bytes()
+        real_replace = os.replace
+
+        def deny_tmp(stage, destination):
+            if Path(destination) == self.pi.TMP:
+                raise PermissionError(13, "antivirus", str(destination))
+            return real_replace(stage, destination)
+        with mock.patch.object(self.pi.os, "replace", side_effect=deny_tmp):
+            with self.assertRaises(PermissionError):
+                self.pi.publish_external_pending(stage2, source=None)
+        self.assertFalse(stage2.exists())
+        self.assertEqual(self.pi.TMP.read_bytes(), before_tmp, "旧待替换包未被触碰")
+        self.assertEqual(json.loads(self.pi.TMP_META.read_text(encoding="utf-8")),
+                         json.loads(before_meta), "sidecar 回滚为发布前的终版，无 journal 残留")
+        self.assertEqual(self.pi.pending_operation(), "install")
+        self.assertEqual(self.pi.pending_tmp(operation="install")["tmp"]["sha256"],
+                         first_tmp["tmp"]["sha256"])
+
+    def test_publish_rename_denied_without_previous_leaves_no_residue(self):
+        # 原先没有任何 pending：rename 被拒后不留 sidecar（否则 pending_operation 恒为
+        # cancelled，让位链永久 deferred），占用解除后重发照常排定并收尾
+        self.real_replace = bridge.os.replace
+        with mock.patch.object(bridge.os, "replace", side_effect=self.replace_refused):
+            result = bridge.ensure_deployed(self.target)
+        stage = Path(result["stage"])
+        real_replace = os.replace
+
+        def deny_tmp(src, dst):
+            if Path(dst) == self.pi.TMP:
+                raise PermissionError(13, "antivirus", str(dst))
+            return real_replace(src, dst)
+        with mock.patch.object(self.pi.os, "replace", side_effect=deny_tmp):
+            with self.assertRaises(PermissionError):
+                self.pi.publish_external_pending(stage, source=result["source"])
+        self.assertFalse(stage.exists())
+        self.assertFalse(self.pi.TMP.exists())
+        self.assertFalse(self.pi.TMP_META.exists())
+        self.assertIsNone(self.pi.pending_operation())
+        with mock.patch.object(bridge.os, "replace", side_effect=self.replace_refused):
+            again = bridge.ensure_deployed(self.target)
+        self.pi.publish_external_pending(Path(again["stage"]), source=again["source"])
+        self.assertEqual(self.pi.pending_operation(), "install")
+        self.assertTrue(self.pi.finalize_tmp(operation="install"))
+        self.assertEqual(bridge.ensure_deployed(self.target)["status"], "present")
+
+    def test_publish_final_sidecar_failure_retracts_new_package(self):
+        # rename 已落、终版 sidecar 写入失败（磁盘满等普通异常）且原先无 pending：
+        # 新包与 journal 一并撤掉——不留「TMP + cancelled/publishing」半发布（finalize
+        # 抛 Busy、让位链永久 deferred），下次照常重建；包是可再生的派生物，无数据可丢
+        self.real_replace = bridge.os.replace
+        with mock.patch.object(bridge.os, "replace", side_effect=self.replace_refused):
+            result = bridge.ensure_deployed(self.target)
+        stage = Path(result["stage"])
+        real_write = self.pi._atomic_tmp_metadata
+        calls = []
+
+        def write_then_fail(meta):
+            calls.append(meta["operation"])
+            if len(calls) == 2:
+                raise OSError(28, "No space left on device")
+            return real_write(meta)
+        with mock.patch.object(self.pi, "_atomic_tmp_metadata", side_effect=write_then_fail):
+            with self.assertRaises(OSError):
+                self.pi.publish_external_pending(stage, source=result["source"])
+        self.assertEqual(calls, ["cancelled", "install"], "journal 已写、终版写入被拒")
+        self.assertFalse(self.pi.TMP.exists())
+        self.assertFalse(self.pi.TMP_META.exists())
+        self.assertIsNone(self.pi.pending_operation())
+        with mock.patch.object(bridge.os, "replace", side_effect=self.replace_refused):
+            again = bridge.ensure_deployed(self.target)
+        self.pi.publish_external_pending(Path(again["stage"]), source=again["source"])
+        self.assertEqual(self.pi.pending_operation(), "install")
+        self.assertTrue(self.pi.finalize_tmp(operation="install"))
+
+    def test_publish_final_sidecar_failure_over_previous_keeps_journal(self):
+        # rename 已覆盖旧包、终版写入失败：旧包无从还原，不删不还原——journal（带
+        # previous_tmp）保留为所有权凭证，下一次 publish 经 _owned_tmp_metadata 认领后重发
+        _, stage2 = self._two_stages_over_valid_pending()
+        real_write = self.pi._atomic_tmp_metadata
+        calls = []
+
+        def write_then_fail(meta):
+            calls.append(meta["operation"])
+            if len(calls) == 2:
+                raise OSError(28, "No space left on device")
+            return real_write(meta)
+        with mock.patch.object(self.pi, "_atomic_tmp_metadata", side_effect=write_then_fail):
+            with self.assertRaises(OSError):
+                self.pi.publish_external_pending(stage2, source=None)
+        self.assertTrue(self.pi.TMP.is_file())
+        journal = json.loads(self.pi.TMP_META.read_text(encoding="utf-8"))
+        self.assertEqual(journal["operation"], "cancelled")
+        self.assertIs(journal["publishing"], True)
         self.assertIn("previous_tmp", journal)
-        self.assertEqual(journal["previous_tmp"]["sha256"], first_tmp["tmp"]["sha256"])
-        self.pi._owned_tmp_metadata()   # 不抛 PendingTmpError：旧包可被认领恢复
-        stage2.unlink(missing_ok=True)
+        self.pi._owned_tmp_metadata()   # 不抛：认领链完好
+        self.real_replace = bridge.os.replace
+        with mock.patch.object(bridge.os, "replace", side_effect=self.replace_refused):
+            third = bridge.ensure_deployed(self.target)
+        self.pi.publish_external_pending(Path(third["stage"]), source=third["source"])
+        self.assertEqual(self.pi.pending_operation(), "install")
+        self.assertNotIn("publishing", self.pi._load_tmp_metadata())
+        self.assertTrue(self.pi.finalize_tmp(operation="install"))
 
 
 class OverlayBridgeNoticeTests(unittest.TestCase):

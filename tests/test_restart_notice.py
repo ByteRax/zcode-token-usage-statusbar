@@ -134,6 +134,120 @@ class RestartNoticeTests(unittest.TestCase):
         self.assertIsNone(notice.reminder(self.runtime, injected=True))
         self.assertFalse((self.runtime / notice.MARKER).exists())
 
+    def test_ack_keeps_marker_when_the_read_fails_transiently(self):
+        import runtime_lock
+        notice.record_restart(self.runtime, {"state": "installed"})
+        marker = self.runtime / notice.MARKER
+        real_read_text = Path.read_text
+
+        def flaky(path, *args, **kwargs):
+            if path == marker:
+                raise PermissionError("transient")
+            return real_read_text(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "read_text", flaky):
+            ack = runtime_lock.ack_restart(self.runtime, {"_loadedAt": 9999999999999})
+        self.assertFalse(ack["cleared"], "读不到标记 ≠ 没有待办")
+        self.assertTrue(marker.exists(), "一次读失败不得销掉重启标记")
+
+    def test_record_restart_raises_when_the_marker_cannot_be_read_and_leaves_it_untouched(self):
+        """复盘第 2 轮：标记读不到时按空合并会把盘上的旧通知整份覆盖——改抛错，标记字节不动。"""
+        notice.record_restart(self.runtime, {"state": "pending-sync", "hashes": {"overlay.js": "a" * 64}})
+        marker = self.runtime / notice.MARKER
+        before = marker.read_bytes()
+        real_read_text = Path.read_text
+
+        def denied(self_path, *args, **kwargs):
+            if self_path == marker:
+                raise PermissionError(13, "denied")
+            return real_read_text(self_path, *args, **kwargs)
+
+        with mock.patch.object(Path, "read_text", denied):
+            with self.assertRaises(OSError):
+                notice.record_restart(self.runtime, {"hashes": {"quota-client.cjs": "b" * 64}})
+        self.assertEqual(marker.read_bytes(), before, "读失败时不得改写标记")
+        # 读恢复后照常合并：旧通知与本次新增都在
+        notice.record_restart(self.runtime, {"hashes": {"quota-client.cjs": "b" * 64}})
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        self.assertEqual(data["hashes"], {"overlay.js": "a" * 64, "quota-client.cjs": "b" * 64})
+
+    def test_record_restart_treats_a_missing_marker_as_empty(self):
+        """文件不存在不是读失败：首次写入（无标记）照常落盘。"""
+        self.assertFalse((self.runtime / notice.MARKER).exists())
+        self.assertEqual(notice.record_restart(self.runtime, {"state": "installed"}), {"ok": True})
+        self.assertEqual(json.loads((self.runtime / notice.MARKER).read_text(encoding="utf-8"))["state"], "installed")
+
+    def test_read_marker_separates_missing_corrupt_and_unreadable(self):
+        module = root_runtime_lock()
+        marker = self.runtime / notice.MARKER
+        self.runtime.mkdir(parents=True)
+        self.assertEqual(module._read_marker(marker, unreadable=False), {}, "缺文件=空标记，与 unreadable 无关")
+        marker.write_text("{bad", encoding="utf-8")
+        self.assertEqual(module._read_marker(marker, unreadable=False), {}, "JSON 损坏=空标记")
+        marker.write_bytes(b"\xff\xfe{")
+        self.assertEqual(module._read_marker(marker, unreadable=False), {}, "非 UTF-8=损坏=空标记")
+        marker.write_text("[]", encoding="utf-8")
+        self.assertEqual(module._read_marker(marker, unreadable=False), {}, "非对象=空标记")
+        real_read_text = Path.read_text
+
+        def denied(self_path, *args, **kwargs):
+            if self_path == marker:
+                raise PermissionError(13, "denied")
+            return real_read_text(self_path, *args, **kwargs)
+
+        with mock.patch.object(Path, "read_text", denied):
+            self.assertIs(module._read_marker(marker, unreadable=False), False, "读不到返回 unreadable")
+            self.assertEqual(module._read_marker(marker), {}, "缺省仍按空标记")
+
+    def test_ack_treats_a_marker_removed_between_check_and_read_as_nothing_to_clear(self):
+        """判存在时标记还在、读完就没了（外部删除）：不抛、不销账、不重建标记。"""
+        notice.record_restart(self.runtime, {"state": "installed"})
+        marker = self.runtime / notice.MARKER
+        before = marker.read_bytes()
+        real_read_text, real_exists, real_stat = Path.read_text, Path.exists, Path.stat
+        checks = []
+
+        def gone(self_path):
+            return self_path == marker and bool(checks)   # 首次判存在之后，标记一律视为已消失
+
+        def vanished(self_path, *args, **kwargs):
+            if gone(self_path):
+                raise FileNotFoundError(2, "vanished")
+            return real_read_text(self_path, *args, **kwargs)
+
+        def exists(self_path, *args, **kwargs):
+            if self_path == marker:
+                checks.append(1)
+                return len(checks) == 1
+            return real_exists(self_path, *args, **kwargs)
+
+        def stat(self_path, *args, **kwargs):
+            if gone(self_path):
+                raise FileNotFoundError(2, "vanished")
+            return real_stat(self_path, *args, **kwargs)
+
+        module = root_runtime_lock()
+        with mock.patch.object(Path, "read_text", vanished), mock.patch.object(Path, "exists", exists), \
+                mock.patch.object(Path, "stat", stat):
+            self.assertEqual(module.ack_restart(self.runtime, {"_loadedAt": 9e15}), {"ok": True, "cleared": False})
+        self.assertEqual(len(checks), 2, "第二次判存在是「读完即被删」的守卫在问")
+        self.assertEqual(marker.read_bytes(), before, "标记未被改写")
+
+    def test_pending_install_with_nan_published_at_is_not_acknowledged(self):
+        import runtime_lock
+        self.runtime.mkdir(parents=True)
+        marker = self.runtime / notice.MARKER
+        data = {"state": "pending-install", "installation": {"asar": "fixture", "entryHash": "a" * 64},
+                "publishedAt": float("nan"), "createdAt": 1.0, "hashes": {}}
+        marker.write_text(json.dumps(data), encoding="utf-8")   # json.dumps 原样写出 NaN，json.loads 也放行
+        self.assertFalse(runtime_lock.ack_restart(self.runtime, {"_loadedAt": 9999999999999})["cleared"],
+                         "publishedAt=NaN 的比较恒假，不得把 pending-install 销账")
+        self.assertTrue(marker.exists())
+        # 对照：同一标记换成有限的发布时刻即正常销账
+        data["publishedAt"] = 1000.0
+        marker.write_text(json.dumps(data), encoding="utf-8")
+        self.assertTrue(runtime_lock.ack_restart(self.runtime, {"_loadedAt": 9999999999999})["cleared"])
+
     def test_installed_state_without_hashes_is_acknowledged_on_next_start(self):
         import runtime_lock
         notice.record_restart(self.runtime, {"state": "installed"})

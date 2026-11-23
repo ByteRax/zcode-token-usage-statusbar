@@ -192,6 +192,27 @@ test("parseNumstat: totals, binary dash rows, rename arrow keying, tab-in-path",
   assert.deepEqual({ ...m.map["b.py"] }, { ins: 3, del: 1 });
 });
 
+test("parseNumstat/parseGitPorcelain: paths named __proto__ or constructor are ordinary keys (no prototype pollution, no phantom counts)", async () => {
+  // 复盘 MINOR：map 曾是普通对象——"__proto__" 文件会改掉它的原型，mergeNumstat 的 for...in
+  // 随之枚举出假键 ins/del，名为 ins/del 的文件拿到幻影「无计数」
+  const { api } = loadPump();
+  const r = api.parseNumstat("5\t2\t__proto__\x001\t1\tconstructor\x003\t0\tins\x00");
+  assert.equal(Object.getPrototypeOf(r.map), null, "映射是无原型对象");
+  assert.deepEqual(Object.keys(r.map).sort(), ["__proto__", "constructor", "ins"], "三个路径都是自有键");
+  assert.deepEqual([r.map.__proto__.ins, r.map.__proto__.del], [5, 2], "__proto__ 是普通键");
+  assert.deepEqual([r.map.constructor.ins, r.map.constructor.del], [1, 1], "constructor 是普通键（不命中 Object.prototype）");
+  const m = api.mergeNumstat(api.parseNumstat("1\t0\t__proto__\x00"), r);
+  assert.equal(Object.getPrototypeOf(m.map), null);
+  assert.deepEqual([m.map.__proto__.ins, m.map.__proto__.del], [6, 2], "跨段合并：仍是普通键且计数相加");
+  assert.equal(Object.keys(m.map).length, 3, "合并不枚举出假键");
+  // 文件行附计数：命中才有 add/del；不在 numstat 里的未跟踪不带幻影值
+  const st = api.parseGitPorcelain("## main\0 M __proto__\0 M constructor\0?? new.txt\0", true, m.map);
+  const rows = [...st.files].map((f) => ({ ...f }));
+  assert.deepEqual([rows[0].p, rows[0].add, rows[0].del], ["__proto__", 6, 2]);
+  assert.deepEqual([rows[1].p, rows[1].add, rows[1].del], ["constructor", 1, 1]);
+  assert.deepEqual([rows[2].p, rows[2].add, rows[2].del], ["new.txt", undefined, undefined]);
+});
+
 test("parseNumstat: quotepath=false keeps raw UTF-8 paths for porcelain matching", async () => {
   const { api } = loadPump();
   const r = api.parseNumstat("1\t0\t说明.md\x00");

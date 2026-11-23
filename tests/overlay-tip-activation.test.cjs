@@ -290,16 +290,28 @@ test('v439 chain: fire fails closed when re-hit is unavailable, panel open, or c
   h.handler.schedule(h.cellA, false);
   h.timers[0].fn();
   assert.equal(opened, 0, '复核异常不弹（fail-closed）');
+  /* v445：到点复核桩必须回本夹具的格。此前回的是上一夹具的 h.cellA，到点走的是「改靶重排」
+   * 分支，面板守卫删掉也绿（假绿）；补正向对照：同夹具、面板关着必须弹。 */
   const h2 = makeHoverChain({
     showTipFor: () => { opened++; },
     lastPt: { x: 120, y: 300 },
-    document: { elementFromPoint: () => h.cellA },
-    hitItemFor: () => h.cellA,
+    document: { elementFromPoint: () => h2.cellA },
+    hitItemFor: () => h2.cellA,
     panel: { classList: { contains: (c) => c === 'open' } },
   });
   h2.handler.schedule(h2.cellA, false);
   h2.timers[0].fn();
   assert.equal(opened, 0, '设置面板开着不弹');
+  const h2b = makeHoverChain({
+    showTipFor: () => { opened++; },
+    lastPt: { x: 120, y: 300 },
+    document: { elementFromPoint: () => h2b.cellA },
+    hitItemFor: () => h2b.cellA,
+  });
+  h2b.handler.schedule(h2b.cellA, false);
+  h2b.timers[0].fn();
+  assert.equal(opened, 1, '对照：面板关着时同一夹具到点即开');
+  opened = 0;   // 后续点击模式用例共用计数器
   const h3 = makeHoverChain({
     state: { tipClick: 1, tipHoverMs: 50 },
     showTipFor: () => { opened++; },

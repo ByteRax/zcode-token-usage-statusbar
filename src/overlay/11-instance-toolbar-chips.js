@@ -1192,9 +1192,8 @@
       }
     }
     function restoreEnhanceBtn(alsoCancel) {
-      /* alsoCancel=true 仅 dispose/热更路径：实例销毁后回执无处落地，在途请求中断止损，
-       * 并置 settled 丢弃迟到回包。临时摘除（无锚/开关关）不传：请求照常完成，回包经
-       * finish 身份门 + sid/草稿守卫裁决回填（spec 承诺的「冲突保护兜底」），不清身份键。 */
+      /* 关闭功能或销毁实例时取消在途请求并丢弃迟到回包。暂时没有锚点时只摘 DOM，
+       * 仍由 finish 的会话与草稿校验决定是否回填。 */
       if (alsoCancel && enhanceInFlightId && !enhanceSettled) {
         pluginRequest("prompt-enhance-cancel", { requestId: enhanceInFlightId });
       }
@@ -1947,7 +1946,7 @@
       var op = [];
       if (r.out > 0) op.push(L("压缩消耗 " + cmpNum(r.out) + " Token", "Compaction cost " + cmpNum(r.out) + " tokens"));   // v434：措辞（用户规格）——out 是压缩请求自身的消耗，旧词「摘要」易误读为摘要正文长度
       if (r.dur > 0) op.push(L("耗时 " + cmpDur(r.dur), "Took " + cmpDur(r.dur)));
-      if (r.alt) op.push(L("由 " + esc(r.alt) + " 执行", "by " + esc(r.alt)));   // v433：model_id 来自 DB（自定义名可含 HTML），与其余转义链同规
+      if (r.alt) op.push(L("由 " + gitEsc(r.alt) + " 执行", "by " + gitEsc(r.alt)));   // v433：model_id 来自 DB（自定义名可含 HTML），与其余转义链同规；走外层 IIFE 的 gitEsc——本工厂作用域没有 esc（v445：此前裸引 esc 抛 ReferenceError，自带 alt 的记录起标注全缺）
       if (op.length) lines.push(op.join(" · "));
       return lines.join("<br>");
     }
@@ -1992,7 +1991,7 @@
           var span = document.createElement("span");
           span.setAttribute("data-zusage-cmp", "1");
           span.__zuSig = html;
-          span.innerHTML = html;   // 内容全部由数字/日期拼出，无用户可控文本
+          span.innerHTML = html;   // 日期/数值由格式化函数拼出；唯一的 DB 文本是执行模型名 alt，已在 compSuffixHtml 过 gitEsc
           span.style.cssText = "flex:0 0 100%;font-size:12px;opacity:.78;text-align:center;line-height:1.5;white-space:nowrap;";
           pill.style.flexWrap = "wrap";   // 行向 pill 放行换行：标注块落到 label 下（先设再挂避免闪帧）
           pill.appendChild(span);

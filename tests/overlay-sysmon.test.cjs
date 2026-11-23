@@ -705,3 +705,24 @@ test('chip blur 守卫（v362 review C5）：焦点移入 sysTip 不收卡、真
   handlers.blur({ relatedTarget: 'elsewhere' });
   assert.deepEqual(hides, [1, 1], '浮层外目标收卡');
 });
+
+test('v445：sysmonInterested 经 api.getScope 上报本机工作区路径（此前裸调 getScope 必抛、被 catch 吞，projectPath 恒空）', () => {
+  const fnSrc = sliceText('      sysmonInterested: function () {', '\n      },\n');
+  const expr = '(' + fnSrc.slice(fnSrc.indexOf('function')) + '\n  })';
+  const mk = (scope, extra = {}) => {
+    const ctx = Object.assign({
+      inactive: () => false, state: { show: { sysmon: 1 }, theme: 'default' }, curDisplay: 'bar',
+      main: { querySelector: () => ({}) }, tipFor: null, tip: { style: { display: 'none' } },
+      panel: { classList: { contains: () => false } }, sysmonChipMounted: () => false,
+      api: { getScope: () => scope },
+    }, extra);
+    vm.runInNewContext('globalThis.interested = ' + expr + ';', ctx);
+    return ctx.interested;
+  };
+  const local = { sid: 's1', workspacePath: '/Users/x/proj' };
+  assert.equal(JSON.stringify(mk(local)()), JSON.stringify({ want: true, projectPath: '/Users/x/proj' }), '本地 scope 上报项目路径与订阅意愿');
+  const remote = mk({ sid: 's1', identity: 'ssh:host', workspacePath: '/remote/proj' })();
+  assert.equal(remote.projectPath, '', '远端分栏不上报本机路径');
+  assert.equal(remote.want, true);
+  assert.equal(JSON.stringify(mk(local, { inactive: () => true })()), JSON.stringify({ want: false, projectPath: '' }), '失活实例全空');
+});

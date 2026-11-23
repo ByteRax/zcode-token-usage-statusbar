@@ -717,7 +717,7 @@ function createModelPuller(opts) {
     if (planSrc) {
       /* 套餐源：单端点（Anthropic models，与运行协议同源），Bearer 套餐 token */
       try {
-        const res = await fetchImpl(planSrc.endpoint, { headers: { "Accept": "application/json", "Authorization": "Bearer " + planToken, "User-Agent": "ZCode" }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+        const res = await fetchImpl(planSrc.endpoint, { headers: { "Accept": "application/json", "Authorization": "Bearer " + planToken, "User-Agent": "ZCode" }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), redirect: "error" });
         if (!res.ok) { dropBody(res); return { ok: false, error: "HTTP " + res.status }; }
         const body = await readJsonBounded(res, RESPONSE_MAX_BYTES);
         const list = Array.isArray(body) ? body : asObject(body).data || asObject(body).models || asObject(body).result || null;
@@ -745,7 +745,11 @@ function createModelPuller(opts) {
       }
     }
     const cfg = effectiveRuleConfig(rule);   // issue #383：模板供应商按合并后配置构造请求
-    const apiKey = String((cfg.access || {}).apiKey || "").trim();
+    /* enc: 形态的 key 是宿主加密信封（或误贴的密文），不是可用凭据：按未配置处理、不随请求
+     * 外发——增强链的规则路径早已同闸（issue #440），拉模型这一口此前漏了，会把密文同时放进
+     * Authorization 与 x-api-key 发往供应商。 */
+    const rawApiKey = String((cfg.access || {}).apiKey || "").trim();
+    const apiKey = rawApiKey.indexOf("enc:") === 0 ? "" : rawApiKey;
     const urls = candidateUrls(cfg.api.baseUrl);
     const headers = { "Accept": "application/json", "User-Agent": "ZCode" };
     if (apiKey) { headers["Authorization"] = "Bearer " + apiKey; headers["x-api-key"] = apiKey; }
@@ -753,7 +757,7 @@ function createModelPuller(opts) {
     let items = null, via = "";
     for (const url of urls) {
       try {
-        const res = await fetchImpl(url, { headers: headers, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+        const res = await fetchImpl(url, { headers: headers, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), redirect: "error" });
         if (!res.ok) {
           lastError = "HTTP " + res.status;
           dropBody(res);
@@ -1313,7 +1317,7 @@ function createModelPuller(opts) {
     const apiType = planSrc ? "anthropic-messages" : String(api.type || "");   // probe 链维持 anthropic models 端点实测语义
     const baseUrl = String((planSrc ? planSrc.baseUrl : api.baseUrl) || "").trim().replace(/\/+$/, "");
     const apiKey = planSrc ? planTokenOf(providerId) : String(((cfg.access || {}).apiKey) || "").trim();
-    if (!apiKey) return { ok: false, model: mid, kind: "auth", error: "no api key" };
+    if (!apiKey || apiKey.indexOf("enc:") === 0) return { ok: false, model: mid, kind: "auth", error: "no api key" };   // enc: 密文按未配置（同 fetchModels）
     const ctx = { providerId: providerId, source: providerSource(data, providerId), deadline: Date.now() + 80000 };
     let attempt = await probeRequest(apiType, baseUrl, apiKey, mid, null, ctx);
     let effectiveBase = baseUrl;

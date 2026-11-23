@@ -1,6 +1,6 @@
 # 速度 Tooltip 自适应布局
 
-> **v384 起被取代**：速度卡由 V2（760×300 基准）整体切换为 V3 920×480（[speed-tooltip-v3.md](speed-tooltip-v3.md)）；本文的字号缩放/钳制纪律由 V3 的 `spdFitTip` V3 分支（视口兜底）与宿主 `--ui-font-size` 缩放继承，尺寸数值不再适用。
+> **v384 起被取代**：速度卡由 V2（760×300 基准）整体切换为 V3 920×480（v393 起高改 450，[speed-tooltip-v3.md](speed-tooltip-v3.md)）；本文的字号缩放/钳制纪律由 V3 的 `spdFitTip` V3 分支（视口兜底）与宿主 `--ui-font-size` 缩放继承，尺寸数值不再适用。
 
 ## 问题与范围
 

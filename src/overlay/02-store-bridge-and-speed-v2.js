@@ -731,7 +731,7 @@
   /* 只按筛选栏和左卡量尺寸，不读取图表横滚内容，避免随历史桶数量撑宽。 */
   function spdFitTip(tip, reset) {
     if (!tip || !tip.querySelector || !tip.style) return;
-    /* v384：V3 卡（.zu-sv3-root）自带 920×480 基准、--ui-font-size 缩放与内部横滚，
+    /* v384：V3 卡（.zu-sv3-root）自带 920 宽基准（高 450，v393 起）、--ui-font-size 缩放与内部横滚，
      * 这里只做视口兜底——清 V2 遗留 zoom、宽高钳进视口，并维护 __zuSpeedSize 供
      * tpsTip 链的「视口尺寸变化才重适配」判定；旧 .zu-sv-root 量测分支保留防热更
      * 过渡期旧卡在挂。 */

@@ -437,6 +437,66 @@ test("insertPrologue keeps the directive prologue first", () => {
   assert.equal(insertPrologue("var a=1;", PROLOGUE), null);
 });
 
+test("v445: the replacement body is inserted verbatim — `$` sequences never act as replace patterns", () => {
+  /* 压缩标识符常带 $（$$、$&、$1…）；字符串替换串会把它们当替换模式展开，补丁体就走样 */
+  const target = { anchor: "FOO_BAR", replacement: "a$$b$&c$1d", prologue: "/*P*/0;" };
+  const out = buildPatchedSource('"use strict";\nX FOO_BAR Y;\n', target);
+  assert.equal(out.error, undefined);
+  assert.equal(out.output, '"use strict";\n/*P*/0;\nX a$$b$&c$1d Y;\n');
+});
+
+test("v445: legacy-prologue migration and restore also insert their bodies verbatim when `$` replacement patterns appear", () => {
+  /* 函数式替换的三处里另两处：站点 2（旧代 prologue 原位换装，换入体=t2.prologue）与站点 3（restore
+   * 还原锚点）。出厂常量今天只含 $ue（无害），用带 $$/$&/$1 的登记条目走真实 ensure/restore 链锁定 */
+  const anchor = "a$$b$&c$1d", replacement = "x$$y$&z$1w", mark = PROLOGUE + "\n/* $$ $& keep */";
+  const original = '#!/usr/bin/env node\n"use strict";var wXi=1;\nfunction q(e){let t=X(e),' + anchor + '}\n';
+  const target = { build: "test", engineSha256: sha256hex(Buffer.from(original)), anchor, replacement, prologue: mark };
+  ENGINE_TARGETS.push(target); extraTargets.push(target);
+  const first = setup({ fixture: Buffer.from(original) });
+  const migrated = setup();
+  try {
+    assert.equal(first.patcher.ensure(), "applied");
+    const patched = fs.readFileSync(first.enginePath, "utf8");
+    assert.ok(patched.includes(replacement), "apply：替换体逐字节原样");
+    assert.ok(patched.includes(mark), "apply：prologue 逐字节原样（$$ 不被折叠成 $）");
+    assert.equal(first.patcher.restore(), "off");
+    assert.equal(fs.readFileSync(first.enginePath, "utf8"), original, "restore：锚点逐字节还原");
+    // 站点 2：已打旧代 prologue 的引擎原位换装——换入的新 prologue 带 $ 序列
+    const legacyPatched = patched.replace(mark, PROLOGUE_V2);
+    fs.writeFileSync(migrated.enginePath, legacyPatched);
+    assert.equal(migrated.patcher.ensure(), "applied");
+    const after = fs.readFileSync(migrated.enginePath, "utf8");
+    assert.ok(after.includes(mark), "旧代迁移：换入的 prologue 逐字节原样");
+    assert.equal(after.includes(PROLOGUE_V2), false, "旧代 prologue 已被替换");
+    assert.equal(migrated.patcher.restore(), "off");
+    assert.equal(fs.readFileSync(migrated.enginePath, "utf8"), original, "迁移后的引擎同样能逐字节还原");
+  } finally { first.cleanup(); migrated.cleanup(); }
+});
+
+test("ensure reports patched_inconsistent and leaves bytes untouched for a foreign or half-applied patch", () => {
+  /* 三道形态：① 带补丁前缀但任一登记条目的替换体都不在；② 旧代 prologue 在、替换体不在
+   * （缺第一道守卫会对 undefined 取 prologue 抛错）；③ 替换体在、却没有任何已知代际的
+   * prologue（半截补丁）。外来/半截补丁一律不接手、不写盘、不留备份 */
+  /* 正文带一个 undefined 字面量：第二道守卫被删时 text.replace(undefined, …) 会改写正文，
+     「不写盘」断言才会参与击杀 */
+  const head = '#!/usr/bin/env node\n"use strict";\n' + PROLOGUE_PREFIX + "/* foreign */\nvar a=1; /* undefined */\n";
+  const fixtures = {
+    "no replacement body": head,
+    "legacy prologue without replacement body": PROLOGUE_V1 + "\nvar a=1;\n",
+    "replacement body without any known prologue": head + REPLACEMENT + "\n",
+  };
+  for (const [what, text] of Object.entries(fixtures)) {
+    const s = setup({ fixture: Buffer.from(text) });
+    try {
+      assert.equal(s.patcher.ensure(), "error", what);
+      assert.equal(s.patcher.status().state, "error", what);
+      assert.equal(s.patcher.status().lastError, "patched_inconsistent", what);
+      assert.deepEqual(fs.readFileSync(s.enginePath), s.original, what + "：不写盘");
+      assert.equal(fs.readdirSync(path.dirname(s.enginePath)).filter((f) => f.startsWith(".pre-acthreshold-")).length, 0, what + "：不留备份");
+    } finally { s.cleanup(); }
+  }
+});
+
 /* ---- prologue hook 取值语义（vm 沙箱 + 临时 HOME）---- */
 function runHook(home) {
   const sandbox = { require: (name) => (name === "os" ? { homedir: () => home } : require(name)) };

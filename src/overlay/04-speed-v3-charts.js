@@ -520,7 +520,10 @@
     var pts = [];
     for (var i = 0; i < slots.length; i++) {
       var it = slots[i], pv = null;
-      if (it && !it.empty && it.models && it.models.length) {
+      /* 整轮值线（key==null）只看桶整值 v：降级帧（旧远端帧无 msl / 二元组 msl 叠单选筛选）
+       * 的桶 models 为空，若同过 models 门则全系列无点 → today/week 假空态（v445 修复；
+       * spec §6「图表退化为不依赖模型速度的形态」）。逐模型线仍要求 models 在场。 */
+      if (it && !it.empty && (key == null || (it.models && it.models.length))) {
         if (key == null) pv = spdNum(it.v) > 0 ? spdNum(it.v) : null;
         else for (var j = 0; j < it.models.length; j++) {
           if (spd3ModelKey(it.models[j]) === key) {

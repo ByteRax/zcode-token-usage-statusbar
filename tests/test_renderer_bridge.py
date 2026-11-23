@@ -305,8 +305,19 @@ assert.equal(next['data-zusage-pane-id'],'pane-2');
                 result = subprocess.run(['node', str(script)], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
 
+    def skip_unless_host_is_newest(self):
+        """真机样本用例只对登记表最新版本成立：宿主已升到未登记版本（该版本走 derive 路径）时
+        跳过，而不是报 Missing packed file 的 ERROR——那不是回归，只是样本换了。"""
+        try:
+            version = json.loads(read(HOST, '/package.json'))['version']
+        except Exception as error:   # 读不到版本号：无法判断，照常让用例自己的断言报错
+            raise AssertionError('host package.json unreadable') from error
+        if version != bridge.NEWEST['version']:
+            self.skipTest(f'host archive is {version}, pinned newest is {bridge.NEWEST["version"]}')
+
     @unittest.skipUnless(HOST_ACCESSIBLE and shutil.which('node'), 'Read-only host archive and Node required')
     def test_actual_host_archive_roundtrip_and_vm(self):
+        self.skip_unless_host_is_newest()   # 跳过判定先于停 pin（与下一条真机用例同序）
         self.pin.stop()
         # Hash all packed files without evaluating any renderer or accessing its database.
         before = asar.source_fingerprint(HOST)
@@ -366,6 +377,7 @@ assert.equal(next['data-zusage-pane-id'],'pane-2');
     @unittest.skipUnless(HOST_ACCESSIBLE, 'Read-only host archive required')
     def test_derive_matches_pinned_host_entry(self):
         # 自动推导必须能复现人工登记的指纹（真机 bundle 是唯一权威样本）
+        self.skip_unless_host_is_newest()
         self.pin.stop()
         pristine = bridge.transform_module(read(HOST), 'remove')
         self.assertEqual(hashlib.sha256(pristine).hexdigest(), bridge.ASSET_SHA256)
@@ -565,6 +577,17 @@ class DeriveTests(unittest.TestCase):
         with self.assertRaises(bridge.BridgeError):
             bridge.derive_target('9.9.9', RICH, asset, set())
 
+    def test_derive_refuses_two_candidate_headers_even_with_identical_parameter_names(self):
+        # 歧义守卫单独锁定：第二个候选头与真实 SessionPane 头的参数名完全相同——后置的
+        # 「testid pane 参数不匹配」守卫兜不住它（取错候选也「匹配」），只能靠歧义守卫拒绝
+        asset = "/out/renderer/assets/styles-n-UNIiNg.js"
+        twin = RICH.replace(b'function Cde(){return 1}',
+                            b'function Cde(){return 1}function twin({paneId:e,sessionId:t,workspacePath:c,'
+                            b'workspaceIdentity:l,remoteSessionId:u}){return 0}')
+        with self.assertRaises(bridge.BridgeError) as caught:
+            bridge.derive_target('9.9.9', twin, asset, set(RICH_PARTS))
+        self.assertIn('Ambiguous SessionPane component parameters', str(caught.exception))
+
     def test_ambiguous_renderer_assets_refuse(self):
         ambiguous = self.root / 'ambiguous.asar'
         clone = RICH.replace(b'"data-testid":hb(WRe,e)', b'"data-testid":zz(QQ,e)')
@@ -722,6 +745,43 @@ class EnsureDeployedTests(unittest.TestCase):
             self.assertEqual(bridge.ensure_deployed(self.target)["status"], "patched")
         self.assertLess(order.index("build"), order.index("lock"))
         self.assertEqual(order[-1], "unlock")
+
+    def test_ensure_rebuilds_when_source_changes_during_build(self):
+        # 锁窗口纪律：锁外构建期间目标被并发改写 → 短锁内指纹重验不符 → 丢弃本轮 stage、
+        # 基于新内容整体重试一次并成功；二次仍变才按 skipped-error 报告（与 mobile 补装同款）
+        real_fingerprint = asar.source_fingerprint
+        calls = []
+
+        def fingerprint_with_concurrent_write(path):
+            value = real_fingerprint(path)
+            calls.append(path)
+            if len(calls) == 1:   # 锁外 before 已取：模拟另一进程改写归档里的第三方文件
+                archive(self.target, extra={'/other.txt': b'drifted third party bytes\0\xff'})
+            return value
+
+        with patch.object(asar, 'source_fingerprint', side_effect=fingerprint_with_concurrent_write):
+            result = bridge.ensure_deployed(self.target)
+        self.assertEqual(result['status'], 'patched', result)
+        self.assertEqual(len(calls), 4, 'before → 重验拒 → 重建 before → 重验过')
+        self.assertEqual(bridge.ensure_deployed(self.target)['status'], 'present')
+        self.assertFalse(list(self.root.glob('.zusage-bridge-*')), '被拒的那一轮 stage 已清理')
+
+    def test_ensure_gives_up_after_one_rebuild_when_the_target_keeps_changing(self):
+        # 二次重验仍变：按 skipped-error 报告，不无限重建、不发布任何一轮的 stage
+        real_fingerprint = asar.source_fingerprint
+        calls = []
+
+        def always_drifting(path):
+            calls.append(path)
+            archive(self.target, extra={'/other.txt': b'drift %d\0\xff' % len(calls)})
+            return real_fingerprint(path)
+
+        with patch.object(asar, 'source_fingerprint', side_effect=always_drifting):
+            result = bridge.ensure_deployed(self.target)
+        self.assertEqual(result['status'], 'skipped-error', result)
+        self.assertIn('kept changing', result['detail'])
+        self.assertEqual(len(calls), 4, 'before → 重验拒 → 重建 before → 重验拒，到此为止')
+        self.assertFalse(list(self.root.glob('.zusage-bridge-*')), '两轮 stage 均已清理')
 
     def test_patch_present_remove_absent_lifecycle(self):
         # 就地替换不得把安装目录 asar 的权限降成 mkstemp 的 0600

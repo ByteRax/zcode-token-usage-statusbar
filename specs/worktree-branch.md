@@ -5,10 +5,10 @@
 
 ## 背景与根因（ZCode 源码取证，2026-11-20）
 
-ZCode 受管 worktree 的核心模型：**worktree 不是新 workspace，只是会话的 cwd**。目录布局固定为 `<dataBaseDir>/.zcode/worktrees/<4位小写hex bucket>/<源仓库名>`（`packages/shared/src/managed-worktree/layout.ts`），创建即 detached HEAD，会话 `directory` = worktree cwd 且创建后不变。
+ZCode 受管 worktree 的核心模型：**worktree 不是新 workspace，只是会话的 cwd**。目录布局固定为 `<dataBaseDir>/.zcode/worktrees/<4位小写hex bucket>/<源仓库名>`（`packages/shared/src/managed-worktree/layout.ts`；`dataBaseDir` 取 `<home>/.zcode/v2/setting.json` 的 `dataBaseDir`，否则 env `ZCODE_DATA_BASE_DIR`，都没有即 HOME——与 `resolve_db_path` 第 3 级共用 `_data_base_dir`，v445：此前写死 HOME，迁移过数据目录的用户受管 worktree 全不认），创建即 detached HEAD，会话 `directory` = worktree cwd 且创建后不变。
 
 - ZCode 自家 Git 面板对 worktree 任务显式改用会话 cwd：`gitCwd = sessionCwd`（`packages/ui/src/v4/SessionPane.tsx:6710`），`sessionCwd = task.cwd ?? workspacePath`（`useTaskWorktreePlacement.ts:69`），并注明「worktree 任务是会话 cwd，缺省为 workspacePath（docs/git/worktree.md §3.7）」。
-- 插件 Git chip 的数据链：渲染端把分栏 `workspacePath` 写进 `window.__zusageGitPaths`（`src/overlay/01-git-and-doc-tooltips.js` `publishGitPaths`），主进程每 10s 逐路径 `git -C <path> status --porcelain --branch` 后推回（`inject-main.cjs` git 轮询段）。分栏的 `workspacePath` 来自宿主 binding 的 `workspaceScope`（`WorkbenchPane.tsx` scope useMemo），对 worktree 会话它是**项目主目录**（宿主 §2.1：「名字带 workspace 的字段只表示归属」）。
+- 插件 Git chip 的数据链：渲染端把分栏 `workspacePath` 写进 `window.__zusageGitPaths`（`src/overlay/01-git-and-doc-tooltips.js` `publishGitPaths`），主进程经 `fs.watch`（工作区目录 + 仓库 `.git` 元数据目录）驱动：任一事件重置 60s 尾随防抖，静默满 60s 才逐路径 `git -C <path> status --porcelain --branch` 后推回；另有首查、点击刷新与路径变化触发（`inject-main.cjs` git watch 段；早期版本为 10s 定时轮询）。分栏的 `workspacePath` 来自宿主 binding 的 `workspaceScope`（`WorkbenchPane.tsx` scope useMemo），对 worktree 会话它是**项目主目录**（宿主 §2.1：「名字带 workspace 的字段只表示归属」）。
 - **缺口**：worktree 会话的 Git chip 查询与显示的是主 checkout 的分支/上游/改动计数——正是宿主 §3.7 警告的「按 cwd 工作的界面用了 workspace 路径」。chip 此刻展示的分支名与该会话实际工作的仓库无关。
 
 ## 目标
@@ -29,7 +29,7 @@ ZCode 受管 worktree 的核心模型：**worktree 不是新 workspace，只是�
   - `created`：同一条 part 的 `time.start`（毫秒，创建时刻；缺 part/解析失败为 null，随起点未决一起补齐）。
   - `sourceRoot`：源仓库路径，读 `<root>/.git` 链接文件（`gitdir: <sourceRoot>/.git/worktrees/<id>` 上溯两级）；非链接/读失败为 null（fail-soft 隐藏行）。
 - 受管判定只做纯路径布局匹配（前缀 + 两级结构 + bucket 形状），与宿主 `parseManagedWorktreePath` 同规则；不执行 git。`.git` 链接文件只为 sourceRoot 做一次小读（缓存内不可变事实），不读分支。目录已删除的 worktree 照常报告（realpath 宽容、part 记录仍在），交由渲染端/主进程自然降级。
-- managedRoot 解析：`ZCODE_DATA_BASE_DIR` 优先，否则用户主目录，再接 `.zcode/worktrees`（与宿主 `resolveManagedWorktreeRoot` 一致）。
+- managedRoot 候选（`_managed_worktree_roots`，realpath 归一去重）：当前数据根在前，数据根不在主目录时再补主目录根，各接 `.zcode/worktrees`。数据根与 `resolve_db_path` 第 3 级共用 `_data_base_dir`：setting.json 的绝对 `dataBaseDir` 优先，否则 env `ZCODE_DATA_BASE_DIR`（非绝对值不采纳），都没有即主目录——与宿主 `getDataBaseDir()` 的引导值次序一致（宿主 `resolveManagedWorktreeRoot` 只接收数据根参数，不负责解析）。补主目录根的原因：宿主迁移数据目录只搬 `.zcode/v2`，迁移前建的受管 worktree 留在原地且任务 cwd 创建后固定。桌面端只在拉起 agent 子进程那一刻才注入 `ZCODE_DATA_BASE_DIR`，主进程自身环境里没有——本查询链由主进程拉起，只读 env 会把根错判到主目录（v445 修复）。
 - 起点查询：`part_session_idx` 索引按 sid 取行，`data LIKE '%"timelineType":"worktree_creation"%'` 预滤后按 `time_created` 序在 Python 侧逐行 `json.loads` 校验，取第一条真正含 `worktreeCreation` 的（不依赖 SQLite JSON1；正文同字面量与损坏 JSON 行跳过继续，不遮蔽其后真实创建记录）。
 - 进程内按 sid 缓存整条事实（cwd 创建后固定、ref/sha 落库后不变，属不可变事实）：**只有 session 行存在且 directory 非空**的 sid 才写缓存——已判定非受管写负缓存（None），行未落库/目录为空不写（下一帧自然重查）；缓存（含负条目）超 512 条整体清空。起点有「未决」态：`worktree_creation` part 实测比 session 行晚 ~1.2s 落库，首见帧可能缓存到空起点（ref/sha 同为 None），命中缓存也重查一次，拿到即转已决（sha 非空即已决，detached 默认形状 ref=null/sha=有值；全 detached 且无 part 记录的会话每帧一次该 sid 范围扫描，节流帧下可接受）。
 - 缺列/查询异常：静默省略，不拖垮整帧（同 all_projects 口径）。
@@ -64,5 +64,6 @@ ZCode 受管 worktree 的核心模型：**worktree 不是新 workspace，只是�
 | WTB-04 | 起点 ref 有 / 无 / 缺 part | tooltip 起点分别 = ref / sha 前 7 位 / 「当前 HEAD」 |
 | WTB-05 | 手机 lean 帧、`ZUSAGE_REMOTE_CHILD=1`、CLI/MCP | 快照无 `worktrees` 字段 |
 | WTB-06 | 分支名/路径含 HTML 特殊字符 | tooltip 全部经 `gitEsc` |
-| WTB-07 | 会话在 worktree 中切分支 | chip 与 tooltip 分支随下次 git 查询更新（10s 周期或点击刷新）；「起点」保持创建记录不变 |
+| WTB-07 | 会话在 worktree 中切分支 | chip 与 tooltip 分支随下次 git 查询更新（fs.watch 60s 防抖后或点击刷新）；「起点」保持创建记录不变 |
 | WTB-08 | 同 worktree 多会话 / 同目录 fork 子会话 | 均按各自 sid 命中同一 `{cwd, root, bucket}` |
+| WTB-09 | setting.json 把 `dataBaseDir` 迁到别处（主进程 env 未设） | 迁移目录下新建的受管 worktree 与迁移前建在主目录下的都照常被认出 |

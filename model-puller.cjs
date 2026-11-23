@@ -57,10 +57,13 @@ var PLAN_SOURCES = {
     baseUrl: "https://open.bigmodel.cn/api/anthropic",
     fam: "bigmodel",
     credKey: "oauth:bigmodel:access_token",
-    /* 增强链鉴权（v344）：宿主对话走 v2/config.json 的 builtin provider options.apiKey
-     * （明文 key + anthropic 协议 + /api/anthropic，实测正常）；credentials.json 的
-     * OAuth access_token 直连 messages 端点被网关以 500「网络错误 code 1234」拒绝
-     * （stream 真/假、有无 UA 均复现）——enhance 鉴权优先宿主同款 key，OAuth 仅兜底。 */
+    /* 增强链鉴权（v344，只说 bigmodel 家族的 messages 直连）：宿主对话走 v2/config.json 的
+     * builtin provider options.apiKey（明文 key + anthropic 协议 + /api/anthropic，实测正常）；
+     * credentials.json 的 OAuth access_token 直连 messages 端点被网关以 500「网络错误 code 1234」
+     * 拒绝（stream 真/假、有无 UA 均复现）——bigmodel 增强鉴权用宿主同款 key，不再以 OAuth
+     * access_token 作直连兜底（GLr 时代经 location 换发短时 token）。范围之外照旧走 OAuth：
+     * zai 家族增强（planKeyOf：v2 key 优先、OAuth 兜底）与套餐模型列表/探测
+     * （planTokenOf）仍用 OAuth access_token 直连。 */
     v2ConfigKey: "builtin:bigmodel-coding-plan",
   },
   /* issue #336（v345）：接入宿主其余 5 个套餐 id——增强链此前只认 bigmodel individual，
@@ -1549,7 +1552,7 @@ function createModelPuller(opts) {
     if (planSrc) {
       /* 套餐源：单端点（Anthropic models，与运行协议同源），Bearer 套餐 token */
       try {
-        const res = await fetchImpl(planSrc.endpoint, { headers: { "Accept": "application/json", "Authorization": "Bearer " + planToken, "User-Agent": "ZCode" }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+        const res = await fetchImpl(planSrc.endpoint, { headers: { "Accept": "application/json", "Authorization": "Bearer " + planToken, "User-Agent": "ZCode" }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), redirect: "error" });
         if (!res.ok) { dropBody(res); return { ok: false, error: "HTTP " + res.status }; }
         const body = await readJsonBounded(res, RESPONSE_MAX_BYTES);
         const list = Array.isArray(body) ? body : asObject(body).data || asObject(body).models || asObject(body).result || null;
@@ -1577,7 +1580,11 @@ function createModelPuller(opts) {
       }
     }
     const cfg = effectiveRuleConfig(rule);   // issue #383：模板供应商按合并后配置构造请求
-    const apiKey = String((cfg.access || {}).apiKey || "").trim();
+    /* enc: 形态的 key 是宿主加密信封（或误贴的密文），不是可用凭据：按未配置处理、不随请求
+     * 外发——增强链的规则路径早已同闸（issue #440），拉模型这一口此前漏了，会把密文同时放进
+     * Authorization 与 x-api-key 发往供应商。 */
+    const rawApiKey = String((cfg.access || {}).apiKey || "").trim();
+    const apiKey = rawApiKey.indexOf("enc:") === 0 ? "" : rawApiKey;
     const urls = candidateUrls(cfg.api.baseUrl);
     const headers = { "Accept": "application/json", "User-Agent": "ZCode" };
     if (apiKey) { headers["Authorization"] = "Bearer " + apiKey; headers["x-api-key"] = apiKey; }
@@ -1585,7 +1592,7 @@ function createModelPuller(opts) {
     let items = null, via = "";
     for (const url of urls) {
       try {
-        const res = await fetchImpl(url, { headers: headers, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+        const res = await fetchImpl(url, { headers: headers, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), redirect: "error" });
         if (!res.ok) {
           lastError = "HTTP " + res.status;
           dropBody(res);
@@ -2145,7 +2152,7 @@ function createModelPuller(opts) {
     const apiType = planSrc ? "anthropic-messages" : String(api.type || "");   // probe 链维持 anthropic models 端点实测语义
     const baseUrl = String((planSrc ? planSrc.baseUrl : api.baseUrl) || "").trim().replace(/\/+$/, "");
     const apiKey = planSrc ? planTokenOf(providerId) : String(((cfg.access || {}).apiKey) || "").trim();
-    if (!apiKey) return { ok: false, model: mid, kind: "auth", error: "no api key" };
+    if (!apiKey || apiKey.indexOf("enc:") === 0) return { ok: false, model: mid, kind: "auth", error: "no api key" };   // enc: 密文按未配置（同 fetchModels）
     const ctx = { providerId: providerId, source: providerSource(data, providerId), deadline: Date.now() + 80000 };
     let attempt = await probeRequest(apiType, baseUrl, apiKey, mid, null, ctx);
     let effectiveBase = baseUrl;
@@ -2444,7 +2451,7 @@ function createModelPuller(opts) {
       const cfg = effectiveRuleConfig(rule), api = cfg.api || {}, access = cfg.access || {};
       /* zhipu-coding-plan-api-key 与 api-key 同型放行（issue #440 路径2）；zhipu-account 仍拒。
        * enc: 密文 key 不可用（review A-1/D-1，与 enhanceText 规则路径同闸）。 */
-      if ((access.type === "api-key" || access.type === "zhipu-coding-plan-api-key") && access.apiKey && String(access.apiKey).indexOf("enc:") !== 0 && api.baseUrl && ["openai-chat-completions", "openai-responses", "anthropic-messages"].includes(api.type)) {
+      if ((access.type === "api-key" || access.type === "zhipu-coding-plan-api-key") && access.apiKey && String(access.apiKey).trim().indexOf("enc:") !== 0 && api.baseUrl && ["openai-chat-completions", "openai-responses", "anthropic-messages"].includes(api.type)) {
         return { providerId, baseUrl: String(api.baseUrl).replace(/\/+$/, ""), protocol: api.type, apiKey: String(access.apiKey) };
       }
     }
@@ -2479,11 +2486,20 @@ function createModelPuller(opts) {
   async function listEnhanceModels(config, signal) {
     const base = config.protocol === "anthropic-messages" ? anthropicBaseWithV1(config.baseUrl) : config.baseUrl.replace(/\/+$/, "");
     const url = new URL(base + "/models");
+    /* 设置页手填或规则里的 key 可能是 enc: 密文（宿主加密信封）：不是可用凭据，按未配置处理、
+     * 零外发——规则路径的闸不 trim，带前导空白的密文此前会被公告为 host 并随头发往供应商 */
+    const apiKey = String((config && config.apiKey) || "").trim();
+    if (!apiKey || apiKey.indexOf("enc:") === 0) return { ok: false, error: "provider unavailable" };
     const headers = { Accept: "application/json", "User-Agent": "ZCode" };
+    /* zcode.z.ai 路由必带 X-Device-Mid（缺头 400 code 3001，与直连增强同口径）：host 公告
+     * 携带的设备号随 provider 配置进来。此前只给直连增强补了这一口，设置页「拉取模型」
+     * 对 zcode 路由恒 400（复盘修复）。设备号只发给官方路由主机，第三方中转不得带上。 */
+    const deviceMid = typeof config.deviceMid === "string" ? config.deviceMid.trim() : "";
+    if (deviceMid && url.hostname === "zcode.z.ai") headers["X-Device-Mid"] = deviceMid;
     if (config.protocol === "anthropic-messages") {
-      headers["x-api-key"] = config.apiKey;
+      headers["x-api-key"] = apiKey;
       headers["anthropic-version"] = "2023-06-01";
-    } else headers.Authorization = "Bearer " + config.apiKey;
+    } else headers.Authorization = "Bearer " + apiKey;
     const controller = new AbortController();
     const abort = () => controller.abort();
     if (signal) signal.addEventListener("abort", abort, { once: true });
@@ -2495,7 +2511,7 @@ function createModelPuller(opts) {
       if (!res.ok) { dropBody(res); return { ok: false, error: "HTTP " + res.status }; }
       const data = await readJsonBounded(res, RESPONSE_MAX_BYTES);
       const ids = sanitizeModelIds(parseModelsPayload(data).map(item => typeof item === "string" ? item : rawModelId(asObject(item))));
-      return { ok: true, models: ids.filter(id => !config.apiKey || !id.includes(config.apiKey)) };
+      return { ok: true, models: ids.filter(id => !apiKey || !id.includes(apiKey)) };
     } catch (e) { return { ok: false, error: "model list unavailable" }; }
     finally { clearTimeout(timer); if (signal) signal.removeEventListener("abort", abort); }
   }

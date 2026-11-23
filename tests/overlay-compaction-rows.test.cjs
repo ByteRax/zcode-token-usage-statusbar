@@ -8,6 +8,10 @@ const { sliceOverlay } = require('./helpers/overlay-extract.cjs');
  * 第 k 条 compact 记录）由 tests/test_session_compactions.py 锁定；本文件锁 DOM 标注。 */
 
 const slice = sliceOverlay('    function cmpNum(', '    /* ---------- v105 压缩上下文');
+/* v445：alt 行走的是外层 IIFE 的 gitEsc（01 分片符号），compSuffixHtml 所在工厂作用域没有 esc。
+ * 这里把产物里的真实 gitEsc 一并放进切片，不再往沙箱注入同名桩——旧桩曾把
+ * 「esc is not defined」的 ReferenceError 掩成恒绿（tests.md §2 同名桩陷阱）。 */
+const gitEscSrc = sliceOverlay('  function gitEsc(s) {', '  function gitTimeStr(ts) {');
 
 // 宿主分隔线结构（ConversationShareReadonlyTimeline MarkerDividerRow）：线 div + 中央 pill + 线 div。
 function fakeSpan(tag) {
@@ -50,7 +54,6 @@ function makeContext(opts) {
     state: { lang: o.lang || 'zh', cmpAnn: 'cmpAnn' in o ? o.cmpAnn : 1, data: { context_window: o.win || 0 } },
     nativeCtxVal: o.nctx || 0,
     L: (zh, en) => ctx.state.lang === 'en' ? en : zh,
-    esc: s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])),   // v433 起 alt 行走分片内 esc 转义（真实现来自 01/11 分片共享符号）
     inactive: () => false,
     pickedSid: o.sid === undefined ? 'sessA' : o.sid,
     instSid: 'sessA',
@@ -71,7 +74,7 @@ function makeContext(opts) {
 }
 
 function run(ctx) {
-  vm.runInNewContext(slice + '\nthis.__api = { compSuffixHtml, syncCompactionRows };', ctx);
+  vm.runInNewContext(gitEscSrc + '\n' + slice + '\nthis.__api = { compSuffixHtml, syncCompactionRows };', ctx);
   return ctx.__api;
 }
 
@@ -157,6 +160,29 @@ test('syncCompactionRows appends one suffixed span per record and is signature-i
   syncCompactionRows();
   assert.equal(pill.children.filter(c => (c.attrs && c.attrs['data-zusage-cmp'] !== undefined)).length, 0);
   assert.equal(pill.style.flexWrap, '', '摘除时还原宿主 pill 单行布局');
+});
+
+test('v445: a record carrying alt renders via the real gitEsc and never aborts later rows', () => {
+  // 回归：alt 行曾裸引工厂作用域里不存在的 esc → ReferenceError 被 syncCompactionRows 的
+  // try 吞进 FATAL.cmpErr，自带 alt 的那条起（含）标注全缺。沙箱不注入 esc 桩，缺失即红。
+  assert.equal(/(^|[^\w.])esc\(/.test(slice), false, '压缩标注切片不得调用裸 esc（本作用域只有 gitEsc）');
+  const ts = new Date(2026, 10, 21, 23, 13, 46).getTime();
+  const first = fakeRow();
+  const recs = [
+    { ts, b: 94787, a: 40747, cr: 0, cw: 0, alt: '<b>glm-4.5-air</b>' },
+    { ts: ts + 60000, b: 50000, a: 45000, cr: 0, cw: 0 },
+  ];
+  const { ctx, pill } = makeContext({ recs, extraRows: [first.row] });   // 默认 pane 含全部行：两条记录各对一条分隔线
+  const { syncCompactionRows } = run(ctx);
+  syncCompactionRows();
+  assert.equal(ctx.FATAL.cmpErr, undefined, '带 alt 的记录不得抛错');
+  const spansOf = p => p.children.filter(c => (c.attrs && c.attrs['data-zusage-cmp'] !== undefined));
+  const a = spansOf(first.pill), b = spansOf(pill);
+  assert.equal(a.length, 1, '带 alt 的分隔线挂上标注');
+  assert.match(a[0].innerHTML, /第 1 次<br>上下文变化：[\s\S]*<br>由 &lt;b&gt;glm-4\.5-air&lt;\/b&gt; 执行$/, 'alt 走产物内真实 gitEsc');
+  assert.ok(!a[0].innerHTML.includes('<b>glm'), '原始标签不得进 innerHTML');
+  assert.equal(b.length, 1, '带 alt 记录之后的分隔线仍有标注（异常不得中断后续行）');
+  assert.match(b[0].innerHTML, /第 2 次 · 距上次 1 分<br>/);
 });
 
 test('syncCompactionRows skips rows outside the pane and tolerates hostile DOM', () => {

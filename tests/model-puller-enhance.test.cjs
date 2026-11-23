@@ -117,6 +117,7 @@ test("openai chat-completions: url/headers/body shape and content unwrap", async
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, "https://relay.example.com/chat/completions");
   assert.equal(calls[0].opts.headers.Authorization, "Bearer sk-secret-1");
+  assert.equal(calls[0].opts.redirect, "error", "带凭据的请求不跟随重定向（行为锁）");
   const body = JSON.parse(calls[0].opts.body);
   assert.equal(body.model, "gpt-4o");
   assert.equal(body.stream, false);
@@ -1617,6 +1618,7 @@ test("Team: bigmodel team enhance exchanges the team PAT and rides it on open.bi
   assert.equal(f.calls[pi].opts.headers.Authorization, "Bearer glr-oauth-1");
   assert.deepEqual(JSON.parse(f.calls[pi].opts.body), { clientType: "zcode", clientVersion: "3.19.1" });
   assert.equal(f.mp.listEnhanceHosts().some((h) => /team/.test(h.id)), false, "team stays out of the sync host announcement list");
+  for (const c of f.calls) assert.equal(c.opts.redirect, "error", "团队三步链每一跳都不跟随重定向：" + c.url);   // 行为锁
 });
 
 test("Team: v2 entry key is the individual project key and is never used for team enhance", async () => {
@@ -1726,4 +1728,124 @@ test("Team: individual coding plan still rides its own GLr location on the same 
   assert.equal(f.calls.filter((c) => c.url === TEAM_CUSTOMER_URL).length, 0, "team chain never fires for individual provider");
   const msg = f.calls.find((c) => c.url.indexOf("/v1/messages") > 0);
   assert.equal(msg.opts.headers.Authorization, "Bearer glr-tok-1");
+  for (const c of f.calls) assert.equal(c.opts.redirect, "error", "GLr 换发与消息请求都不跟随重定向：" + c.url);   // 行为锁
+});
+
+/* 近 5 天复盘：规则路径的 enc: 闸此前只补了 enhanceText（issue #440），拉模型列表与探测
+ * 两处漏同步——enc: 密文会随 Authorization/x-api-key 外发。listEnhanceModels 则漏了
+ * zcode.z.ai 路由必带的 X-Device-Mid（缺头 400 code 3001）：设置页「拉取模型」对 zcode
+ * 路由恒失败。 */
+function listingPuller(rules) {
+  const calls = [];
+  const impl = async (url, opts) => {
+    if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
+    calls.push({ url, opts });
+    return { ok: true, status: 200, json: async () => ({ data: [{ id: "m-enc" }] }) };
+  };
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify({ config: { providerConfigRules: { providerRules: rules } } }));
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "" });
+  return { mp, calls };
+}
+
+test("retro: an enc: rule key never leaves through model listing or probing (gate mirrors enhanceText, issue #440)", async () => {
+  const { mp, calls } = listingPuller([{
+    providerId: "enc-relay", providerName: "密文中转",
+    config: {
+      access: { type: "api-key", apiKey: "enc:v2:ciphertext" },
+      api: { baseUrl: "https://enc.example.com", type: "openai-chat-completions" },
+    },
+  }]);
+  const r = await mp.fetchModels("enc-relay");
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.deepEqual(r.models, ["m-enc"]);
+  assert.equal(calls.length, 1, JSON.stringify(calls.map((c) => c.url)));
+  assert.equal(calls[0].opts.redirect, "error", "listing never follows a redirect");
+  assert.equal(/enc:v2/.test(JSON.stringify(calls[0].opts.headers)), false, "ciphertext must not be sent as a credential");
+  assert.equal(calls[0].opts.headers.Authorization, undefined);
+  assert.equal(calls[0].opts.headers["x-api-key"], undefined);
+  const p = await mp.probeModel("enc-relay", "m-enc");
+  assert.equal(p.ok, false);
+  assert.equal(p.kind, "auth");
+  assert.equal(calls.length, 1, "probe of an enc: key sends nothing");
+  assert.equal(mp.resolveEnhanceHost("enc-relay"), null, "enc: rule is not announced as an enhance host");
+  assert.equal(mp.listEnhanceHosts().some((h) => h.id === "enc-relay"), false);
+});
+
+test("retro: a rule key with leading whitespace before enc: is gated on listing, probing and host announcement", async () => {
+  /* 复盘第 2 轮（增强链）：规则路径的公告闸此前不 trim——带前导空白的密文会被公告为 host，
+   * 直连增强随 x-api-key 发往供应商。拉列表与探测两处本就 trim，这里一并锁住。 */
+  const { mp, calls } = listingPuller([{
+    providerId: "enc-relay-ws", providerName: "密文中转（带空白）",
+    config: {
+      access: { type: "api-key", apiKey: "  enc:v2:ciphertext " },
+      api: { baseUrl: "https://enc.example.com", type: "anthropic-messages" },
+    },
+  }]);
+  assert.equal(mp.resolveEnhanceHost("enc-relay-ws"), null, "whitespace-padded ciphertext is still ciphertext");
+  assert.equal(mp.listEnhanceHosts().some((h) => h.id === "enc-relay-ws"), false);
+  const r = await mp.fetchModels("enc-relay-ws");
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.deepEqual(r.models, ["m-enc"]);
+  assert.equal(calls.length, 1, JSON.stringify(calls.map((c) => c.url)));
+  assert.equal(calls[0].opts.headers.Authorization, undefined);
+  assert.equal(calls[0].opts.headers["x-api-key"], undefined);
+  assert.equal(calls[0].opts.redirect, "error", "listing never follows a redirect");
+  const p = await mp.probeModel("enc-relay-ws", "m-enc");
+  assert.equal(p.ok, false);
+  assert.equal(p.kind, "auth");
+  assert.equal(calls.length, 1, "probe of a padded enc: key sends nothing");
+});
+
+test("retro: listEnhanceModels carries X-Device-Mid only for the zcode.z.ai route and never follows redirects", async () => {
+  const calls = [];
+  const impl = async (url, opts) => {
+    if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
+    calls.push({ url, opts });
+    return { ok: true, status: 200, json: async () => ({ data: [{ id: "glm-4.6" }] }) };
+  };
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "" });
+  const zcodeBase = "https://zcode.z.ai/api/v1/zcode-plan/anthropic";
+  const r = await mp.listEnhanceModels({ protocol: "anthropic-messages", baseUrl: zcodeBase, apiKey: "sess-jwt", deviceMid: " dev-mid-1 " });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.deepEqual(r.models, ["glm-4.6"]);
+  assert.equal(calls[0].url, M.anthropicBaseWithV1(zcodeBase) + "/models");
+  assert.equal(calls[0].opts.headers["X-Device-Mid"], "dev-mid-1", "official zcode route gets the trimmed device id");
+  assert.equal(calls[0].opts.redirect, "error");
+  const r2 = await mp.listEnhanceModels({ protocol: "openai-chat-completions", baseUrl: "https://relay.example.com/v1/", apiKey: "sk-1" });
+  assert.equal(r2.ok, true, JSON.stringify(r2));
+  assert.equal(calls[1].url, "https://relay.example.com/v1/models");
+  assert.equal(calls[1].opts.headers["X-Device-Mid"], undefined, "third-party relays get no device id");
+  /* 复盘第 2 轮（增强链）：设置页手填的 baseUrl 可以是任何地址，而 deviceMid 是本机设备身份——
+   * 此前只要公告带了 deviceMid 就无条件下发。宿主同款口径：来源头（含 X-Device-Mid）只随
+   * ZCode endpoint origin 注入（engine packages/services/src/providers/api/nodeApiClient.ts
+   * resolveRequestHeaders），第三方地址一律不带；形似主机名（前缀/后缀拼接）同样不算官方路由。 */
+  for (const baseUrl of ["https://relay.example.com/v1", "https://api.z.ai", "https://zcode.z.ai.relay.example", "https://relay.zcode.z.ai.evil.example", "https://notzcode.z.ai"]) {
+    const r3 = await mp.listEnhanceModels({ protocol: "anthropic-messages", baseUrl, apiKey: "sk-1", deviceMid: "dev-mid-1" });
+    assert.equal(r3.ok, true, baseUrl + " " + JSON.stringify(r3));
+    const c = calls[calls.length - 1];
+    assert.equal(c.opts.headers["X-Device-Mid"], undefined, "device id must not leave for " + baseUrl);
+    assert.equal(c.opts.redirect, "error", "redirect policy holds for " + baseUrl);
+  }
+});
+
+test("retro: listEnhanceModels treats a pasted enc: key as no credential and sends nothing", async () => {
+  /* 复盘第 2 轮（增强链）：设置页手填的 key 同样可能是宿主加密信封——不是可用凭据，零外发。 */
+  const calls = [];
+  const impl = async (url, opts) => {
+    if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
+    calls.push({ url, opts });
+    return { ok: true, status: 200, json: async () => ({ data: [{ id: "glm-4.6" }] }) };
+  };
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "" });
+  for (const apiKey of ["enc:v2:os:k:iv.tag.ct", "  enc:v2:os:k:iv.tag.ct  "]) {
+    const r = await mp.listEnhanceModels({ protocol: "anthropic-messages", baseUrl: "https://zcode.z.ai/api/v1/zcode-plan/anthropic", apiKey, deviceMid: "dev-mid-1" });
+    assert.equal(r.ok, false, JSON.stringify(r));
+    assert.equal(r.error, "provider unavailable");
+  }
+  assert.equal(calls.length, 0, "ciphertext never leaves through the model listing");
 });

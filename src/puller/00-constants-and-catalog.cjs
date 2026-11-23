@@ -57,10 +57,13 @@ var PLAN_SOURCES = {
     baseUrl: "https://open.bigmodel.cn/api/anthropic",
     fam: "bigmodel",
     credKey: "oauth:bigmodel:access_token",
-    /* 增强链鉴权（v344）：宿主对话走 v2/config.json 的 builtin provider options.apiKey
-     * （明文 key + anthropic 协议 + /api/anthropic，实测正常）；credentials.json 的
-     * OAuth access_token 直连 messages 端点被网关以 500「网络错误 code 1234」拒绝
-     * （stream 真/假、有无 UA 均复现）——enhance 鉴权优先宿主同款 key，OAuth 仅兜底。 */
+    /* 增强链鉴权（v344，只说 bigmodel 家族的 messages 直连）：宿主对话走 v2/config.json 的
+     * builtin provider options.apiKey（明文 key + anthropic 协议 + /api/anthropic，实测正常）；
+     * credentials.json 的 OAuth access_token 直连 messages 端点被网关以 500「网络错误 code 1234」
+     * 拒绝（stream 真/假、有无 UA 均复现）——bigmodel 增强鉴权用宿主同款 key，不再以 OAuth
+     * access_token 作直连兜底（GLr 时代经 location 换发短时 token）。范围之外照旧走 OAuth：
+     * zai 家族增强（planKeyOf：v2 key 优先、OAuth 兜底）与套餐模型列表/探测
+     * （planTokenOf）仍用 OAuth access_token 直连。 */
     v2ConfigKey: "builtin:bigmodel-coding-plan",
   },
   /* issue #336（v345）：接入宿主其余 5 个套餐 id——增强链此前只认 bigmodel individual，
