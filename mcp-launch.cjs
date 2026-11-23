@@ -4,8 +4,8 @@
  * .mcp.json 的 command 固定为 node：宿主给 stdio MCP 子进程的 PATH 末尾追加了
  * Electron Node 的 fallback shim（未装 Node 的机器也能解析 node），而 MCP 单命令
  * 配置没有 hooks.json 那样的 shell 回退通道。本脚本按 hooks 同款顺序
- * python3 → python → py -3 探测可用解释器（--version 实测；Windows Store 的
- * python 桩是 PATH 真实文件、存在性检查全过，只有执行能区分），spawn
+ * python3 → python → py -3 探测可用解释器（仅认 Python 3.8+；--version 实测；Windows
+ * Store 的 python 桩是 PATH 真实文件、存在性检查全过，只有执行能区分），spawn
  * usage_mcp.py 并原样透传 stdio 与信号。
  */
 'use strict';
@@ -20,9 +20,11 @@ const CANDIDATES = [
 
 function usable(result) {
   if (!result || result.error || result.status !== 0) return false;
-  // 只认行首的 Python 3 版本行；Store 桩（退出码 49、广告走 stderr）与 Python 2
-  // 残留在这一步被排除。
-  return /^Python 3\.\d/.test(String(result.stdout));
+  // 只认行首的 Python 3.8+ 版本行；Store 桩（退出码 49、广告走 stderr）、Python 2
+  // 残留与低于 3.8 的 python（issue #454：hooks 链靠脚本入口的版本门让位，MCP 没有
+  // 这一层，必须由探测自己挡住）在这一步被排除。
+  const match = /^Python 3\.(\d+)/.exec(String(result.stdout));
+  return !!match && Number(match[1]) >= 8;
 }
 
 // 单独导出供测试锁定探测参数（--version 与 windowsHide 必须在位）。
