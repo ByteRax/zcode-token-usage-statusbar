@@ -1099,10 +1099,17 @@ def _mark_deferred_notice_shown(runtime):
 
 
 def _mobile_relay_enabled(runtime):
-    """手机远控推送开关，口径同主桥 mobileEnabled()：config.mobile_relay.enabled 仅
-    对象内显式 true 开启；缺文件/损坏/非布尔/非对象都按未开启。"""
+    """手机远控推送开关，口径同主桥 mobileEnabled()（配置按 readCfg 的 utf8 解码 +
+    JSON.parse）：config.mobile_relay.enabled 仅对象内显式 true 开启；缺文件/损坏/
+    非布尔/非对象都按未开启。非法 UTF-8 字节按替换字符解码（配置仍有效）；NaN/Infinity
+    字面量或 BOM 让整份配置按损坏处理（顶层 __proto__ 键的原型链怪癖不对齐）。"""
+
+    def reject(value):
+        raise ValueError(f"non-finite JSON constant: {value}")
+
     try:
-        cfg = json.loads((Path(runtime) / "config.json").read_text(encoding="utf-8"))
+        raw = (Path(runtime) / "config.json").read_bytes().decode("utf-8", "replace")
+        cfg = json.loads(raw, parse_constant=reject)
     except Exception:  # noqa: BLE001 — 读不出按未开启：提示跟随功能的真实生效状态
         return False
     relay = cfg.get("mobile_relay") if isinstance(cfg, dict) else None

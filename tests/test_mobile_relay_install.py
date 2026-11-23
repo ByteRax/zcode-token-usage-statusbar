@@ -488,6 +488,24 @@ class MobileInstallTests(unittest.TestCase):
         self.installer._mobile_pending_notice(enabled, self.pi, {"status": "deferred", "detail": "lock busy"})
         self.assertIn("手机远控增强尚未就绪", enabled["systemMessage"])
 
+    def test_mobile_notice_gate_mirrors_host_config_parsing(self):
+        # 配置解析口径对齐主桥 readCfg（fs.readFileSync utf8 + JSON.parse）：别处的非法
+        # UTF-8 字节按替换字符解码、配置仍有效；NaN/Infinity 字面量或 BOM 让 JSON.parse
+        # 抛出，整份配置按损坏处理（推送未开启）。
+        config = self.runtime / "config.json"
+        config.write_bytes(b'{"mobile_relay": {"enabled": true}, "note": "\xff\xfe"}')
+        decoded = {"suppressOutput": True}
+        self.installer._mobile_pending_notice(decoded, self.pi, {"status": "pending"})
+        self.assertIn("已排定", decoded["systemMessage"])
+        for raw in (b'{"mobile_relay": {"enabled": true}, "x": NaN}',
+                    b'{"mobile_relay": {"enabled": true}, "x": -Infinity}',
+                    b"\xef\xbb\xbf" + b'{"mobile_relay": {"enabled": true}}'):
+            with self.subTest(config=raw):
+                config.write_bytes(raw)
+                out = {"suppressOutput": True}
+                self.assertEqual(self.installer._mobile_pending_notice(out, self.pi, {"status": "pending"}),
+                                 {"suppressOutput": True})
+
     def _run_hook_while_asar_locked(self):
         """真实 hook 链 + asar 被运行中客户端占用：桥补装转存 pending，手机补丁按
         「bridge pending」让位——issue #455 报告的会话路径。"""

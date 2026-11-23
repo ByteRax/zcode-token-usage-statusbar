@@ -37,9 +37,9 @@ SessionStart 的兼容性提示优先于手机中继未就绪提示：兼容性�
 - 已注入旧代 relay 的隔离 asar 可升级，现有注入尾缀保留；已经是当前代时不复制或重写整包。
 - 无 pending 时就地替换；`os.replace` 被拒时 stage 经 publish 转存为待替换包（`pending`，TMP+META 在位、operation=install、目标 asar 字节不变、无 `.mobile-relay-*` 残留），写入带 stage 入口指纹的 `pending-install` 标记并拉起监控；finalize 后补丁落位。转存失败（含 remove 冲突）返回 `skipped-error`，stage 由 publish 清理，不落地半发布状态。
 - install、remove、损坏、孤立和 publishing/Busy 以及锁忙均不触碰已有包或 journal；renderer 原有发布、监控及失败清理回归不变。
-- 首次注入 pending 时不叠补丁；bridge pending 时 mobile 延后至收尾后的下一次 SessionStart，提示等待自动收尾补装、不出现手动命令文案。
-- 提示分流：`pending`=已排定自动完成（无需重试）；`existing pending operation`/`bridge pending`=等待自动补装（无手动命令）；其余 `deferred`=完全退出+独立命令；`patched` CLI 打印已写入确认（运行中=要求完全重启）；`skipped-error/unknown` SessionStart 静默。
-- 推送开关门控：`mobile_relay.enabled` 未开启（缺文件、缺键、`false`、非布尔、非对象、损坏 JSON）时 `pending`、`existing pending operation`、`bridge pending` 与其余 `deferred` 均不写 `systemMessage`/`hookSpecificOutput`，也不落 `.mobile-deferred-notice.json`；显式 `true` 时分流提示照旧。真实 hook 链（客户端锁 asar → 桥补装转存 pending → 手机补丁按 `bridge pending` 让位）在未开启时已注入与刚安装成功两条分支都整条静默，开启后提示等待自动补装；已注入分支的 asar 待替换与 ⚙ 红点标记不受门控影响。
+- 首次注入 pending 时不叠补丁；bridge pending 时 mobile 延后至收尾后的下一次 SessionStart，推送开关开启时提示等待自动收尾补装、不出现手动命令文案（未开启时静默，见下方门控条）。
+- 推送开关开启时的提示分流：`pending`=已排定自动完成（无需重试）；`existing pending operation`/`bridge pending`=等待自动补装（无手动命令）；其余 `deferred`=完全退出+独立命令；`patched` CLI 打印已写入确认（运行中=要求完全重启）；`skipped-error/unknown` SessionStart 静默。
+- 推送开关门控：`mobile_relay.enabled` 未开启（缺文件、缺键、`false`、非布尔、非对象、损坏 JSON）时 `pending`、`existing pending operation`、`bridge pending` 与其余 `deferred` 均不写 `systemMessage`/`hookSpecificOutput`，也不落 `.mobile-deferred-notice.json`；显式 `true` 时分流提示照旧。配置解析口径同主桥 `readCfg()`（`fs.readFileSync … utf8` + `JSON.parse`）：别处的非法 UTF-8 字节按替换字符解码、配置仍有效；`NaN`/`Infinity` 字面量或 UTF-8 BOM 使 `JSON.parse` 抛出、整份配置按损坏处理（视为未开启）；顶层 `__proto__` 键的原型链怪癖不对齐。真实 hook 链（客户端锁 asar → 桥补装转存 pending → 手机补丁按 `bridge pending` 让位）在未开启时已注入与刚安装成功两条分支都整条静默，开启后提示等待自动补装；已注入分支的 asar 待替换与 ⚙ 红点标记不受门控影响。
 - dry-run、豁免、无客户端不补丁，失败不改变安装返回码，hook stdout 不混入诊断。
 - 独立 `--remove` 与插件 `remove` 在 `pi.remove()` 成功后都清掉 stash/uplink：`check_deployed` 为 `absent`，原始前缀（含安装器尾缀剥离结果）逐字节还原；存在 pending 时清理让位并保留既有包。
 - mobile `patched` 且客户端运行中时写入 `state="installed"` + `asarPatch=True` 重启标记（无 hashes/installation）；pending-sync hashes 合并后热销账候选命中也不得清除该 marker，只有下一次真正启动（`createdAt` 早于 `loadedAt`）才按正常流程销账；两态标记不混用；mobile 未就绪（其余 deferred/skipped-error）时不输出「全部完成」。
