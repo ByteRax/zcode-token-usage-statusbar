@@ -37,6 +37,8 @@ class Element {
   querySelectorAll() { return []; }
   contains(el) { return el === this || this.children.some(e => e.contains(el)); }
   closest() { return null; }
+  // issue #452：窄宽探针克隆条面（仅 clientWidth > 0 的夹具会走到；其余夹具 clientWidth 为 undefined 恒跳过）
+  cloneNode() { const c = new Element(this.tagName); c.className = this.className; return c; }
   hasAttribute(k) { return k === 'data-pane-id' ? !!this.pid : k === 'data-session-id' ? !!this.sid : Object.prototype.hasOwnProperty.call(this.dataset, k); }
   getAttribute(k) { return k === 'data-pane-id' ? this.pid : k === 'data-session-id' ? this.sid : this.dataset[k] ?? null; }
   getBoundingClientRect() { return { top: 600, bottom: 650, left: 20, right: 520, width: 500, height: 50 }; }
@@ -80,7 +82,9 @@ function harness(ls = { getItem: () => null, setItem() {} }) {
     return panes.map(e => e.parentElement);
   }
   return { window, document, root, body, timers, frames, observers, sandbox, inject, tick, boot, setPanes,
-    runFrame() { for (const [n, fn] of [...frames]) fn(); } };
+    /* 取走当前排队的回调再执行（浏览器语义：已触发的 rAF 回调即出队）。issue #452 起同一用例连跑
+     * 数十帧；旧实现每次重跑历史回调，track 自调度会按 2^帧数 复利增长直至 Map 溢出。 */
+    runFrame() { const queued = [...frames]; frames.clear(); for (const [, fn] of queued) fn(); } };
 }
 
 test('coordinator quota counts only live panes and handles more than four sequential IDs', () => {
@@ -675,5 +679,217 @@ test('issue #342: coordinator tick skips instance reconciliation while over budg
   now.v += 300;
   h.tick();
   assert.equal(pidOf(), 'h', '廉价拍后档位回落 600ms：下一拍正常对账');
+  h.window.__zusageDispose();
+});
+
+/* ---------- issue #452（specs/perf-lag-reduction.md 规则 19）：卡片内嵌形态 track 空闲门 ----------
+ * 宿主每帧改 DOM 时逐帧读几何，会把本帧的样式重算与布局强制进 track 回调（本机实测占主线程
+ * 7.8%）。内嵌形态下几何段只在「脏标 / cardMode 翻转 / 视口变化 / 面板打开 / 100ms 兜底」时
+ * 执行；帧级补挂对账仍每帧。几何段执行与否用 composer（textarea）的 getBoundingClientRect
+ * 次数计（几何段每执行一次至少读它一次，门控跳过的帧零读取）；时钟经 fakeClock 冻结后手动
+ * 平移，全部确定性判定。 */
+function countComposerRects(card) {
+  const ta = card.children.find(e => e.tagName === 'TEXTAREA');
+  const real = ta.getBoundingClientRect.bind(ta);
+  const counter = { reads: 0, ta };
+  ta.getBoundingClientRect = function () { counter.reads++; return real(); };
+  return counter;
+}
+
+test('issue #452: in-card track reads geometry only on the idle cadence while nothing changed', () => {
+  const h = harness(), [card] = h.setPanes(['a'], { toolbar: true }); h.inject(); h.boot();
+  const geo = countComposerRects(card);
+  h.runFrame();   // 首帧：几何段执行，条显示
+  const bar = card.children.find(e => /zusage-root/.test(e.className || ''));
+  assert.equal(bar.style.display, 'flex', 'harness sanity: 首帧几何段把内嵌条显示出来');
+  assert.ok(geo.reads >= 1, 'harness sanity: 首帧读了 composer 矩形');
+  const afterFirst = geo.reads;
+  const now = fakeClock(h, Date.now());
+  for (let i = 0; i < 12; i++) h.runFrame();
+  assert.equal(geo.reads, afterFirst, '时钟不动的 12 帧不读几何（逐帧读=回归）');
+  const base = geo.reads;
+  now.v += 99; h.runFrame();
+  assert.equal(geo.reads, base, '时钟不动/不足 TRACK_IDLE_MS 的帧不读几何（逐帧读=回归）');
+  now.v += 1; h.runFrame();   // 恰 100ms（右开：< 100 才跳）
+  assert.ok(geo.reads > base, '恰满 TRACK_IDLE_MS 的下一帧执行一次几何段（<= 变异在此变红）');
+  const afterPass = geo.reads;
+  h.runFrame(); h.runFrame();
+  assert.equal(geo.reads, afterPass, '执行后重新计时，紧随其后的帧不再读');
+  now.v -= 1500;   // 系统时钟回拨：距上次几何段的差值为负
+  const beforeRollback = geo.reads;
+  h.runFrame();
+  assert.ok(geo.reads > beforeRollback, '时钟回拨后不冻结对账（负差一律视为到期；去掉 >= 0 守卫在此变红）');
+  now.v += 5000;   // 回到正常时间轴，重置计时基线
+  h.runFrame();
+  const resynced = geo.reads;
+  h.runFrame();
+  assert.equal(geo.reads, resynced, '回拨恢复后门控照常');
+  now.v += 100; h.runFrame();
+  assert.ok(geo.reads > resynced, 'harness sanity: 兜底节奏到期执行');
+  const settled = geo.reads;
+  // 帧级补挂对账不受门控影响：条被宿主清掉后，时钟不动的下一帧即补挂回卡（纯 DOM 引用读取）
+  bar.remove();
+  h.runFrame();
+  assert.equal(bar.parentElement, card, 'v80 帧级补挂对账仍每帧执行');
+  assert.equal(geo.reads, settled, '补挂对账不读几何');
+  h.window.__zusageDispose();
+});
+
+test('issue #452: a rebuilt bar or a theme change re-evaluates geometry on the very next frame', () => {
+  const h = harness(), [card] = h.setPanes(['a'], { toolbar: true }); h.inject(); h.boot();
+  const geo = countComposerRects(card);
+  h.runFrame();
+  const now = fakeClock(h, Date.now());
+  h.runFrame(); h.runFrame();
+  const inst = h.window.lifecycleTest.instances()[0];
+  inst.render({ session: {}, last_turn: {}, today: {}, context_window: 0 });
+  const afterRender = geo.reads;
+  h.runFrame();
+  assert.ok(geo.reads > afterRender, 'render 重建条面后的下一帧立即重判几何（条面宽度/溢出可能已变）');
+  const settled = geo.reads;
+  h.runFrame();
+  assert.equal(geo.reads, settled, '一次脏标只换一次几何段');
+  inst.applyBarTheme();
+  const afterTheme = geo.reads;
+  h.runFrame();
+  assert.ok(geo.reads > afterTheme, '切档（尾部重建条面）后的下一帧立即重判几何');
+  h.window.__zusageDispose();
+});
+
+test('issue #452: open followers (settings panel, ⋯ menu, sub-agent popover) keep track per-frame; closing returns to the idle cadence', () => {
+  const h = harness(), [card] = h.setPanes(['a'], { toolbar: true }); h.inject(); h.boot();
+  const geo = countComposerRects(card);
+  h.runFrame();
+  const now = fakeClock(h, Date.now());
+  h.runFrame();
+  const onBody = (re) => h.document.body.children.find(e => re.test(e.className || ''));
+  const idle = () => { const before = geo.reads; h.runFrame(); return geo.reads === before; };
+  const busy = () => { const before = geo.reads; h.runFrame(); return geo.reads > before; };
+  assert.equal(idle(), true, 'harness sanity: 全关且时钟不动时不读几何');
+  // ⚙ 设置面板（v155 逐帧跟随）
+  const settings = onBody(/zu-settings/);
+  assert.ok(settings, 'harness sanity: 设置面板挂在 body');
+  settings.classList.add('open');
+  assert.equal(busy(), true, '设置面板打开：逐帧读几何'); assert.equal(busy(), true, '面板开着每一帧都读');
+  settings.classList.remove('open');
+  assert.equal(idle(), true, '设置面板关闭：回到空闲门');
+  // ⋯ 折叠菜单只在窄宽档（shrink===2）存在——其余档每次几何段对账都会关它（syncBarOverflow 首支）。
+  // 夹具给条面主容器补 clientWidth=100：250ms 节流的窄宽探针量得探针宽 500 装不下 → 落 narrow 档
+  const bar = card.children.find(e => /zusage-root/.test(e.className || ''));
+  const main = bar.querySelector('.zu-main');
+  Object.defineProperty(main, 'clientWidth', { value: 100, configurable: true });
+  now.v += 100; h.runFrame();   // 兜底节奏到期：探针进 narrow 档（shrink=2），折叠对账同拍收敛
+  assert.equal(bar.classList.contains('zu-narrow'), true, 'harness sanity: 已进 narrow 档');
+  assert.equal(idle(), true, 'harness sanity: 折叠对账收敛后回空闲门');
+  const more = onBody(/^zu-more-panel$/);
+  assert.ok(more, 'harness sanity: ⋯ 菜单挂在 body');
+  more.classList.add('open');
+  assert.equal(busy(), true, '⋯ 菜单打开：逐帧读几何（barMorePosition 跟随）');
+  assert.equal(busy(), true, '菜单开着每一帧都读');
+  assert.equal(more.classList.contains('open'), true, 'harness sanity: narrow 档下菜单保持打开');
+  more.classList.remove('open');
+  assert.equal(idle(), true, '⋯ 菜单关闭：回到空闲门');
+  // 子代理统一浮层：条面 .zu-sub 入口点击固定打开（positionSubPop 逐帧跟随）
+  const subEntry = new Element('span');
+  subEntry.closest = sel => sel === '.zu-sub' ? subEntry : null;
+  for (const fn of bar.listeners.get('click') || []) fn({ target: subEntry, stopPropagation() {} });
+  const sub = onBody(/zu-sub-pop/);
+  assert.ok(sub && sub.classList.contains('open'), 'harness sanity: 子代理浮层已打开');
+  assert.equal(busy(), true, '子代理浮层打开：逐帧读几何'); assert.equal(busy(), true, '浮层开着每一帧都读');
+  sub.listeners.get('keydown')[0]({ key: 'Escape', preventDefault() {}, stopPropagation() {} });
+  assert.equal(sub.classList.contains('open'), false, 'harness sanity: Escape 关闭浮层');
+  assert.equal(idle(), true, '浮层关闭：回到空闲门');
+  h.window.__zusageDispose();
+});
+
+test('issue #452: a viewport change re-evaluates geometry on the spot and holds per-frame tracking briefly', () => {
+  const h = harness(), [card] = h.setPanes(['a'], { toolbar: true }); h.inject(); h.boot();
+  const geo = countComposerRects(card);
+  h.runFrame();
+  const now = fakeClock(h, Date.now());
+  h.runFrame();
+  const base = geo.reads;
+  h.sandbox.innerWidth = 900;   // 窗口被拖窄
+  h.runFrame();
+  assert.ok(geo.reads > base, '视口变化当帧执行几何段（拖拽缩放时折叠/窄宽即时跟随）');
+  const changed = geo.reads;
+  now.v += 16; h.runFrame();
+  assert.ok(geo.reads > changed, '保持期内不足兜底节奏（16ms < 100ms）也逐帧执行（去掉保持期=拖拽缩放时条面一卡一卡）');
+  now.v += 383; h.runFrame();   // 累计 +399：仍在保持期
+  assert.ok(geo.reads > changed, '保持期（400ms）内逐帧执行');
+  const held = geo.reads;
+  now.v += 1;   // 恰 400ms：保持期结束（右开），距上次几何段仅 1ms
+  h.runFrame();
+  assert.equal(geo.reads, held, '保持期恰满后的下一帧回到空闲门');
+  now.v += 98; h.runFrame();   // 上次几何段在 +399：此刻距它 99ms
+  assert.equal(geo.reads, held, '回到 100ms 兜底节奏');
+  now.v += 1; h.runFrame();   // 恰 100ms
+  assert.ok(geo.reads > held, '兜底节奏到期照常对账');
+  h.window.__zusageDispose();
+});
+
+test('issue #452: the below-card floating bar still follows the composer every frame', () => {
+  const h = harness(), [card] = h.setPanes(['a']);   // 无工具行 → below-card 悬浮兜底
+  const geo = countComposerRects(card);
+  h.inject(); h.boot();
+  h.runFrame();
+  const bar = h.document.body.children.find(e => /zusage-root/.test(e.className || ''));
+  assert.ok(bar, 'harness sanity: 悬浮条挂在 body');
+  assert.equal(bar.style.display, 'flex', 'harness sanity: 悬浮条已显示');
+  fakeClock(h, Date.now());
+  for (let i = 0; i < 5; i++) { const prev = geo.reads; h.runFrame(); assert.ok(geo.reads > prev, '悬浮形态不设门：时钟不动也每帧读几何跟随输入卡'); }
+  h.window.__zusageDispose();
+});
+
+test('issue #452: the first frame after switching to the in-card mount re-evaluates geometry', () => {
+  const h = harness(), [card] = h.setPanes(['a']);   // 先 below-card 悬浮
+  const geo = countComposerRects(card);
+  h.inject(); h.boot();
+  h.runFrame();
+  const now = fakeClock(h, Date.now());
+  h.runFrame();
+  const bar = h.document.body.children.find(e => /zusage-root/.test(e.className || ''));
+  assert.ok(bar, 'harness sanity: 悬浮条挂在 body');
+  const row = card.appendChild(new Element());
+  row.className = 'group/toolbar flex items-end gap-3';   // 宿主补上工具行
+  h.tick();   // heavy：mountInCard 成功，cardMode 由假翻真
+  assert.ok(bar.classList.contains('zu-in'), 'harness sanity: heavy 已切到内嵌挂载');
+  const base = geo.reads;
+  h.runFrame();
+  assert.ok(geo.reads > base, 'cardMode 翻转后的首帧执行几何段（去掉 trackCard 比较=最多晚一个节奏才按内嵌形态重判）');
+  h.window.__zusageDispose();
+});
+
+test('issue #452: host-driven visibility changes are still picked up by the idle cadence', () => {
+  const h = harness(), [card] = h.setPanes(['a'], { toolbar: true }); h.inject(); h.boot();
+  const bar = card.children.find(e => /zusage-root/.test(e.className || ''));
+  h.runFrame();
+  assert.equal(bar.style.display, 'flex', 'harness sanity: 条已显示');
+  const now = fakeClock(h, Date.now());
+  // 宿主弹窗盖住输入框：没有插件侧事件，只能靠兜底节奏对账
+  const cover = h.document.body.appendChild(new Element('div'));
+  h.document.elementFromPoint = () => cover;
+  h.runFrame();
+  assert.equal(bar.style.display, 'flex', '时钟未动的帧被门控跳过，尚未对账');
+  now.v += 100; h.runFrame(); now.v += 50; h.runFrame();   // 一个节奏，并越过 150ms 命中缓存 TTL
+  assert.equal(bar.style.display, 'flex', '刚判定被盖：400ms 收条迟滞照旧，不立即收');
+  for (let i = 0; i < 9 && bar.style.display !== 'none'; i++) { now.v += 100; h.runFrame(); }
+  assert.equal(bar.style.display, 'none', '兜底节奏对账到遮挡，迟滞期满收条');
+  h.document.elementFromPoint = () => card.children.find(e => e.tagName === 'TEXTAREA');
+  for (let i = 0; i < 6 && bar.style.display !== 'flex'; i++) { now.v += 100; h.runFrame(); }
+  assert.equal(bar.style.display, 'flex', '遮挡解除后一个节奏内复显');
+  h.window.__zusageDispose();
+});
+
+test('issue #452: mount diag reports track frame and pass counters', () => {
+  const h = harness(), [card] = h.setPanes(['a'], { toolbar: true }); h.inject(); h.boot();
+  h.runFrame();
+  const now = fakeClock(h, Date.now());
+  for (let i = 0; i < 30; i++) h.runFrame();   // 时钟不动：帧数增长、几何段不执行
+  now.v += 5001; h.runFrame();   // 越过 5 秒 mount 诊断节流，且兜底节奏到期
+  const mount = h.window.__zusageDiag.mount;
+  assert.equal(typeof mount.trackFrames, 'number', 'mount.trackFrames 数值字段（供报告者环境核对门控生效）');
+  assert.equal(typeof mount.trackPasses, 'number', 'mount.trackPasses 数值字段');
+  assert.ok(mount.trackPasses < mount.trackFrames, '30 帧空闲只多出兜底几何段：执行次数明显少于帧数');
   h.window.__zusageDispose();
 });

@@ -60,6 +60,13 @@
     var curDisplay = "none", lastPos = [-1, -1], hideSince = 0;
     /* v80：true=条挂在输入卡片内部（group/toolbar 工具行之后）；false=旧 below-card 悬浮兜底 */
     var cardMode = false;
+    /* v441（issue #452，specs/perf-lag-reduction.md 规则 19）：track 空闲门状态。trackAt=上次几何段时刻；
+     * trackCard=上次几何段时的 cardMode（翻转后的首帧必读）；trackDirty=脏标（render 重建条面——切档尾部
+     * 同走 render——与解除让位抑制时置位）；trackVw/trackVh=上一帧视口（无 window 尺寸的环境恒 0，永不误判
+     * 变化）；trackFastUntil=视口变化后的逐帧保持期截止；trackFrames/trackPasses=走到门的帧数/执行几何段的次数。 */
+    var TRACK_IDLE_MS = 100, TRACK_FAST_MS = 400;
+    var trackAt = 0, trackCard = false, trackDirty = true, trackFastUntil = 0, trackFrames = 0, trackPasses = 0;
+    var trackVw = typeof innerWidth === "number" ? innerWidth : 0, trackVh = typeof innerHeight === "number" ? innerHeight : 0;
     /* v408：in-card 的实际宿主（多数是 cardCache；elicitation 面板是其内容列 wrapper，
      * 条不在 cardCache 的直接子层）——帧级补挂与同卡去重按它判宿主 */
     var cardHost = null;
@@ -474,7 +481,7 @@
         if (!dupSuppress) { dupSuppress = true; hideBar(); }
         return;
       }
-      dupSuppress = false;
+      if (dupSuppress) { dupSuppress = false; trackDirty = true; }   // v441：解除让位抑制后的下一帧复显，不等兜底节奏
     }
     function hideBar() {
       if (curDisplay !== "none") { bar.style.display = "none"; curDisplay = "none"; }
@@ -886,6 +893,25 @@
         } else if (cardCache && (state.theme === "pill" || !paddedCard || paddedCard.style.marginBottom !== CARD_MARGIN)) {
           ensureCardPad();   // 流式期间 React 重置内联边距时立刻补回（仅 below-card 兜底形态）
         }
+        /* v441（issue #452，specs/perf-lag-reduction.md 规则 19）：内嵌形态的条随输入卡片排版，逐帧读
+         * 几何只服务于显隐与溢出对账；宿主每帧改 DOM（流式输出/打字/虚拟列表滚动）时，这些读取会把
+         * 本帧的样式重算与布局强制进本回调（本机实测 1.3ms/帧、占主线程 7.8%，其中 89% 是强制重算）。
+         * 上方补挂对账仍每帧（纯 DOM 引用读取）；下方几何段在 cardMode 下按门执行：脏标（render 重建
+         * 条面/解除让位抑制）、cardMode 翻转、视口变化立即读；设置面板/子代理浮层/⋯ 菜单打开
+         * 期间或视口保持期内逐帧；否则按 TRACK_IDLE_MS 兜底对账（宿主自发的布局变化没有插件侧事件）。
+         * 药丸与 below-card 悬浮形态（cardMode 为假）不设门——条不随卡片排版，必须逐帧跟随。 */
+        var trackNow = Date.now();
+        if ((innerWidth || 0) !== trackVw || (innerHeight || 0) !== trackVh) {
+          trackVw = innerWidth || 0; trackVh = innerHeight || 0;
+          trackDirty = true; trackFastUntil = trackNow + TRACK_FAST_MS;
+        }
+        trackFrames++;
+        if (cardMode && trackNow >= trackFastUntil && !panel.classList.contains("open") && !subPopOpen() && !morePanel.classList.contains("open") &&
+            cardMode === trackCard && !trackDirty) {
+          var trackSince = trackNow - trackAt;
+          if (trackSince >= 0 && trackSince < TRACK_IDLE_MS) return;   // 负差=系统时钟回拨，视为到期（与 heavy 降频门同口径）
+        }
+        trackCard = cardMode; trackDirty = false; trackAt = trackNow; trackPasses++;
         var r = composer.getBoundingClientRect();
         var on = r.width > 60 && r.height > 14 && r.bottom > 0 && r.top < innerHeight &&
           !ghostOf(composer) &&          // 设置页等幽灵壳（opacity-0/inert）：视觉已隐藏（v61，v115 TTL 缓存）
@@ -1035,6 +1061,7 @@
             nativeCtx: nativeCtxVal,
             quota: { providerId: effectiveQuotaProvider(), modelId: quotaModel, sourceId: quotaSourceId,
               selected: !!quotaSelection, status: lastQuota ? lastQuota.status : "unavailable", chip: !!quotaChipCache },
+            trackFrames: trackFrames, trackPasses: trackPasses,   // v441：空闲门是否生效的现场证据（内嵌空闲态执行次数远小于帧数）
             picked: pickedSid,
             exc: excOn ? (excGone ? "on-gone" : "on") : 0,
             href: String(location.href).slice(0, 120),

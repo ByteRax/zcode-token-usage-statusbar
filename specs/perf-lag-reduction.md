@@ -14,6 +14,7 @@
 - **修复前后对照（离线，真实 `turn-stats.js` + 真实 v2 `zuSnapshot` 深拷贝 + 真实定时器与时钟；6867 行 / 2289 轮；脚本不入库，口径见下）**：按 overlay 的消费方式建模——旧=心跳每拍读 store 2 次、每次通知读 2 次；新=心跳读 handle 记录（2s 回源 1 次）、每次通知读 1 次并受规则 12 预算约束。 空闲（仅心跳）整窗读取 19.5→0.3 次/s、拷贝耗时 293→7 ms/s；5Hz 流式 33.8→3.8 次/s、467→67 ms/s；**10Hz 流式 48.8→4.0 次/s、677→68 ms/s（≈6.8%，落在规则 12 的 ≤~10% 上界内）**，事件循环最大延迟 84→26 ms。 注意 `mainThreadBusyPct` 含基准进程自身构造数据与 GC 的开销，绝对值偏高，只看相对变化。**度量陷阱**：overlay VM 夹具把 `performance.now` 换成不随真实耗时前进的假时钟，夹具内 `subscribeStore` 测得的处理耗时恒为 0，规则 12 的预算永不触发——在夹具里直接统计读取次数会得到“修后仍每通知一读”的假象；预算只能用注入时钟的单测（`turn-stats.test.cjs`）或真实时钟的基准验证。 **本机真实宿主上未做修复后的实测**（本机无已注册的大窗口流式会话；报告者 Windows 环境的修后数据待其反馈）。
 
 - **issue #342（2026-11-15；报告者 Windows 10 22H2 / ZCode 3.18.2，zcode-lagfix 只读定时器归因 T1——只包宿主 `window.setTimeout/setInterval` 的 handler、只记录单次同步执行 ≥50ms 的回调，不改时机不读内容）**：1.5.19 在内置浏览器面板活动期间仍记录到 `bridgeTick` 51–93ms（原定 100ms）、`heavy` 55–75ms（600ms）、coordinator `tick` 54–63ms（600ms）、turn-stats `flush` 55–92ms（规则 12 合并批尾部处理）的单次慢拍；同一时段宿主帧 P95 103–303ms，T1 每 3 秒约 1–2 个慢拍。归因：规则 10–12 之后正常拍已 <5ms，慢拍是「正常 5–20ms 的工作在宿主主线程被 guest 长帧/GC 占用期间被拉长」与「长窗口会话 2s 回源一次的整窗深拷贝（报告者环境实测 ≈86ms/次）」两类；报告者场景是浏览器面板开在宿主窗口内（宿主窗口可见），`visibilityState` 门控对此无增益。guest 页面自身的 60–166ms interval 长帧不属本插件，报告者已另开 ZCode issue。
+- **issue #452（2026-11-23；报告者 Windows 11 / ZCode 4.0.0.10870 / 1.12GB 库 / 千轮级会话，打字与滚动「不跟手」，剥离注入后消失；本机 ZCode 4.0.0 可见窗口 CDP 被动取证，不注入合成输入，窗口内宿主持续在改 DOM，约 3.4k 节点会话）**：40 秒 `Tracing`（devtools.timeline）里 `track` 每帧被调 2400 次，FunctionCall 合计 3136ms（**均 1.31ms/帧、单次最大 25ms、占主线程墙钟 7.8%**）；其中嵌套的强制 `UpdateLayoutTree` 2227ms（2870 次）与强制 `Layout` 497ms（462 次）合计占 89%——全线程 74% 的样式重算时间发生在 `track` 内。同窗口宿主自己的 rAF 回调 0.44ms/帧；浮层其余周期回调合计约 1.3% 墙钟（`bridgeTick` 0.33ms/拍、协调器 `tick` 1.2ms/拍、`heavy` 1.1ms/拍、两个 500ms 扫描各 0.25–0.31ms/拍）。**页内 A/B**（rAF 包装器让 `track` 循环暂停 8 秒再恢复，不动任何文件；两轮）：主线程任务时间均值 2024→1836ms/8s，`RecalcStyleDuration` 786→356ms/8s——被 `track` 强制的样式重算多数只是提前（同帧稍后本就要算），净额外约 190ms/8s（约 2.3% 墙钟）；两组窗口的宿主 DOM 变更数不完全相同（185/178 对 114/125），净额外值有波动。**对报告者五条定位的证伪结论**：①逐帧 `track` 成立，且是渲染端主因（高刷屏上 rAF 频率随刷新率升高、慢机器单次更贵，报告者环境的绝对占比未测，需其火焰图）；②100ms 心跳与④每帧推送在本机量级很小（本机 `speed_history` 1776 轮、帧比报告者的更大，推送处理在 profile 里排不上号，与报告者「`activity_min_ms` 调到 4000 无改善」一致）；③两个 500ms 全文档扫描在 `answer_rate_line` 关闭时于 `querySelectorAll` 之前早退（`scanRateLines` 的 `!state.rateLine`、`scanDeterministicLines` 的 `!state.rateLine || !TURN_STATS`），报告者配置下根本不执行；⑤`pillObserver` 仅药丸主题存在。**机制**：宿主每帧改 DOM（流式输出、打字、虚拟列表滚动）后，`track` 在同一帧的 rAF 回调里读几何，把样式重算与布局强制进本回调；而条内嵌在输入卡片里随卡片排版，这些逐帧读取只服务于显隐与溢出对账，不需要帧率。 **真实 Chromium 隔离页冒烟**（无头 Chrome，仿宿主卡片夹具，旧 v440 与新 v441 同页对比；脚本不入库）：内嵌挂载、帧级补挂（21/22ms）、宿主隐藏输入区后的收条与复显（该夹具里由协调器回收并重建实例驱动，279/286ms、577/589ms）、窗口缩放跟随（0ms）、设置面板开合与定位逐项一致，`trackErr` 为空；窄宽档位自适应 128→275ms、回宽 252→294ms、原地改字 232→296ms（250ms 探针节奏叠加兜底节奏，增量不超过一个节奏）。合成页样式重算本身极廉价，旧新两版的重算次数相同，量不出真实宿主里的强制重算差值——差值只在上面的真机取证里成立。
 
 ## 产品规则（不变量）
 
@@ -46,6 +47,14 @@
     c. **诊断（供报告者环境归因）**：`window.__zusageDiag` 新增 `snapSrcMs`（上次回源实测耗时）、`heavyCost`、`coordCost`（上次对应 tick 实测耗时），随主进程既有 ~15 泵 diag-`<n>`.json 落盘；只加数值字段，不改任何既有字段。
     d. **有意不做**：bridgeTick 100ms 心跳不降频——规则 1 悬停 ≤100ms 跟手与「思考中」走字钉住该节奏，其慢拍主因由 18a（回源）与规则 6（空闲整条渲染 500ms 节流）覆盖；`flush`（规则 12 合并批尾部处理）已有 ≤~10% 占空比上界、成本即合并批自身，不再叠加；`document.visibilityState` 门控不加——Chromium 对隐藏窗口本就把定时器降到 ≈1Hz（证据节），且报告者场景宿主窗口可见，门控无增益。
 
+19. **卡片内嵌形态 `track` 空闲门（v441，issue #452）**：`track` 的 rAF 自调度、异常后续帧、`document.hidden` 早退、compact 早退、超限气泡同步与「composer 断连即收条」逐字不变；**帧级补挂对账（`bar.isConnected`、`bar.parentElement !== cardHost`）保持每帧**（纯 DOM 引用读取，不触发布局，v80 契约不动）。其后的**几何段**（可见性判定与显隐迟滞、窄宽探针、裁剪与折叠对账、面板/浮层跟随、mount 诊断）在**卡片内嵌形态**（`cardMode` 为真）下按门控执行：
+    - **不设门、逐帧执行**（与此前逐字一致）：`cardMode` 为假（药丸主题与 below-card 悬浮兜底——条不随卡片排版，必须逐帧跟随）；⚙ 设置面板、子代理浮层、⋯ 菜单任一打开（它们的逐帧跟随在本段内）；视口宽高变化后的 `TRACK_FAST_MS`（400ms）保持期内。
+    - **下一帧立即执行**：有脏标 `trackDirty`——`render()` 重建条面后（切档 `applyBarTheme()` 尾部同走 `render`）、`dedupBars()` 解除让位抑制后置位；`cardMode` 自上次几何段以来翻转（悬浮与内嵌互切后的首帧）；`innerWidth`/`innerHeight` 较上一帧变化（每帧两次标量比较，不触发布局，同时进入保持期）。
+    - **兜底对账**：以上都不成立时，距上次几何段不足 `TRACK_IDLE_MS`（100ms）的帧直接返回（差值为负的系统时钟回拨一律视为到期，与规则 18b 同口径，不冻结对账）。宿主自发的布局变化（侧栏折叠、终端面板开合、模态弹窗、幽灵壳）没有插件侧事件，由该节奏兜住：收条判定最多晚一个节奏（叠加既有 400ms 迟滞），溢出与折叠对账最多晚一个节奏，条内原地改字引起的宽度变化同此。
+    - **不做的事**：不新增定时器、监听器或观察器；不改几何段内部任何读取与判定；`hideSince` 迟滞、窄宽 250ms 探针、5 秒 mount 诊断都在几何段内、随几何段执行（节拍只会变粗）；不动 100ms 心跳、600ms 对账与两个 500ms 扫描。
+    - **诊断**：`__zusageDiag.mount` 追加数值字段 `trackFrames`、`trackPasses`（实例生命周期内走到门的帧数、执行几何段的次数，随既有 5 秒 mount 诊断落盘），只加字段不改既有字段，供报告者环境核对门控生效（空闲内嵌态 60Hz 下比值约 1/6）。
+    - **有意不做（issue #452 另三条建议）**：`speed_history` 指纹去重推送仍列「未做」（冷文件加主桥到渲染端的协议改动，本机实测推送处理在 profile 里排不上号，不是卡顿主因）；两个 500ms 扫描的范围收敛不做（关闭态本就早退，开启态 0.25–0.31ms/拍）；大库冷帧的持久化与增量聚合见「未做」的既有立项。
+
 ## 状态所有者与接口
 
 - 渲染进程拥有全部实例级节流状态（`liveTipBuiltAt`、`idleRenderData/At`）与失鲜标记（`__zuTipView`/`__zuTipStale`，挂在 `.it` 格元素上）；均为实例闭包变量/元素私有属性，随实例销毁，不进 `localStorage`、不进快照。
@@ -53,6 +62,7 @@
 - Python 水位缓存状态（`_AGG_WM/_PROJ_WM/_SPEED_WM/_SESS_WM`）与对应缓存同生命周期、同上限、同清空；不进快照、不改 CLI/MCP/`/usage` 输出契约；`speed_history` 帧字段、协议与大小不变。
 - **桥快照记录（issue #309）**：渲染进程的主桥 handle 持有 `snap`/`snapAt`，仅由 overlay 的通知回调与 `handleSnapshot` 回源写入，`bridgeDetach` 时释放引用；不进 `localStorage`、不进快照、不跨 pane（每个 handle 一份）。`subscribeStore(store, tracker, changed, options?)` 的预算状态（`pending`/尾部定时器/`lastCost`/`lastEnd`）是该订阅的闭包私有状态；`options.now/setTimeout/clearTimeout` 仅为测试注入缝（缺省 `performance.now` 与全局定时器）。`changed(state)` 新增参数向后兼容（既有无参回调不受影响）。
 - **规则 18 状态（v349）**：回源退避档 `handle.freshMul` 归主桥 handle（随 `bridgeDetach` 释放）；heavy 降频档/上拍时刻（`heavyLvl`/`heavyRunAt`）归实例闭包、coordinator 降频档/上拍时刻（`coordLvl`/`coordRunAt`）归模块级协调器闭包，随实例 dispose / 热重载换代；`perfMs()` 是模块级工具（`performance.now` 优先、缺位回退 `Date.now`）。均不进 `localStorage`、不进快照、不改输出契约；`__zusageDiag` 仅追加 `snapSrcMs/heavyCost/coordCost` 三个数值字段。
+- **规则 19 状态（v441）**：`trackAt`、`trackCard`、`trackDirty`、`trackVw`、`trackVh`、`trackFastUntil` 与计数 `trackFrames`/`trackPasses` 归实例闭包（12 分片），随实例 dispose 与热重载换代；不进 `localStorage`、不进快照、不改输出契约；只动热文件 `overlay.js`（`src/overlay/` 分片），不涉及冷文件，无需重启客户端。
 - 本批全部为热文件：`overlay.js`、`turn-stats.js`（主桥 mtime 轮询整体重注入）、`zusage.py`（mtime 变化后常驻 Python 自动重启）；**不涉及冷文件 `inject-main.cjs`**，无需重启客户端。issue #309 批同样只动 `turn-stats.js` 与 `overlay.js`（`src/overlay/` 分片）：**不改桥模板与 `BRIDGE_GEN`**（静态桥在宿主 asar 里，属冷路径）。
 - **大库满载 P0（规则 13–16）含冷文件，上一条「不涉及冷文件」只针对 v328 与 issue #309 两批**：`zusage.py` 是热文件（常驻 Python 自动重启），而**规则 16 的泵冷却与超时放宽在 `inject-main.cjs`（唯一冷文件，只能随客户端完全重启生效）**；未重启前泵仍是旧限频，新 `zusage.py` 与旧泵可并存（只是没有冷却保护）。`hot_reload:false` 的用户，`zusage.py` 同样按冷文件处理，也要完全退出才生效。新增进程内状态均不进快照、`localStorage`、`config.json`：Python 侧 `_SESS_CACHE/_SESS_WM`（超过 32 条整体 clear，峰值至多 33 条，与 `_PROJ_CACHE` 同款整体 clear）与 `_TASK_AT`（任务名扫描时刻，与 `_TASK_CACHE` 同清）；主进程侧 `lastQueryMs/lastDoneAt`（随主进程生灭；窗口全关时不重置，只会让重开后的首帧至多晚一个上帧耗时）。快照字段与 CLI/MCP/`/usage` 输出契约不变。
 
@@ -76,6 +86,7 @@
     - **18a**：注入「`getState` 时使假 `performance.now` 恰前进 8ms」的读取桩（≥ 阈值含界，`>8` 变异红）——陈旧回源后 2.5s 内的心跳不再回源（退避生效，读取计数不变），满 4s 恰好再回源一次；第三次贵回源断言新鲜窗停在 8s（封顶，`min(2→3)` 变异红）；换回零成本 `getState`（<8ms）后 8s 窗届满回源、档位回落，此后 2s 即回源（变异：去掉退避，第一段断言变红）。廉价桩（成本 <8ms）下回源节奏仍为 2s（既有验收 9 用例复验通过）。
     - **18b**：heavy/coordinator 各以「每次实跑恰 +16ms」的标记桩注入成本（`>16` 变异红）——降频窗口内的拍被跳过（body 副作用不发生：compact 条不补挂 / 消失 pane 的实例不 dispose）；恰 `600ms` 不跳拍（窗口右开，`<→<=` 变异红）；连续贵拍把档位推到 3 封顶、越过 `600×3` 窗界的触发必须执行（`min(3→4)` 变异红）；恢复廉价后档位回落、600ms 节奏照旧（变异：去掉跳拍门，跳过断言变红）。降频门不改变定时器拓扑：dispose 后 `timers` 清零等既有用例不变。
     - **18c**：各测点写入 `snapSrcMs/heavyCost/coordCost` 数值字段（恰等于阈值可断言）；`perfMs` 的 performance 缺位/`now` 非函数两形态回退支有独立单测；既有 `__zusageDiag` 字段与 diag 落盘节奏不变。
+14. **`track` 空闲门（规则 19；`overlay-lifecycle` 夹具加可平移的 VM 时钟，`runFrame` 改为「取走队列再执行」的真实浏览器语义——旧实现重跑历史回调，track 自调度按 2^帧数 复利增长）**：内嵌形态首帧执行几何段后，时钟不动连跑 N 帧，composer 的 `getBoundingClientRect` 调用数不增（变异：去掉门控或把 `TRACK_IDLE_MS` 改 0，变红）；时钟前进 99ms 不执行、恰满 `TRACK_IDLE_MS` 的下一帧执行一次；时钟回拨（差值为负）当帧执行；`render()` 之后下一帧立即执行且只执行一次（切档尾部同走 `render`）；⚙ 设置面板、⋯ 菜单（narrow 档）、子代理浮层任一打开期间每帧执行，关闭后回空闲；`innerWidth` 变化当帧执行、保持期内（含不足 100ms 的帧）逐帧执行、恰满保持期回空闲；无工具行的 below-card 形态每帧执行；`cardMode` 由假翻真后的首帧执行；宿主遮挡输入框（无插件侧事件）由兜底节奏在迟滞期满后收条、解除后复显；mount 诊断带 `trackFrames`/`trackPasses` 数值字段且空闲时执行次数远小于帧数。
 
 ## 未做（已评估，留作后续）
 
@@ -83,7 +94,7 @@
 - `tracker.ingest` 自身对窗口 O(window)（6867 行约 6–8ms）：由规则 12 的预算封顶，未改算法。
 - 通知频率的实测：本机无流式中的已注册会话，没能直接量宿主 store 的通知速率；规则 12 的 ≤10% 上界不依赖该速率。
 - 主进程冷文件 `inject-main.cjs`：`speed_history` 按指纹去重推送（本机每窗口每 ≥1.5s 约 312KB，其中 241KB 为 `speed_history`）；`gitTick` 窗口失焦门控 + 结果不变退避 + 子仓库枚举改异步（本机 17k 文件仓库每 10s 仅 0.15~0.3s，Windows 上更重）；同窗最多 3 次重复注入 1.5MB 脚本前加探针。均需完全重启才生效。
-- 渲染端：逐帧 `track()` 的几何读取按 pill 以外 150ms 节流；`hcObserver`/quota observer 缩小观察范围（依赖 Radix portal 假设，需先验证）；`heavy` 与协调器 tick 的双倍频率。前台实测前不动。
+- 渲染端：`track()` 几何读取在卡片内嵌形态已按规则 19 门控（v441）；药丸与 below-card 悬浮形态仍逐帧（条不随卡片排版，需逐帧跟随），再降须先给悬浮形态找到不读几何的跟随手段。`hcObserver`/quota observer 缩小观察范围（依赖 Radix portal 假设，需先验证）；`heavy` 与协调器 tick 的双倍频率（本机 1.1–1.2ms/拍）。后三项前台实测前不动。
 - Python 命中帧基线 ~200ms：子代理 `_scope_models_cost` N+1（48 次 ≈ 56ms）、5 个完整会话快照（`_provider_fallback` 无缓存与 `_sub_agent_tasks` 全量重扫已由规则 14/15 处理）。
 - **大库 miss 帧根治（后续独立立项，需先改规则 8 的陈旧界语义）**：帧成本随**全库总行数**线性增长（合成基准：5.6 万行 miss 帧 0.84s → 36.8 万行 6.6s），热点是 `_speed_turns`（全表 GROUP BY×2，约 31%）、`_project_usage`×N + `_all_projects_usage`（约 42%）；规则 13–16 只能把占空比封顶到 ~50%、改善命中帧，**不降低 miss 帧本身**。方向：宿主「只 INSERT 不 UPDATE」（规则 8 前提）使按 `rowid` 水位增量聚合可行——仅扫 `rowid > 上次水位` 的新增行并并入既有聚合，低频全量对账兜底。代价：`in-place UPDATE`/非尾行删除的可见延迟从 ≤20s 变为对账周期；须配套对账用例与「增量结果 ≡ 全量重算」的等价性测试。
 - hooks：`SessionStart` 每次对 373MB `app.asar` 全量 SHA256（~135ms，仅发布前才需要，可改廉价 stat 戳）；`UserPromptSubmit` 为 `detect_agent` 整体 `import zusage`（~37ms）。hook 读插件缓存副本，需发版后生效。
