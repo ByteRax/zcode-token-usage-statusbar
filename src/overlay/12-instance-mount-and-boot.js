@@ -895,7 +895,8 @@
         }
         /* v441（issue #452，specs/perf-lag-reduction.md 规则 19）：内嵌形态的条随输入卡片排版，逐帧读
          * 几何只服务于显隐与溢出对账；宿主每帧改 DOM（流式输出/打字/虚拟列表滚动）时，这些读取会把
-         * 本帧的样式重算与布局强制进本回调（本机实测 1.3ms/帧、占主线程 7.8%，其中 89% 是强制重算）。
+         * 本帧的样式重算与布局强制进本回调（本机实测 1.3ms/帧、占主线程 7.8%，其中约 87% 是嵌套的
+         * 强制样式重算与布局）。
          * 上方补挂对账仍每帧（纯 DOM 引用读取）；下方几何段在 cardMode 下按门执行：脏标（render 重建
          * 条面/解除让位抑制）、cardMode 翻转、视口变化立即读；设置面板/子代理浮层/⋯ 菜单打开
          * 期间或视口保持期内逐帧；否则按 TRACK_IDLE_MS 兜底对账（宿主自发的布局变化没有插件侧事件）。
@@ -1102,6 +1103,10 @@
         if (!inactive()) frame = requestAnimationFrame(track);   // 自调度循环：异常绝不能杀死循环（setInterval 无此问题，rAF 有）
       }
     }
+
+    /* v441：条面横向滚动后的下一帧重判裁剪渐隐（zu-clip/zu-clip-left）——事件只置脏标、不读几何；
+     * 监听挂在条内 main 上，经 listenGlobal 登记，随实例 dispose 摘除。 */
+    listenGlobal(main, "scroll", function () { trackDirty = true; });
 
     heavyTimer = setInterval(heavy, 600);
     heavy();
