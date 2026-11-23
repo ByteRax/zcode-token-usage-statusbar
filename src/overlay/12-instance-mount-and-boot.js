@@ -1301,7 +1301,9 @@
           if (tipFor && tipFor.dataset && tipFor.dataset.zuKey === "sysmon" && tip.style.display === "block") r.want = true;
           if (panel.classList.contains("open")) r.want = true;   // 设置页开着：预览需要真实采样
           if (typeof sysmonChipMounted === "function" && sysmonChipMounted()) r.want = true;
-          var sc = getScope();
+          /* v445：getScope 只是本 api 对象的属性、不是作用域里的变量——此前裸调必抛
+           * ReferenceError 被下面的 catch 吞掉，projectPath 恒空，主进程永远定位不到项目卷。 */
+          var sc = api.getScope();
           if (sc && sc.sid && !sc.identity && sc.workspacePath) r.projectPath = sc.workspacePath;
         } catch (e) { }
         return r;

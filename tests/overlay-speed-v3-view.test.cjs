@@ -146,17 +146,6 @@ test('spd3CardHTML 结构锁: 根类/data-sv-key/双 Tab 组/chips/单多左卡�
   assert.doesNotMatch(dom, /本期有效 \d+ 个模型/, '左卡计数前缀「本期有效」已去（筛选条 fcount 保留）');
   assert.doesNotMatch(dom, /已选 \d+ 个模型/, '旧「已选 N 个模型」计数行已被计数语义替换');
 
-test('空池门控: 降级帧（real 非空、perModel 空）不拼伪造计数（v402 §24 审查收口）', () => {
-  const ctx = makeCtx();
-  const h = fixture();
-  const sel = { range: 'session', period: 'all', sid: 'sess_main' };
-  const anD = Object.assign({}, analyze(ctx, h, sel), { perModel: [] });
-  assert.ok(anD.real && anD.real.length && anD.overall, '前置：real/overall 在（走空池门控而非空态分支）');
-  const domD = stripStyle(cardHTML(ctx, anD, sel));
-  assert.doesNotMatch(domD, /zu-sv3-count/, '空池门控生效：不渲染 count 块');
-  assert.doesNotMatch(domD, / · 0 模型/, '无伪造「 · 0 模型」计数（与请求轮次 0 自相矛盾）');
-  assert.match(domD, /zu-sv3-main-num/, 'real 数据仍渲染主数字（非空态分支）');
-});
   assert.match(dom, /zu-sv3-dtab/);
   assert.match(dom, /所选模型分布 · 按请求数/);
   assert.doesNotMatch(dom, /唯一模型/);
@@ -234,6 +223,81 @@ test('空池门控: 降级帧（real 非空、perModel 空）不拼伪造计数�
 });
 
 // ---------- ② 单模型五态标题 + 精简左卡（v391 §15.1：「本期统计」「覆盖范围」已删） ----------
+test('空池门控: 降级帧（real 非空、perModel 空）不拼伪造计数（v402 §24 审查收口）', () => {
+  const ctx = makeCtx();
+  const h = fixture();
+  const sel = { range: 'session', period: 'all', sid: 'sess_main' };
+  const anD = Object.assign({}, analyze(ctx, h, sel), { perModel: [] });
+  assert.ok(anD.real && anD.real.length && anD.overall, '前置：real/overall 在（走空池门控而非空态分支）');
+  const domD = stripStyle(cardHTML(ctx, anD, sel));
+  assert.doesNotMatch(domD, /zu-sv3-count/, '空池门控生效：不渲染 count 块');
+  assert.doesNotMatch(domD, / · 0 模型/, '无伪造「 · 0 模型」计数（与请求轮次 0 自相矛盾）');
+  assert.match(domD, /zu-sv3-main-num/, 'real 数据仍渲染主数字（非空态分支）');
+});
+
+// ---------- ③b v445 左卡空态判据对齐 an.real（降级帧 + 模型筛选不伪造 0 轮） ----------
+test('v445 降级帧+模型筛选: 左卡如实显示整轮值主数字与真实轮数，不出空态、不伪造「请求轮次 0 轮」', () => {
+  const ctx = makeCtx();
+  // 旧代帧：每轮两个模型、msl 只有 [mIdx,out]（无模型级窗口/请求数）；t=相对上一行的增量
+  const t0 = new Date(2026, 10, 5, 9).getTime();
+  const raw = [
+    [t0, 100, 1000, [[0, 100], [1, 300]]],         // 100 t/s
+    [t0 + HOUR, 400, 8000, [[0, 300], [1, 500]]],   // 50 t/s
+  ];
+  let prev = 0;
+  const turns = raw.map(r => {
+    const o = { s: 0, t: r[0] - prev, b: r[0] - 60000, out: r[1], ms: r[2], i: 80, o: r[1], n: 2, msl: r[3], c: 0.01, cf: 1 };
+    prev = r[0];
+    return o;
+  });
+  const h = { sid: 'sess_main', source: 'local', truncated: false, sids: ['sess_main'], snames: ['S'],
+    pids: [['p', 'P']], mnames: ['GLM-A', 'Claude-B'], mkeys: [KEYS.a, KEYS.b], turns };
+  for (const [range, period] of [['session', 'all'], ['session', 'recent'], ['all', 'recent'], ['all', 'today']]) {
+    const sel = { range, period, sid: 'sess_main', filt: { mode: 'sel', keys: [KEYS.a] } };
+    const an = analyze(ctx, h, sel);
+    assert.equal(an.msAvail, false, range + '×' + period + ' 降级模式');
+    assert.equal(an.perModel.length, 0, range + '×' + period + ' 筛选后 perModel 为空（选中的模型对不上分量）');
+    assert.ok(an.real && an.real.length >= 1 && an.overall && an.overall.turns === 2,
+      range + '×' + period + ' 前置：整行 out/ms 仍在（图表有真实数据）');
+    const dom = stripStyle(cardHTML(ctx, an, sel));
+    assert.doesNotMatch(dom, /请求轮次<\/i><b>0轮/, range + '×' + period + ' 不伪造「请求轮次 0 轮」');
+    assert.doesNotMatch(dom, /有效模型<\/i>/, range + '×' + period + ' 不走空态分支（无「有效模型 0」行）');
+    assert.match(dom, /zu-sv3-main-num" title="整轮值：[^"<>]*含未选中的模型"><span class="[a-z-]+">\d/,
+      range + '×' + period + ' 主数字为真实整轮值（非 —），并以 title 点明「含未选中的模型」');
+    assert.match(dom, /请求轮次<\/i><b>2轮/, range + '×' + period + ' 如实显示 2 轮');
+    assert.doesNotMatch(dom, /zu-sv3-dbar|zu-sv3-dtab|zu-sv3-count/, range + '×' + period + ' 无模型分量可分发：不渲染分布块与 count');
+    assert.doesNotMatch(dom, /zu-sv3-empty/, range + '×' + period + ' 图表区不出空态块');
+  }
+  // 真·空筛选仍走空态：选一个帧里不存在的模型 → real 为空
+  const anX = analyze(ctx, h, { range: 'session', period: 'all', sid: 'sess_main', filt: { mode: 'sel', keys: ['p\x1fghost'] } });
+  assert.ok(!(anX.real && anX.real.length), '前置：不存在的模型筛选后 real 为空');
+  const domX = stripStyle(cardHTML(ctx, anX, { range: 'session', period: 'all', sid: 'sess_main' }));
+  assert.match(domX, /请求轮次<\/i><b>0轮/, '真空池仍显示 0 轮');
+  assert.match(domX, /zu-sv3-main-num"><span class="dim">—</, '真空池主数字为 —');
+});
+
+// ---------- ③c v445 降级帧分布块：请求数未知——占比不显「<0.1%」、条不画、弹层计数显「—」 ----------
+test('v445 降级帧（不筛选）: 分布块占比列显「—」、不画分布条、不出现「<0.1%」；筛选弹层行尾计数显「—」；新帧不受影响', () => {
+  const sel = { range: 'session', period: 'all', sid: 'sess_main' };
+  const ctx = makeCtx();
+  const an = analyze(ctx, fixtureLegacy(), sel);   // 两个模型各一轮，msl 二元组（无请求数）
+  assert.ok(an.msAvail === false, '前置：降级模式');
+  const dom = stripStyle(cardHTML(ctx, an, sel));
+  assert.match(dom, /zu-sv3-dtab/, '明细表照常渲染（模型名列）');
+  assert.doesNotMatch(dom, /zu-sv3-dbar/, '没有请求数就不画分布条（此前是 0 宽段）');
+  assert.doesNotMatch(dom, /<0\.1%/, '占比未知不伪装成「极小」');
+  assert.equal((dom.match(/zu-sv3-pct" role="cell">—<\/span>/g) || []).length, 2, '两行占比列都是 —');
+  const domPop = stripStyle(cardHTML(ctx, an, sel, { pop: { open: true, query: "" } }));
+  assert.match(domPop, /class="zu-sv3-fpop" role="dialog"/, '前置：筛选弹层已打开');
+  assert.equal((domPop.match(/zu-sv3-fpop-n">—<\/span>/g) || []).length, 2, '弹层两行计数都是 —');
+  assert.doesNotMatch(domPop, /zu-sv3-fpop-n">\d/, '弹层不显 0');
+  // 新帧（带请求数）不受影响：条与占比照常
+  const ctx2 = makeCtx();
+  const dom2 = stripStyle(cardHTML(ctx2, analyze(ctx2, multiFixture(3), sel), sel));
+  assert.match(dom2, /zu-sv3-dbar/, '新帧照常画分布条');
+  assert.match(dom2, /zu-sv3-pct" role="cell">\d+(\.\d+)?%</, '新帧占比列是百分比');
+});
+
 test('单模型左卡: 五 period 标题文案、主数字/档位恒在、同构分布块（count+dist-h+dbar+dwrap 1 行）、组标题与覆盖范围已删、日均标签切换', () => {
   const ctx = makeCtx();
   const h = fixture();

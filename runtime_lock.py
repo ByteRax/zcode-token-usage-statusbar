@@ -141,12 +141,21 @@ def file_lock(path, timeout=10.0):
             os.close(fd)
 
 
-def _read_marker(marker):
+def _read_marker(marker, unreadable=None):
+    """JSON 损坏/非对象按空标记（合并与发布链据此重建）；读不到（OSError）返回 unreadable。
+    缺省仍是空标记；record_restart/ack_restart 传 False 以区分「读不到」与「没有待办」。
+    文件不存在恒为空标记：「没有标记」不是读失败。"""
     try:
-        data = json.loads(marker.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
+        raw = marker.read_text(encoding="utf-8")
+    except (FileNotFoundError, UnicodeDecodeError):
         return {}
+    except OSError:
+        return {} if unreadable is None else unreadable
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _hashes(value):
@@ -321,7 +330,11 @@ def record_restart(runtime, data):
     runtime = Path(runtime)
     marker = runtime / ".plugin-restart-required"
     with file_lock(runtime / "plugin-restart.lock"):
-        previous = _read_marker(marker)
+        previous = _read_marker(marker, unreadable=False)
+        if previous is False:
+            # 读不到 ≠ 没有旧通知：按空合并会把读失败那一刻盘上的通知整份覆盖掉（另一条链
+            # 刚写的重启待办随之丢失）。标记不动、原样抛出，调用方按写入失败处理，下次再合并。
+            raise OSError("restart marker unreadable")
         hashes = _hashes(previous.get("hashes"))
         hashes.update(_hashes(data.get("hashes")))
         if data.get("state") == "pending-install":
@@ -362,7 +375,12 @@ def ack_restart(runtime, loaded):
     with file_lock(runtime / "plugin-restart.lock"):
         if not marker.exists():
             return {"ok": True, "cleared": False}
-        data = _read_marker(marker)
+        data = _read_marker(marker, unreadable=False)
+        if data is False or (not data and not marker.exists()):
+            # 瞬态读失败 ≠ 没有待办：保留标记，下次 ack 再核（此前按空标记直接删除，
+            # 一次读失败就把「需要重启」的红点误销）。判存在后读完即被外部删除同理：
+            # 什么都没销、也不重建标记
+            return {"ok": True, "cleared": False}
         loaded_at = loaded.get("_loadedAt")
         hot_loaded = loaded.get("_hotLoadedAt")
         created_at = data.get("createdAt")
@@ -400,6 +418,7 @@ def ack_restart(runtime, loaded):
             if (not isinstance(installation, dict)
                     or not isinstance(published_at, (int, float)) or isinstance(published_at, bool)
                     or not isinstance(loaded_at, (int, float)) or isinstance(loaded_at, bool)
+                    or published_at != published_at   # NaN：json.loads 放行，比较恒假会把销账放行
                     or loaded_at <= published_at):
                 return {"ok": True, "cleared": False}
         hashes = _hashes(data.get("hashes"))

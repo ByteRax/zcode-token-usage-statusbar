@@ -1146,7 +1146,7 @@
        * 不可达（v416 修正）。positionTip 本就持有测量时机，零新增监听；仅变化才写
        * DOM；量不到宽（隐藏态/夹具桩）保持现值。 */
       if (tip.querySelector && tip.style && tip.style.display === "block") {
-        var statRoot = tip.querySelector(".zu-stat-tip[data-zu-w]");   // v412.1：带 data-zu-w 才是统计卡（V1 速度卡根不带）
+        var statRoot = tip.querySelector(".zu-stat-tip[data-zu-w]");   // v412.1：带 data-zu-w 才入响应式范围（V1 速度卡根不带；tools 卡也带 450，同样写 data-zu-mode 但无 CSS 消费，无害）
         if (statRoot && statRoot.getBoundingClientRect && statRoot.getAttribute && statRoot.setAttribute) {
           var mw = statRoot.getBoundingClientRect().width;
           if (mw > 0) {

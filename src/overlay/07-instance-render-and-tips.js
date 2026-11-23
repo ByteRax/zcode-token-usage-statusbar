@@ -222,8 +222,10 @@
       return list.map(function (p1) {
         var name = p1.unattributed ? L("未归属项目", "Unattributed")
           : (p1.name || p1.directory || L("未知项目", "Unknown"));
+        /* v445：首列带费用副行——narrow/tiny 会把费用列整列收起（statResponsiveCore 的隐藏规则
+         * 按卡根后代写，项目表一并命中），此前项目行没有副行，费用随列一起消失（模型行 v412 起就有） */
         return '<tr>' +
-          '<td class="zu-c-name zu-pj-mname" title="' + escAttr(p1.directory || name) + '">' + ttEsc(name) + '</td>' +
+          '<td class="zu-c-name zu-pj-mname" title="' + escAttr(p1.directory || name) + '">' + ttEsc(name) + mdSubHtml("", p1.cost_usd) + '</td>' +
           '<td class="zu-c-tok" data-l="' + lb.tok + '">' + ttEsc(fmt(p1.total || 0)) + '</td>' +
           '<td class="zu-c-req" data-l="' + lb.req + '">' + ttEsc(countFmt(p1.requests || 0)) + '</td>' +
           (showCost ? '<td class="zu-c-cost" data-l="' + lb.cost + '">' + (typeof p1.cost_usd === "number" && isFinite(p1.cost_usd) ? ttEsc(fmtMoney(p1.cost_usd)) : "—") + '</td>' : "") +

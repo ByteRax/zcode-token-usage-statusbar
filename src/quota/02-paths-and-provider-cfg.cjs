@@ -67,7 +67,10 @@ function loadProviderCfg(readFile2, cfgPath, builtinCfgPath) {
     const api = Object.assign({}, tpl && tpl.api, cfg.api);
     const access = Object.assign({}, tpl && tpl.access, cfg.access);
     if (!api.baseUrl && tpl && tpl.api) api.baseUrl = tpl.api.baseUrl;
-    byId.set(id, { baseUrl: String(api.baseUrl || "").replace(/\/+$/, ""), apiKey: String(access.apiKey || ""), name: cfg.name || "",
+    /* enc: 形态是宿主加密信封（或误贴的密文），不是可用凭据：按未配置处理、绝不随请求外发
+     * （与 model-puller 规则路径同闸）。宿主 schema 是 z.string() 不 trim，先 trim 再判。 */
+    const rawKey = String(access.apiKey || "").trim();
+    byId.set(id, { baseUrl: String(api.baseUrl || "").replace(/\/+$/, ""), apiKey: rawKey.indexOf("enc:") === 0 ? "" : rawKey, name: cfg.name || "",
       accessType: String(access.type || "") });
   }
   if (stamp !== null) providerCfgCache = { stamp, readFile: readFile2, byId };

@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -473,6 +474,34 @@ class EnsureDeployedTests(unittest.TestCase):
             self.assertEqual(result["detail"], "existing pending operation")
             self.assertEqual(src.read_bytes(), before)   # 目标未被改写
             self.assertFalse(mrp.check_deployed(src)["stash"])
+
+    def test_stale_empty_journal_is_reclaimed_before_deferring(self):
+        # 被硬杀的发布留下「cancelled+publishing 且无包」的空 journal：超龄即回收、补丁照常落地；
+        # 未超龄（可能是活的发布窗口）与带包的（可认领重发）都不动，照旧让位
+        def fp():
+            return {"size": 1, "mtime_ns": 1, "ctime_ns": 1, "dev": 1, "ino": 1, "sha256": "a" * 64}
+        for stale, with_package, expect in ((True, False, "patched"), (False, False, "deferred"),
+                                            (True, True, "deferred")):
+            with self.subTest(stale=stale, with_package=with_package), tempfile.TemporaryDirectory() as tmp:
+                src = self._make_target(tmp)
+                pending = src.with_name(src.name + ".zusage.tmp")
+                meta_path = pending.with_name(pending.name + ".json")
+                # 回收只对 patch_install 自己的目标生效：把其常量指到本夹具
+                with mock.patch.object(mrp.asar, "ASAR", src), mock.patch.object(mrp.asar, "TMP", pending), \
+                        mock.patch.object(mrp.asar, "TMP_META", meta_path):
+                    mrp.asar._atomic_tmp_metadata({
+                        "version": 1, "asar": str(src.resolve()), "tmp_path": str(pending.absolute()),
+                        "operation": "cancelled", "publishing": True, "source": fp(), "tmp": fp(),
+                        "runtime": "fixture"})
+                    if with_package:
+                        pending.write_bytes(b"new package")
+                    if stale:
+                        old = time.time() - mrp.asar.STALE_STAGE_SECONDS - 60
+                        os.utime(meta_path, (old, old))
+                    result = mrp.ensure_deployed(src)
+                    self.assertEqual(result["status"], expect, result)
+                    self.assertEqual(meta_path.exists(), expect == "deferred")
+                    self.assertEqual(pending.exists(), with_package)
 
     def test_ensure_rebuilds_when_source_changes_during_build(self):
         # 锁窗口纪律：锁外构建期间目标被并发改写 → 短锁指纹重验拒绝 → 整体重试一次，

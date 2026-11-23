@@ -119,6 +119,22 @@ test("ollama: windowless reply (no period) yields plan window without resetsAt",
   assert.equal(garbage.windows.monthly, undefined);
 });
 
+test("ollama: numeric period.until (epoch ms, or ms digit string) lands on the monthly window with resetsAt", () => {
+  // 复盘 MINOR：Date.parse 只认日期串，数字毫秒被误落 plan 窗（「套餐」标签、无重置时间）
+  const ms = 1769875200000;
+  for (const until of [ms, String(ms), ms / 1000]) {   // 第三形态：秒值（resetOf 乘 1000）
+    const v = Q.normalizeOllama({ included: { balance_usd: 19, allowance_usd: 20, period: { until } } });
+    assert.ok(v.windows.monthly, "until=" + JSON.stringify(until) + " 进月窗");
+    assert.equal(v.windows.monthly.resetsAt, ms);
+    assert.equal(v.windows.plan, undefined);
+  }
+  // 玩具数值与垃圾串仍不冒充月窗；超长数字串转 Number 是 Infinity，同样落 plan 窗
+  for (const until of ["12345", 12345, "TBD", "", null, true, "9".repeat(400)]) {
+    const v = Q.normalizeOllama({ included: { balance_usd: 19, allowance_usd: 20, period: { until } } });
+    assert.ok(v.windows.plan && !v.windows.monthly, "until=" + JSON.stringify(until).slice(0, 24) + " 落 plan 窗");
+  }
+});
+
 test("ollama: purchased-only account degrades to balance card; zero allowance no divide-by-zero", () => {
   const payg = Q.normalizeOllama({ purchased: { balance_usd: 25 } });
   assert.equal(payg.kind, "balance");

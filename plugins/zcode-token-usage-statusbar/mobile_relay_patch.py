@@ -385,6 +385,15 @@ def _pending_exists(asar_path):
     return False
 
 
+def _reclaim_stale_journal(asar_path):
+    """既有 pending 探测命中后、让位之前：回收被硬杀的发布留下的空 journal（patch_install.
+    reclaim_stale_journal——cancelled+publishing、无包、超龄）。没有包可收尾的空壳留着，
+    本链会永久 deferred。只对 patch_install 自己的目标生效：改名目标（--asar 高级路径）的
+    pending 路径与其常量分叉，交发布端锁内互斥兜底。调用方必须已持有目标锁。"""
+    meta_path = _pending_paths(asar_path)[1]
+    return Path(asar.TMP_META) == meta_path and bool(asar.reclaim_stale_journal())
+
+
 def ensure_deployed(asar_path, _locked=False, _cli_safe=False):
     """安装/更新链专用：确认目标 asar 带 stash 注入，没有则就地补打。
 
@@ -425,7 +434,7 @@ def ensure_deployed(asar_path, _locked=False, _cli_safe=False):
                 os.fsync(dest.fileno())
             # —— 短锁：pending 复查 + 指纹重验 + 原子替换 ——
             with (nullcontext() if _locked else file_lock(asar_path.with_name(asar_path.name + ".zusage.lock"))):
-                if _pending_exists(asar_path):
+                if _pending_exists(asar_path) and not _reclaim_stale_journal(asar_path):
                     return {"status": "deferred", "detail": "existing pending operation"}
                 if asar.source_fingerprint(asar_path) != before:
                     if attempt:

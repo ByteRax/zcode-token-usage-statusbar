@@ -173,7 +173,9 @@ function insertPrologue(text, prologue) {
 function buildPatchedSource(text, target) {
   const count = text.split(target.anchor).length - 1;
   if (count !== 1) return { error: "anchor_count_" + count };
-  const output = insertPrologue(text.replace(target.anchor, target.replacement), target.prologue);
+  // 函数式替换：replacement/prologue 是 JS 源码，压缩标识符常带 $（$$、$&、$1…），
+  // 字符串替换串会把这些当替换模式展开——插入体必须逐字节原样
+  const output = insertPrologue(text.replace(target.anchor, () => target.replacement), target.prologue);
   if (output == null) return { error: "strict_prefix_missing" };
   return { output };
 }
@@ -228,7 +230,7 @@ function createEnginePatcher(opts) {
        * 匹配不到=外来/半截补丁不接手。V1/V2 percent 段互斥，命中唯一。 */
       const legacy = [PROLOGUE_V2, PROLOGUE_V1].find((p) => text.includes(p));
       if (!legacy) return set("error", "patched_inconsistent");
-      try { atomicWrite(enginePath, Buffer.from(text.replace(legacy, t2.prologue), "utf8")); } catch (e) {
+      try { atomicWrite(enginePath, Buffer.from(text.replace(legacy, () => t2.prologue), "utf8")); } catch (e) {
         const busy = e && (e.code === "EBUSY" || e.code === "EPERM" || e.code === "EACCES");
         return set(busy ? "busy" : "error", e.message);
       }
@@ -305,7 +307,7 @@ function createEnginePatcher(opts) {
     if (!target) return set("error", "restore_pattern_missing");
     const pro = text.includes(target.prologue) ? target.prologue
       : text.includes(PROLOGUE_V1) ? PROLOGUE_V1 : PROLOGUE_V2;   // v194 前与 v194+（tokens 1000 代）装机的旧本体都能还原
-    let out = text.replace("\n" + pro, "").replace(target.replacement, target.anchor);
+    let out = text.replace("\n" + pro, "").replace(target.replacement, () => target.anchor);
     if (out.includes(MARK)) return set("error", "restore_incomplete");
     try { atomicWrite(enginePath, Buffer.from(out, "utf8")); } catch (e) {
       const busy = e && (e.code === "EBUSY" || e.code === "EPERM" || e.code === "EACCES");

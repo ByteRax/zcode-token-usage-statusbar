@@ -13,9 +13,11 @@ key 前缀 `sk-sp-`）是纯推理入口：任意非推理路径统一 400 `Inva
 
 1. **设备码申请** `POST https://t.qianwenai.com/cli/device/code?client_id&code_challenge&code_challenge_method=S256`
    （PKCE S256；client_id 为随机 UUID）→ `{Success, Data:{Token, VerificationUrl, ExpiresIn, Interval}}`。
-   渲染端拿 `VerificationUrl` 走 openExternal 桥在系统浏览器打开授权页。
+   渲染端拿 `VerificationUrl` 走 openExternal 桥在系统浏览器打开授权页。授权地址只收 `https:` 且
+   主机为 `*.qianwenai.com`（拒 userinfo）；交出的是 `URL` 解析归一后的 `href`，非 https/异域直接落
+   `failed` 不起流；流到终态后地址清空，不再对外提供。
 2. **授权轮询** `POST https://t.qianwenai.com/cli/device/token?client_id&token&code_verifier`
-   每 `min(Interval, 2s)` 一次（`slow_down` 翻倍间隔）：`Data.Status`（或小写 `status`，缺省
+   每 `min(Interval, 2s)` 一次；`slow_down` 把间隔翻倍并沿用（封顶 30s，RFC 8628 节流语义），`http_error` 按当前间隔原样重试：`Data.Status`（或小写 `status`，缺省
    `authorization_pending`）∈ `authorization_pending | complete | expired_token | access_denied`。
    complete 时从 `Data.Credentials.AccessToken`（或小写 `credentials.access_token` 形状）取
    access token，`ExpireTime`（或 `expire_time`）为过期时刻（秒/毫秒/日期串自适应），`User{Id,Email}`
@@ -24,7 +26,9 @@ key 前缀 `sk-sp-`）是纯推理入口：任意非推理路径统一 400 `Inva
 3. **持久化** 登录完成由主进程把 `{token, tokenExpiresAt, account}` 写入 quota-secrets.json 的
    `sources.qianwen`（0600 原子写，经注入侧 `writeQuotaSecrets`，写入即触发
    credentialsChanged → 解冻 → tick）。手动通道：⚙ 面板 token 字段手填（高级路径），
-   env `ZCODE_QIANWEN_ACCESS_TOKEN` 优先。
+   env `ZCODE_QIANWEN_ACCESS_TOKEN` 优先。手填或清空 token 一并作废 `tokenExpiresAt` 与 `account`
+   （设备码登录留下的派生字段不得跟随手填值）。关额度开关（`quota_enabled=false`）即取消在途
+   登录流；关闭期间 `start` 被拒（`quota disabled`），`state`/`cancel` 仍应答。
 4. **换控制台令牌** `POST https://cli.qianwenai.com/data/v2/api.json`，JSON 体
    `{product:"ModelStudioRegional", action:"GenerateCLIAccessToken", region:"cn-beijing",
    params:{}, version:"2026-02-10"}`，`Authorization: Bearer <access>`，UA `qianwen-cli/1.11.0`。
@@ -37,7 +41,8 @@ key 前缀 `sk-sp-`）是纯推理入口：任意非推理路径统一 400 `Inva
    console:"ONE_CONSOLE",productCode:"p_efm",switchUserType:3,consoleSite:"QIANWENAI"}}}&region=cn-beijing`
    ，`Authorization: Bearer <cliAccessToken>`，同 UA。
 6. **解析窗口** 信封 `data.{success,errorCode,errorMsg,DataV2}`：`success===false` 且 errorCode 含
-   `NotLogined` → auth_failed；其他 errorCode/errorMsg → network_error（只带 code/msg 摘要）。
+   `NotLogined` → auth_failed；其他 errorCode → network_error（错误摘要只带 code，不带服务端 errorMsg——那是给浏览器控制台看的原文）。窗口已用值为负的条目
+   丢弃（全负 → parse_error），不渲染成 0%。
    业务数据在 `DataV2.data.data`（双层 `{data:…}` 剥壳，缺层容忍）。键 `per<N>(Hour|Day|Week|Month)(Percentage|ResetTime)`
    按对解析：值域 0–1 → 已用 `clampPct(v*100)` 保留 1 位；窗口映射
    `per5Hour→fiveHour、per1Day→daily、per1Week→weekly、per1Month→monthly`，未知窗丢弃；
@@ -62,8 +67,10 @@ key 前缀 `sk-sp-`）是纯推理入口：任意非推理路径统一 400 `Inva
 
 - qianwen 源行加「登录」按钮：点击 → `quota-qianwen-signin` 桥动作 → 主进程起设备码流并返回
   `VerificationUrl` → 渲染端 openExternal 打开 → 每 2s 轮询 `quota-qianwen-signin-state`；
-  `done` 显示「已登录 <account>」、`failed` 显示错误、`idle` 停止。重复点击=重开新流
-  （主进程取消旧流）。`quota-qianwen-signin-cancel` 供清理。
+  `done` 显示「已登录 <account>」、`failed` 显示错误、`idle`（流已被取消或主进程刚重启）显示
+  中性「登录已取消」并停止。重复点击=重开新流（主进程取消旧流）。渲染端轮询以代际号为准：
+  新一轮点击、实例销毁都让旧回调自弃，轮询不绑定按钮节点（源列表会整表重建）。当前没有
+  「取消登录」的 UI 出口——`quota-qianwen-signin-cancel` 只保留给外部调用方与清理。
 - 旧主进程（inject-main 冷文件未重启）回 `unknown action`：按钮反馈「重启 ZCode 后可用」，
   不报红。
 - 手动 token 字段（credentialFields `["token"]`）保留；清空字段=退出登录。
@@ -81,6 +88,10 @@ key 前缀 `sk-sp-`）是纯推理入口：任意非推理路径统一 400 `Inva
 detect 认领/不认领域名矩阵、sk-sp- key 认领、mint→usage 双跳断言（URL/UA/form 参数/双层
 Bearer）、NotLogined 分层（usage 层 auth_failed、mint 层 auth_failed、缓存令牌重换一次）、
 无窗 parse_error、设备码流完成/拒绝/过期/取消、complete 回复双信封形状宽容解析、错误文案
-不含 token、tokenExpiresAt 过期归未配置、授权页 URL 域白名单。面板（tests/overlay-quota-chip.test.cjs）：
-qianwen 行渲染登录按钮、点击发 quota-qianwen-signin；done/failed 状态机在 quota-client
-测试覆盖，overlay 测试只锁按钮渲染与起流委托。
+不含 token、tokenExpiresAt 过期归未配置、授权页 URL 域白名单、slow_down 沿用与 30s 封顶、
+http_error 沿用当前间隔、取消后迟到 complete 不落盘、单拍 kill 定时器必清、负值窗口
+parse_error、errorMsg 不进错误文案、两个 fetch 入口恒 `redirect:"manual"`（结构锁）。面板
+（tests/overlay-quota-chip.test.cjs）：qianwen 行渲染登录按钮、点击发 quota-qianwen-signin、
+轮询跨源行重建存活、旧代回执（起流与状态）按代际丢弃、idle 显「登录已取消」。主进程侧
+（tests/plugin-loader.test.cjs）：手填/清空 token 清派生字段、关额度触发取消、关闭期间
+start 拒而 state/cancel 应答。

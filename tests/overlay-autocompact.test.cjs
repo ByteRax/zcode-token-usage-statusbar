@@ -21,7 +21,7 @@ function makePanel() {
   const fields = new Map();
   const node = (key) => {
     if (!fields.has(key)) {
-      fields.set(key, { value: "", textContent: "", hidden: undefined, closest: () => fields.get(key).__row || null, classes: new Set(), classList: { toggle: (k, on) => { if (on) fields.get(key).classes.add(k); else fields.get(key).classes.delete(k); } } });
+      fields.set(key, { value: "", textContent: "", hidden: undefined, closest: () => fields.get(key).__row || null, classes: new Set(), classList: { toggle: (k, on) => { if (on) fields.get(key).classes.add(k); else fields.get(key).classes.delete(k); }, contains: (k) => fields.get(key).classes.has(k) } });
       fields.get(key).__row = { hidden: undefined };   // closest("label") 返回所在行桩（v190 hidden 断言用）
     }
     return fields.get(key);
@@ -286,6 +286,25 @@ test("v436：切模式数值跟随换算（按当前会话窗口，未知按 1M�
   seqRev.sandbox.syncAutoCompactInputs();
   seqRev.sandbox.acConvertOnModeSwitch({ value: "percent" });
   assert.equal(seqRev.node(".zu-ac-value").value, "65", "反向：650k→65");
+  // v445：换算后状态行同步重算——换算前的 sync 是按新模式校验旧值（65 不在 tokens 域），
+  // 留下的「⚠ Token 数需 ≥100k」不得继续挂在已合法的 650k 旁（纯显示不一致，落盘不受影响）。
+  // 复盘第 2 轮：面板 change 委托的 .zu-ac-mode 分支从源码原样切出来执行（行为验证，不再用正则锁接线）
+  const modeBranch = sliceOverlay('      if (t2.classList.contains("zu-ac-mode")) {', '      if (t2.type === "checkbox") {');
+  assert.ok(!/zu-ac-value|zu-lang/.test(modeBranch), "切片只含模式下拉分支");
+  const seqSt = runHelpers({ state: { enginePatch: { enabled: true, state: "applied", config: { enabled: true, thresholdPercent: 65 } } } });
+  seqSt.sandbox.document.activeElement = seqSt.node(".zu-ac-mode");   // 切模式下拉时它持有焦点：sync 不覆写选中项
+  seqSt.sandbox.window = { __zusageDiag: {} };
+  seqSt.node(".zu-ac-mode").classes.add("zu-ac-mode");   // 委托按类名认控件
+  seqSt.node(".zu-ac-mode").value = "tokens";
+  seqSt.sandbox.syncAutoCompactInputs();
+  assert.match(seqSt.node(".zu-ac-status").textContent, /Token 数需 ≥100k/, "前置：旧值 65 按新模式校验为非法");
+  assert.equal(seqSt.node(".zu-ac-status").classes.has("zu-ac-warn"), true);
+  vm.runInNewContext("function onPanelChange(t2) {\n" + modeBranch + "\n}", seqSt.sandbox);   // 分支以 return 结尾，包成函数才能跑
+  seqSt.sandbox.onPanelChange(seqSt.node(".zu-ac-mode"));   // 等同用户切模式下拉触发的委托分支
+  assert.equal(seqSt.sandbox.window.__zusageDiag.acPanelErr, undefined, "委托分支未落入 catch");
+  assert.equal(seqSt.node(".zu-ac-value").value, "650k", "委托分支：sync → 换算");
+  assert.doesNotMatch(seqSt.node(".zu-ac-status").textContent, /⚠/, "换算成合法值后提示消失（分支里重算了状态行）");
+  assert.equal(seqSt.node(".zu-ac-status").classes.has("zu-ac-warn"), false);
 });
 
 test("v426：模式下拉回显、分模式校验与提交", () => {
