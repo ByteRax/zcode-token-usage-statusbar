@@ -869,8 +869,8 @@ test('v457 §25 英文文案: 悬停卡「Total tokens / tokens」与「in · ou
   assert.ok(cellOf(cal, 9).includes(', 100万 tokens"'), 'en 格 aria');
   ctx.__sd = daysNtok(500);
   const mo = dom(histHTMLO(ctx, analyzeAll(ctx, '__sd'), ctx.__sd, -1, { fmtTok: cnFmt }));
-  assert.match(mo, /, [0-9.]+(?:万|亿) tokens"/, 'en 月格 aria 用 tokens');
-  assert.doesNotMatch(mo, /, [0-9.]+(?:万|亿) token"/, 'en 月格 aria 不得退回单数');
+  assert.match(mo, / with data, [0-9]+ requests, [0-9.]+(?:万|亿) tokens"/, 'en 月格 aria 用 tokens');
+  assert.doesNotMatch(mo, / with data, [0-9]+ requests, [0-9.]+(?:万|亿) token"/, 'en 月格 aria 不得退回单数');
 });
 
 test('v457 §25 样式: 数值贴右、token 行、两个尺寸容器（日卡格不设）、分档只缩值组内且与隐藏共边界', () => {
@@ -878,7 +878,8 @@ test('v457 §25 样式: 数值贴右、token 行、两个尺寸容器（日卡�
   ctx.__h = multiFrame();
   const style = styleOf(monthHTML(ctx, analyzeMonth(ctx)));
   assert.match(style, /\.zu-sv3-root \.zu3-v,\.zu-sv3-root \.zu3-dcv\{align-self:flex-end;text-align:right\}/, '裸速度与日卡速度贴右');
-  assert.match(style, /\.zu-sv3-root \.zu3-vwrap\{[^}]*flex-direction:column;align-items:flex-end;text-align:right\}/, '值组列内右对齐');
+  assert.match(style, /\.zu-sv3-root \.zu3-vwrap\{flex:0 0 auto;min-width:0;display:flex;flex-direction:column;align-items:flex-end;text-align:right\}/,
+    '值组列内右对齐；min-width:0 让值组能收到格宽以内（否则窄格里贴右失效）');
   assert.match(style, /\.zu-sv3-root \.zu3-hm-grid \.zu3-vwrap,\.zu-sv3-root \.zu3-hh-mo \.zu3-hh-grid \.zu3-vwrap\{margin:auto 0\}/,
     '值组垂直位置沿用裸速度的两条既有规则');
   assert.match(style, /\.zu-sv3-root \.zu3-tk\{[^}]*font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;/, 'token 行样式');
@@ -897,8 +898,10 @@ test('v457 §25 样式: 数值贴右、token 行、两个尺寸容器（日卡�
     '日历窄格档一（39.5~49.5px）：token 7px');
   assert.match(style, /@container zu3hc \(width >= 36\.8px\) and \(width < 39\.5px\)\{\n?\.zu-sv3-root \.zu3-tk,\.zu-sv3-root \.zu3-cal \.zu3-tk\{font-size:6\.5px\}\}/,
     '日历窄格档二（36.8~39.5px）：token 6.5px');
-  const hcTier2 = style.indexOf('@container zu3hc (max-height:33px)'), calA = style.indexOf('@container zu3hc (width >= 39.5px)'), calB = style.indexOf('@container zu3hc (width >= 36.8px)');
-  assert.ok(hcTier2 >= 0 && calA > hcTier2 && calB > calA, '日历窄格档排在高度缩字档之后、由宽到窄排列（同特异性靠源序取胜）');
+  const hcTier1 = style.indexOf('@container zu3hc (max-height:39px)'), hcTier2 = style.indexOf('@container zu3hc (max-height:33px)'),
+    calA = style.indexOf('@container zu3hc (width >= 39.5px)'), calB = style.indexOf('@container zu3hc (width >= 36.8px)');
+  assert.ok(hcTier1 >= 0 && calA > hcTier1 && calB > calA && hcTier2 > calB,
+    '日历窄格档排在高度档一之后、由宽到窄；矮格高度档二排在宽度档之后（矮格取 6.5px，不被宽度档抬回 7px）');
   /* 宽度线修正（spec §25.2）：周列/月列格的内容宽在常见历史长度下只有 26~28px（周列 ≥16 列横向滚动后恒 28.2px、
    * 月列 17/18 列 28.4/26.3px），沿用日历格的 30px 会把 token 行全藏。紧凑写法实测自然宽（夹具字体）：「123.4万」
    * 7px/6.5px/6px = 28.4/26.5/24.5px，「1234万」= 26.0/24.2/22.4px——每档留 ≥1.4px 余量 */
@@ -917,15 +920,16 @@ test('v457 §25 样式: 数值贴右、token 行、两个尺寸容器（日卡�
   assert.match(style, /\.zu-sv3-root \.zu3-cal \.zu3-vwrap \.zu3-cv\{font-size:10px\}/);
   const blocks = style.match(/@container[^{}]*\{(?:[^{}]*\{[^{}]*\})+\}/g) || [];
   assert.equal(blocks.length, 11, '7 个缩字档 + 4 条隐藏规则');
-  // 整块锁定：条件、块体里的字号、源序（宽度档排在高度档之后、由宽到窄；隐藏规则最后）一起锁
+  // 整块锁定：条件、块体里的字号、源序一起锁。源序即层叠：宽度档排在比它字号大的高度档之后，
+  // 日历矮格的高度档二（6.5px）排在宽度档之后；隐藏规则最后
   assert.deepEqual(blocks, [
     '@container zu3hc (max-height:39px) and (min-height:26.5px) and (min-width:36.8px){.zu-sv3-root .zu3-tk,.zu-sv3-root .zu3-cal .zu3-tk{font-size:7px}}',
-    '@container zu3hc (max-height:33px) and (min-height:26.5px) and (min-width:36.8px){.zu-sv3-root .zu3-vwrap .zu3-v{font-size:8px}' +
-      '.zu-sv3-root .zu3-cal .zu3-vwrap .zu3-cv{font-size:10px}.zu-sv3-root .zu3-tk,.zu-sv3-root .zu3-cal .zu3-tk{font-size:6.5px}}',
     '@container zu3hw (max-height:25px) and (min-height:21.5px) and (min-width:26px){.zu-sv3-root .zu3-vwrap .zu3-v{font-size:8px}' +
       '.zu-sv3-root .zu3-hh-grid .zu3-tk{font-size:6.5px}}',
     '@container zu3hc (width >= 39.5px) and (width < 49.5px){.zu-sv3-root .zu3-tk,.zu-sv3-root .zu3-cal .zu3-tk{font-size:7px}}',
     '@container zu3hc (width >= 36.8px) and (width < 39.5px){.zu-sv3-root .zu3-tk,.zu-sv3-root .zu3-cal .zu3-tk{font-size:6.5px}}',
+    '@container zu3hc (max-height:33px) and (min-height:26.5px) and (min-width:36.8px){.zu-sv3-root .zu3-vwrap .zu3-v{font-size:8px}' +
+      '.zu-sv3-root .zu3-cal .zu3-vwrap .zu3-cv{font-size:10px}.zu-sv3-root .zu3-tk,.zu-sv3-root .zu3-cal .zu3-tk{font-size:6.5px}}',
     '@container zu3hw (width >= 28px) and (width < 30px){.zu-sv3-root .zu3-hh-grid .zu3-tk{font-size:6.5px}}',
     '@container zu3hw (width >= 26px) and (width < 28px){.zu-sv3-root .zu3-hh-grid .zu3-tk{font-size:6px}}',
     '@container zu3hc (height < 26.5px){.zu-sv3-root .zu3-tk{display:none}}',
@@ -933,7 +937,8 @@ test('v457 §25 样式: 数值贴右、token 行、两个尺寸容器（日卡�
     '@container zu3hw (height < 21.5px){.zu-sv3-root .zu3-tk{display:none}}',
     '@container zu3hw (width < 26px){.zu-sv3-root .zu3-tk{display:none}}',
   ], '容器查询规则整块文本与源序');
-  assert.match(style, /\.zu-sv3-root \.zu3-tk\{[^}]*font-size:8px;line-height:1\.15;/, 'token 行基础字号 8px（日卡与高格）');
+  assert.match(style, /\.zu-sv3-root \.zu3-tk\{flex:0 0 auto;max-width:100%;font-size:8px;line-height:1\.15;/,
+    'token 行基础字号 8px（日卡与高格）；max-width:100% 是省略号裁切的前提');
   assert.doesNotMatch(style, /zu3hw \(width < 30px\)\{\.zu-sv3-root \.zu3-tk\{display:none/, '周列/月列格不得沿用 30px 隐藏线');
   assert.doesNotMatch(style, /zu3hc \(width < 30px\)\{\.zu-sv3-root \.zu3-tk\{display:none/, '日历格隐藏线不得回到 30px（全文写法 6.5px 下就要 35.3px）');
   for (const blk of blocks.slice(0, 7)) {

@@ -9867,7 +9867,7 @@
       ".zu-sv-portal .zu-sv3-ctok{white-space:nowrap;font-variant-numeric:tabular-nums}" +
       ".zu-sv-portal .zu-sv3-ctok small{display:block;font-size:9px;font-weight:400;" +
         "color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
-      /* ---------- v457 §25：数值贴右 + token 行 + 按格高分档 ----------
+      /* ---------- v457 §25：数值贴右 + token 行 + 按格分档（高与宽） ----------
        * 贴右：速度值（裸 .zu3-v / 日卡 .zu3-dcv / 值组 .zu3-vwrap）一律贴格右缘，
        * 日号仍左上、模型点仍右上。值组=速度+token 两行列内右对齐；组的垂直位置沿
        * 用各形态裸值的既有规则（日历格=margin:auto 0 在日号下方剩余空间居中、周列
@@ -9891,8 +9891,8 @@
        * 宽度线两种容器不同（spec §25.2 宽度线修正），都按各形态实际写法的实测自然宽
        * 定档、每档留 ≥1.4px 余量。日历格用全文写法——「1234.57万」在 9px/7px/6.5px 下
        * 47.8/37.8/35.3px：≥49.5px 跟随高度档字号，39.5~49.5px 降到 7px，36.8~39.5px
-       * 降到 6.5px，<36.8px 隐藏（首版一条 30px 线，窄窗 620~700px 下 token 被裁成
-       * 省略号）。周列/月列格走紧凑写法——「123.4万」在 7px/6.5px/6px 下 28.4/26.5/
+       * 降到 6.5px，<36.8px 隐藏（高 ≤33px 的矮格不受宽度档影响，恒 6.5px；首版一条
+       * 30px 线，窄窗 620~700px 下 token 被裁成省略号）。周列/月列格走紧凑写法——「123.4万」在 7px/6.5px/6px 下 28.4/26.5/
        * 24.5px，「1234万」再窄 2.4px：≥30px 用 7px、28~30px 用 6.5px、26~28px 用 6px、
        * <26px 隐藏。周列 ≥16 列横向滚动后列宽钉在 34px（内容宽 28.2px）、月列 17/18 列
        * 内容宽 28.4/26.3px，沿用日历格的隐藏线会把这些常见历史长度的 token 行全藏；
@@ -9910,17 +9910,19 @@
       ".zu-sv3-root .zu3-hh-grid .zu-hm-cell{container-type:size;container-name:zu3hw}" +
       "@container zu3hc (max-height:39px) and (min-height:26.5px) and (min-width:36.8px){" +
         ".zu-sv3-root .zu3-tk,.zu-sv3-root .zu3-cal .zu3-tk{font-size:7px}}" +
-      "@container zu3hc (max-height:33px) and (min-height:26.5px) and (min-width:36.8px){" +
-        ".zu-sv3-root .zu3-vwrap .zu3-v{font-size:8px}" +
-        ".zu-sv3-root .zu3-cal .zu3-vwrap .zu3-cv{font-size:10px}" +
-        ".zu-sv3-root .zu3-tk,.zu-sv3-root .zu3-cal .zu3-tk{font-size:6.5px}}" +
       "@container zu3hw (max-height:25px) and (min-height:21.5px) and (min-width:26px){" +
         ".zu-sv3-root .zu3-vwrap .zu3-v{font-size:8px}" +
         ".zu-sv3-root .zu3-hh-grid .zu3-tk{font-size:6.5px}}" +
-      /* 窄格宽度档：与上面的高度缩字档同特异性，排在它们之后才胜出（窄且矮的格 token 取宽度档的字号） */
+      /* 窄格宽度档：与高度缩字档同特异性，靠源序取胜。日历格的矮格高度档（≤33px，token
+       * 6.5px 并缩速度）排在宽度档之后——矮格的竖直余量按 6.5px 标定，不能被宽度档的
+       * 7px 抬回去；每格最终取到的是各命中档里最小的字号 */
       "@container zu3hc (width >= 39.5px) and (width < 49.5px){" +
         ".zu-sv3-root .zu3-tk,.zu-sv3-root .zu3-cal .zu3-tk{font-size:7px}}" +
       "@container zu3hc (width >= 36.8px) and (width < 39.5px){" +
+        ".zu-sv3-root .zu3-tk,.zu-sv3-root .zu3-cal .zu3-tk{font-size:6.5px}}" +
+      "@container zu3hc (max-height:33px) and (min-height:26.5px) and (min-width:36.8px){" +
+        ".zu-sv3-root .zu3-vwrap .zu3-v{font-size:8px}" +
+        ".zu-sv3-root .zu3-cal .zu3-vwrap .zu3-cv{font-size:10px}" +
         ".zu-sv3-root .zu3-tk,.zu-sv3-root .zu3-cal .zu3-tk{font-size:6.5px}}" +
       "@container zu3hw (width >= 28px) and (width < 30px){.zu-sv3-root .zu3-hh-grid .zu3-tk{font-size:6.5px}}" +
       "@container zu3hw (width >= 26px) and (width < 28px){.zu-sv3-root .zu3-hh-grid .zu3-tk{font-size:6px}}" +
