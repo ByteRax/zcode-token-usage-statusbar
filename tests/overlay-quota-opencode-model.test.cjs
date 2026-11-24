@@ -256,13 +256,17 @@ test('other tiers render their own meters as-is — percent shown as given, not 
   assert.equal(segsOf(m.chip), '2,3,7', 'percent 照接口值；按 used/total 重算会得到 1/1/4');
   const html = m.tip();
   assert.match(html, /5小时窗口<\/b><span>已用 2\.1% · \$0\.26 \/ \$24\.00 · 剩余 \$23\.74<\/span>/);
+  assert.match(html, /本周窗口<\/b><span>已用 2\.6% · \$0\.79 \/ \$60\.00 · 剩余 \$59\.21<\/span>/);
   assert.match(html, /月度窗口<\/b><span>已用 7\.3% · \$4\.40 \/ \$120\.00 · 剩余 \$115\.60<\/span>/);
 });
 
 test('bare opencode source id (env/secrets key, non-composite) renders as-is on chip and tooltip', () => {
   const h = harness(), m = mount(h, Object.assign({ quota: ocQuota(OC_METERS, undefined, 'opencode') }, OC));
   assert.equal(segsOf(m.chip), '2,3,7', '裸 opencode 源 id 与复合源同口径（v385 曾换算成 1/2/4）');
-  assert.match(m.tip(), /月度窗口<\/b><span>已用 7\.3% · \$4\.40 \/ \$60\.00/);
+  const html = m.tip();
+  assert.match(html, /5小时窗口<\/b><span>已用 2\.1% · \$0\.26 \/ \$12\.00 · 剩余 \$11\.74/);
+  assert.match(html, /本周窗口<\/b><span>已用 2\.6% · \$0\.79 \/ \$30\.00 · 剩余 \$29\.21/);
+  assert.match(html, /月度窗口<\/b><span>已用 7\.3% · \$4\.40 \/ \$60\.00/);
 });
 
 test('non-opencode source with the same windows is unaffected', () => {
@@ -279,7 +283,19 @@ test('remaining view (v251) is derived from the official percent, on chip and to
   assert.match(m.chip.getAttribute('aria-label'), /套餐剩余 5时 99%，7天 93%，月 60%/);
   const html = m.tip();   // 剩余口径下窗口行：剩余% 打头，已用退为行末明细
   assert.match(html, /5小时窗口<\/b><span>剩余 98\.7% · \$11\.84 \/ \$12\.00 · 已用 \$0\.16/);
+  assert.match(html, /本周窗口<\/b><span>剩余 93\.3% · \$28\.00 \/ \$30\.00 · 已用 \$2\.00/);
   assert.match(html, /月度窗口<\/b><span>剩余 59\.7% · \$35\.80 \/ \$60\.00 · 已用 \$24\.20/);
+});
+
+test('remaining view with percent-only windows shows the complement of the official percent', () => {
+  const h = harness({ prefs: { 'zusage3.quotaRemain': '1' } });
+  const m = mount(h, Object.assign({ quota: ocQuota(OC_PCT_ONLY) }, OC));
+  assert.equal(segsOf(m.chip), '98,97,93');
+  const html = m.tip();
+  assert.match(html, /5小时窗口<\/b><span>剩余 97\.9%<\/span>/);
+  assert.match(html, /本周窗口<\/b><span>剩余 97\.4%<\/span>/);
+  assert.match(html, /月度窗口<\/b><span>剩余 92\.7%<\/span>/);
+  assert.doesNotMatch(html, /\$\d/, '纯百分比窗口不得凭空出现金额');
 });
 
 test('percent-only windows (public usage fallback chain, no amounts) render as-is', () => {
@@ -287,6 +303,7 @@ test('percent-only windows (public usage fallback chain, no amounts) render as-i
   assert.equal(segsOf(m.chip), '2,3,7');
   const html = m.tip();
   assert.match(html, /5小时窗口<\/b><span>已用 2\.1%<\/span>/);
+  assert.match(html, /本周窗口<\/b><span>已用 2\.6%<\/span>/);
   assert.match(html, /月度窗口<\/b><span>已用 7\.3%<\/span>/);
   assert.doesNotMatch(html, /\$\d/, '纯百分比窗口不得凭空出现金额');
 });
@@ -326,7 +343,20 @@ test('English UI shows the same as-is numbers in the window rows and the account
   /* aria-label 单独锁定：完整档 aria 走 fullAria，与可见分段不是同一段代码 */
   assert.equal(m.chip.getAttribute('aria-label'), 'Plan used 5h 1%, 7d 7%, 1mo 40%');
   const html = m.tip();
+  assert.match(html, /5-hour window<\/b><span>used 1\.3% · \$0\.16 \/ \$12\.00 · remaining \$11\.84/);
+  assert.match(html, /This week<\/b><span>used 6\.7% · \$2\.00 \/ \$30\.00 · remaining \$28\.00/);
   assert.match(html, /Monthly<\/b><span>used 40\.3% · \$24\.20 \/ \$60\.00 · remaining \$35\.80/);
   assert.match(html, /The pool is account-level/);
   assert.doesNotMatch(html, /Window totals are scaled/);
+});
+
+test('English UI in the remaining view shows the same as-is numbers', () => {
+  const h = harness({ prefs: { 'zusage3.lang': 'en', 'zusage3.quotaRemain': '1' } });
+  const m = mount(h, Object.assign({ quota: ocQuota(OC_453) }, OC));
+  assert.equal(segsOf(m.chip), '99,93,60');
+  assert.equal(m.chip.getAttribute('aria-label'), 'Plan remaining 5h 99%, 7d 93%, 1mo 60%');
+  const html = m.tip();
+  assert.match(html, /5-hour window<\/b><span>remaining 98\.7% · \$11\.84 \/ \$12\.00 · used \$0\.16/);
+  assert.match(html, /This week<\/b><span>remaining 93\.3% · \$28\.00 \/ \$30\.00 · used \$2\.00/);
+  assert.match(html, /Monthly<\/b><span>remaining 59\.7% · \$35\.80 \/ \$60\.00 · used \$24\.20/);
 });
