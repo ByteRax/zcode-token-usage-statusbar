@@ -209,9 +209,9 @@ test('issue #453: Go-tier meters render as-is for deepseek-v4.1-flash — chip 1
   assert.match(m.chip.getAttribute('aria-label'), /套餐已用 5时 1%，7天 7%，月 40%/);
   const html = m.tip();
   /* 整行逐字段：已用比例、已用/总额、剩余——三个数都必须是 meters 原值 */
-  assert.match(html, /已用 1\.3% · \$0\.16 \/ \$12\.00 · 剩余 \$11\.84/);
-  assert.match(html, /已用 6\.7% · \$2\.00 \/ \$30\.00 · 剩余 \$28\.00/);
-  assert.match(html, /已用 40\.3% · \$24\.20 \/ \$60\.00 · 剩余 \$35\.80/);
+  assert.match(html, /5小时窗口<\/b><span>已用 1\.3% · \$0\.16 \/ \$12\.00 · 剩余 \$11\.84<\/span>/);
+  assert.match(html, /本周窗口<\/b><span>已用 6\.7% · \$2\.00 \/ \$30\.00 · 剩余 \$28\.00<\/span>/);
+  assert.match(html, /月度窗口<\/b><span>已用 40\.3% · \$24\.20 \/ \$60\.00 · 剩余 \$35\.80<\/span>/);
   assert.doesNotMatch(html, /\$(20|50|100)\.00/, '不得出现按模型月度额度放大的 20/50/100');
 });
 
@@ -219,9 +219,9 @@ test('official percent is kept: issue #382 meters show 2/3/7 and $12/$30/$60 for
   const h = harness(), m = mount(h, Object.assign({ quota: ocQuota() }, OC));
   assert.equal(segsOf(m.chip), '2,3,7', 'percent=used/limit 原值（v385 曾重算成 1/2/4）');
   const html = m.tip();
-  assert.match(html, /已用 2\.1% · \$0\.26 \/ \$12\.00 · 剩余 \$11\.74/, '5 小时窗');
-  assert.match(html, /已用 2\.6% · \$0\.79 \/ \$30\.00 · 剩余 \$29\.21/, '周窗');
-  assert.match(html, /已用 7\.3% · \$4\.40 \/ \$60\.00 · 剩余 \$55\.60/, '月窗');
+  assert.match(html, /5小时窗口<\/b><span>已用 2\.1% · \$0\.26 \/ \$12\.00 · 剩余 \$11\.74/, '5 小时窗');
+  assert.match(html, /本周窗口<\/b><span>已用 2\.6% · \$0\.79 \/ \$30\.00 · 剩余 \$29\.21/, '周窗');
+  assert.match(html, /月度窗口<\/b><span>已用 7\.3% · \$4\.40 \/ \$60\.00 · 剩余 \$55\.60/, '月窗');
 });
 
 test('tooltip keeps the account-level footer and never shows a model-basis note', () => {
@@ -245,7 +245,7 @@ test('model switch leaves chip and tooltip numbers unchanged and never mutates t
     assert.equal(segsOf(chip), '2,3,7', model + '：分段恒为源数据 percent');
     chip.listeners.get('mouseenter')[0].call(chip);
     const html = h.tipEl().innerHTML;
-    assert.match(html, /已用 7\.3% · \$4\.40 \/ \$60\.00/, model + '：月窗行');
+    assert.match(html, /月度窗口<\/b><span>已用 7\.3% · \$4\.40 \/ \$60\.00/, model + '：月窗行');
     assert.ok(html.includes('（当前 <span class="qt-cur">' + model + '</span>）'), 'tooltip 跟随当前模型 ' + model);
   }
   assert.equal(JSON.stringify(quota.sources['opencode:opencode-go-chat']), srcBefore, '原始源数据零变异');
@@ -255,14 +255,14 @@ test('other tiers render their own meters as-is — percent shown as given, not 
   const h = harness(), m = mount(h, Object.assign({ quota: ocQuota(OC_PLUS) }, OC));
   assert.equal(segsOf(m.chip), '2,3,7', 'percent 照接口值；按 used/total 重算会得到 1/1/4');
   const html = m.tip();
-  assert.match(html, /已用 2\.1% · \$0\.26 \/ \$24\.00 · 剩余 \$23\.74/);
-  assert.match(html, /已用 7\.3% · \$4\.40 \/ \$120\.00 · 剩余 \$115\.60/);
+  assert.match(html, /5小时窗口<\/b><span>已用 2\.1% · \$0\.26 \/ \$24\.00 · 剩余 \$23\.74<\/span>/);
+  assert.match(html, /月度窗口<\/b><span>已用 7\.3% · \$4\.40 \/ \$120\.00 · 剩余 \$115\.60<\/span>/);
 });
 
 test('bare opencode source id (env/secrets key, non-composite) renders as-is on chip and tooltip', () => {
   const h = harness(), m = mount(h, Object.assign({ quota: ocQuota(OC_METERS, undefined, 'opencode') }, OC));
   assert.equal(segsOf(m.chip), '2,3,7', '裸 opencode 源 id 与复合源同口径（v385 曾换算成 1/2/4）');
-  assert.match(m.tip(), /已用 7\.3% · \$4\.40 \/ \$60\.00/);
+  assert.match(m.tip(), /月度窗口<\/b><span>已用 7\.3% · \$4\.40 \/ \$60\.00/);
 });
 
 test('non-opencode source with the same windows is unaffected', () => {
@@ -278,16 +278,16 @@ test('remaining view (v251) is derived from the official percent, on chip and to
   assert.equal(segsOf(m.chip), '99,93,60', '剩余%=100−官方已用%（1.33/6.67/40.33 的补数；v385 曾得 99/96/76）');
   assert.match(m.chip.getAttribute('aria-label'), /套餐剩余 5时 99%，7天 93%，月 60%/);
   const html = m.tip();   // 剩余口径下窗口行：剩余% 打头，已用退为行末明细
-  assert.match(html, /剩余 98\.7% · \$11\.84 \/ \$12\.00 · 已用 \$0\.16/);
-  assert.match(html, /剩余 59\.7% · \$35\.80 \/ \$60\.00 · 已用 \$24\.20/);
+  assert.match(html, /5小时窗口<\/b><span>剩余 98\.7% · \$11\.84 \/ \$12\.00 · 已用 \$0\.16/);
+  assert.match(html, /月度窗口<\/b><span>剩余 59\.7% · \$35\.80 \/ \$60\.00 · 已用 \$24\.20/);
 });
 
 test('percent-only windows (public usage fallback chain, no amounts) render as-is', () => {
   const h = harness(), m = mount(h, Object.assign({ quota: ocQuota(OC_PCT_ONLY) }, OC));
   assert.equal(segsOf(m.chip), '2,3,7');
   const html = m.tip();
-  assert.match(html, /已用 2\.1%<\/span>/);
-  assert.match(html, /已用 7\.3%<\/span>/);
+  assert.match(html, /5小时窗口<\/b><span>已用 2\.1%<\/span>/);
+  assert.match(html, /月度窗口<\/b><span>已用 7\.3%<\/span>/);
   assert.doesNotMatch(html, /\$\d/, '纯百分比窗口不得凭空出现金额');
 });
 
@@ -307,7 +307,7 @@ test('wire-provided modelBasis is not a protocol field: never rendered raw nor a
   assert.doesNotMatch(html, /窗口总额已按当前模型/);
   assert.match(html, /套餐池为账号级/);
   assert.equal(segsOf(m.chip), '2,3,7');
-  assert.match(html, /已用 7\.3% · \$4\.40 \/ \$60\.00/);
+  assert.match(html, /月度窗口<\/b><span>已用 7\.3% · \$4\.40 \/ \$60\.00/);
 });
 
 test('English UI shows the same as-is numbers in the window rows and the account-level footer', () => {
@@ -315,7 +315,7 @@ test('English UI shows the same as-is numbers in the window rows and the account
   const m = mount(h, Object.assign({ quota: ocQuota(OC_453) }, OC));
   assert.equal(segsOf(m.chip), '1,7,40');
   const html = m.tip();
-  assert.match(html, /used 40\.3% · \$24\.20 \/ \$60\.00 · remaining \$35\.80/);
+  assert.match(html, /Monthly<\/b><span>used 40\.3% · \$24\.20 \/ \$60\.00 · remaining \$35\.80/);
   assert.match(html, /The pool is account-level/);
   assert.doesNotMatch(html, /Window totals are scaled/);
 });
