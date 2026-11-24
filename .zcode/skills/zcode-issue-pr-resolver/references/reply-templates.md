@@ -2,6 +2,13 @@
 
 先合并，后回复，再关闭。语言跟随提交者；英文提交者就把同样的结构译成英文，命令、文件名、字段名保留原文。风格可对照已关闭的 issue #40、#56 的回复：`python3 -B "<triage.py 的绝对路径>" show 56`（输出经过净化，维护者的回复带 `关系 OWNER`；不要直接用 gh 取评论原文）。
 
+## 开头先 @ 对应的人
+
+每条回复的第一行以 `@<登录名> ` 开头：issue 下 @ 作者，外部 PR 下 @ 贡献者（整合 PR 致谢、被取代的原 PR 同此）。上面拿来对照风格的 #40、#56 是这条规则之前发的，首行没有 `@`，其余写法照旧。
+
+- 登录名只从 `python3 -B "<triage.py 的绝对路径>" show N` 的净化输出里取：`▶ 作者 @login` 那一行（issue 与 PR 都有）。核对后再写，不凭记忆或正文里的显示名拼——GitHub 的 `@` 只认登录名。
+- 已发出的回复漏了 `@`：改原评论补上，不另发一条只有 `@` 的评论。评论 id 是 `gh issue comment` / `gh pr comment` 输出链接里 `#issuecomment-` 后面的数字：`gh api --method PATCH repos/ByteRax/zcode-token-usage-statusbar/issues/comments/<评论 id> -F body=@<改好的正文文件>`，改完回读。
+
 ## 选哪个模板
 
 先用 `triage.py released <合并提交或已含修复的提交>` 判断发版状态，再按结论选：
@@ -24,7 +31,7 @@
 ```bash
 gh issue comment N --repo ByteRax/zcode-token-usage-statusbar --body-file /tmp/ztus-issue-N-reply.md
 gh issue close N --repo ByteRax/zcode-token-usage-statusbar --reason completed        # 或 --reason "not planned" / --duplicate-of M。close 子命令没有 --comment-file，硬传会直接报 unknown flag 退出 1、issue 不会关闭（勿误当「已关但漏评论」排查）——评论必须走上一行 comment --body-file，两步分开
-gh issue view N --repo ByteRax/zcode-token-usage-statusbar --json state,comments --jq '.state, ([.comments[] | select(.author.login == "ByteRax")] | last | .body)'   # 回读状态，以及我们自己最后一条评论的格式和链接
+gh issue view N --repo ByteRax/zcode-token-usage-statusbar --json state,comments --jq '.state, ([.comments[] | select(.author.login == "ByteRax")] | last | .body)'   # 回读状态，以及我们自己最后一条评论的格式和链接；第一行必须以 @<登录名> 开头
 gh pr comment N --repo ByteRax/zcode-token-usage-statusbar --body-file /tmp/ztus-pr-N-reply.md        # 外部 PR
 ```
 
@@ -33,7 +40,7 @@ gh pr comment N --repo ByteRax/zcode-token-usage-statusbar --body-file /tmp/ztus
 ## A 已修复
 
 ```markdown
-感谢这份报告——<点名具体价值：定位到的根因 / 提供的日志 / 复现步骤>。
+@<作者登录名> 感谢这份报告——<点名具体价值：定位到的根因 / 提供的日志 / 复现步骤>。
 
 **根因**：<一两句>
 
@@ -77,7 +84,7 @@ gh pr comment N --repo ByteRax/zcode-token-usage-statusbar --body-file /tmp/ztus
 ## B 信息不足
 
 ```markdown
-感谢反馈。目前还无法定位，需要补充：
+@<作者登录名> 感谢反馈。目前还无法定位，需要补充：
 1. <具体项：版本号 / 操作系统 / 哪份日志的哪几行 / 复现步骤>
 2. <……>
 
@@ -89,7 +96,7 @@ gh pr comment N --repo ByteRax/zcode-token-usage-statusbar --body-file /tmp/ztus
 ## C 重复、设计如此、已修好
 
 ```markdown
-感谢反馈。<理由：与 #M 是同一问题 / 已在 main 修复（提交 <SHA>，<未发版，或随 vX.Y.Z 发布>）/ 属于设计如此（依据：<AGENTS.md 条目或文档>）>。
+@<作者登录名> 感谢反馈。<理由：与 #M 是同一问题 / 已在 main 修复（提交 <SHA>，<未发版，或随 vX.Y.Z 发布>）/ 属于设计如此（依据：<AGENTS.md 条目或文档>）>。
 <指向：重复项链接或修复提交>。先关闭；如果你的场景和上面不同，欢迎补充后重新打开。
 ```
 
@@ -100,7 +107,7 @@ gh pr comment N --repo ByteRax/zcode-token-usage-statusbar --body-file /tmp/ztus
 ## D 外部 PR 合并致谢
 
 ```markdown
-感谢这个 PR——<点名具体价值：例如对客户端源码的逆向核对、实机验证、测试覆盖>。
+@<贡献者登录名> 感谢这个 PR——<点名具体价值：例如对客户端源码的逆向核对、实机验证、测试覆盖>。
 
 我做了 review，发现并修复了 <N> 处问题（提交 <SHA>）：
 1. <问题与修复>
@@ -118,7 +125,7 @@ gh pr comment N --repo ByteRax/zcode-token-usage-statusbar --body-file /tmp/ztus
 方向不符、有安全问题或质量不足时，说明具体原因与可行的改法，礼貌致谢后再决定关闭还是保持开放等其修改，**这一步交给用户决定**，不替用户关闭。
 
 ```markdown
-感谢提交。暂不合并，原因：<具体、可核对的原因，指到文件和行>。
+@<贡献者登录名> 感谢提交。暂不合并，原因：<具体、可核对的原因，指到文件和行>。
 如果要继续，建议：<可行的改法>。
 ```
 
@@ -129,7 +136,7 @@ gh pr comment N --repo ByteRax/zcode-token-usage-statusbar --body-file /tmp/ztus
 需求有几种做法、取舍会影响范围时，不擅自选方案，也不合并；先在 issue 下征询，最终报告里请用户决策。
 
 ```markdown
-感谢反馈。这个需求有几种做法，取舍会影响 <范围>，想先听听你的场景再动手：
+@<作者登录名> 感谢反馈。这个需求有几种做法，取舍会影响 <范围>，想先听听你的场景再动手：
 1. <方案一>：<好处 / 代价>
 2. <方案二>：<好处 / 代价>
 
