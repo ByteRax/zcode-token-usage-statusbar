@@ -247,6 +247,19 @@ function createModelPuller(opts) {
   const GLR_EXCHANGE_TIMEOUT_MS = 15000;
   const GLR_PLATFORM_PREFIX = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform;
   const glrMemo = { fp: "", token: "", at: 0 };
+  /* 换发在途共享：memo 只在换发成功后写入，确认流对多模型并发探测（渲染端并发 4）会让首个
+   * 请求各签一次 token；同凭据文件内容下的并发调用共享同一次换发。键含凭据文件原文——凭据
+   * 变化即不共享。只有不带外部 signal 的调用（探测）参与共享——带 signal 的调用（增强链）
+   * 各自换发：共享会让跟随者继承首调用方的取消，未取消的一方误报凭据不可用。 */
+  const glrInflight = new Map(), teamInflight = new Map();
+  async function sharedInflight(map, key, run) {
+    try { key += "|" + fs.readFileSync(credentialsPath, "utf8"); } catch (e) { }
+    const hit = map.get(key);
+    if (hit) return hit;
+    const p = Promise.resolve().then(run).finally(() => { if (map.get(key) === p) map.delete(key); });
+    map.set(key, p);
+    return p;
+  }
   function glrMemoToken() {
     return glrMemo.token && Date.now() - glrMemo.at < GLR_MEMO_TTL_MS ? glrMemo.token : null;
   }
@@ -340,6 +353,10 @@ function createModelPuller(opts) {
    * + location 键名——凭据或定位变化即失效。OAuth token 只发 bigmodel.cn 本域
    * （origin 已在 parseProjectLocationKeyName 校验）。 */
   async function planGLrTokenOf(providerId, externalSignal) {
+    return externalSignal ? planGLrTokenOfSolo(providerId, externalSignal)
+      : sharedInflight(glrInflight, "glr|" + providerId, () => planGLrTokenOfSolo(providerId, null));
+  }
+  async function planGLrTokenOfSolo(providerId, externalSignal) {
     const src = PLAN_SOURCES[String(providerId || "")];
     /* teamPat 源在此恒 null（issue #442）：location 只承载个人项目三元组，团队源走
      * planTeamPatOf 三步换发——这里收紧防止任何调用方（如双路由降级腿）对团队源
@@ -441,6 +458,10 @@ function createModelPuller(opts) {
     return { org: org, project: project };
   }
   async function planTeamPatOf(providerId, externalSignal) {
+    return externalSignal ? planTeamPatOfSolo(providerId, externalSignal)
+      : sharedInflight(teamInflight, "team|" + providerId, () => planTeamPatOfSolo(providerId, null));
+  }
+  async function planTeamPatOfSolo(providerId, externalSignal) {
     const src = PLAN_SOURCES[String(providerId || "")];
     if (!src || src.fam !== "bigmodel" || !src.teamPat || !credentialsPath || !decryptValue) return null;
     const oauth = planTokenOf(providerId);
@@ -504,6 +525,19 @@ function createModelPuller(opts) {
       clearTimeout(timer);
       if (externalSignal && typeof externalSignal.removeEventListener === "function") externalSignal.removeEventListener("abort", onAbort);
     }
+  }
+  /* 套餐探测凭据（specs/plan-model-list.md）：确认流连通性探测打表值 baseUrl 的 Anthropic
+   * messages 端点，该网关自 2026-11-24 实测起对 OAuth 登录令牌回 401「登录状态已过期」，只认
+   * 项目域凭据——bigmodel 家族先取宿主运行时同款凭据，凭据序与 enhanceText 对齐：团队源走团队
+   * PAT（个人 location/条目 key 属个人池，团队源绝不用），其余 v2 条目明文 key（3.18 宿主）
+   * → GLr 换发 token；都拿不到才回 OAuth 诚实尝试（zai 家族端点未实测、无 location 的旧宿主
+   * 维持原行为）。团队源例外：PAT 拿不到即 null（probeModel 回 auth、零请求）——账号级 OAuth
+   * 令牌属个人池，与增强链「团队源绝不用个人凭据」同门。token 只在内存与请求头。 */
+  async function planProbeKeyOf(providerId) {
+    const src = PLAN_SOURCES[String(providerId || "")];
+    if (!src || src.fam !== "bigmodel") return planTokenOf(providerId);
+    if (src.teamPat) return (await planTeamPatOf(providerId, null)) || null;   // 团队源无 OAuth 兜底：与 issue #442 同门，否则探测会把个人池令牌打到团队源
+    return planEntryKeyOf(providerId) || (await planGLrTokenOf(providerId, null)) || planTokenOf(providerId);
   }
   /* 拉模型列表门控（issue #336 附加发现 2）：PLAN_SOURCES 从 1 条扩到 6 条后，共享凭据的
    * team/start 条目若照单全列会出现 3 行近似重复——规则：宿主 v2 config 显式 enabled:false
@@ -715,34 +749,49 @@ function createModelPuller(opts) {
       ]).finally(() => clearTimeout(graceTimer));
     };
     if (planSrc) {
-      /* 套餐源：单端点（Anthropic models，与运行协议同源），Bearer 套餐 token */
-      try {
-        const res = await fetchImpl(planSrc.endpoint, { headers: { "Accept": "application/json", "Authorization": "Bearer " + planToken, "User-Agent": "ZCode" }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), redirect: "error" });
-        if (!res.ok) { dropBody(res); return { ok: false, error: "HTTP " + res.status }; }
-        const body = await readJsonBounded(res, RESPONSE_MAX_BYTES);
-        const list = Array.isArray(body) ? body : asObject(body).data || asObject(body).models || asObject(body).result || null;
-        const ids = sanitizeModelIds((Array.isArray(list) ? list : [])
-          .map((item) => (typeof item === "string" ? item : asObject(item).id || asObject(item).slug || "")).filter(Boolean))
-          .map(normalizePlanModelId)
-          .filter((id, i, a) => a.indexOf(id) === i);
-        if (!ids.length) return { ok: false, error: "no models in response" };
-        ids.sort();
-        const entries = await awaitCatalogWithinGrace();
-        const metaById = Object.create(null);   // null 原型：模型 id 来自远端，"__proto__" 等键必须可写
-        if (entries && entries.length) {
-          for (const mid of ids) {
-            const hit = matchCatalogEntry(entries, mid);
-            if (!hit) continue;
-            const meta = mergedMeta({ id: mid, contextWindow: 0, maxOutputTokens: 0, modalities: null, vision: undefined, efforts: [] }, hit.model, agreedCapabilities(entries, mid));
-            if (Object.keys(meta).length) metaById[mid] = meta;
-          }
+      /* 套餐源：候选端点按序尝试（PLAN_SOURCES.listUrls），Bearer 套餐 token。两候选是同域的
+       * 不同网关家族——同一凭据可能被其一拒而被另一认，所以任一候选的非 ok / HTTP 200 错误
+       * 信封 / 无列表 / 空列表都换下一个，全败报最后一错（与下方自定义供应商循环同形）。
+       * 2026-11-24 实测：Anthropic 形态端点对 OAuth 回 200 + {"code":401,"success":false}，
+       * 只看 res.ok 会把它当空列表（specs/plan-model-list.md）。 */
+      let lastError = "no models in response";   // 全部条目被 sanitize 滤空时沿用旧口径
+      let list = null, via = "";
+      for (const url of planSrc.listUrls) {
+        if (disposed) break;   // 热换/关窗后不再带凭据发下一候选
+        try {
+          const res = await fetchImpl(url, { headers: { "Accept": "application/json", "Authorization": "Bearer " + planToken, "User-Agent": "ZCode" }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), redirect: "error" });
+          if (!res.ok) { lastError = "HTTP " + res.status; dropBody(res); continue; }
+          const body = await readJsonBounded(res, RESPONSE_MAX_BYTES);
+          const envelopeError = planEnvelopeError(body);
+          if (envelopeError) { lastError = envelopeError; continue; }
+          list = parseModelsPayload(body);
+          if (!list.length) { lastError = "no models in response"; list = null; continue; }   // list 复位是防御：返回处只看 lastError
+          via = url;
+          break;
+        } catch (e) {
+          lastError = (e && e.name === "TimeoutError") ? "timeout" : "request failed";
         }
-        const fetching = fillEffortsFromApiCatalog(metaById, ids);   // #236：GLM 档位词表来自 api 目录（按需）
-        fetchCache.set(providerId, { metaById: metaById, source: source });
-        return { ok: true, models: ids, metaById: metaById, via: planSrc.endpoint, effortsFetching: fetching || undefined };
-      } catch (e) {
-        return { ok: false, error: (e && e.name === "TimeoutError") ? "timeout" : "request failed" };
       }
+      const ids = list
+        ? sanitizeModelIds(list.map((item) => (typeof item === "string" ? item : asObject(item).id || asObject(item).slug || "")).filter(Boolean))
+          .map(normalizePlanModelId)
+          .filter((id, i, a) => a.indexOf(id) === i)
+        : [];
+      if (!ids.length) return { ok: false, error: lastError };
+      ids.sort();
+      const entries = await awaitCatalogWithinGrace();
+      const metaById = Object.create(null);   // null 原型：模型 id 来自远端，"__proto__" 等键必须可写
+      if (entries && entries.length) {
+        for (const mid of ids) {
+          const hit = matchCatalogEntry(entries, mid);
+          if (!hit) continue;
+          const meta = mergedMeta({ id: mid, contextWindow: 0, maxOutputTokens: 0, modalities: null, vision: undefined, efforts: [] }, hit.model, agreedCapabilities(entries, mid));
+          if (Object.keys(meta).length) metaById[mid] = meta;
+        }
+      }
+      const fetching = fillEffortsFromApiCatalog(metaById, ids);   // #236：GLM 档位词表来自 api 目录（按需）
+      fetchCache.set(providerId, { metaById: metaById, source: source });
+      return { ok: true, models: ids, metaById: metaById, via: via, effortsFetching: fetching || undefined };
     }
     const cfg = effectiveRuleConfig(rule);   // issue #383：模板供应商按合并后配置构造请求
     /* enc: 形态的 key 是宿主加密信封（或误贴的密文），不是可用凭据：按未配置处理、不随请求
@@ -1316,7 +1365,7 @@ function createModelPuller(opts) {
     const api = cfg.api || {};
     const apiType = planSrc ? "anthropic-messages" : String(api.type || "");   // probe 链维持 anthropic models 端点实测语义
     const baseUrl = String((planSrc ? planSrc.baseUrl : api.baseUrl) || "").trim().replace(/\/+$/, "");
-    const apiKey = planSrc ? planTokenOf(providerId) : String(((cfg.access || {}).apiKey) || "").trim();
+    const apiKey = planSrc ? await planProbeKeyOf(providerId) : String(((cfg.access || {}).apiKey) || "").trim();
     if (!apiKey || apiKey.indexOf("enc:") === 0) return { ok: false, model: mid, kind: "auth", error: "no api key" };   // enc: 密文按未配置（同 fetchModels）
     const ctx = { providerId: providerId, source: providerSource(data, providerId), deadline: Date.now() + 80000 };
     let attempt = await probeRequest(apiType, baseUrl, apiKey, mid, null, ctx);
