@@ -13,7 +13,7 @@
   python3 token_rate.py --turn --turn-ref msg_x --session sess_subagent_x
                                          按页面轮号固定轮次（子代理窗格统计行）：页面 data-turn-id
                                          即用量行的 parent_user_message_id，只认该会话内对应的那一轮，
-                                         且 turn_usage 已有该轮行（轮已结束）才输出，否则为空
+                                         且 turn_usage 已有该轮终态行（完成、取消或出错）才输出，否则为空
   python3 token_rate.py --json           JSON 输出
   python3 token_rate.py --session sess_xxx 显式指定会话（优先于下面两个环境变量；钩子下达
                                          的统计指令带此参数，防止模型迟迟才跑该命令时，
@@ -374,8 +374,8 @@ def latest_turn_id(db, sid, prompt_ts=None):
     # v458：无 main_turn 的会话（子代理窗格 sess_subagent_*）在不带提问时刻（非 --current 路径）
     # 时回退该会话除压缩请求外的全部行——方向同 scope_for 的全量回退，但压缩请求不参与选轮
     # （宿主给压缩行的 turn_id 独立时会被当成最新一轮；query_source 为空的行照常参与）。
-    # --current 路径（prompt_ts 非空）与探测失败时都保持 main_turn 过滤：与改动前逐字节一致，
-    # 宁可查不到也不放宽（fail-closed）。
+    # --current 路径（prompt_ts 非空）的选轮与探测失败时都保持 main_turn 过滤：选轮结果与改动前
+    # 一致，宁可查不到也不放宽（fail-closed）。
     try:
         has_main = db.execute(
             "select 1 from model_usage where session_id=? and query_source='main_turn' limit 1",
@@ -483,6 +483,9 @@ def query_turn(session_id=None, current=False, turn_id=None, turn_ref=None):
             if turn_pending:
                 result["turnPending"] = True
             if current:
+                # 「该会话有没有轮身份」不带提问时刻去问：无 main_turn 行的会话因此答「有」，
+                # 原因记 noMatchingTurn（有轮、提问时刻之后没有匹配的轮）而不是 missingTurnIdentity。
+                # 只影响 --json 的这个诊断字段（没有运行时消费方），选轮与文本输出不受影响。
                 has_identity = db is not None and latest_turn_id(db, sid) is not None
                 result.update(noCurrentTurnData=True,
                               currentTurnUnavailableReason="noMatchingTurn" if has_identity else "missingTurnIdentity")

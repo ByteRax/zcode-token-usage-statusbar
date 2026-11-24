@@ -153,7 +153,7 @@
   }
   function zuSubDetPaneScope(root) {   // 窗格自身的本地 scope；远端 / 带身份 / 无法确认本地 → null（不认领）
     if (root.getAttribute("data-zusage-scope-version") === "1") {
-      /* 桥写在会话根上的 scope 属性（与 readPaneScope 同一来源、同一套校验）。paneId 不核对：
+      /* 桥写在会话根上的 scope 属性（与 readPaneScope 同一来源；比它少核对一项 paneId）。paneId 不核对：
        * 观察器没有宿主 pane 身份，根节点本身就是窗格，这些属性与 data-session-id 同节点同写。 */
       var path = root.getAttribute("data-zusage-workspace-path"), identity = root.getAttribute("data-zusage-workspace-identity"), remote = root.getAttribute("data-zusage-remote-session-id");
       if (typeof path !== "string" || !path.trim() || typeof identity !== "string" || typeof remote !== "string" ||
@@ -161,8 +161,9 @@
       return { workspacePath: path };
     }
     /* 桥缺席（表外宿主 / 补装失败）时的退路：仅当本窗口每一个实例的 scope 都是已验证的本地
-     * scope 才认领——同窗口只要有远端分栏，或任何一个实例的 scope 不明，就不认领；实例分布在
-     * 多个本地工作区时分不清窗格属于哪一个，同样不认领。 */
+     * scope 才认领——实例里有远端分栏，或任何一个实例的 scope 不明，就不认领；实例分布在
+     * 多个本地工作区时分不清窗格属于哪一个，同样不认领。只看得见 overlay 实例：没有实例的
+     * 远端分栏识别不了（规格已知限制）。 */
     if (!instances.length) return null;
     var local = null;
     for (var i = 0; i < instances.length; i++) {

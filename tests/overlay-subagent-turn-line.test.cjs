@@ -256,10 +256,24 @@ test('v458 绑定：注册表直绑失败走 acquire 租约（窗格自身 scope
   assert.deepEqual(plain(h.acquired), [{ sid: 'sess_subagent_x', hint: { workspacePath: WS_PATH } }]);
   h.api.tick();   // now=0 < retryAt(2000)：不重试
   assert.equal(h.acquired.length, 1);
+  h.ctx.Date.now = () => 1999;
+  h.api.tick();   // 差 1ms 到点：仍不重试
+  assert.equal(h.acquired.length, 1);
+  h.ctx.Date.now = () => 2000;
+  h.api.tick();   // 恰到重试点：重试
+  assert.equal(h.acquired.length, 2);
   h.ctx.Date.now = () => 2500;
-  h.api.tick();   // 到点重试
+  h.api.tick();   // 这一拍仍没绑上：重试点顺延，不连发
   assert.equal(h.acquired.length, 2);
   assert.deepEqual(plain(h.api.diag()), { panes: 1, bound: 0, retrying: 1 });
+});
+
+test('v458 归属：工作区身份是纯空白时视为无身份（与 readPaneScope 同语义），照常认领', () => {
+  const h = make03ctx({ tryStore: true });
+  const t = subTree(h, SUB_SID, 'msg_t1', Object.assign({}, BRIDGE_LOCAL, { 'data-zusage-workspace-identity': '   ' }));
+  assert.equal(h.api.detOwnerOf(t.box).pid, 'subagent-pane:' + SUB_SID);
+  assert.equal(h.api.list().length, 1);
+  assert.deepEqual(plain(h.tryCalls), [{ sid: SUB_SID, want: { workspacePath: WS_PATH } }]);
 });
 
 test('v458 绑定：注册表直绑成功后不再取租约（两条路径都拿得到时只走直绑）', () => {
@@ -417,6 +431,34 @@ test('v458 已知限制：同一子代理会话两个窗格——观察器只跟
   assert.equal(h.api.detOwnerOf(b.box), null);
   assert.equal(h.api.detOwnerOf(a.box), w);
   assert.equal(h.api.list().length, 1);
+});
+
+test('v458 生命周期：已撤除观察器的迟到回调静默——不会误撤同 sid 的新观察器', () => {
+  // 真实 subscribeStore 退订后不再回调（closed 标志）；回调里的 dead 守卫是它之后的最后一道防线：
+  // 旧观察器的回调闭包若在撤除后还被调到，不能把同 sid 的新观察器当成「换代」撤掉。
+  // 两条撤除路径都验：代际清理 disposeAll、巡检时单个撤除 zuSubDetPaneDispose
+  for (const how of ['disposeAll', 'tick']) {
+    const h = make03ctx({ tryStore: true });
+    const first = subTree(h, SUB_SID);
+    const old = h.api.detOwnerOf(first.box);
+    const late = h.callbacks[0];
+    first.root.isConnected = false;   // 旧窗格被宿主回收
+    if (how === 'disposeAll') h.api.disposeAll(); else h.api.tick();
+    assert.equal(h.api.list().length, 0, how);
+    assert.deepEqual(h.storeOffs, [SUB_SID], how);
+    first.root.remove();
+    const second = subTree(h, SUB_SID);   // 宿主重挂窗格根：同 sid 的新观察器
+    const fresh = h.api.detOwnerOf(second.box);
+    assert.notEqual(fresh, old, how);
+    assert.equal(h.api.list().length, 1, how);
+    assert.deepEqual(plain(h.api.diag()), { panes: 1, bound: 1, retrying: 0 }, how);
+    late({ snapshot: { sessionId: 'sess_other', rows: { window: [] } } });   // 旧订阅迟到的、别的会话的快照
+    assert.equal(h.api.list().length, 1, how + '：新观察器没被旧回调误撤');
+    assert.equal(h.api.detOwnerOf(second.box), fresh, how);
+    assert.deepEqual(h.storeOffs, [SUB_SID], how + '：新观察器的订阅与租约原封不动');
+    late({ snapshot: { sessionId: SUB_SID, rows: { window: [{ kind: 'turnHeader', turnId: 'db_t9', productTurnId: 'msg_t9' }] } } });
+    assert.equal(fresh.isCurrentTurn('msg_t9'), false, how + '：旧回调不会往新观察器里写活跃轮号');
+  }
 });
 
 test('v458 生命周期：窗格根断连 → detRoot 返 null 不认领，tick 巡检撤除并释放租约', () => {
