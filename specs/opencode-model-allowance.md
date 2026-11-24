@@ -1,30 +1,33 @@
-# OpenCode Go 模型口径额度换算（v385，issue #382）
+# OpenCode Go 额度口径：账号共享额度池，不按模型换算（v447，issue #453）
 
 ## 背景
 
-OpenCode Go 官方按模型给月度额度（opencode.ai/go "allowances vary by model"，changelog 曾专门上调 DeepSeek V4.1 Flash），而 `/console/api/go/status` 的 `access.meters` 是**账户基线池**（Go 档实测 $60/月、5h 窗 20%、周窗 50%），端点不提供模型级数据（issue #382 实测 `?model=`、请求头、`/console/api/go/*` 各端点均无效）。用 DeepSeek V4.1 Flash（$100/月）时按基线显示会少 40%。
+v385（issue #382）把 opencode.ai/go 的 "allowances vary by model" 与各模型月度额度表读成「官方按模型给独立额度」，把 `/console/api/go/status` 的 `access.meters` 当作「账户基线池」，在渲染端按当前模型放大窗口总额并重算 percent。这是误读。issue #453 实报后果：Go 档（10 美元/月）账户的 5 小时/周/月窗口总额被显示成 20/50/100 美元（当前模型 deepseek-v4.1-flash），真实额度是 12/30/60。
+
+官方口径（opencode.ai/docs/go「Usage limits」，2026-11-23 核对）：
+
+- 付费模型共用一个额度："The paid models you use on Go share one allowance."；5 小时窗是月额度的 20%，周窗是 50%。
+- 各模型的「月度额度」只表示整月只用该模型时套餐覆盖多少（标价）用量："Each model’s monthly limit shows how much usage your plan covers if you use only that model over the month."
+- 请求按模型折算计入同一池："$1.50 of usage on a model with a $15 limit uses 10% of your monthly allowance. So does $6 on a model with a $60 limit."
+
+参考实现：magpie（github.com/yetone/magpie，提交 0d7c026d21c0）的 `internal/provider/planquota.go` 对 OpenCode Go 只读 `zen/go/v1/usage` 的三窗百分比，不做模型换算。
 
 ## 契约
 
-换算只发生在**渲染端**（`src/overlay/11-instance-toolbar-chips.js` 的 `quotaOpencodeModelView`），额度链、协议、调度器零改动（「模型不入键」取舍不变，模型切换不触发重查——meters 数据本身模型无关）：
-
-- **门槛**（任一不满足原样返回，绝不伪造）：
-  1. 当前源 id 为 `opencode` 或复合源 `opencode:<providerId>`；
-  2. 当前 pane 模型（小写）精确命中模型表（2026-11-17 抓取自 opencode.ai/go 的 28 款快照）；
-  3. 月窗 `total` 恰等于 Go 档账户基线 `60`（档位锚定）。Plus 档基线官方页面未明示，**不验证不换算**；官方调基线后表过期同样回落基线显示。
-- **公式**：窗口总额 = 模型月度额度 ×（该窗基线总额 / 月窗基线总额）——窗占比跟活接口走，不硬编码 20%/50%；`used` 是账户窗口内实际花费、模型无关，**保留原值**；`percent = used/新总额` 重算并钳 [0,100]（账户花费超过小额度模型上限时语义即「已到顶」）；`remaining` 重算；原对象不变异（浅拷贝 + 窗口逐个替换）。5h/周窗字段漂移（`total`/`used` 缺失或非数值）时**该窗单独保留基线显示**（保守方向：显示活数据、不伪造），其余窗照常换算；月窗锚定失败才整链不换算。
-- **披露**：换算生效时 `q.modelBasis` 置模型 id（表键小写规范形），tooltip 页脚换模型口径说明（opencode.ai/go 快照 + 官方调价以官网为准 + 已用为账号实际花费）；未换算维持「套餐池为账号级」固定页脚。`modelBasis` 是插件保留的展示层字段：主进程协议今天不下发，渲染端消费一律经 `esc()` 转义（对快照透传兜底，回归锁定）。
-- **消费点**：chip 分段（`quotaChipMode`）与 `chip.__zuQ.q`（tooltip）同吃换算视图，两处口径恒一致。
-- **不换算的链路**（有意保持原始基线）：兜底链（public usage 端点窗口只有基线 percent、无金额锚点）、⚙ 面板源列表与其他源摘要行（无模型上下文）、重置卡（只消费重置时间）。
+- **meters 即账号额度池本身**：`limitMicroCents`/`usedMicroCents` 是额度口径金额（Go 档 12/30/60 美元），不是可被换算的「基线」。渲染端原样展示窗口的 `total`/`used`/`remaining`/`percent`，不按当前模型换算（`quotaChipMode` 与 `chip.__zuQ.q` 直接用源数据）。
+- **percent 不得按模型重算**：`used / limit` 就是官方的「额度已用比例」，与 `zen/go/v1/usage` 的 percent 同源。v385 的重算会把比例改坏——meters 已用 24.20/60（40.33%）被显示成 24.2%；月度额度 15 美元的模型窗口总额缩到 1/4、已用比例放大 4 倍（已用约 30% 显示成 100%）。
+- **披露**：tooltip 页脚维持「套餐池为账号级」固定文案，没有模型口径分支；`modelBasis` 不是协议字段，渲染端不读。
+- **不变的部分**：额度链、协议、调度器零改动——模型不入状态键，模型切换不触发重查；兜底链（`zen/go/v1/usage`，只有整数已用百分比、无金额）与其它源行为不变。
+- **金额语义**：meters 金额是额度口径，混用多个模型时不等于标价花费，只用于展示「已用 / 总额」。
 
 ## 与「账号级口径」合同的关系
 
-AGENTS.md §5「额度是账号级套餐池口径，chip/tooltip 不得出现模型独享额度语义」针对的是把共享池误标成模型独享（BigModel/Z.ai 语义上是错的）。OpenCode Go 是官方明示的按模型口径，属有依据的例外：tooltip 明示换算依据与快照日期，未命中/锚不上时 fail-open 回真实基线，绝不虚构数字。
+AGENTS.md §5 规定额度是账号级套餐池/账户余额口径、不是单模型独享，chip/tooltip 不得出现模型独享额度语义。这条对 OpenCode Go 同样成立，没有例外：官方各模型「月度额度」是「单模型整月的用量覆盖」，不是独立池。
 
 ## 维护责任
 
-模型表是快照数据：官方调价/上新时需重新抓取 opencode.ai/go 同步（表内注释带抓取日期）。表过期不会显示错误数字——锚定与门槛不满足时一律显示活接口基线。
+官方调价、上新或调整窗口占比时，meters 跟活接口走，渲染端无需同步任何表（v385 的 28 款模型快照表已删除）。不要按 opencode.ai/go 的各模型月度额度重建换算。
 
 ## 回归
 
-`tests/overlay-quota-opencode-model.test.cjs`（11 用例）：已知模型换算（1/2/4 vs 基线 2/3/7）、tooltip 金额与披露、未知模型回落、非 opencode 源不换算、基线锚定（Plus 档不换算）、窗占比跟活接口（非硬编码 20%/50%）、超上限钳 100%（exc 档）、模型切换零重取且源数据零变异（首拍采集）、原型键名守卫、裸 opencode 源 id 同门槛、modelBasis 透传转义。
+`tests/overlay-quota-opencode-model.test.cjs`：已知模型（deepseek-v4.1-flash）与 issue #453 实报数据原样展示（chip 分段、tooltip 整行的已用比例与金额、账号级页脚）、模型切换数字不变且源数据零变异、Plus 档金额与百分比原样、裸 opencode 源与非 opencode 源、「显示剩余额度」口径、只有百分比没有金额的兜底链窗口、tooltip「其他源」行里的非主 OpenCode 源、快照透传的未知 `modelBasis` 不渲染。

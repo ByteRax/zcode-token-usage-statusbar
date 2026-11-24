@@ -5,10 +5,15 @@ const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
 
-/* v385 OpenCode Go 模型口径换算（issue #382）：整 IIFE 执行 + Element 桩（overlay-quota-chip
- * 同款夹具）。非 live composer 走 p.last.model 兜底控制当前模型，byProvider 显式映射自定义
- * provider → 源 id（复合 opencode:<pid> 与裸 opencode 两形都有用例）；断言 chip 前插/换算
- * 门槛/模型口径分段/tooltip 金额与披露/锚定回落/钳顶/零重取与源数据零变异。 */
+/* OpenCode Go 额度原样展示（v447，issue #453；撤回 v385 的按模型换算）：整 IIFE 执行 + Element 桩
+ * （overlay-quota-chip 同款夹具）。官方口径是付费模型共用一个额度池，/console/api/go/status 的
+ * meters（Go 档 12/30/60）即该池本身，各模型「月度额度」只是单模型整月的标价用量覆盖——
+ * 渲染端不得按当前模型放大窗口总额或重算 percent。非 live composer 走 p.last.model 兜底控制
+ * 当前模型，byProvider 显式映射自定义 provider → 源 id（复合 opencode:<pid> 与裸 opencode 两形
+ * 都有用例）。断言按「用户看到的每个数」逐个锁定：chip 分段、tooltip 窗口行的已用比例/已用与
+ * 总额/剩余三个数（只锁金额会漏掉「只在 tooltip 里改百分比」）、模型切换数字不变且源数据
+ * 零变异、档位金额原样、账号级页脚、剩余口径、兜底链的纯百分比窗口、「其他源」行、快照
+ * 透传的未知 modelBasis 不渲染。 */
 class Element {
   constructor(tag = 'div') {
     this.tagName = tag.toUpperCase(); this.children = []; this.dataset = {}; this.style = {};
@@ -58,9 +63,9 @@ class Element {
         ...this.children.map(e => e.querySelectorAll(sel)));
     }
     if (sel === 'circle') return this.children.filter(e => e.tagName === 'CIRCLE').concat(
-      ...this.children.filter(e => e.querySelectorAll).map(e => e.querySelectorAll(sel)));
+        ...this.children.filter(e => e.querySelectorAll).map(e => e.querySelectorAll(sel)));
     if (sel === '.zu-sr-only') return this.children.filter(e => e.classList.contains('zu-sr-only')).concat(
-      ...this.children.filter(e => e.querySelectorAll).map(e => e.querySelectorAll(sel)));
+        ...this.children.filter(e => e.querySelectorAll).map(e => e.querySelectorAll(sel)));
     return [];
   }
   contains(el) { return el === this || this.children.some(e => e.contains(el)); }
@@ -151,155 +156,207 @@ function harness({ quotaOn = true, prefs = {} } = {}) {
 }
 
 const NOW = Date.now();
-/* issue #382 报告者实测 meters（microcent→USD）：Go 档基线 12/30/60，账户已用
- * 0.2556/0.7902/4.3969。基线 percent 自算 2.13/2.63/7.33。 */
+const clone = (o) => JSON.parse(JSON.stringify(o));
+/* issue #382 报告者实测 meters（microcent→USD）：Go 档 12/30/60，账户已用
+ * 0.2556/0.7902/4.3969。percent=used/limit 即官方「额度已用比例」。
+ * 每个源条目拿自己的一份窗口副本：实现若就地改写源对象，不会经共享夹具串到别的用例。 */
 const OC_SOURCE = (windows, extra) => Object.assign({
   status: 'ok', label: 'OpenCode Go', kind: 'plan', providerId: 'opencode-go-chat', fetchedAt: NOW, stale: false, error: '',
-  windows,
+  windows: clone(windows || {}),
 }, extra || {});
 const OC_METERS = {
   fiveHour: { percent: 2.13, resetsAt: NOW + 3600e3, used: 0.25561772, total: 12, remaining: 11.74438228, currency: 'USD' },
   weekly: { percent: 2.63, resetsAt: NOW + 3 * 86400e3, used: 0.79024081, total: 30, remaining: 29.20975919, currency: 'USD' },
   monthly: { percent: 7.33, resetsAt: NOW + 25 * 86400e3, used: 4.39694317, total: 60, remaining: 55.60305683, currency: 'USD' },
 };
-const ocQuota = (windows, extra) => ({
-  active: 'opencode:opencode-go-chat',
-  byProvider: { 'opencode-go-chat': 'opencode:opencode-go-chat' },
-  sources: { 'opencode:opencode-go-chat': OC_SOURCE(windows || OC_METERS, extra) },
+/* issue #453 报告者截图背后的源数据（当前模型 deepseek-v4.1-flash）：v385 曾把它显示成
+ * $0.16/$20.00、$2.00/$50.00、$24.20/$100.00（chip 1/4/24），真实额度是 12/30/60（chip 1/7/40）。
+ * resetsAt 为空，tooltip 行到「剩余」为止，便于整行逐字段断言。 */
+const OC_453 = {
+  fiveHour: { percent: 1.33, resetsAt: null, used: 0.16, total: 12, remaining: 11.84, currency: 'USD' },
+  weekly: { percent: 6.67, resetsAt: null, used: 2, total: 30, remaining: 28, currency: 'USD' },
+  monthly: { percent: 40.33, resetsAt: null, used: 24.2, total: 60, remaining: 35.8, currency: 'USD' },
+};
+/* Plus 档形状。percent 有意不等于 used/limit（实算 1.07/1.32/3.66），继承自 v385 的夹具：
+ * 「原样展示」要求 percent 照接口值显示、不按金额重算，下面的 Plus 档用例借此锁定。 */
+const OC_PLUS = {
+  fiveHour: { percent: 2.13, resetsAt: null, used: 0.25561772, total: 24, remaining: 23.74438228, currency: 'USD' },
+  weekly: { percent: 2.63, resetsAt: null, used: 0.79024081, total: 60, remaining: 59.20975919, currency: 'USD' },
+  monthly: { percent: 7.33, resetsAt: null, used: 4.39694317, total: 120, remaining: 115.60305683, currency: 'USD' },
+};
+/* 兜底链（zen/go/v1/usage）的窗口形状：只有已用百分比，没有金额 */
+const OC_PCT_ONLY = { fiveHour: { percent: 2.13 }, weekly: { percent: 2.63 }, monthly: { percent: 7.33 } };
+const ocQuota = (windows, extra, sourceId = 'opencode:opencode-go-chat', extraSources) => ({
+  active: sourceId,
+  byProvider: { 'opencode-go-chat': sourceId },
+  sources: Object.assign({ [sourceId]: OC_SOURCE(windows || OC_METERS, extra) }, extraSources || {}),
 });
 const segsOf = chip => (chip.innerHTML.match(/(\d+)%<\/span>/g) || []).map(s => s.replace(/\D+/g, '')).join(',');
-
-test('known model scales window totals from live ratios, keeps real used, recomputes percent (chip 1/2/4 not baseline 2/2/7)', () => {
-  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+/* 挂载 chip 并打开 tooltip（v440 悬停门槛由夹具种子 tipHoverMs=0 直通） */
+function mount(h, opts, prefs) {
+  const ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
-  h.window.__zusageUpdate(h.payload({ provider: 'opencode-go-chat', model: 'deepseek-v4.1-flash', quota: ocQuota() }));
+  h.window.__zusageUpdate(h.payload(opts));
   const chip = h.chipOf(ui.wrap);
-  assert.ok(chip, 'chip mounted for mapped custom opencode provider');
-  /* deepseek-v4.1-flash 月度 $100：5h=100×12/60=20、周=50、月=100；
-   * percent=used/新总额 → 1.28→1、1.58→2、4.40→4（基线应为 2/3/7）。 */
-  assert.equal(segsOf(chip), '1,2,4');
-  assert.match(chip.getAttribute('aria-label'), /套餐已用 5时 1%，7天 2%，月 4%/);
+  return { ui, chip, tip: () => { chip.listeners.get('mouseenter')[0].call(chip); return h.tipEl().innerHTML; } };
+}
+const OC = { provider: 'opencode-go-chat', model: 'deepseek-v4.1-flash' };
+
+test('issue #453: Go-tier meters render as-is for deepseek-v4.1-flash — chip 1/7/40, $12/$30/$60, never 20/50/100', () => {
+  const h = harness(), m = mount(h, Object.assign({ quota: ocQuota(OC_453) }, OC));
+  assert.ok(m.chip, 'chip mounted for mapped custom opencode provider');
+  assert.equal(segsOf(m.chip), '1,7,40');
+  assert.match(m.chip.getAttribute('aria-label'), /套餐已用 5时 1%，7天 7%，月 40%/);
+  const html = m.tip();
+  /* 整行逐字段：已用比例、已用/总额、剩余——三个数都必须是 meters 原值 */
+  assert.match(html, /5小时窗口<\/b><span>已用 1\.3% · \$0\.16 \/ \$12\.00 · 剩余 \$11\.84<\/span>/);
+  assert.match(html, /本周窗口<\/b><span>已用 6\.7% · \$2\.00 \/ \$30\.00 · 剩余 \$28\.00<\/span>/);
+  assert.match(html, /月度窗口<\/b><span>已用 40\.3% · \$24\.20 \/ \$60\.00 · 剩余 \$35\.80<\/span>/);
+  assert.doesNotMatch(html, /\$(20|50|100)\.00/, '不得出现按模型月度额度放大的 20/50/100');
 });
 
-test('tooltip shows scaled amounts with real used and model-basis disclosure note', () => {
-  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
-  h.inject(); h.boot(); h.tick();
-  h.window.__zusageUpdate(h.payload({ provider: 'opencode-go-chat', model: 'deepseek-v4.1-flash', quota: ocQuota() }));
-  const chip = h.chipOf(ui.wrap);
-  chip.listeners.get('mouseenter')[0].call(chip);
-  const html = h.tipEl().innerHTML;
-  assert.match(html, /\$0\.26 \/ \$20\.00/, '5小时 used 保留真实花费 $0.2556，总额换算 $20');
-  assert.match(html, /\$0\.79 \/ \$50\.00/, '周窗总额 $50');
-  assert.match(html, /\$4\.40 \/ \$100\.00/, '月窗总额 $100（官方模型口径）');
-  assert.match(html, /剩余 \$19\.74/);
-  assert.match(html, /窗口总额已按当前模型 <span class="qt-cur">deepseek-v4\.1-flash<\/span> 的月度额度换算/);
-  assert.match(html, /opencode\.ai\/go 快照/);
-  assert.ok(!/套餐池为账号级/.test(html), '模型口径下不再展示账号级固定页脚');
+test('official percent is kept: issue #382 meters show 2/3/7 and $12/$30/$60 for deepseek-v4.1-flash', () => {
+  const h = harness(), m = mount(h, Object.assign({ quota: ocQuota() }, OC));
+  assert.equal(segsOf(m.chip), '2,3,7', 'percent=used/limit 原值（v385 曾重算成 1/2/4）');
+  const html = m.tip();
+  assert.match(html, /5小时窗口<\/b><span>已用 2\.1% · \$0\.26 \/ \$12\.00 · 剩余 \$11\.74/, '5 小时窗');
+  assert.match(html, /本周窗口<\/b><span>已用 2\.6% · \$0\.79 \/ \$30\.00 · 剩余 \$29\.21/, '周窗');
+  assert.match(html, /月度窗口<\/b><span>已用 7\.3% · \$4\.40 \/ \$60\.00 · 剩余 \$55\.60/, '月窗');
 });
 
-test('unknown model falls back to live baseline untouched (2/3/7, $12/$30/$60), no fabricated values', () => {
-  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
-  h.inject(); h.boot(); h.tick();
-  h.window.__zusageUpdate(h.payload({ provider: 'opencode-go-chat', model: 'deepseek-v9-fake', quota: ocQuota() }));
-  const chip = h.chipOf(ui.wrap);
-  assert.equal(segsOf(chip), '2,3,7');
-  chip.listeners.get('mouseenter')[0].call(chip);
-  const html = h.tipEl().innerHTML;
-  assert.match(html, /\$0\.26 \/ \$12\.00/);
-  assert.match(html, /套餐池为账号级/, '未换算走账号级页脚');
-  assert.ok(!/opencode\.ai\/go 快照/.test(html));
+test('tooltip keeps the account-level footer and never shows a model-basis note', () => {
+  const h = harness(), m = mount(h, Object.assign({ quota: ocQuota() }, OC));
+  const html = m.tip();
+  /* 当前模型确实到达 tooltip（前置条件成立，上面的「不换算」断言才不是空过） */
+  assert.match(html, /套餐内全部模型（当前 <span class="qt-cur">deepseek-v4\.1-flash<\/span>）/);
+  assert.match(html, /套餐池为账号级/);
+  assert.doesNotMatch(html, /窗口总额已按当前模型|opencode\.ai\/go 快照/);
 });
 
-test('non-opencode source id never converts even when model matches the table', () => {
-  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
-  h.inject(); h.boot(); h.tick();
-  h.window.__zusageUpdate(h.payload({ provider: 'acme-chat', model: 'deepseek-v4.1-flash',
-    quota: { active: 'acme:acme-chat', byProvider: { 'acme-chat': 'acme:acme-chat' },
-      sources: { 'acme:acme-chat': OC_SOURCE(OC_METERS) } } }));
-  assert.equal(segsOf(h.chipOf(ui.wrap)), '2,3,7', '源 id 非 opencode 前缀 → 原样基线');
-});
-
-test('tier anchor: baseline monthly ≠ Go $60 (Plus/changed baseline) stays untouched', () => {
-  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
-  h.inject(); h.boot(); h.tick();
-  const plus = {
-    fiveHour: { percent: 2.13, resetsAt: null, used: 0.25561772, total: 24, remaining: 0, currency: 'USD' },
-    weekly: { percent: 2.63, resetsAt: null, used: 0.79024081, total: 60, remaining: 0, currency: 'USD' },
-    monthly: { percent: 7.33, resetsAt: null, used: 4.39694317, total: 120, remaining: 0, currency: 'USD' },
-  };
-  h.window.__zusageUpdate(h.payload({ provider: 'opencode-go-chat', model: 'deepseek-v4.1-flash', quota: ocQuota(plus) }));
-  assert.equal(segsOf(h.chipOf(ui.wrap)), '2,3,7', 'Plus 档基线未验证，不换算不伪造');
-});
-
-test('window ratios derive from live response, not hardcoded 20%/50%', () => {
-  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
-  h.inject(); h.boot(); h.tick();
-  const shifted = {
-    fiveHour: { percent: 16.67, resetsAt: null, used: 2.5, total: 15, remaining: 12.5, currency: 'USD' },
-    weekly: { percent: 16.67, resetsAt: null, used: 5, total: 30, remaining: 25, currency: 'USD' },
-    monthly: { percent: 16.67, resetsAt: null, used: 10, total: 60, remaining: 50, currency: 'USD' },
-  };
-  h.window.__zusageUpdate(h.payload({ provider: 'opencode-go-chat', model: 'deepseek-v4.1-flash', quota: ocQuota(shifted) }));
-  /* 5h 占比 15/60=25% → deepseek 上限 25 → percent 2.5/25=10%（硬编码 20% 会得 12.5→13） */
-  assert.equal(segsOf(h.chipOf(ui.wrap)), '10,10,10');
-});
-
-test('account spend above small-model cap clamps at 100% (exc band) with remaining $0.00', () => {
-  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
-  h.inject(); h.boot(); h.tick();
-  const heavy = {
-    fiveHour: { percent: 30, resetsAt: null, used: 3.6, total: 12, remaining: 8.4, currency: 'USD' },
-    weekly: { percent: 30, resetsAt: null, used: 9, total: 30, remaining: 21, currency: 'USD' },
-    monthly: { percent: 36.67, resetsAt: null, used: 22, total: 60, remaining: 38, currency: 'USD' },
-  };
-  h.window.__zusageUpdate(h.payload({ provider: 'opencode-go-chat', model: 'kimi-k3', quota: ocQuota(heavy) }));   // kimi-k3 月度 $15
-  const chip = h.chipOf(ui.wrap);
-  assert.equal(segsOf(chip), '100,100,100');
-  assert.match(chip.innerHTML, /zu-qb-exc/, '≥100% 走满档异常态');
-  chip.listeners.get('mouseenter')[0].call(chip);
-  assert.match(h.tipEl().innerHTML, /剩余 \$0\.00/);
-});
-
-test('model switch re-renders from the same unmutated source entry without refetch', () => {
+test('model switch leaves chip and tooltip numbers unchanged and never mutates the source entry', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
   const quota = ocQuota();
-  const srcBefore = JSON.stringify(quota.sources['opencode:opencode-go-chat']);   // 首次换算前采集：零变异断言直设防首帧污染
-  h.window.__zusageUpdate(h.payload({ provider: 'opencode-go-chat', model: 'deepseek-v4.1-flash', quota }));
-  assert.equal(segsOf(h.chipOf(ui.wrap)), '1,2,4', 'deepseek-v4.1-flash → 模型口径');
-  h.window.__zusageUpdate(h.payload({ provider: 'opencode-go-chat', model: 'glm-5.2', quota }));   // glm-5.2 月度 $60 = 基线，换算为恒等
-  assert.equal(segsOf(h.chipOf(ui.wrap)), '2,3,7');
-  h.window.__zusageUpdate(h.payload({ provider: 'opencode-go-chat', model: 'gpt-6-luna', quota }));   // $15：5h=3 → 0.2556/3=8.52→9、周=7.5 → 0.7902/7.5=10.54→11、月=15 → 4.3969/15=29.31→29
-  assert.equal(segsOf(h.chipOf(ui.wrap)), '9,11,29');
+  const srcBefore = JSON.stringify(quota.sources['opencode:opencode-go-chat']);   // 首帧前采集：零变异断言直设防首帧污染
+  for (const model of ['deepseek-v4.1-flash', 'kimi-k3', 'glm-5.2', 'deepseek-v9-fake']) {
+    h.window.__zusageUpdate(h.payload({ provider: OC.provider, model, quota }));
+    const chip = h.chipOf(ui.wrap);
+    assert.ok(chip, 'chip stays mounted for ' + model);
+    assert.equal(segsOf(chip), '2,3,7', model + '：分段恒为源数据 percent');
+    chip.listeners.get('mouseenter')[0].call(chip);
+    const html = h.tipEl().innerHTML;
+    assert.match(html, /月度窗口<\/b><span>已用 7\.3% · \$4\.40 \/ \$60\.00/, model + '：月窗行');
+    assert.ok(html.includes('（当前 <span class="qt-cur">' + model + '</span>）'), 'tooltip 跟随当前模型 ' + model);
+  }
   assert.equal(JSON.stringify(quota.sources['opencode:opencode-go-chat']), srcBefore, '原始源数据零变异');
 });
 
-test('prototype-key model names never hit the table: constructor must not kill the chip or convert', () => {
-  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
-  h.inject(); h.boot(); h.tick();
-  h.window.__zusageUpdate(h.payload({ provider: 'opencode-go-chat', model: 'constructor', quota: ocQuota() }));
-  const chip = h.chipOf(ui.wrap);
-  assert.ok(chip, 'Object.prototype 键名不得让 chip 消失（hasOwnProperty 守卫）');
-  assert.equal(segsOf(chip), '2,3,7', '未命中表 → 基线原样');
+test('other tiers render their own meters as-is — percent shown as given, not recomputed from amounts (Plus-like 24/60/120)', () => {
+  const h = harness(), m = mount(h, Object.assign({ quota: ocQuota(OC_PLUS) }, OC));
+  assert.equal(segsOf(m.chip), '2,3,7', 'percent 照接口值；按 used/total 重算会得到 1/1/4');
+  const html = m.tip();
+  assert.match(html, /5小时窗口<\/b><span>已用 2\.1% · \$0\.26 \/ \$24\.00 · 剩余 \$23\.74<\/span>/);
+  assert.match(html, /本周窗口<\/b><span>已用 2\.6% · \$0\.79 \/ \$60\.00 · 剩余 \$59\.21<\/span>/);
+  assert.match(html, /月度窗口<\/b><span>已用 7\.3% · \$4\.40 \/ \$120\.00 · 剩余 \$115\.60<\/span>/);
 });
 
-test('bare opencode source id (env/secrets key, non-composite) converts too', () => {
-  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
-  h.inject(); h.boot(); h.tick();
-  h.window.__zusageUpdate(h.payload({ provider: 'opencode-go-chat', model: 'deepseek-v4.1-flash',
-    quota: { active: 'opencode', byProvider: { 'opencode-go-chat': 'opencode' },
-      sources: { opencode: OC_SOURCE(OC_METERS) } } }));
-  assert.equal(segsOf(h.chipOf(ui.wrap)), '1,2,4', '裸 opencode 源 id 与复合源同门槛换算');
+test('bare opencode source id (env/secrets key, non-composite) renders as-is on chip and tooltip', () => {
+  const h = harness(), m = mount(h, Object.assign({ quota: ocQuota(OC_METERS, undefined, 'opencode') }, OC));
+  assert.equal(segsOf(m.chip), '2,3,7', '裸 opencode 源 id 与复合源同口径（v385 曾换算成 1/2/4）');
+  const html = m.tip();
+  assert.match(html, /5小时窗口<\/b><span>已用 2\.1% · \$0\.26 \/ \$12\.00 · 剩余 \$11\.74/);
+  assert.match(html, /本周窗口<\/b><span>已用 2\.6% · \$0\.79 \/ \$30\.00 · 剩余 \$29\.21/);
+  assert.match(html, /月度窗口<\/b><span>已用 7\.3% · \$4\.40 \/ \$60\.00/);
 });
 
-test('gate-fail passthrough never renders wire-provided modelBasis unescaped', () => {
-  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
-  h.inject(); h.boot(); h.tick();
-  h.window.__zusageUpdate(h.payload({ provider: 'opencode-go-chat', model: 'not-in-table',
-    quota: ocQuota(OC_METERS, { modelBasis: '<i>x</i>' }) }));
-  const chip = h.chipOf(ui.wrap);
-  chip.listeners.get('mouseenter')[0].call(chip);
-  const html = h.tipEl().innerHTML;
-  assert.ok(!/<i>x<\/i>/.test(html), '透传的 modelBasis 必须经 esc 渲染');
-  assert.match(html, /&lt;i&gt;x&lt;\/i&gt;/, '转义后可见（防直出）');
+test('non-opencode source with the same windows is unaffected', () => {
+  const h = harness(), m = mount(h, { provider: 'acme-chat', model: OC.model,
+    quota: { active: 'acme:acme-chat', byProvider: { 'acme-chat': 'acme:acme-chat' },
+      sources: { 'acme:acme-chat': OC_SOURCE(OC_METERS) } } });
+  assert.equal(segsOf(m.chip), '2,3,7');
+});
+
+test('remaining view (v251) is derived from the official percent, on chip and tooltip', () => {
+  const h = harness({ prefs: { 'zusage3.quotaRemain': '1' } });
+  const m = mount(h, Object.assign({ quota: ocQuota(OC_453) }, OC));
+  assert.equal(segsOf(m.chip), '99,93,60', '剩余%=100−官方已用%（1.33/6.67/40.33 的补数；v385 曾得 99/96/76）');
+  assert.match(m.chip.getAttribute('aria-label'), /套餐剩余 5时 99%，7天 93%，月 60%/);
+  const html = m.tip();   // 剩余口径下窗口行：剩余% 打头，已用退为行末明细
+  assert.match(html, /5小时窗口<\/b><span>剩余 98\.7% · \$11\.84 \/ \$12\.00 · 已用 \$0\.16/);
+  assert.match(html, /本周窗口<\/b><span>剩余 93\.3% · \$28\.00 \/ \$30\.00 · 已用 \$2\.00/);
+  assert.match(html, /月度窗口<\/b><span>剩余 59\.7% · \$35\.80 \/ \$60\.00 · 已用 \$24\.20/);
+});
+
+test('remaining view with percent-only windows shows the complement of the official percent', () => {
+  const h = harness({ prefs: { 'zusage3.quotaRemain': '1' } });
+  const m = mount(h, Object.assign({ quota: ocQuota(OC_PCT_ONLY) }, OC));
+  assert.equal(segsOf(m.chip), '98,97,93');
+  const html = m.tip();
+  assert.match(html, /5小时窗口<\/b><span>剩余 97\.9%<\/span>/);
+  assert.match(html, /本周窗口<\/b><span>剩余 97\.4%<\/span>/);
+  assert.match(html, /月度窗口<\/b><span>剩余 92\.7%<\/span>/);
+  assert.doesNotMatch(html, /\$\d/, '纯百分比窗口不得凭空出现金额');
+});
+
+test('percent-only windows (public usage fallback chain, no amounts) render as-is', () => {
+  const h = harness(), m = mount(h, Object.assign({ quota: ocQuota(OC_PCT_ONLY) }, OC));
+  assert.equal(segsOf(m.chip), '2,3,7');
+  const html = m.tip();
+  assert.match(html, /5小时窗口<\/b><span>已用 2\.1%<\/span>/);
+  assert.match(html, /本周窗口<\/b><span>已用 2\.6%<\/span>/);
+  assert.match(html, /月度窗口<\/b><span>已用 7\.3%<\/span>/);
+  assert.doesNotMatch(html, /\$\d/, '纯百分比窗口不得凭空出现金额');
+});
+
+test('tooltip "other sources" row lists a non-primary opencode source with its own percents', () => {
+  const h = harness(), m = mount(h, { provider: 'acme-chat', model: OC.model,
+    quota: { active: 'acme:acme-chat', byProvider: { 'acme-chat': 'acme:acme-chat' },
+      sources: { 'acme:acme-chat': OC_SOURCE(OC_METERS), 'opencode:opencode-go-chat': OC_SOURCE(OC_METERS) } } });
+  /* 夹具没有 srcLabels，标签回退为源 id */
+  assert.match(m.tip(), /其他源<\/b><span>opencode:opencode-go-chat 2% 3% 7%<\/span>/);
+});
+
+test('tooltip "other sources" row keeps the official percents in the remaining view too', () => {
+  const h = harness({ prefs: { 'zusage3.quotaRemain': '1' } });
+  const m = mount(h, { provider: 'acme-chat', model: OC.model,
+    quota: { active: 'acme:acme-chat', byProvider: { 'acme-chat': 'acme:acme-chat' },
+      sources: { 'acme:acme-chat': OC_SOURCE(OC_METERS), 'opencode:opencode-go-chat': OC_SOURCE(OC_METERS) } } });
+  /* 剩余口径下该行是 100 − 官方已用% 的补数，同样不得按模型换算 */
+  assert.match(m.tip(), /其他源<\/b><span>opencode:opencode-go-chat 98% 97% 93%<\/span>/);
+});
+
+test('wire-provided modelBasis is not a protocol field: never rendered raw nor as a note', () => {
+  const h = harness(), m = mount(h, Object.assign({ quota: ocQuota(OC_METERS, { modelBasis: '<i>x</i>' }) }, OC));
+  const html = m.tip();
+  assert.ok(!/<i>x<\/i>/.test(html), '快照透传的未知字段不得直出');
+  assert.ok(!/&lt;i&gt;x&lt;\/i&gt;/.test(html), '也不作为披露文本渲染');
+  assert.doesNotMatch(html, /窗口总额已按当前模型/);
+  assert.match(html, /套餐池为账号级/);
+  assert.equal(segsOf(m.chip), '2,3,7');
+  assert.match(html, /月度窗口<\/b><span>已用 7\.3% · \$4\.40 \/ \$60\.00/);
+});
+
+test('English UI shows the same as-is numbers in the window rows and the account-level footer', () => {
+  const h = harness({ prefs: { 'zusage3.lang': 'en' } });
+  const m = mount(h, Object.assign({ quota: ocQuota(OC_453) }, OC));
+  assert.equal(segsOf(m.chip), '1,7,40');
+  /* aria-label 单独锁定：完整档 aria 走 fullAria，与可见分段不是同一段代码 */
+  assert.equal(m.chip.getAttribute('aria-label'), 'Plan used 5h 1%, 7d 7%, 1mo 40%');
+  const html = m.tip();
+  assert.match(html, /5-hour window<\/b><span>used 1\.3% · \$0\.16 \/ \$12\.00 · remaining \$11\.84/);
+  assert.match(html, /This week<\/b><span>used 6\.7% · \$2\.00 \/ \$30\.00 · remaining \$28\.00/);
+  assert.match(html, /Monthly<\/b><span>used 40\.3% · \$24\.20 \/ \$60\.00 · remaining \$35\.80/);
+  assert.match(html, /The pool is account-level/);
+  assert.doesNotMatch(html, /Window totals are scaled/);
+});
+
+test('English UI in the remaining view shows the same as-is numbers', () => {
+  const h = harness({ prefs: { 'zusage3.lang': 'en', 'zusage3.quotaRemain': '1' } });
+  const m = mount(h, Object.assign({ quota: ocQuota(OC_453) }, OC));
+  assert.equal(segsOf(m.chip), '99,93,60');
+  assert.equal(m.chip.getAttribute('aria-label'), 'Plan remaining 5h 99%, 7d 93%, 1mo 60%');
+  const html = m.tip();
+  assert.match(html, /5-hour window<\/b><span>remaining 98\.7% · \$11\.84 \/ \$12\.00 · used \$0\.16/);
+  assert.match(html, /This week<\/b><span>remaining 93\.3% · \$28\.00 \/ \$30\.00 · used \$2\.00/);
+  assert.match(html, /Monthly<\/b><span>remaining 59\.7% · \$35\.80 \/ \$60\.00 · used \$24\.20/);
 });
