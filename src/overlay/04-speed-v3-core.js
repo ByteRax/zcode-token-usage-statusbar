@@ -75,7 +75,10 @@
         }
       }
       var meta = pids[r.s] || ["", ""];
-      var ti = spdNum(r.i), to = spdNum(r.o), tok = (ti + to) > 0 ? ti + to : null;
+      var ti = spdNum(r.i), to = spdNum(r.o);
+      /* 行级 tok 与日行同一严格判定（v457）：i/o 任一缺失或非法 → tok 未知，不把残缺的
+       * i+o 当合计显示；行上的 i/o 字段沿用既有 spdNum 口径不变（v253 起恒成对产出） */
+      var tok = (spd3TokNum(r.i) !== null && spd3TokNum(r.o) !== null && ti + to > 0) ? ti + to : null;
       /* 无 tk 的轮表行 = 恰一个入列模型且其 token 恰为轮级合计（v457 生产端契约；
        * 旧帧的单模型轮同取轮级 i+o，多模型轮各模型 tt 保持未知） */
       if (!tokArr && models.length === 1 && tok !== null) models[0].tt = tok;

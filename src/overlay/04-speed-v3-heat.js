@@ -375,35 +375,44 @@
        * 计高宽（格高减内距）。速度永远保留：缩字只作用于带 token 行的值组（.zu3-vwrap
        * 内——无 token 的格观感不变），且限 token 可显示的高宽区间（与隐藏区间共边界，
        * 不出「token 被藏、速度却已缩」的两种字号）；格太矮或太窄时 token 行整行隐藏。
-       * 宽度线两种容器不同（spec §25.2 宽度线修正）：日历格一条 30px；周列/月列格按
-       * 紧凑写法的实测自然宽分三档——「123.4万」这类（4 位数字带小数点）7px 下 28.4px、
-       * 6.5px 下 26.5px、6px 下 24.5px，「1234万」再窄 2.4px——所以 ≥30px 用 7px、
-       * 28~30px 用 6.5px、26~28px 用 6px、<26px 隐藏。周列 ≥16 列横向滚动后列宽钉在
-       * 34px（内容宽 28.2px）、月列 17/18 列内容宽 28.4/26.3px，首版沿用日历格的 30px
-       * 会把这些常见历史长度的 token 行全藏；月列 19 列（内容宽 24.4px）仍放不下，隐藏。
+       * 宽度线两种容器不同（spec §25.2 宽度线修正），都按各形态实际写法的实测自然宽
+       * 定档、每档留 ≥1.4px 余量。日历格用全文写法——「1234.57万」在 9px/7px/6.5px 下
+       * 47.8/37.8/35.3px：≥49.5px 跟随高度档字号，39.5~49.5px 降到 7px，36.8~39.5px
+       * 降到 6.5px，<36.8px 隐藏（首版一条 30px 线，窄窗 620~700px 下 token 被裁成
+       * 省略号）。周列/月列格走紧凑写法——「123.4万」在 7px/6.5px/6px 下 28.4/26.5/
+       * 24.5px，「1234万」再窄 2.4px：≥30px 用 7px、28~30px 用 6.5px、26~28px 用 6px、
+       * <26px 隐藏。周列 ≥16 列横向滚动后列宽钉在 34px（内容宽 28.2px）、月列 17/18 列
+       * 内容宽 28.4/26.3px，沿用日历格的隐藏线会把这些常见历史长度的 token 行全藏；
+       * 月列 19 列（内容宽 24.4px）仍放不下，隐藏。
        * 阈值=真实 Electron 夹具实测（spec §25.2）：日历格内容高 45.4/35.8/29（5/6/7
-       * 行，日号行占 8px）；周列格无日号行（头部仅模型点 ≤6px），阈值整体下移 8px。
-       * 边界不留缝（合并前审查实测，Electron 44/45 同）：隐藏条件写成范围查询
-       * `(width < Npx)`，与缩字档的下界 Npx 互补。上界若写成 `(max-width:N-0.1px)`，
-       * 落在 (N-0.1, N) 里的格既不隐藏也不缩字，token 按原字号显示后被裁成省略号；
-       * 写成 N-0.0001px 更糟——引擎对 max-/min- 的比较有约 1/64px 的容差，
-       * `max-width:25.9999px` 会连 26px 的格一起隐藏。 */
+       * 行，日号行占 8px）；周列格无日号行（头部仅模型点 ≤6px），速度缩字线比日历格
+       * 低 8px、隐藏线低 5px。
+       * 边界不留缝（合并前审查实测，ZCode 4.0.0 = Electron 44 / Chrome 152 与夹具
+       * Electron 45 同）：隐藏条件写成范围查询 `(width < Npx)`——N 以下恒隐藏、N 起不
+       * 隐藏；缩字档下界会提前约 2/128px 为真，这段重叠由排在后面的隐藏规则胜出。上界
+       * 若写成 `(max-width:N-0.1px)`，落在 (N-0.1, N) 里的格既不隐藏也不缩字，token 按
+       * 原字号显示后被裁成省略号；写成 N-0.0001px 更糟——引擎对 max-/min- 的比较有约
+       * 1/64px 的容差，`max-width:25.9999px` 会连 26px 的格一起隐藏。 */
       ".zu-sv3-root .zu3-hm-grid .zu-hm-cell{container-type:size;container-name:zu3hc}" +
       ".zu-sv3-root .zu3-hh-grid .zu-hm-cell{container-type:size;container-name:zu3hw}" +
-      "@container zu3hc (max-height:39px) and (min-height:26.5px) and (min-width:30px){" +
+      "@container zu3hc (max-height:39px) and (min-height:26.5px) and (min-width:36.8px){" +
         ".zu-sv3-root .zu3-tk,.zu-sv3-root .zu3-cal .zu3-tk{font-size:7px}}" +
-      "@container zu3hc (max-height:33px) and (min-height:26.5px) and (min-width:30px){" +
+      "@container zu3hc (max-height:33px) and (min-height:26.5px) and (min-width:36.8px){" +
         ".zu-sv3-root .zu3-vwrap .zu3-v{font-size:8px}" +
         ".zu-sv3-root .zu3-cal .zu3-vwrap .zu3-cv{font-size:10px}" +
         ".zu-sv3-root .zu3-tk,.zu-sv3-root .zu3-cal .zu3-tk{font-size:6.5px}}" +
       "@container zu3hw (max-height:25px) and (min-height:21.5px) and (min-width:26px){" +
         ".zu-sv3-root .zu3-vwrap .zu3-v{font-size:8px}" +
         ".zu-sv3-root .zu3-hh-grid .zu3-tk{font-size:6.5px}}" +
-      /* 窄列两档：与上面的高度缩字档同特异性，排在它之后才胜出（窄且矮的格 token 取宽度档的字号） */
+      /* 窄格宽度档：与上面的高度缩字档同特异性，排在它们之后才胜出（窄且矮的格 token 取宽度档的字号） */
+      "@container zu3hc (width >= 39.5px) and (width < 49.5px){" +
+        ".zu-sv3-root .zu3-tk,.zu-sv3-root .zu3-cal .zu3-tk{font-size:7px}}" +
+      "@container zu3hc (width >= 36.8px) and (width < 39.5px){" +
+        ".zu-sv3-root .zu3-tk,.zu-sv3-root .zu3-cal .zu3-tk{font-size:6.5px}}" +
       "@container zu3hw (width >= 28px) and (width < 30px){.zu-sv3-root .zu3-hh-grid .zu3-tk{font-size:6.5px}}" +
       "@container zu3hw (width >= 26px) and (width < 28px){.zu-sv3-root .zu3-hh-grid .zu3-tk{font-size:6px}}" +
       "@container zu3hc (height < 26.5px){.zu-sv3-root .zu3-tk{display:none}}" +
-      "@container zu3hc (width < 30px){.zu-sv3-root .zu3-tk{display:none}}" +
+      "@container zu3hc (width < 36.8px){.zu-sv3-root .zu3-tk{display:none}}" +
       "@container zu3hw (height < 21.5px){.zu-sv3-root .zu3-tk{display:none}}" +
       "@container zu3hw (width < 26px){.zu-sv3-root .zu3-tk{display:none}}" +
       "</style>";

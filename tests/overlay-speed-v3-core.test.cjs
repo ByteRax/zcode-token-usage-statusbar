@@ -899,14 +899,19 @@ test('v457 tok/tt 解包（轮表）: tk 与 msl 按原始下标对齐、无 tk 
     { out: 700, ms: 7000, i: 4000, o: 700, n: 2, msl: [[0, 500, 5000, 1], [1, 200, 2000, 1]] },     // 无 tk 多模型轮
     { out: 300, ms: 1000, i: 1000, o: 300, n: 2, msl: [[0, 200, 1000, 1], [2, 100, 1000, 1]], tk: ['x', -1] },   // 非法 tk 值（非数字/负数）
     { out: 300, ms: 3000, i: 2000, o: 300, n: 1, msl: [[0, 0, 0, 0], [2, 300, 3000, 1]], tk: [7, 2300] },  // 无效条目占号
+    { out: 200, ms: 1000, i: 1000, n: 1, msl: [[0, 200, 1000, 1]] },                                  // 畸形帧：i 有、o 缺席
+    { out: 300, ms: 2000, o: 300, n: 1, msl: [[0, 300, 2000, 1]] },                                  // 畸形帧：o 有、i 缺席
   ]);
   const T = vm.runInContext('spd3Unpack(__h)', ctx).turns;
-  assert.deepEqual(host(T.map(r => r.tok)), [7900, 3400, 4700, 1300, 2300], '轮表行 tok=i+o（行级合计，与有无 tk 无关）');
+  assert.deepEqual(host(T.map(r => r.tok)), [7900, 3400, 4700, 1300, 2300, null, null], '轮表行 tok=i+o（行级合计，与有无 tk 无关）；i/o 残缺未知');
   assert.deepEqual(host(T[0].models.map(m => m.tt)), [5000, 2900], 'tk 与 msl 逐条对齐');
   assert.deepEqual(host(T[1].models.map(m => m.tt)), [3400], '无 tk 的单模型轮：tt=轮级 i+o（生产端契约）');
   assert.deepEqual(host(T[2].models.map(m => m.tt)), [null, null], '无 tk 的多模型轮：各模型 tt 未知');
   assert.deepEqual(host(T[3].models.map(m => m.tt)), [null, null], '非法 tk 值（非数字/负数）→ 未知（绝不当 0，也不回退 i+o）');
   assert.deepEqual(host(T[4].models.map(m => m.tt)), [2300], '无效 msl 条目跳过但占号：tk[1] 归到 Gemini-C，tk[0] 不错位');
+  assert.deepEqual(host(T[5].models.map(m => m.tt)), [null], 'i/o 残缺（o 缺席）：不把 i 当合计，也不由它推导单模型 tt');
+  assert.deepEqual(host(T[6].models.map(m => m.tt)), [null], 'i/o 残缺（i 缺席）：不把 o 当合计，也不由它推导单模型 tt');
+  assert.deepEqual(host([[T[5].i, T[5].o], [T[6].i, T[6].o]]), [[1000, 0], [0, 300]], '行上的 i/o 字段沿用既有口径（缺席记 0），不受 tok 严格判定影响');
 });
 
 test('v457 tok/tt 解包（speed_days）: 合计恒为 tok、tk 只含合计的单模型日取合计、多模型日带段按序号、只含合计的多模型日未知、旧帧未知', () => {
@@ -920,20 +925,35 @@ test('v457 tok/tt 解包（speed_days）: 合计恒为 tok、tk 只含合计的�
       [700, 7000, 2, 1, 0, [[0, 300, 3000, 1, 1], [1, 400, 4000, 1, 1]], [8000, 700]],                // 多模型日只含合计（窗口外）
       [800, 8000, 1, 1, 0, [[1, 800, 8000, 1, 1]], [5000, 800, 4800]],                                 // 单入列模型日带段（有未入列 token）
       [600, 6000, 1, 1, 0, [[0, 600, 6000, 1, 1]], '3400'],                                             // 畸形帧：tk 不是数组
-      [650, 6500, 1, 1, 0, [[0, 650, 6500, 1, 1]], ['x', 800, 500]],                                    // 畸形帧：合计段非法
-      [900, 9000, 1, 1, 0, [[0, 900, 9000, 1, 1]]],                                                     // 旧帧：6 位无 tk
+      [650, 6500, 1, 1, 0, [[0, 650, 6500, 1, 1]], ['x', 800, 500]],                                    // 5 畸形帧：输入合计非法
+      [660, 6600, 1, 1, 0, [[0, 660, 6600, 1, 1]], [3000, 'x', 600]],                                   // 6 畸形帧：输出合计非法
+      [670, 6700, 1, 1, 0, [[0, 670, 6700, 1, 1]], ['x', 700]],                                         // 7 只含合计且输入非法
+      [675, 6750, 1, 1, 0, [[0, 675, 6750, 1, 1]], [3000, 'x']],                                        // 8 只含合计且输出非法
+      [680, 6800, 2, 1, 0, [[0, 400, 4000, 1, 1], [1, 280, 2800, 1, 1]], [9000, 1400, 'x', 4400]],    // 9 每模型段首条非法
+      [690, 6900, 2, 2, 0, [[0, 0, 0, 0], [1, 690, 6900, 1, 1]], [9000, 1400, 6000, 4400]],           // 10 无效 msl 条目跳过但占号
+      [900, 9000, 1, 1, 0, [[0, 900, 9000, 1, 1]]],                                                     // 11 旧帧：6 位无 tk
     ] };
   const R = vm.runInContext('spd3UnpackDays(__sd)', ctx).rows;
-  assert.equal(R.length, 7, '空日不产行');
-  assert.deepEqual(host(R.map(r => r.tok)), [10400, 3500, 8700, 5800, null, null, null], '日行 tok=tin+tout；旧帧与畸形帧未知');
-  assert.deepEqual(host(R.map(r => [r.i, r.o])), [[9000, 1400], [3000, 500], [8000, 700], [5000, 800], [0, 0], [0, 0], [0, 0]],
+  assert.equal(R.length, 12, '空日不产行');
+  const ZERO = [0, 0];
+  assert.deepEqual(host(R.map(r => r.tok)), [10400, 3500, 8700, 5800, null, null, null, null, null, 10400, 10400, null],
+    '日行 tok=tin+tout；旧帧与畸形帧（含输入或输出合计任一非法）未知；每模型段非法不影响行级合计');
+  assert.deepEqual(host(R.map(r => [r.i, r.o])), [[9000, 1400], [3000, 500], [8000, 700], [5000, 800], ZERO, ZERO, ZERO, ZERO, ZERO, [9000, 1400], [9000, 1400], ZERO],
     '日行 i/o 由 tk 补齐；旧帧与合计未知的行保持 0');
-  assert.deepEqual(host(R[0].models.map(m => m.tt)), [6000, 4400], '带每模型段：按 msl 条目序号对齐');
-  assert.deepEqual(host(R[1].models.map(m => m.tt)), [3500], 'tk 只含合计 + 恰一个入列模型 → tt=合计');
-  assert.deepEqual(host(R[2].models.map(m => m.tt)), [null, null], '多模型日的 tk 只含合计 → 各模型未知（不按比例摊）');
-  assert.deepEqual(host(R[3].models.map(m => m.tt)), [4800], '单入列模型日带段（有未入列 token）→ 取段，不取合计 5800');
-  assert.deepEqual(host(R[4].models.map(m => m.tt)), [null], 'tk 不是数组 → 各模型 tt 未知');
-  assert.deepEqual(host(R[5].models.map(m => m.tt)), [500], '合计段非法：每模型段照常读（500），但行级 tok 未知');
+  assert.deepEqual(host(R.map(r => r.models.map(m => m.tt))), [
+    [6000, 4400],   // 带每模型段：按 msl 条目序号对齐
+    [3500],         // tk 只含合计 + 恰一个入列模型 → tt=合计
+    [null, null],   // 多模型日的 tk 只含合计 → 各模型未知（不按比例摊）
+    [4800],         // 单入列模型日带段（有未入列 token）→ 取段，不取合计 5800
+    [null],         // tk 不是数组 → 各模型 tt 未知
+    [500],          // 输入合计非法：每模型段照常读，但行级 tok 未知
+    [600],          // 输出合计非法：同上
+    [null],         // 只含合计且输入非法 → 不由合计推导单模型 tt
+    [null],         // 只含合计且输出非法 → 同上
+    [null, 4400],   // 每模型段首条非法 → 该模型未知，其余照常
+    [4400],         // 无效 msl 条目跳过但占号：tk[3] 归到第二条
+    [null],         // 旧帧：无 tk → 未知
+  ], '日行各模型 tt');
 });
 
 test('v457 tok 聚合与筛选重算: 未筛选=Σ行 tok；只选部分模型=所选 tt 之和、未知即 null；全选沿用行级合计', () => {
