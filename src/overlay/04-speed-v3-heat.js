@@ -66,27 +66,76 @@
       sub = SPD_L(" · 活跃 " + act + "/" + span + " 天", " · active " + act + "/" + span + " days");
     return { mode: mode, dense: dense, sub: sub };
   }
-  /* 格 aria（spec §7）：完整日期 + 均速档位 + 模型数；无记录日显式说明，绝不 0 t/s */
-  function spd3CellAria(t, agg) {
+  /* v457（spec §25）：Token 总消耗文本——agg.tok 已知（>0 的有限数）才返回，经
+   * o.fmtTok（跟随万/亿开关）格式化，回调缺席回退原值；未知返回空串，调用点据此
+   * 不出 token 行、aria 不提 token（绝不估数）。compact=窄列形态（周列/月列）取
+   * 紧凑写法（spd3TokCompact），日历格与日卡、aria、悬停卡一律全文。 */
+  function spd3TokTxt(agg, o, compact) {
+    var t = agg && agg.tok;
+    if (!(typeof t === "number" && isFinite(t) && t > 0)) return "";
+    var f = o && typeof o.fmtTok === "function" ? o.fmtTok : null;
+    var txt = String(f ? f(t) : t);
+    return compact ? spd3TokCompact(txt) : txt;
+  }
+  /* 窄列紧凑写法（spec §25.2）：周列/月列格内容宽仅 28–58px，放不下「1234.57万」
+   * 这类 9 字符写法；整数位 ≥3 位时只保留到合计 4 位数字（1234万、123.4万、12.34万、
+   * 1.23亿），只裁小数位、不改量级，精确值看悬停卡与 aria。非「数字[.小数]单位」
+   * 形态原样返回。 */
+  function spd3TokCompact(txt) {
+    var m = /^(\d+)(?:\.(\d+))?(.*)$/.exec(txt);
+    if (!m || !m[2]) return txt;
+    var keep = 4 - m[1].length;
+    var dec = keep > 0 ? m[2].slice(0, keep).replace(/0+$/, "") : "";
+    return m[1] + (dec ? "." + dec : "") + m[3];
+  }
+  /* 值组 HTML（spec §25.2）：有 token 文本时速度与 token 两行成组（.zu3-vwrap，
+   * 列内右对齐、在日号下方剩余空间垂直居中）；无 token 时保持裸值结构（v457 前的
+   * 格结构零变化）。valCls=速度元素全类名（本月 .zu3-v / 全部日历 .zu3-v zu3-cv /
+   * 日卡 .zu3-dcv），由调用点给全。 */
+  function spd3ValHTML(valCls, v, tokTxt) {
+    var vHtml = '<span class="' + valCls + '">' + spdEsc(spd3Fmt1(v)) + "</span>";
+    if (!tokTxt) return vHtml;
+    return '<span class="zu3-vwrap">' + vHtml + '<span class="zu3-tk">' + spdEsc(tokTxt) + "</span></span>";
+  }
+  /* 悬停卡「Token 总消耗」行（spec §25.2）：tok 已知才出行；数值 nowrap 一行，拆分
+   * 「输入 a · 输出 b」作次行小字（柱状图悬停卡 .zu-sv-crow>b small 同构）。仅当行内
+   * 输入+输出合计恰等于 tok（未筛选、或所选模型即全部 token）时带拆分；筛选后只显
+   * 合计不拆——i/o 是整行口径，拆分会冒充所选模型的拆分。 */
+  function spd3TokRowHTML(agg, o) {
+    var tt = spd3TokTxt(agg, o);
+    if (!tt) return "";
+    var f = o && typeof o.fmtTok === "function" ? o.fmtTok : null;
+    var fi = spdNum(agg.i), fo = spdNum(agg.o), sub = "";
+    if (fi + fo === agg.tok)
+      sub = "<small>" + spdEsc(SPD_L("输入 ", "in ") + String(f ? f(fi) : fi) +
+        SPD_L(" · 输出 ", " · out ") + String(f ? f(fo) : fo)) + "</small>";
+    return '<div class="zu-sv3-crow"><span>' + SPD_L("Token 总消耗", "Total tokens") +
+      '</span><b class="zu-sv3-ctok">' + spdEsc(tt + SPD_L(" token", " tokens")) + sub + "</b></div>";
+  }
+  /* 格 aria（spec §7）：完整日期 + 均速档位 + 模型数；无记录日显式说明，绝不 0 t/s。
+   * v457：tok 已知时补「消耗 X token」（fmtTok 缺席回退原值） */
+  function spd3CellAria(t, agg, o) {
     var d = spdDate(t), wd = d.getDay();
     var dateTxt = SPD_L(d.getFullYear() + "年" + (d.getMonth() + 1) + "月" + d.getDate() + "日 " + SPD3_WD_ZH[wd],
       SPD3_WD_EN[wd] + ", " + SPD3_MO_EN[d.getMonth()] + " " + d.getDate() + " " + d.getFullYear());
     if (!agg) return dateTxt + SPD_L("，无有效速度记录", ", no rated speed data");
-    var b = tpsBand(agg.v);
+    var b = tpsBand(agg.v), tk = spd3TokTxt(agg, o);
     return dateTxt + SPD_L("，均速 ", ", avg ") + spd3Fmt1(agg.v) + SPD_L(" t/s", " t/s") +
       (b ? SPD_L("，" + b.zh, ", " + b.en) : "") +
-      SPD_L("，" + agg.modelCount + " 个模型", ", " + agg.modelCount + (agg.modelCount === 1 ? " model" : " models"));
+      SPD_L("，" + agg.modelCount + " 个模型", ", " + agg.modelCount + (agg.modelCount === 1 ? " model" : " models")) +
+      (tk ? SPD_L("，消耗 " + tk + " token", ", " + tk + " tokens") : "");
   }
   /* 月格 aria（spec §11.6）：完整年月 + 均速档位 + 「N 天有记录 / M 次请求」；空月
-   * 显式说明，绝不 0 t/s */
-  function spd3MonthAria(mb) {
+   * 显式说明，绝不 0 t/s。v457：tok 已知时补「消耗 X token」 */
+  function spd3MonthAria(mb, o) {
     var txt = SPD_L(mb.y + "年" + (mb.mo + 1) + "月", SPD3_MO_EN[mb.mo] + " " + mb.y);
     if (!(mb.v > 0)) return txt + SPD_L("，无有效速度记录", ", no rated speed data");
-    var b = tpsBand(mb.v);
+    var b = tpsBand(mb.v), tk = spd3TokTxt(mb, o);
     return txt + SPD_L("，均速 ", ", avg ") + spd3Fmt1(mb.v) + SPD_L(" t/s", " t/s") +
       (b ? SPD_L("，" + b.zh, ", " + b.en) : "") +
       SPD_L("，" + mb.days + " 天有记录，" + mb.n + " 次请求",
-        ", " + mb.days + (mb.days === 1 ? " day" : " days") + " with data, " + mb.n + " requests");
+        ", " + mb.days + (mb.days === 1 ? " day" : " days") + " with data, " + mb.n + " requests") +
+      (tk ? SPD_L("，消耗 " + tk + " token", ", " + tk + " tokens") : "");
   }
   /* hover 卡时间行（spec §11.5，v387）：core 已把进行中日/月桶的 item.b 钳到 now，
    * 本层调用点对日/月格统一 Math.min(桶末, now) 下发，卡内动态取 b——b 距区间末
@@ -301,6 +350,48 @@
       ".zu-sv-portal .zu-sv3-mtn{flex:0 0 auto;font-style:normal;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-sv-portal .zu-sv3-mtps{margin-left:auto;font-variant-numeric:tabular-nums;white-space:nowrap}" +
       ".zu-sv-portal .zu-sv3-capped{color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      /* v457：日/月悬停卡 Token 总消耗行——数值一行不折，拆分作次行小字 */
+      ".zu-sv-portal .zu-sv3-ctok{white-space:nowrap;font-variant-numeric:tabular-nums}" +
+      ".zu-sv-portal .zu-sv3-ctok small{display:block;font-size:9px;font-weight:400;" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      /* ---------- v457 §25：数值贴右 + token 行 + 按格高分档 ----------
+       * 贴右：速度值（裸 .zu3-v / 日卡 .zu3-dcv / 值组 .zu3-vwrap）一律贴格右缘，
+       * 日号仍左上、模型点仍右上。值组=速度+token 两行列内右对齐；组的垂直位置沿
+       * 用各形态裸值的既有规则（日历格=margin:auto 0 在日号下方剩余空间居中、周列
+       * 格=贴底、日卡=space-between），故 margin 与两条既有 .zu3-v{margin:auto 0}
+       * 规则一一对应。token 行只在 tok 精确已知时产出，次要灰等宽数字。 */
+      ".zu-sv3-root .zu3-v,.zu-sv3-root .zu3-dcv{align-self:flex-end;text-align:right}" +
+      ".zu-sv3-root .zu3-vwrap{flex:0 0 auto;min-width:0;display:flex;flex-direction:column;align-items:flex-end;text-align:right}" +
+      ".zu-sv3-root .zu3-hm-grid .zu3-vwrap,.zu-sv3-root .zu3-hh-mo .zu3-hh-grid .zu3-vwrap{margin:auto 0}" +
+      ".zu-sv3-root .zu3-tk{flex:0 0 auto;max-width:100%;font-size:8px;line-height:1.15;font-weight:500;" +
+        "font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-sv3-root .zu3-cal .zu3-tk{font-size:9px}" +
+      ".zu-sv3-root .zu3-hh-grid .zu3-tk{font-size:7px}" +
+      /* 分档：日历格（.zu3-hm-grid，本月/全部日历共用，名 zu3hc）与周/月列格
+       * （.zu3-hh-grid，名 zu3hw）各设为尺寸容器——两种网格的行列轨道恒
+       * minmax(0,1fr)/固定上下限，格尺寸由轨道定、不受内容影响，size containment
+       * 不改轨道尺寸；日卡（.zu3-dc-grid，内容定高）不设容器。容器查询按格的内容盒
+       * 计高宽（格高减内距）。速度永远保留：缩字只作用于带 token 行的值组（.zu3-vwrap
+       * 内——无 token 的格观感不变），且限 token 可显示的高宽区间（与隐藏区间共边界，
+       * 不出「token 被藏、速度却已缩」的两种字号）；格太矮或太窄时 token 行整行隐藏。
+       * 阈值=真实 Electron 夹具实测（spec §25.2）：日历格内容高 45.4/35.8/29（5/6/7
+       * 行，日号行占 8px）；周列格无日号行（头部仅模型点 ≤6px），阈值整体下移 8px。 */
+      ".zu-sv3-root .zu3-hm-grid .zu-hm-cell{container-type:size;container-name:zu3hc}" +
+      ".zu-sv3-root .zu3-hh-grid .zu-hm-cell{container-type:size;container-name:zu3hw}" +
+      "@container zu3hc (max-height:39px) and (min-height:26.5px) and (min-width:30px){" +
+        ".zu-sv3-root .zu3-tk,.zu-sv3-root .zu3-cal .zu3-tk{font-size:7px}}" +
+      "@container zu3hc (max-height:33px) and (min-height:26.5px) and (min-width:30px){" +
+        ".zu-sv3-root .zu3-vwrap .zu3-v{font-size:8px}" +
+        ".zu-sv3-root .zu3-cal .zu3-vwrap .zu3-cv{font-size:10px}" +
+        ".zu-sv3-root .zu3-tk,.zu-sv3-root .zu3-cal .zu3-tk{font-size:6.5px}}" +
+      "@container zu3hw (max-height:25px) and (min-height:21.5px) and (min-width:30px){" +
+        ".zu-sv3-root .zu3-vwrap .zu3-v{font-size:8px}" +
+        ".zu-sv3-root .zu3-hh-grid .zu3-tk{font-size:6.5px}}" +
+      "@container zu3hc (max-height:26.4px){.zu-sv3-root .zu3-tk{display:none}}" +
+      "@container zu3hc (max-width:29.9px){.zu-sv3-root .zu3-tk{display:none}}" +
+      "@container zu3hw (max-height:21.4px){.zu-sv3-root .zu3-tk{display:none}}" +
+      "@container zu3hw (max-width:29.9px){.zu-sv3-root .zu3-tk{display:none}}" +
       "</style>";
   }
   /* 本月日历热力（spec §5 month 行）：数据源=an.daysGrid（core 已产当月全日格集，
@@ -338,8 +429,8 @@
         flat.push('<div class="' + cls + '" role="gridcell" aria-hidden="true" data-i="' + i + '">' + head + "</div>");
       } else if (agg) {
         flat.push('<div class="' + cls + '" role="gridcell" tabindex="' + (tabSet3 ? "-1" : "0") + '" data-i="' + i +
-          '" aria-label="' + spdEsc(spd3CellAria(g.t0, agg)) + '">' + head +
-          '<span class="zu3-v">' + spdEsc(spd3Fmt1(agg.v)) + "</span></div>");
+          '" aria-label="' + spdEsc(spd3CellAria(g.t0, agg, o)) + '">' + head +
+          spd3ValHTML("zu3-v", agg.v, spd3TokTxt(agg, o)) + "</div>");
         tabSet3 = true;
       } else {
         flat.push('<div class="' + cls + '" role="gridcell" data-i="' + i +
@@ -462,8 +553,8 @@
         var headMo = '<span class="zu3-hd">' + spd3DotsHTML(mb3, single) + "</span>";
         if (hasMo) {
           moFlat.push('<div class="' + clsMo + '" role="gridcell" tabindex="' + (tabMo ? "-1" : "0") + '" data-i="' + di2 +
-            '" aria-label="' + spdEsc(spd3MonthAria(mb3)) + '">' + headMo +
-            '<span class="zu3-v">' + spdEsc(spd3Fmt1(mb3.v)) + "</span></div>");
+            '" aria-label="' + spdEsc(spd3MonthAria(mb3, o)) + '">' + headMo +
+            spd3ValHTML("zu3-v", mb3.v, spd3TokTxt(mb3, o, true)) + "</div>");
           tabMo = true;
         } else {
           moFlat.push('<div class="' + clsMo + '" role="gridcell" data-i="' + di2 +
@@ -472,7 +563,7 @@
       }
       if (hoverIdx >= 0 && hoverIdx < moCols) {
         var mb4 = byMk[firstMk + hoverIdx];
-        if (mb4 && mb4.v > 0) SPD_PORTAL = spd3MonthCardHTML(mb4);
+        if (mb4 && mb4.v > 0) SPD_PORTAL = spd3MonthCardHTML(mb4, o);
       }
       var moRows = "";
       for (var r4 = 0; r4 < moFlat.length; r4++)
@@ -511,8 +602,8 @@
         var inner = '<span class="zu3-hd">' + spd3DotsHTML(it2, single) + "</span>";
         if (it2) {
           flat.push('<div class="' + cls2 + '" role="gridcell" tabindex="' + (tabSet3 ? "-1" : "0") + '" data-i="' + di +
-            '" aria-label="' + spdEsc(spd3CellAria(ds, it2)) + '">' + inner +
-            '<span class="zu3-v">' + spdEsc(spd3Fmt1(it2.v)) + "</span></div>");
+            '" aria-label="' + spdEsc(spd3CellAria(ds, it2, o)) + '">' + inner +
+            spd3ValHTML("zu3-v", it2.v, spd3TokTxt(it2, o, true)) + "</div>");
           tabSet3 = true;
         }
         else
@@ -571,10 +662,10 @@
         '<span class="zu3-dcw">' + spdEsc(spd3Wd(d3.getDay())) + "</span>";
       /* v395 §18.2：空日卡只保留日期/星期+低对比底，不再重复「无记录」（禁止项 5）；
        * aria-label 仍表达无记录语义。完全无数据在 spd3HistHTML first===Infinity 分支走独立空态。 */
-      var inner = it ? head + '<span class="zu3-dcv">' + spdEsc(spd3Fmt1(it.v)) + "</span>" : head;
+      var inner = it ? head + spd3ValHTML("zu3-dcv", it.v, spd3TokTxt(it, o)) : head;
       cards.push('<div role="row" style="display:contents"><div class="' + cls +
         '" role="gridcell" tabindex="' + (i === 0 ? "0" : "-1") + '" data-i="' + di +
-        '" aria-label="' + spdEsc(spd3CellAria(ds, it)) + '">' + inner + "</div></div>");
+        '" aria-label="' + spdEsc(spd3CellAria(ds, it, o)) + '">' + inner + "</div></div>");
     }
     if (hoverIdx >= 0 && hoverIdx < nDays && days[hoverIdx] && days[hoverIdx].agg)
       SPD_PORTAL = spd3DayCardHTML({ t: days[hoverIdx].t, b: Math.min(days[hoverIdx].end, Date.now()),
@@ -634,10 +725,10 @@
       var head = '<span class="zu3-hd"><span class="zu3-d">' + dn + "</span>" + spd3DotsHTML(it, single) + "</span>";
       /* v395 §18.2：空日只保留日号+低对比底，不再逐格重复「无记录」文字（禁止项 5）；
        * aria-label 仍由 spd3CellAria(ds,null) 表达无记录语义，无障碍不丢。 */
-      var val = it ? '<span class="zu3-v zu3-cv">' + spdEsc(spd3Fmt1(it.v)) + "</span>" : "";
+      var val = it ? spd3ValHTML("zu3-v zu3-cv", it.v, spd3TokTxt(it, o)) : "";
       if (it) {
         flat.push('<div class="' + cls + '" role="gridcell" tabindex="' + (tabSet3 ? "-1" : "0") + '" data-i="' + di +
-          '" aria-label="' + spdEsc(spd3CellAria(ds, it)) + '">' + head + val + "</div>");
+          '" aria-label="' + spdEsc(spd3CellAria(ds, it, o)) + '">' + head + val + "</div>");
         tabSet3 = true;
       } else {
         flat.push('<div class="' + cls + '" role="gridcell" data-i="' + di +
@@ -679,7 +770,8 @@
       spdEsc(dayTxt + (multi ? SPD_L(" · 模型明细", " · model detail") : "")) + "</b></div>" +
       '<div class="zu-sv3-crow"><span>' + spdEsc(spd3DaySpanTxt(item.t, item.b)) + "</span></div>" +
       '<div class="zu-sv3-crow"><span>' + SPD_L("日均速度", "Day avg") + '</span><b class="zu-sv3-cval' +
-      (bd ? " " + bd.cls : "") + '">' + spdEsc(spd3Fmt1(agg.v)) + SPD_L(" t/s", " t/s") + "</b></div>";
+      (bd ? " " + bd.cls : "") + '">' + spdEsc(spd3Fmt1(agg.v)) + SPD_L(" t/s", " t/s") + "</b></div>" +
+      spd3TokRowHTML(agg, o);
     for (var i = 0; i < models.length; i++) {
       var m = models[i], key = spd3ModelKey(m), mb = tpsBand(m.tps);
       var tn = item.tn ? (spdNum(item.tn[key]) || 0) : spdNum(m.n);
@@ -700,7 +792,8 @@
    * （口径 §0：绝不按日算术平均）、n=Σ请求、days=有记录天数；models 按 key 累计
    * {o,ms,n} 供月卡构成——日桶 models 全空（降级帧筛选清空分量）→ ml 空，月卡如
    * 实省略构成段，绝不伪造；capped=当月存在 capFlag 日（生产端 msl 截断 → 月卡定
-   * 性尾注，不编数字）。 */
+   * 性尾注，不编数字）。v457：月桶另累计 i/o 与 tok（任一日 tok 未知 → 月 tok=null，
+   * 月格不出 token 行、月卡不出 token 行，绝不拿已知日冒充整月）。 */
   function spd3MonthBuckets(items, capByDay) {
     var byM = {}, keys = [];
     for (var i = 0; i < items.length; i++) {
@@ -709,10 +802,13 @@
       var d = spdDate(it.a), mk = d.getFullYear() * 12 + d.getMonth();
       var mb = byM[mk];
       if (!mb) {
-        mb = byM[mk] = { y: d.getFullYear(), mo: d.getMonth(), out: 0, ms: 0, n: 0, days: 0, models: {}, capped: false };
+        mb = byM[mk] = { y: d.getFullYear(), mo: d.getMonth(), out: 0, ms: 0, n: 0, days: 0, models: {}, capped: false,
+          i: 0, o: 0, tok: 0, tokFull: true };
         keys.push(mk);
       }
       mb.out += it.out; mb.ms += it.ms; mb.n += spdNum(it.n); mb.days++;
+      mb.i += spdNum(it.i); mb.o += spdNum(it.o);
+      if (it.tok === null || it.tok === undefined) mb.tokFull = false; else mb.tok += it.tok;
       if (capByDay && capByDay[it.a]) mb.capped = true;
       var mm = it.models || [];
       for (var j = 0; j < mm.length; j++) {
@@ -730,7 +826,8 @@
       months.push({ y: b2.y, mo: b2.mo, t0: new Date(b2.y, b2.mo, 1).getTime(),
         t1: new Date(b2.y, b2.mo + 1, 1).getTime(),
         v: b2.ms > 0 ? b2.out / (b2.ms / 1000) : null,
-        out: b2.out, ms: b2.ms, n: b2.n, days: b2.days, models: ml, capped: b2.capped });
+        out: b2.out, ms: b2.ms, n: b2.n, days: b2.days, models: ml, capped: b2.capped,
+        i: b2.i, o: b2.o, tok: b2.tokFull ? b2.tok : null });
     }
     return months;
   }
@@ -740,7 +837,7 @@
    * 「N 天有记录 / M 次请求」；模型构成=各模型 Σout 占比前 3 +「另有 N 个模型」，
    * 月桶无每模型分量（降级帧）时整段如实省略；capped 定性尾注。空月/无有效速度 →
    * 空串不出卡。动态内容（模型名）一律 spdEsc 转义。 */
-  function spd3MonthCardHTML(mb) {
+  function spd3MonthCardHTML(mb, o) {
     if (!mb || !(mb.v > 0)) return "";
     var bd = tpsBand(mb.v);
     var s = '<div class="zu-sv-card zu-sv3-card" role="tooltip">' +
@@ -751,7 +848,7 @@
       '<div class="zu-sv3-crow"><span>' + SPD_L("月均速度", "Month avg") + '</span><b class="zu-sv3-cval' +
       (bd ? " " + bd.cls : "") + '">' + spdEsc(spd3Fmt1(mb.v)) + SPD_L(" t/s", " t/s") + "</b></div>" +
       '<div class="zu-sv3-crow"><span>' + mb.days + SPD_L(" 天有记录 / ", " days with data / ") +
-      mb.n + SPD_L(" 次请求", " requests") + "</span></div>";
+      mb.n + SPD_L(" 次请求", " requests") + "</span></div>" + spd3TokRowHTML(mb, o);
     var ml = mb.models || [], shown = Math.min(3, ml.length);
     for (var i = 0; i < shown; i++) {
       var m = ml[i], pct = mb.out > 0 ? Math.round(m.o * 100 / mb.out) : 0;

@@ -1,7 +1,9 @@
   /* ---------- v384 生成速度 Tooltip V3：模型级速度统计核心（spd3 纯函数，无 DOM） ----------
    * 数据契约 = specs/speed-tooltip-v3.md §1：轮表 msl 条目扩为 [mIdx,out,ms,n] 四元组
    * （旧二元组兼容）+ 帧级 mkeys 身份表；新顶层 speed_days 全历史按日聚合（生产端
-   * 本地日界、550 天上限）。本分片只做解包/筛选状态机/聚合/管线，是 view/charts/heat
+   * 本地日界、550 天上限）。v457（spec §25）起轮级可选键 tk / 日桶第 7 位 tk 携带每模型
+   * Token 总消耗，解包为行 tok 与模型分量 tt（未知为 null，筛选重算据此保持精确）。
+   * 本分片只做解包/筛选状态机/聚合/管线，是 view/charts/heat
    * （spec §5-§7，另分片实现）唯一的数据上游：消费入口 spd3Analyze(h, sd, sel) → an。
    * 口径铁律（spec §0）：速度恒 = Σ有效输出 ÷ Σ有效生成窗口，绝不逐轮/逐模型算术
    * 平均，绝不用「模型输出 ÷ 整轮耗时」充当模型速度。
@@ -34,7 +36,12 @@
     return { key: key, name: name, pid: mpid, mid: mmid, o: spdNum(p[1]),
       ms: (typeof p[2] === "number" && isFinite(p[2]) && p[2] > 0) ? p[2] : 0,
       n: (typeof p[3] === "number" && isFinite(p[3]) && p[3] > 0) ? p[3] : 0,
-      tn: (typeof p[4] === "number" && isFinite(p[4]) && p[4] > 0) ? p[4] : 0 };
+      tn: (typeof p[4] === "number" && isFinite(p[4]) && p[4] > 0) ? p[4] : 0,
+      tt: null };   /* tt=该模型在本行内的 Token 总消耗（v457，解包层按 tk 填；null=未知） */
+  }
+  /* v457（spec §25）：Token 数只认非负有限数，其余一律 null——未知 ≠ 0，未知不出 token 行 */
+  function spd3TokNum(x) {
+    return (typeof x === "number" && isFinite(x) && x >= 0) ? x : null;
   }
   /* 轮表解包：t 是相对上一轮完成时刻的 delta（升序还原），s/msl 是索引表下标。
    * t 缺失/非法整帧拒绝（fail-closed，minor3）：t 是 delta 累加基准，跳行续跑会让
@@ -56,20 +63,26 @@
       prev = t;
       var outv = spdNum(r.out), ms = spdNum(r.ms);
       if (!(outv > 0 && ms > 0) || !(typeof r.s === "number" && sids[r.s])) continue;
-      var models = [], msAvail = false;
+      var models = [], msAvail = false, tokArr = Array.isArray(r.tk) ? r.tk : null;
       if (r.msl && typeof r.msl.length === "number") {
         for (var j = 0; j < r.msl.length; j++) {
           var m = spd3ModelOf(r.msl[j], mnames, mkeys);
           if (!m) continue;
           if (m.ms > 0) msAvail = true;
+          /* tk 与 msl 按原始下标对齐：无效条目跳过，tk 下标照用 j（不错位） */
+          if (tokArr) m.tt = spd3TokNum(tokArr[j]);
           models.push(m);
         }
       }
       var meta = pids[r.s] || ["", ""];
+      var ti = spdNum(r.i), to = spdNum(r.o), tok = (ti + to) > 0 ? ti + to : null;
+      /* 无 tk 的轮表行 = 恰一个入列模型且其 token 恰为轮级合计（v457 生产端契约；
+       * 旧帧的单模型轮同取轮级 i+o，多模型轮各模型 tt 保持未知） */
+      if (!tokArr && models.length === 1 && tok !== null) models[0].tt = tok;
       out.push({ s: r.s, sid: sids[r.s], sname: snames[r.s] || sids[r.s],
         pid: meta[0] || "", pname: meta[1] || sids[r.s],
         t: t, b: spdNum(r.b) || t, out: outv, ms: ms,
-        i: spdNum(r.i), o: spdNum(r.o), n: spdNum(r.n), models: models, msAvail: msAvail,
+        i: ti, o: to, n: spdNum(r.n), models: models, msAvail: msAvail, tok: tok,
         c: (typeof r.c === "number" && isFinite(r.c)) ? r.c : null, cf: !!r.cf });
     }
     return { turns: out, sid: h.sid || "", source: h.source || "", truncated: !!h.truncated };
@@ -91,8 +104,9 @@
    * days[i] = start 起第 i 个本地自然日（连续；日界由 Python 生产端按本地日历保证，
    * 解包同样按本地日历 new Date(y,m,d+i) 推进，DST 日 23h/25h 与生产端天然对齐，
    * 见 spd3UnpackDaysRaw 注释）。空日=[0,0,0,0,0,0] 跳过不产行，渲染层自己铺空格。
-   * 日行字段与轮表行对齐同形（b=t0、t=当日最后一毫秒、i/o 补 0、c=null），使
-   * spd3Aggregate/筛选重算无需分行处理；sid/pid 留空 = 日行无会话身份，范围筛选
+   * 日行字段与轮表行对齐同形（b=t0、t=当日最后一毫秒、c=null），使
+   * spd3Aggregate/筛选重算无需分行处理；i/o 自 v457 起由第 7 位 tk 补齐（旧帧无 tk →
+   * i=o=0、tok=null）；sid/pid 留空 = 日行无会话身份，范围筛选
    * 天然只命中轮表行；t0 即日历零点，供日桶键直接使用（与轮表行 spdBucket 同源）。 */
   function spd3UnpackDaysRaw(sd) {
     var mnames = Array.isArray(sd.mnames) ? sd.mnames : [];
@@ -113,28 +127,40 @@
       if (!(outv > 0 && ms > 0)) continue;   /* 空日（或全无效日）不产行 */
       var t0 = new Date(y0, mo0, dd0 + i).getTime();
       var t1 = new Date(y0, mo0, dd0 + i + 1).getTime();
+      /* v457：第 7 位 tk=[当日输入, 当日输出, 与 msl 五元组逐条对齐的每模型 token]。
+       * 旧帧无第 7 位 → tok=null（未知，渲染端不出 token 行，绝不估数）。
+       * 每模型段不是每天都带（spec §8 帧体积预算）：恰一个入列模型且 tk 只含合计 →
+       * 该模型 token=合计（这类日在筛选下只有全选或整行剔除两态，推导值不参与显示）；
+       * 多模型日的 tk 只含合计（早于近 N 天）→ 各模型 tt 未知，筛选后不出行 */
+      var tkd = (Array.isArray(e[6]) && e[6].length >= 2) ? e[6] : null;
+      var tin = tkd ? spdNum(tkd[0]) : 0, tout = tkd ? spdNum(tkd[1]) : 0;
       var models = [], msAvail = false;
       if (e[5] && typeof e[5].length === "number") {
         /* v384 S1 打平形态：日行 msl 为五元组平铺序列 [mIdx,out,ms,n,tn, ...]
          * （生产端 cap=8）；逐元素嗅探兼容旧嵌套形态（数组=嵌套条目步长 1，
-         * 数字=打平步长 5）。残缺尾部（不足一个五元组）丢弃不越界读。 */
+         * 数字=打平步长 5）。残缺尾部（不足一个五元组）丢弃不越界读。步长恒 5——
+         * 新字段一律挂第 7 位 tk，不得改步长（旧渲染端按 5 解析）。 */
         var ml3 = e[5];
-        for (var j = 0; j < ml3.length;) {
+        for (var j = 0, k3 = 0; j < ml3.length;) {
           var entry3, step3;
           if (Array.isArray(ml3[j])) { entry3 = ml3[j]; step3 = 1; }
           else if (typeof ml3[j] === "number" && j + 5 <= ml3.length) { entry3 = ml3.slice(j, j + 5); step3 = 5; }
           else break;
           j += step3;
           var m = spd3ModelOf(entry3, mnames, mkeys);
+          /* tk 的每模型段按条目序号对齐：无效条目也占号（跳过但 k3 照加）；越界=未知 */
+          if (m && tkd && tkd.length > 2) m.tt = spd3TokNum(tkd[2 + k3]);
+          k3++;
           if (!m) continue;
           if (m.ms > 0) msAvail = true;
           models.push(m);
         }
       }
+      if (tkd && tkd.length === 2 && models.length === 1) models[0].tt = tin + tout;
       rows.push({ t0: t0, t1: t1, t: t1 - 1, b: t0,
         out: outv, ms: ms, n: spdNum(e[2]), turns: spdNum(e[3]), capped: !!e[4],
         models: models, msAvail: msAvail, sid: "", pid: "", sname: "", pname: "",
-        i: 0, o: 0, c: null, cf: false });
+        i: tin, o: tout, tok: tkd ? tin + tout : null, c: null, cf: false });
     }
     /* end=覆盖末日次日日历零点（合并接缝界，B1/S10）：日行 t 恒 < end，晚于 end 的
      * 轮表行才由 spd3Analyze 并入，无重叠无遗漏。 */
@@ -226,9 +252,12 @@
   function spd3Aggregate(rows, withNames) {
     var out = 0, ms = 0, i = 0, o = 0, n = 0, turns = 0, models = {}, c = 0, priced = false, costFull = true;
     var t0 = Infinity, t1 = 0, last = 0;
+    /* v457：tok=桶内各行 Token 总消耗之和；任一行未知即整桶未知（null，不出 token 行） */
+    var tok = 0, tokFull = true;
     for (var k = 0; k < rows.length; k++) {
       var r = rows[k];
       out += r.out; ms += r.ms; i += r.i; o += r.o; n += r.n;
+      if (r.tok === null || r.tok === undefined) tokFull = false; else tok += r.tok;
       /* 日行 turns=当日 distinct 轮数（解包带），轮表行每行恒 1 轮 */
       turns += (typeof r.turns === "number" && isFinite(r.turns) && r.turns > 0) ? r.turns : 1;
       if (r.b < t0) t0 = r.b;
@@ -252,6 +281,7 @@
     ml.sort(function (a, b) { return b.o - a.o; });
     var res = { v: out / (ms / 1000), out: out, ms: ms, i: i, o: o, n: n, turns: turns,
       models: ml, modelCount: ml.length, t0: isFinite(t0) ? t0 : 0, t1: t1, last: last,
+      tok: tokFull ? tok : null,
       c: priced ? c : null, costFull: priced && costFull };
     /* 整体口径额外产出全量模型名单（悬停列表不省略，纪律同 V2 withNames） */
     if (withNames) res.modelNames = ml.map(function (x) { return x.name; });
@@ -384,14 +414,21 @@
         for (var fj = 0; fj < row.models.length; fj++) if (selSet[row.models[fj].key]) fm.push(row.models[fj]);
         if (!fm.length) continue;
         if (fm.length === row.models.length) { fp.push(row); continue; }
-        var fo = 0, fms = 0, fn = 0;
-        for (var fk = 0; fk < fm.length; fk++) { fo += fm[fk].o; fms += fm[fk].ms; fn += fm[fk].n; }
+        var fo = 0, fms = 0, fn = 0, ftok = 0, tokKnown = true;
+        for (var fk = 0; fk < fm.length; fk++) {
+          fo += fm[fk].o; fms += fm[fk].ms; fn += fm[fk].n;
+          /* v457（spec §25）：选中模型的 Token 之和；任一选中模型 tt 未知 → 整行未知
+           * （tok=null，渲染端不出 token 行，绝不拿整行合计冒充筛选后的值） */
+          if (fm[fk].tt === null || fm[fk].tt === undefined) tokKnown = false; else ftok += fm[fk].tt;
+        }
         /* 部分选中：有窗口分量按 spec §4 重算行级和；全无窗口（旧二元组帧）保留
          * 整行 out/ms 画整轮值、models 清空（M1/S8，身份不再入分布/悬停卡）。
-         * 两种都拷贝新行对象——缓存的解包结果只读，绝不原地改行。 */
+         * 两种都拷贝新行对象——缓存的解包结果只读，绝不原地改行。筛选后的行
+         * 无法再按模型拆输入/输出，i/o 保留整轮值不动，token 以 tok 为准。 */
         fp.push(fms > 0
-          ? Object.assign({}, row, { out: fo, ms: fms, n: fn, models: fm, msAvail: true })
-          : Object.assign({}, row, { models: [], msAvail: false }));
+          ? Object.assign({}, row, { out: fo, ms: fms, n: fn, models: fm, msAvail: true,
+              tok: tokKnown ? ftok : null })
+          : Object.assign({}, row, { models: [], msAvail: false, tok: null }));
       }
       pool = fp;
     }

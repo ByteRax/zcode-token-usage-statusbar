@@ -352,7 +352,8 @@ test('aria/role: grid/row/gridcell、data-i 唯一、roving tabindex（首格 0 
   assert.equal(count(html, 'tabindex="-1"'), 2, '其余可交互格全 -1');
   assert.ok(!cellOf(html, 0).includes('tabindex'), '无记录格不进 Tab 序（aria 保留）');
   assert.ok(!cellOf(html, 5).includes('tabindex'), '未来格 aria-hidden 不进 Tab 序');
-  assert.match(cellOf(html, 4), /aria-label="2026年11月5日 周四，均速 250 t\/s，快速，2 个模型"/);
+  // v457：tok 已知（11-05 两轮 i+o=200+1800）→ aria 补「消耗 X token」
+  assert.match(cellOf(html, 4), /aria-label="2026年11月5日 周四，均速 250 t\/s，快速，2 个模型，消耗 2000 token"/);
 
   const ctxH = makeCtx();
   ctxH.__sd = days550(0);
@@ -375,7 +376,7 @@ test('aria/role: grid/row/gridcell、data-i 唯一、roving tabindex（首格 0 
   const ctxEn = makeCtx(FIXED_NOW, 'en');
   ctxEn.__h = multiFrame();
   const htmlEn = dom(monthHTML(ctxEn, analyzeMonth(ctxEn)));
-  assert.match(cellOf(htmlEn, 4), /aria-label="Thu, Nov 5 2026, avg 250 t\/s, Fast, 2 models"/, 'en aria');
+  assert.match(cellOf(htmlEn, 4), /aria-label="Thu, Nov 5 2026, avg 250 t\/s, Fast, 2 models, 2000 tokens"/, 'en aria（v457 补 tokens）');
   assert.match(htmlEn, /<span>Sun<\/span>/, 'en 星期表头');
   assert.match(htmlEn, /aggregated by day/, 'en 聚合粒度 sub');
 });
@@ -669,4 +670,241 @@ test('v395 §18.1 四档阈值: ≤7 日卡 / 8–21 紧凑日历 / 22–63 完�
   const cSparse = makeCtx(); cSparse.__sd = daysSparseLong(90, [0, 45, 89]);
   const rawSparse = histHTML(cSparse, analyzeAll(cSparse, '__sd'), cSparse.__sd);
   assert.match(rawSparse, /data-head-sub="[^"]*活跃 3\/90 天/, 'hh 档稀疏长史副题披露活跃 3/90 天');
+});
+
+// ---------- v457 §25 热力格 token 行与数值贴右 ----------
+// 带格式化回调的整卡入口（既有 monthHTML/histHTML 不传 o，覆盖「fmtTok 缺席回退原值」一态）
+function monthHTMLO(ctx, an, hoverIdx, o) {
+  ctx.__an = an; ctx.__hi = typeof hoverIdx === 'number' ? hoverIdx : -1; ctx.__o = o || null;
+  return vm.runInContext('spd3MonthHTML(__an, __hi, __o)', ctx);
+}
+function histHTMLO(ctx, an, sd, hoverIdx, o) {
+  ctx.__an = an; ctx.__sdh = sd; ctx.__hi = typeof hoverIdx === 'number' ? hoverIdx : -1; ctx.__o = o || null;
+  return vm.runInContext('spd3HistHTML(__an, __sdh, __hi, __o)', ctx);
+}
+// 生产 cnUnit 同款（至多两位小数、去尾零）的宿主侧桩
+const cnFmt = n => n < 1e4 ? String(n)
+  : n < 1e8 ? (n / 1e4).toFixed(2).replace(/\.?0+$/, '') + '万'
+  : (n / 1e8).toFixed(2).replace(/\.?0+$/, '') + '亿';
+// 新帧 speed_days：第 7 位 tk=[tin, tout]（单模型日只含合计）；tokOf 指定当日 token
+function daysNtok(n, tokOf) {
+  const start = new Date(2026, 10, 5).getTime() - (n - 1) * DAY;
+  const days = [];
+  for (let i = 0; i < n; i++) {
+    const t = tokOf ? tokOf(i) : 1000000 + 3 * i;
+    const tin = Math.floor(t * 0.7);
+    days.push([1000 + i, 10000, 2, 2, 0, [[0, 1000 + i, 10000, 2, 2]], [tin, t - tin]]);
+  }
+  return { v: 1, source: 'local', start, days, mnames: ['GLM-A'], mkeys: [K.a], truncated: 0 };
+}
+const styleOf = html => html.match(/<style>[\s\S]*?<\/style>/)[0];
+
+test('v457 §25 本月日历: 值组=速度在上 token 在下、日号左上色点右上不动、fmtTok 回调生效且缺席回退原值', () => {
+  const ctx = makeCtx();
+  ctx.__h = multiFrame();
+  const html = dom(monthHTML(ctx, analyzeMonth(ctx)));
+  assert.equal(count(html, 'zu3-vwrap'), 3, '仅有值格出值组（11-03/04/05）');
+  const today = cellOf(html, 4);
+  assert.match(today, /<span class="zu3-hd"><span class="zu3-d">5<\/span><span class="zu3-mdots">[\s\S]*?<\/span><\/span><span class="zu3-vwrap">/,
+    '头部（日号+色点）在前，值组在后');
+  assert.ok(today.endsWith('<span class="zu3-vwrap"><span class="zu3-v">250</span><span class="zu3-tk">2000</span></span></div>'),
+    '值组=速度在上、token 在下；token=200+1800（fmtTok 缺席回退原值）');
+  assert.match(cellOf(html, 3), /zu3-v">300<\/span><span class="zu3-tk">6000<\/span>/, '单模型日同样出行');
+  assert.match(cellOf(html, 2), /zu3-tk">8000<\//);
+  assert.ok(!cellOf(html, 0).includes('zu3-v'), '无记录格无值组');
+  assert.ok(!cellOf(html, 5).includes('zu3-v'), '未来格无值组');
+  // 大数字经 o.fmtTok：180 万
+  ctx.__h = frameFrom([{ t: tOf(5, 9), out: 300000, ms: 60000, i: 1500000, msl: [[0, 300000, 60000, 1, 1]] }]);
+  const htmlO = dom(monthHTMLO(ctx, analyzeMonth(ctx), -1, { fmtTok: cnFmt }));
+  assert.match(cellOf(htmlO, 4), /<span class="zu3-v">5000<\/span><span class="zu3-tk">180万<\/span>/, 'token 文本走 o.fmtTok（万/亿）');
+  assert.match(htmlO, /消耗 180万 token/, 'aria 用同一格式化全文');
+});
+
+test('v457 §25 未知即不出行: 旧帧筛选后 tt 未知的格回到裸速度（绝不估数）；旧 speed_days（6 位）四形态均无 token 行', () => {
+  const ctx = makeCtx();
+  ctx.__h = multiFrame();
+  // 只看 A（夹具无 tk）：11-05 混合轮与 11-03 四模型轮都是部分选中 → tt 未知 → tok=null
+  const an = vm.runInContext('spd3Analyze(__h, null, {range:"all", period:"month", sid:"sess_main", filt:{mode:"sel",keys:[' +
+    JSON.stringify(K.a) + ']}})', ctx);
+  const html = dom(monthHTML(ctx, an));
+  assert.match(cellOf(html, 4), /<span class="zu3-v">233\.3<\/span><\/div>$/, '部分选中且 tt 未知：裸速度，无值组');
+  assert.doesNotMatch(cellOf(html, 4), /zu3-tk|zu3-vwrap|消耗/, '不估数：无 token 行、aria 不提 token');
+  assert.match(cellOf(html, 3), /zu3-v">300<\/span><span class="zu3-tk">6000<\/span>/, '全选的单模型轮仍精确');
+  assert.match(cellOf(html, 2), /<span class="zu3-v">400<\/span><\/div>$/, '四模型轮部分选中：未知');
+  // 旧 speed_days（无第 7 位）：日卡 / 日历 / 周列 / 月列 全部保持裸速度
+  for (const [n, tag] of [[7, 'zu3-dcv">'], [10, 'zu3-v zu3-cv">'], [70, 'zu3-v">'], [550, 'zu3-v">']]) {
+    ctx.__sd = n === 550 ? days550(0) : daysN(n);
+    const h = dom(histHTML(ctx, analyzeAll(ctx, '__sd'), ctx.__sd));
+    assert.ok(h.includes(tag), n + ' 天形态在场（' + tag + '）');
+    assert.ok(!/zu3-tk|zu3-vwrap|token/.test(h), n + ' 天旧帧：无 token 行、aria 不提 token');
+  }
+});
+
+test('v457 §25 新帧 speed_days 五形态全接: 日卡 / 全部日历 / 周列 / 月列均出 token 行（月列为整月合计）', () => {
+  const ctx = makeCtx();
+  const o = { fmtTok: cnFmt };
+  // 日卡（7 天）：速度大字下出 token
+  ctx.__sd = daysNtok(7);
+  const dc = dom(histHTMLO(ctx, analyzeAll(ctx, '__sd'), ctx.__sd, -1, o));
+  assert.match(cellOf(dc, 6), /<span class="zu3-dcv">100\.6<\/span><span class="zu3-tk">100万<\/span><\/span>/, '日卡值组');
+  assert.equal(count(dc, 'zu3-tk'), 7, '日卡每卡一行');
+  // 全部日历（10 天）
+  ctx.__sd = daysNtok(10);
+  const cal = dom(histHTMLO(ctx, analyzeAll(ctx, '__sd'), ctx.__sd, -1, o));
+  assert.match(cellOf(cal, 9), /<span class="zu3-v zu3-cv">100\.9<\/span><span class="zu3-tk">100万<\/span>/, '全部日历值组（速度类名原样保留）');
+  assert.match(cellOf(cal, 9), /，消耗 100万 token"/, '日格 aria 补 token');
+  // 周列（70 天）：窄列同样出
+  ctx.__sd = daysNtok(70);
+  const wk = dom(histHTMLO(ctx, analyzeAll(ctx, '__sd'), ctx.__sd, -1, o));
+  assert.match(cellOf(wk, 69), /<span class="zu3-v">106\.9<\/span><span class="zu3-tk">100万<\/span>/, '周列值组');
+  // 月列（550 天）：月合计
+  ctx.__sd = daysNtok(550);
+  const rawMo = histHTMLO(ctx, analyzeAll(ctx, '__sd'), ctx.__sd, -1, o);
+  const mo = dom(rawMo);
+  assert.match(cellOf(mo, 18), /<span class="zu3-v">[\d.]+<\/span><span class="zu3-tk">500\.8万<\/span>/,
+    '月列值组=整月合计（窄列紧凑：500.82万→500.8万）');
+  assert.match(cellOf(mo, 18), /，5 天有记录，10 次请求，消耗 500\.82万 token"/, '月格 aria 补 token（全文）');
+  assert.equal(count(mo, 'zu3-tk'), 19, '19 个月列每列一行');
+  // 单入列模型日即使 tk 带每模型段，未筛选也显示日合计（行级 tok=tin+tout）；
+  // 只选这个模型=全选 → 仍沿用行级合计（段值只在部分选中时才被读到）
+  ctx.__sd = daysNtok(8);
+  ctx.__sd.days[7] = [500, 5000, 1, 1, 0, [[0, 500, 5000, 1, 1]], [5000, 800, 4800]];
+  const one = dom(histHTMLO(ctx, analyzeAll(ctx, '__sd'), ctx.__sd, -1, o));
+  assert.match(cellOf(one, 7), /zu3-tk">5800<\//, '单入列模型日未筛选：显示日合计（含未入列 token）');
+});
+
+test('v457 §25 窄列紧凑写法: spd3TokCompact 只裁小数位（合计 4 位数字），周列/月列用紧凑、日历/日卡/aria/悬停卡用全文', () => {
+  const ctx = makeCtx();
+  const compact = s => vm.runInContext('spd3TokCompact(' + JSON.stringify(s) + ')', ctx);
+  assert.equal(compact('1234.57万'), '1234万');
+  assert.equal(compact('123.45万'), '123.4万');
+  assert.equal(compact('1823.4万'), '1823万');
+  assert.equal(compact('12.34万'), '12.34万');
+  assert.equal(compact('1.23亿'), '1.23亿');
+  assert.equal(compact('8468万'), '8468万');
+  assert.equal(compact('18.23M'), '18.23M');
+  assert.equal(compact('3341'), '3341');
+  const o = { fmtTok: cnFmt };
+  // 今天 token=12345678 → 全文 1234.57万、紧凑 1234万
+  const tokOf = i => (i === 69 ? 12345678 : 1000000 + 3 * i);
+  ctx.__sd = daysNtok(70, tokOf);
+  const wk = dom(histHTMLO(ctx, analyzeAll(ctx, '__sd'), ctx.__sd, -1, o));
+  assert.match(cellOf(wk, 69), /zu3-tk">1234万<\//, '周列：紧凑写法');
+  assert.match(cellOf(wk, 69), /，消耗 1234\.57万 token"/, '周列 aria 仍全文');
+  ctx.__sd = daysNtok(550, i => (i === 549 ? 12345678 : 1000000 + 3 * i));
+  const mo = dom(histHTMLO(ctx, analyzeAll(ctx, '__sd'), ctx.__sd, -1, o));
+  assert.match(cellOf(mo, 17), /zu3-tk">\d+万<\//, '月列出整月合计值组');
+  // 同一数值在宽格形态保留全文
+  ctx.__sd = daysNtok(10, i => (i === 9 ? 12345678 : 1000000 + 3 * i));
+  assert.match(cellOf(dom(histHTMLO(ctx, analyzeAll(ctx, '__sd'), ctx.__sd, -1, o)), 9), /zu3-tk">1234\.57万<\//, '日历：全文');
+  ctx.__sd = daysNtok(7, () => 12345678);
+  assert.match(cellOf(dom(histHTMLO(ctx, analyzeAll(ctx, '__sd'), ctx.__sd, -1, o)), 6), /zu3-tk">1234\.57万<\//, '日卡：全文');
+});
+
+test('v457 §25 悬停卡: 日卡/月卡「Token 总消耗」行，拆分只在 i+o===tok 时带；筛选后只显合计；未知不出行', () => {
+  const ctx = makeCtx();
+  const o = { fmtTok: cnFmt };
+  ctx.__sd = daysNtok(10);
+  histHTMLO(ctx, analyzeAll(ctx, '__sd'), ctx.__sd, 9, o);
+  const card = portal(ctx);
+  assert.match(card, /<div class="zu-sv3-crow"><span>Token 总消耗<\/span><b class="zu-sv3-ctok">100万 token<small>输入 70万 · 输出 30万<\/small><\/b><\/div>/,
+    '未筛选：合计 + 输入/输出拆分（次行小字）');
+  // 只看 B：两模型日帧
+  const start = new Date(2026, 10, 5).getTime() - 9 * DAY, days = [];
+  for (let i = 0; i < 10; i++) days.push([1000 + i, 10000, 2, 2, 0,
+    [[0, 600 + i, 6000, 1, 1], [1, 400, 4000, 1, 1]], [700000 + i, 300000 + i, 600000 + i, 400000]]);
+  ctx.__sd = { v: 1, source: 'local', start, days, mnames: ['GLM-A', 'Claude-B'], mkeys: [K.a, K.b], truncated: 0 };
+  ctx.__kb = K.b;
+  const anB = vm.runInContext('spd3Analyze(null, __sd, {range:"all", period:"all", sid:"", filt:{mode:"sel",keys:[__kb]}})', ctx);
+  const calB = dom(histHTMLO(ctx, anB, ctx.__sd, 9, o));
+  assert.match(cellOf(calB, 9), /zu3-tk">40万<\//, '只看 B：格内 token=B 的 tt（不是整日 100万）');
+  assert.match(cellOf(calB, 9), /，消耗 40万 token"/, 'aria 同步为所选模型的 token');
+  const cardB = portal(ctx);
+  assert.match(cardB, /<b class="zu-sv3-ctok">40万 token<\/b><\/div>/, '筛选后只显合计');
+  assert.ok(!cardB.includes('<small>'), 'i+o≠tok 时不带拆分（i/o 是整日口径）');
+  // 月卡：月桶 tok 与拆分
+  ctx.__sd = daysNtok(550);
+  histHTMLO(ctx, analyzeAll(ctx, '__sd'), ctx.__sd, 18, o);
+  const mo = portal(ctx);
+  assert.match(mo, /Token 总消耗<\/span><b class="zu-sv3-ctok">500\.82万 token<small>输入 350\.57万 · 输出 150\.25万<\/small>/, '月卡 token 行（全文）');
+  // 未知 / 0：不出行（直接调用纯函数）
+  ctx.__it = { t: tOf(5, 0), agg: { v: 100, modelCount: 1, i: 500, o: 100, tok: null, models: [] } };
+  assert.ok(!vm.runInContext('spd3DayCardHTML(__it, {fmtTok: function(){ return "x"; }})', ctx).includes('Token 总消耗'), 'tok 未知不出行');
+  ctx.__it.agg.tok = 0;
+  assert.ok(!vm.runInContext('spd3DayCardHTML(__it, {fmtTok: function(){ return "x"; }})', ctx).includes('Token 总消耗'), 'tok=0 不出行');
+  ctx.__mb = { y: 2026, mo: 10, v: 100, days: 1, n: 1, i: 500, o: 100, tok: 600, models: [] };
+  assert.match(vm.runInContext('spd3MonthCardHTML(__mb, {fmtTok: String})', ctx),
+    /Token 总消耗<\/span><b class="zu-sv3-ctok">600 token<small>输入 500 · 输出 100<\/small>/, '月卡拆分（fmtTok 桩原样）');
+});
+
+test('v457 §25 样式: 数值贴右、token 行、两个尺寸容器（日卡格不设）、分档只缩值组内且与隐藏共边界', () => {
+  const ctx = makeCtx();
+  ctx.__h = multiFrame();
+  const style = styleOf(monthHTML(ctx, analyzeMonth(ctx)));
+  assert.match(style, /\.zu-sv3-root \.zu3-v,\.zu-sv3-root \.zu3-dcv\{align-self:flex-end;text-align:right\}/, '裸速度与日卡速度贴右');
+  assert.match(style, /\.zu-sv3-root \.zu3-vwrap\{[^}]*flex-direction:column;align-items:flex-end;text-align:right\}/, '值组列内右对齐');
+  assert.match(style, /\.zu-sv3-root \.zu3-hm-grid \.zu3-vwrap,\.zu-sv3-root \.zu3-hh-mo \.zu3-hh-grid \.zu3-vwrap\{margin:auto 0\}/,
+    '值组垂直位置沿用裸速度的两条既有规则');
+  assert.match(style, /\.zu-sv3-root \.zu3-tk\{[^}]*font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;/, 'token 行样式');
+  assert.match(style, /\.zu-sv3-root \.zu3-cal \.zu3-tk\{font-size:9px\}/, '全部日历 token 基础 9px');
+  assert.match(style, /\.zu-sv3-root \.zu3-hh-grid \.zu3-tk\{font-size:7px\}/, '周列/月列 token 基础 7px（窄列）');
+  assert.match(style, /\.zu-sv3-root \.zu3-hm-grid \.zu-hm-cell\{container-type:size;container-name:zu3hc\}/, '日历格=尺寸容器');
+  assert.match(style, /\.zu-sv3-root \.zu3-hh-grid \.zu-hm-cell\{container-type:size;container-name:zu3hw\}/, '周列/月列格=尺寸容器');
+  assert.doesNotMatch(style, /zu3-dc-grid[^{]*\{[^}]*container-type/, '日卡格不得设尺寸容器（行高由内容撑出）');
+  // 分档阈值（spec §25.2 表；夹具实测校准值，改一处须同步另两处）
+  assert.match(style, /@container zu3hc \(max-height:39px\) and \(min-height:26\.5px\) and \(min-width:30px\)\{/);
+  assert.match(style, /@container zu3hc \(max-height:33px\) and \(min-height:26\.5px\) and \(min-width:30px\)\{/);
+  assert.match(style, /@container zu3hw \(max-height:25px\) and \(min-height:21\.5px\) and \(min-width:30px\)\{/);
+  for (const q of ['zu3hc (max-height:26.4px)', 'zu3hc (max-width:29.9px)', 'zu3hw (max-height:21.4px)', 'zu3hw (max-width:29.9px)'])
+    assert.match(style, new RegExp('@container ' + q.replace(/[.()]/g, '\\$&') + '\\{\\.zu-sv3-root \\.zu3-tk\\{display:none\\}\\}'), q + ' 隐藏 token 行');
+  assert.match(style, /\.zu-sv3-root \.zu3-vwrap \.zu3-v\{font-size:8px\}/, '缩速度只作用于值组内');
+  assert.match(style, /\.zu-sv3-root \.zu3-cal \.zu3-vwrap \.zu3-cv\{font-size:10px\}/);
+  const blocks = style.match(/@container[^{}]*\{(?:[^{}]*\{[^{}]*\})+\}/g) || [];
+  assert.equal(blocks.length, 7, '3 个缩字档 + 4 条隐藏规则');
+  for (const blk of blocks.slice(0, 3)) {
+    assert.match(blk, /min-width:30px/, '缩字档带宽度下限（窄格 token 已隐藏，不得缩速度）');
+    // 选择器须以 {.zu-sv3-root 开头才算「裸速度」缩字（.zu3-vwrap 内的不算）
+    assert.doesNotMatch(blk, /\{\.zu-sv3-root \.zu3-v\{font-size|\{\.zu-sv3-root \.zu3-cal \.zu3-cv\{font-size/,
+      '不得缩裸速度（无 token 的格观感不变）');
+    assert.ok(!/padding|height:\d|width:\d/.test(blk.replace(/max-height:\d|min-height:\d|max-width:\d|min-width:\d/g, '')), '档位不得改容器自身盒');
+  }
+  assert.match(style, /\.zu-sv-portal \.zu-sv3-ctok\{white-space:nowrap;font-variant-numeric:tabular-nums\}/, '悬停卡数值一行');
+  assert.match(style, /\.zu-sv-portal \.zu-sv3-ctok small\{display:block;font-size:9px;font-weight:400;/, '拆分为次行小字');
+});
+
+test('v457 §25 月桶: 当月任一日 tok 未知 → 月格/月卡不出 token 行（不拿已知日冒充整月）；全已知才求和', () => {
+  const ctx = makeCtx();
+  const o = { fmtTok: cnFmt };
+  // 旧 speed_days（无第 7 位）覆盖 10-26..11-04 + 今天一条轮表行（tok 已知）→ 11 月=未知日+已知日混合
+  ctx.__sd = Object.assign(daysN(10), { start: new Date(2026, 10, 5).getTime() - 10 * DAY });
+  ctx.__h = frameFrom([{ t: tOf(5, 9), out: 500, ms: 5000, msl: [[0, 500, 5000, 1, 1]] }]);
+  const an = vm.runInContext('spd3Analyze(__h, __sd, {range:"all", period:"all", sid:""})', ctx);
+  const cal = dom(histHTMLO(ctx, an, ctx.__sd, -1, o));
+  assert.match(cellOf(cal, 10), /zu3-tk">1000<\//, '今天（晚于覆盖末日的轮表行）tok 已知');
+  assert.match(cellOf(cal, 9), /<span class="zu3-v zu3-cv">100\.9<\/span><\/div>$/, '昨天的旧日行 tok 未知（裸速度）');
+  ctx.__items = an.items;
+  const months = JSON.parse(JSON.stringify(vm.runInContext('spd3MonthBuckets(__items, {})', ctx)));
+  assert.deepEqual(months.map(m => [m.y, m.mo, m.tok, m.i, m.o]),
+    [[2026, 9, null, 0, 0], [2026, 10, null, 500, 500]],
+    '两月各含未知日 → tok=null；i/o 仍累计（已知部分）');
+  ctx.__nov = months[1];
+  ctx.__o = o;
+  const card = vm.runInContext('spd3MonthCardHTML(__nov, __o)', ctx);
+  assert.ok(!card.includes('Token 总消耗'), '月卡不出 token 行（不拿已知日冒充整月）');
+  // 全已知：各日求和
+  ctx.__sd = daysNtok(10);
+  const anK = analyzeAll(ctx, '__sd');
+  ctx.__itemsK = anK.items;
+  const monthsK = vm.runInContext('spd3MonthBuckets(__itemsK, {})', ctx);
+  const sum = anK.items.reduce((a, it) => a + it.tok, 0);
+  assert.equal(monthsK.reduce((a, m) => a + m.tok, 0), sum, '全已知月桶 tok=各日之和');
+});
+
+test('v457 §25 本月日历 token 用全文（窄列紧凑只作用于周列/月列）', () => {
+  const ctx = makeCtx();
+  // i+o=12615678 → 全文 1261.57万、紧凑 1261万
+  ctx.__h = frameFrom([{ t: tOf(5, 9), out: 300000, ms: 60000, i: 12315678, msl: [[0, 300000, 60000, 1, 1]] }]);
+  const html = dom(monthHTMLO(ctx, analyzeMonth(ctx), -1, { fmtTok: cnFmt }));
+  assert.match(cellOf(html, 4), /zu3-tk">1261\.57万<\//, '本月日历保留全文');
+  assert.match(cellOf(html, 4), /，消耗 1261\.57万 token"/, 'aria 全文');
 });

@@ -537,6 +537,7 @@ _SPEED_WM = {}                    # 轮表缓存的 model_usage 水位（TTL 过
 # v384（specs/speed-tooltip-v3.md §1.2）：全历史按本地自然日聚合，解决 6000 轮截断。
 _SPEED_DAYS_MAX_DAYS = 550        # 覆盖窗口：截至今天（含）往前 N 个本地日；truncated 时渲染端明示
 _SPEED_DAYS_MAX_MODELS = 8        # 日桶 msl 每模型条目上限（超出 capFlag=1，日级总量仍精确）
+_SPEED_DAYS_TK_DAYS = 90          # v457：日桶 tk 每模型 token 只带最近 N 个本地日（spec §8 帧体积预算）
 _DAYS_CACHE = {}                  # speed_days 缓存：与轮表 _SPEED_CACHE 同款独立缓存（不挤 _AGG_CACHE）
 _DAYS_WM = {}                     # speed_days 缓存的 model_usage 水位（同款续用语义）
 
@@ -2237,6 +2238,10 @@ def _speed_turns(con, session_ids, covers):
     ms=该模型通过窗口过滤行的 Σ窗口毫秒、n=该模型本轮已完成行数含无效窗口行，仅 out>0
     入列；_speed_history 转索引时按 (model, provider) 建身份表并剥掉末位 provider）、
     c=轮预估费用 USD（价表可能含兜底均价，展示层恒标「含兜底估价」，不冒充完整牌价）。
+    tk（v457，specs/speed-tooltip-v3.md §25）=与 msl 顺序对齐的每模型 Token 总消耗
+    （输入+输出，含无效窗口行）；仅多模型轮、或存在未入列模型（out=0 / 超出 8 条帽）
+    的 token 时携带——缺席即「恰一个入列模型且其 token 恰等于轮的 i+o」，渲染端直接
+    取轮级合计（单模型轮占多数，省帧体积）。
     刻意不存 v（单点 t/s）：渲染端所有柱/桶/均值一律按 Σout÷Σms 重算，杜绝算术平均。
     返回 (turns, session_rows)：session_rows 供顶部名称表一次性取会话名/项目归属。"""
     if not session_ids:
@@ -2320,8 +2325,9 @@ def _speed_turns(con, session_ids, covers):
                 gen_ms = _row_gen_ms(row, covers)
                 # v384 模型级速度：每行都登记模型——n 计该模型本轮全部已完成行（含无效
                 # 窗口行），ms 只累加通过窗口过滤的有效行（渲染端按 Σout÷Σms 算模型速度）
-                m = models.setdefault(key, {"out": 0, "ms": 0, "n": 0})
+                m = models.setdefault(key, {"out": 0, "ms": 0, "n": 0, "tok": 0})
                 m["n"] += 1
+                m["tok"] += inp + tokens   # v457：每模型 Token 总消耗，含无效窗口行
                 if tokens > 0 and gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
                     valid_out += tokens
                     valid_ms += gen_ms
@@ -2334,10 +2340,15 @@ def _speed_turns(con, session_ids, covers):
                  "out": valid_out, "ms": valid_ms,
                  "i": tin, "o": tout, "n": len(rows)}
             ml = sorted(models.items(), key=lambda kv: -kv[1]["out"])
+            top = [(k, v) for k, v in ml if v["out"] > 0][:8]
             # 预索引条目末位带 provider_id：_speed_history 以 (model, provider) 二元组建
             # mnames/mkeys 身份表，转索引后剥掉——同名牌不同 provider 不再共享身份
-            t["msl"] = [[k[0], v["out"], int(v["ms"]), v["n"], k[1]]
-                        for k, v in ml if v["out"] > 0][:8]
+            t["msl"] = [[k[0], v["out"], int(v["ms"]), v["n"], k[1]] for k, v in top]
+            # v457：未入列模型（out=0 或超出 8 条帽）的 token——有则单靠 msl 还原不了
+            # 轮级合计，须带 tk；多模型轮同理（见函数注释）
+            other_tok = sum(v["tok"] for _, v in ml[len(top):])
+            if len(top) > 1 or other_tok > 0:
+                t["tk"] = [v["tok"] for _, v in top]
             if _pricing is not None:
                 try:
                     groups_in = [(k[0], k[1], g[0], g[1], g[2], g[3])
@@ -2497,7 +2508,7 @@ def _speed_days(con):
     main_turn 行、_row_gen_ms 生成窗口 + 200ms–1h 有效段过滤、covers 特例，辅助
     query_source 与子代理行不计。日界一律 datetime.fromtimestamp 本地日历推导（DST/
     月末/跨年由标准库保证），禁止按固定 86400000 毫秒整除推日。
-    日桶 [out, ms, n, turns, capFlag, msl]：out/ms=当日通过窗口过滤行的 Σ有效输出/Σ窗口
+    日桶 [out, ms, n, turns, capFlag, msl, tk]：out/ms=当日通过窗口过滤行的 Σ有效输出/Σ窗口
     （分母分子完整精确）；n=当日已完成行数（含无效窗口行）；turns=当日 distinct 轮数，
     非空 turn_id 按 (sid, turn_id) 复合键去重，turn_id 为 NULL 的旧行按每行一个独立计次
     （_speed_turns 把 NULL 行按会话归并一组，这里逐行计次是更细的可控口径，渲染端只做
@@ -2508,6 +2519,14 @@ def _speed_days(con):
     条目按 out 降序、仅 out>0 的模型入列（与 _speed_turns 一致；out=0 的模型只计入日级
     总量不进身份列表），tn=当日含该模型已完成行（不论窗口有效性）的 distinct 轮数，
     与日级 turns 同款 NULL 行逐行计次。
+    第 7 位 tk（v457，spec §25）=[tin, tout, 每模型 token…]：tin/tout=当日**全部**已完成
+    main_turn 行的输入/输出合计（含无效窗口行，input 已含缓存、output 已含思考）；其后
+    与 msl 五元组逐条对齐的该模型当日 Token 总消耗（输入+输出）。空日不带（仍 6 个 0）。
+    每模型段不是每天都带（spec §8 帧体积预算，满帧多 45%）：恰一个入列模型的日只带合计
+    （渲染端按契约取该模型 token=合计；这类日在筛选下只有全选或整行剔除两态，推导值不参与
+    显示）；多模型日只给最近 _SPEED_DAYS_TK_DAYS 天携带，更早的只带合计（筛选后该日各
+    模型 token 未知，渲染端不出行）。
+    旧渲染端按前 6 位下标读取、看不见第 7 位；msl 步长恒为 5 不得改（旧渲染端按 5 解析）。
     truncated=1 表示存在早于窗口起点（今天往前 _SPEED_DAYS_MAX_DAYS 个本地日）的已完成
     行，渲染端据此明示「已截断」；早于起点/晚于今天的时间戳行（时钟偏移）不进任何桶，
     不伪造未来日。mnames/mkeys 与 speed_history 同款 (model, provider) 身份表。"""
@@ -2521,10 +2540,10 @@ def _speed_days(con):
              and (query_source is null or query_source='main_turn')
              and completed_at is not null""").fetchone()
     truncated = 1 if probe and probe[0] is not None and probe[0] < start_ms else 0
-    days = {}   # 本地 date → [out, ms, n, 轮键集合, 模型字典]；空日不建桶，装配时补零
+    days = {}   # 本地 date → [out, ms, n, 轮键集合, 模型字典, 输入合计, 输出合计]；空日不建桶
     mname_idx, mnames, mkeys = {}, [], []
     for row in con.execute(
-            """select rowid, output_tokens, completed_at, turn_id, session_id,
+            """select rowid, output_tokens, input_tokens, completed_at, turn_id, session_id,
                       model_id, provider_id, first_token_at, started_at, reasoning_tokens
                from model_usage where status='completed'
                  and (query_source is null or query_source='main_turn')
@@ -2537,7 +2556,7 @@ def _speed_days(con):
             continue   # 未来时间戳（时钟偏移）不伪造日桶；起点判定冗余防御
         b = days.get(day)
         if b is None:
-            b = days[day] = [0, 0, 0, set(), {}]
+            b = days[day] = [0, 0, 0, set(), {}, 0, 0]
         # 轮身份：非空 turn_id 用 (sid, turn_id)；NULL 旧行每行一个独立计次（rowid 唯一）
         tk = (row["session_id"], row["turn_id"]) if row["turn_id"] is not None else (None, row["rowid"])
         b[3].add(tk)
@@ -2548,12 +2567,17 @@ def _speed_days(con):
             mkeys.append(mk[1] + "\x1f" + mk[0])
         macc = b[4].get(mk)
         if macc is None:
-            macc = b[4][mk] = [0, 0, 0, set()]
+            macc = b[4][mk] = [0, 0, 0, set(), 0]
+        tokens = row["output_tokens"] or 0
+        inp = row["input_tokens"] or 0
         b[2] += 1            # n：当日已完成行数（含无效窗口行）
         macc[2] += 1
         macc[3].add(tk)      # tn 与日级 turns 同款 NULL 逐行计次
+        # v457：Token 总消耗（输入+输出）不分窗口有效性——当日全部已完成行都计
+        b[5] += inp
+        b[6] += tokens
+        macc[4] += inp + tokens
         gen_ms = _row_gen_ms(row, covers)
-        tokens = row["output_tokens"] or 0
         if tokens > 0 and gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
             b[0] += tokens
             b[1] += gen_ms
@@ -2563,15 +2587,19 @@ def _speed_days(con):
     for i in range(_SPEED_DAYS_MAX_DAYS):
         b = days.get(start_date + timedelta(days=i))
         if b is None:
-            buckets.append([0, 0, 0, 0, 0, 0])   # 空日：msl 槽位恒 0（无记录）
+            buckets.append([0, 0, 0, 0, 0, 0])   # 空日：msl 槽位恒 0（无记录）；不带 tk
             continue
         ml = sorted((kv for kv in b[4].items() if kv[1][0] > 0), key=lambda kv: -kv[1][0])
         top = ml[:_SPEED_DAYS_MAX_MODELS]
         msl = []
         for k, v in top:
             msl += [mname_idx[k], v[0], int(v[1]), v[2], len(v[3])]   # 打平五元组，省内层括号
+        # v457：恰一个入列模型的日只带合计（渲染端按契约取该模型 token=合计；单入列模型
+        # 的日在筛选下只有全选或整行剔除两态，该值不参与显示）；多模型日的每模型 token
+        # 是筛选后仍能精确显示的依据，但满帧体积大（spec §8）——只给最近 N 天
+        per_model = [v[4] for _, v in top] if (len(top) > 1 and i >= _SPEED_DAYS_MAX_DAYS - _SPEED_DAYS_TK_DAYS) else []
         buckets.append([b[0], b[1], b[2], len(b[3]),
-                        1 if len(ml) > _SPEED_DAYS_MAX_MODELS else 0, msl])
+                        1 if len(ml) > _SPEED_DAYS_MAX_MODELS else 0, msl, [b[5], b[6]] + per_model])
     return {
         "v": 1,
         "source": "local",               # 数据源边界：远端身份下渲染端禁用「全部」
