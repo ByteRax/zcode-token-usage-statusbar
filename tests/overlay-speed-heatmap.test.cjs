@@ -250,7 +250,7 @@ test('经 wire 悬停: month/all 数据日出日卡（模型明细+轮次+capped
 test('a11y 与 i18n: en aria、星期表头、roving tabindex（首格 0 其余 -1，经 wire 整卡）', () => {
   const ctx = makeCtx(FIXED_NOW, 'en');
   const html = dom(card(ctx, { h: multiFrame(), sel: { range: 'all', period: 'month' } }));
-  assert.match(cellOf(html, 4), /aria-label="Thu, Nov 5 2026, avg 250 t\/s, Fast, 2 models"/, 'en data-cell aria');
+  assert.match(cellOf(html, 4), /aria-label="Thu, Nov 5 2026, avg 250 t\/s, Fast, 2 models, 2000 tokens"/, 'en data-cell aria（v457 补 tokens）');
   assert.match(cellOf(html, 0), /no rated speed data/, 'en void aria');
   assert.match(html, /<span>Sun<\/span>/, 'en weekday header');
   // v384 M1 roving tabindex：首个可交互格（11-03, data-i=2）0、其余 -1（方向键移动
