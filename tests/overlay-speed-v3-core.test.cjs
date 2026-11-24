@@ -902,9 +902,12 @@ test('v457 tok/tt 解包（轮表）: tk 与 msl 按原始下标对齐、无 tk 
     { out: 200, ms: 1000, i: 1000, n: 1, msl: [[0, 200, 1000, 1]] },                                  // 畸形帧：i 有、o 缺席
     { out: 300, ms: 2000, o: 300, n: 1, msl: [[0, 300, 2000, 1]] },                                  // 畸形帧：o 有、i 缺席
     { out: 250, ms: 1500, i: 'x', o: 250, n: 1, msl: [[0, 250, 1500, 1]] },                          // 畸形帧：i 在场但非法
+    { out: 260, ms: 1600, i: null, o: 260, n: 1, msl: [[0, 260, 1600, 1]] },                         // 畸形帧：i 为 null（isFinite(null) 为真，不得放行）
+    { out: 270, ms: 1700, i: Infinity, o: 270, n: 1, msl: [[0, 270, 1700, 1]] },                     // 畸形帧：i 为 Infinity
   ]);
   const T = vm.runInContext('spd3Unpack(__h)', ctx).turns;
-  assert.deepEqual(host(T.map(r => r.tok)), [7900, 3400, 4700, 1300, 2300, null, null, null], '轮表行 tok=i+o（行级合计，与有无 tk 无关）；i/o 残缺或非法未知');
+  assert.deepEqual(host(T.map(r => r.tok)), [7900, 3400, 4700, 1300, 2300, null, null, null, null, null],
+    '轮表行 tok=i+o（行级合计，与有无 tk 无关）；i/o 残缺或非法未知');
   assert.deepEqual(host(T[0].models.map(m => m.tt)), [5000, 2900], 'tk 与 msl 逐条对齐');
   assert.deepEqual(host(T[1].models.map(m => m.tt)), [3400], '无 tk 的单模型轮：tt=轮级 i+o（生产端契约）');
   assert.deepEqual(host(T[2].models.map(m => m.tt)), [null, null], '无 tk 的多模型轮：各模型 tt 未知');
@@ -913,8 +916,10 @@ test('v457 tok/tt 解包（轮表）: tk 与 msl 按原始下标对齐、无 tk 
   assert.deepEqual(host(T[5].models.map(m => m.tt)), [null], 'i/o 残缺（o 缺席）：不把 i 当合计，也不由它推导单模型 tt');
   assert.deepEqual(host(T[6].models.map(m => m.tt)), [null], 'i/o 残缺（i 缺席）：不把 o 当合计，也不由它推导单模型 tt');
   assert.deepEqual(host(T[7].models.map(m => m.tt)), [null], 'i 在场但非法（数字串）：同缺席，tok 与 tt 都未知');
-  assert.deepEqual(host([[T[5].i, T[5].o], [T[6].i, T[6].o], [T[7].i, T[7].o]]), [[1000, 0], [0, 300], [0, 250]],
-    '行上的 i/o 字段沿用既有口径（缺席或非法记 0），不受 tok 严格判定影响');
+  assert.deepEqual(host(T[8].models.map(m => m.tt)), [null], 'i 为 null：不得被 isFinite(null) 放行');
+  assert.deepEqual(host(T[9].models.map(m => m.tt)), [null], 'i 为 Infinity：不得放行');
+  assert.deepEqual(host([[T[5].i, T[5].o], [T[6].i, T[6].o], [T[7].i, T[7].o], [T[8].i, T[8].o], [T[9].i, T[9].o]]),
+    [[1000, 0], [0, 300], [0, 250], [0, 260], [0, 270]], '行上的 i/o 字段沿用既有口径（缺席或非法记 0），不受 tok 严格判定影响');
 });
 
 test('v457 tok/tt 解包（speed_days）: 合计恒为 tok、tk 只含合计的单模型日取合计、多模型日带段按序号、只含合计的多模型日未知、旧帧未知', () => {
@@ -938,14 +943,15 @@ test('v457 tok/tt 解包（speed_days）: 合计恒为 tok、tk 只含合计的�
       [681, 6810, 2, 1, 0, [[0, 400, 4000, 1, 1], [1, 281, 2810, 1, 1]], [9000, 1400, -1, 4400]],    // 12 每模型段：负数
       [682, 6820, 2, 1, 0, [[0, 400, 4000, 1, 1], [1, 282, 2820, 1, 1]], [9000, 1400, '600', 4400]],  // 13 每模型段：数字串
       [683, 6830, 1, 1, 0, [[0, 683, 6830, 1, 1]], ['9000', 1400, 600]],                              // 14 合计段：数字串
-      [900, 9000, 1, 1, 0, [[0, 900, 9000, 1, 1]]],                                                     // 15 旧帧：6 位无 tk
+      [684, 6840, 1, 1, 0, [[0, 684, 6840, 1, 1]], [Infinity, 1400, 600]],                             // 15 合计段：Infinity
+      [900, 9000, 1, 1, 0, [[0, 900, 9000, 1, 1]]],                                                     // 16 旧帧：6 位无 tk
     ] };
   const R = vm.runInContext('spd3UnpackDays(__sd)', ctx).rows;
-  assert.equal(R.length, 16, '空日不产行');
+  assert.equal(R.length, 17, '空日不产行');
   const ZERO = [0, 0], TOT = [9000, 1400];
-  assert.deepEqual(host(R.map(r => r.tok)), [10400, 3500, 8700, 5800, null, null, null, null, null, 10400, 10400, null, 10400, 10400, null, null],
-    '日行 tok=tin+tout；旧帧与畸形帧（输入或输出合计非法：缺席以外的负数、数字串同样算非法）未知；每模型段非法不影响行级合计');
-  assert.deepEqual(host(R.map(r => [r.i, r.o])), [TOT, [3000, 500], [8000, 700], [5000, 800], ZERO, ZERO, ZERO, ZERO, ZERO, TOT, TOT, ZERO, TOT, TOT, ZERO, ZERO],
+  assert.deepEqual(host(R.map(r => r.tok)), [10400, 3500, 8700, 5800, null, null, null, null, null, 10400, 10400, null, 10400, 10400, null, null, null],
+    '日行 tok=tin+tout；旧帧与畸形帧（输入或输出合计非法：缺席以外的负数、数字串、Infinity 同样算非法）未知；每模型段非法不影响行级合计');
+  assert.deepEqual(host(R.map(r => [r.i, r.o])), [TOT, [3000, 500], [8000, 700], [5000, 800], ZERO, ZERO, ZERO, ZERO, ZERO, TOT, TOT, ZERO, TOT, TOT, ZERO, ZERO, ZERO],
     '日行 i/o 由 tk 补齐；旧帧与合计未知的行保持 0');
   assert.deepEqual(host(R.map(r => r.models.map(m => m.tt))), [
     [6000, 4400],   // 带每模型段：按 msl 条目序号对齐
@@ -963,6 +969,7 @@ test('v457 tok/tt 解包（speed_days）: 合计恒为 tok、tk 只含合计的�
     [null, 4400],   // 每模型段负数 → 该模型未知
     [null, 4400],   // 每模型段数字串 → 该模型未知（不隐式转数）
     [600],          // 合计段数字串 → tok 未知；每模型段照常读
+    [600],          // 合计段 Infinity → tok 未知；每模型段照常读
     [null],         // 旧帧：无 tk → 未知
   ], '日行各模型 tt');
 });
