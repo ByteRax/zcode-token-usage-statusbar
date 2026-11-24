@@ -427,6 +427,8 @@ test('panel retains all controls, scroll position and settings-only styling', ()
   }
   assert.match(source, /\.zu-settings-body"\)\.scrollTop = scrollTop/);
   assert.match(source, /t2\.classList\.contains\("zu-ctxov"\)/);
+  assert.match(source, /\.zu-settings \.zu-tip-hover-ms\{order:2/);   // 悬停延迟下拉靠右（无 order 规则时停在 DOM 原位=文字左侧）
+  assert.match(source, /\.zu-settings \.zu-rst-cdh\{order:2/);   // 倒计时阈值输入框同款
   assert.match(source, /t2\.classList\.contains\("zu-cn-num"\)/);
   assert.match(source, /panel\.addEventListener\("scroll", syncSettingsScroll, true\)/);
   assert.match(source, /body\.scrollTop \+= Math\.max\(1, Math\.round\(body\.clientHeight \* \.8\)\)/);
