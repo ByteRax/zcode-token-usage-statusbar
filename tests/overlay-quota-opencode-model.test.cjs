@@ -309,3 +309,13 @@ test('wire-provided modelBasis is not a protocol field: never rendered raw nor a
   assert.equal(segsOf(m.chip), '2,3,7');
   assert.match(html, /已用 7\.3% · \$4\.40 \/ \$60\.00/);
 });
+
+test('English UI shows the same as-is numbers in the window rows and the account-level footer', () => {
+  const h = harness({ prefs: { 'zusage3.lang': 'en' } });
+  const m = mount(h, Object.assign({ quota: ocQuota(OC_453) }, OC));
+  assert.equal(segsOf(m.chip), '1,7,40');
+  const html = m.tip();
+  assert.match(html, /used 40\.3% · \$24\.20 \/ \$60\.00 · remaining \$35\.80/);
+  assert.match(html, /The pool is account-level/);
+  assert.doesNotMatch(html, /Window totals are scaled/);
+});
