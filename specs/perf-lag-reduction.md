@@ -20,7 +20,7 @@
 
 > 编号约定：代码注释与测试里的「§N」指本节「产品规则 N」；验收场景用「验收 N」。
 
-1. **展示不变**：tooltip / chip / 统计行的数值与格式逐字不变；悬停中 tooltip 仍 ≤100ms 跟手，打开瞬间内容必须是最新的（不得陈旧）。
+1. **展示不变**：tooltip 与统计行的数值与格式逐字不变；chip（速度格格面）的文案与结构见 [specs/speed-chip-stable-slot.md](speed-chip-stable-slot.md)（稳定占位批改为「标签+数值+单位」，统计数值与口径不变，tooltip 仍读真实视图）；悬停中 tooltip 仍 ≤100ms 跟手，打开瞬间内容必须是最新的（不得陈旧）。
 2. **字符计数等价**：`ingest` 的字符数与原 `Array.from(text).length`（码点计数；高低代理对记 1，孤立代理项各记 1）逐值相同。
 3. **轮表解包按引用缓存**：同一份 `speed_history` 对象重复 `spdUnpack` 只解包一次（WeakMap，随帧对象回收）；新帧是新对象自然失效；结果只读。
 4. **未悬停不白建 tooltip**：实时速度 chip 所在格未悬停时，`updateLive` 不再每拍构建 tooltip 串，只记最新 view 并标失鲜（`__zuTipStale`）；`drawTip` 读取 `__tip` 前经 `liveTipRefresh` 补建；兜底每 1s 保鲜一次；悬停本格仍每拍构建并重画（v224 契约）；整条 `render` 重挂 `__tip` 时清失鲜标记。

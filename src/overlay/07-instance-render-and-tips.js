@@ -116,15 +116,114 @@
     /* 结构化 tooltip（v67.1）：\x01 前缀标记 HTML 内容（drawTip 分流），行/脚注排版与
      * 回复末尾统计行 tooltip 同款；动态值一律过 ttEsc（innerHTML 安全，如工具名/错误文案） */
     function ttEsc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
-    /* v326：动态态与完成态统一「数字 + dim 单位」两 item 结构——.zu-live 用 inline-flex+gap:5px
-     * 控制数字与 t/s 间距（word-spacing 已除：对完成态无空格字符、动态态单文本均无视觉效果）。
-     * t/s 结尾才拆（状态词态保持单文本）。声明必须在实例一级：07 render live 分支、08 updateLive
-     * 原地更新、11 compact chip 三处消费——放在 html(d) 分支块内是 Annex B 块级函数声明，
-     * live 分支执行时绑定未初始化（TypeError），跨分片 08 直接 ReferenceError（实测 44 测试红）。 */
-    function zuLiveFaceHtml(text) {
-      return typeof text === "string" && / t\/s$/.test(text)
-        ? ttEsc(text.slice(0, -4)) + '<span class="dim">t/s</span>'
-        : ttEsc(text);
+    /* ---------- 速度格稳定占位：展示模型（specs/speed-chip-stable-slot.md） ----------
+     * 状态判定仍只在 02 分片 zuBarSpeedView；这里把它的结构化字段翻成格面的「标签 / 数值 / 单位」，
+     * 禁止解析 text 文案反推状态。全称 text 继续供 tooltip、aria-label 与「···」菜单使用。纯函数放在
+     * 实例级渲染助手区：html() 的 VM 切片夹具统一按「ttEsc 到 stubFor」区间取助手，放模块级会让
+     * 53 例布局回归同时 ReferenceError（zuSpeedFace is not defined）。
+     * 工具短名表：完整动词表在 03 分片 ZU_TOOL_VERBS，tooltip 仍用完整态。 */
+    var ZU_SPEED_TOOL_LABELS = {
+      Read: ["读取", "Read"], Write: ["写入", "Write"], Edit: ["编辑", "Edit"], ApplyPatch: ["编辑", "Edit"],
+      Bash: ["执行", "Run"], Grep: ["搜索", "Find"], Glob: ["搜索", "Find"], WebSearch: ["搜索", "Find"],
+      web_search: ["搜索", "Find"], WebFetch: ["网页", "Fetch"],
+      TodoWrite: ["待办", "Todo"], TodoRead: ["待办", "Todo"], Skill: ["技能", "Skill"],
+      ReadSessionContext: ["上下文", "Ctx"], Agent: ["代理", "Agent"], Task: ["代理", "Agent"],
+      SendMessage: ["消息", "Send"], TaskOutput: ["输出", "Out"], TaskStop: ["停止", "Stop"],
+      CreateWorkflow: ["流程", "Flow"],
+    };
+    function zuSpPad(n) { return n < 10 ? "0" + n : String(n); }
+    /* 格面紧凑时间（时间格式表）：不足 1 秒一位小数（0.5s，向下截断不进位），其后整数秒两位补零
+     * （03s），分:秒，时:分:秒，跨天 天+时。刷新节奏由展示协调器的计时节流（ZU_SPEED_DISP_MS.time）
+     * 决定——同一状态里耗时文本每 time 毫秒才换一次，格式本身不决定刷新频率。只影响格面；
+     * tooltip 与统计行的既有时间文案不变。非法值返回空串（格面不显示数值）。 */
+    function zuSpTime(ms) {
+      if (typeof ms !== "number" || !isFinite(ms) || ms < 0) return "";
+      var s = Math.floor(ms / 1000);
+      if (s < 1) return (((ms / 100) | 0) / 10).toFixed(1) + "s";
+      if (s < 60) return zuSpPad(s) + "s";
+      if (s < 3600) return Math.floor(s / 60) + ":" + zuSpPad(s % 60);
+      if (s < 86400) return Math.floor(s / 3600) + ":" + zuSpPad(Math.floor(s / 60) % 60) + ":" + zuSpPad(s % 60);
+      return Math.floor(s / 86400) + L("天", "d ") + (Math.floor(s / 3600) % 24) + L("时", "h");
+    }
+    /* 格面数值：万以上缩写（仅展示层，不参与分档；k/M/B/T 逐级，进位不跨档：999999→1.0M）；
+     * 估算态恒一位小数，完成态沿用既有「整数不带小数」格式。非有限/负值返回空串
+     * （调用方既有策略已拒绝，绝不伪造 0）。tooltip 读真实视图，保留原始精确数值。 */
+    function zuSpNum(v, est) {
+      if (typeof v !== "number" || !isFinite(v) || v < 0) return "";
+      if (v < 10000) return (est || v % 1) ? v.toFixed(1) : String(v);
+      var units = ["k", "M", "B", "T"], i = 0, x = v / 1000;
+      while (i < units.length - 1 && x >= 999.95) { x /= 1000; i++; }   // 候选缩写值进位到 1000.x 就升一级单位
+      return (x >= 1000 ? String(Math.round(x)) : x.toFixed(1)) + units[i];
+    }
+    /* 展示模型：{label, value, unit}。view = zuBarSpeedView 的返回值，或 DB 回退伪视图
+     * {kind:"avg"|"real", db:true, speedValue}。kind avg 的面数字取 latest（最后一轮真实
+     * 速度，v298），不取 speedValue（那是会话均，只在 tooltip）。无值可显返回 null。 */
+    function zuSpeedFace(view) {
+      if (!view) return null;
+      var k = view.kind, lab = "", val = "", unit = "";
+      if (k === "subagent") {
+        lab = L("代理", "Agt") + (view.activeCount > 1 ? "×" + view.activeCount : "");
+        val = "≈" + zuSpNum(view.speedValue, true); unit = "t/s";
+      } else if (k === "estimate") {
+        lab = L("生成", "Gen"); val = "≈" + zuSpNum(view.speedValue, true); unit = "t/s";
+      } else if (k === "avg" || k === "real") {
+        /* 精度逐字沿用 text：real 恒一位小数（250.0），avg 与 DB 回退整数不带小数（250） */
+        val = zuSpNum(view.latest != null ? view.latest : view.speedValue, k === "real" && !view.db);
+        if (!val) return null;
+        unit = "t/s";
+        if (view.db) lab = L("历史", "Hist");
+      } else if (k === "thinking") {
+        lab = L("思考", "Think"); val = zuSpTime(view.elapsedMs);
+      } else if (k === "toolgroup") {
+        lab = view.groupKind === "terminal" ? L("终端", "Shell") : L("查阅", "Scan");
+        val = zuSpTime(view.elapsedMs);
+      } else if (k === "skill") {
+        lab = view.nameText || L("技能", "Skill"); val = zuSpTime(view.elapsedMs);
+      } else {
+        var tn = String(view.toolName || ""), pair = ZU_SPEED_TOOL_LABELS[tn];
+        if (pair) lab = L(pair[0], pair[1]);
+        else if (tn.indexOf("mcp__computer-use__") === 0) lab = L("电脑", "Cua");
+        else if (tn.indexOf("mcp__") === 0) lab = tn.slice(5).split("__")[0] || L("工具", "Tool");
+        else if (tn.indexOf("js") === 0) lab = L("代码", "Code");
+        else lab = tn || L("执行", "Run");
+        val = zuSpTime(view.elapsedMs);
+      }
+      return { label: lab, value: val, unit: unit };
+    }
+    /* 速度格稳定占位：格面=标签 + 数值 + 单位三个 span，文案由上方展示模型 zuSpeedFace 从结构化
+     * 字段翻出（不解析 text）；数字与单位仍是零空格两 item、
+     * 间距由 gap 提供（v326 机制延续）。声明必须在实例一级：07 render、08 updateLive 原地更新、
+     * 11 compact chip 三处消费——放在 html(d) 分支块内是 Annex B 块级函数声明，live 分支执行时
+     * 绑定未初始化（TypeError），跨分片 08 直接 ReferenceError（实测 44 测试红）。 */
+    function zuSpeedFaceHtml(view) {
+      var f = zuSpeedFace(view);
+      if (!f) return "";
+      return '<span class="zu-sp-label">' + ttEsc(f.label) + '</span><span class="zu-sp-val">' + ttEsc(f.value) + '</span>' +
+        (f.unit ? '<span class="zu-sp-unit dim">' + ttEsc(f.unit) + '</span>' : "");
+    }
+    /* 速度格图标：思考=动效脑、工具=扳手、其余相位=闪电。07 整条渲染与 08 原地换图标共用同一出口。 */
+    function zuSpeedIconHtml(phase) {
+      return phase === "thinking" ? zuIcoThinking()
+        : phase === "tool" ? ico('<path d="M14.5 2.5a6 6 0 0 0-5.6 8.1L3.3 16.2a3.2 3.2 0 0 0 4.5 4.5l5.6-5.6a6 6 0 0 0 8.1-5.6l-4.1 3-3.8-3.8 3-4.1a6 6 0 0 0-2.1-2.1z"/>')
+        : ico('<path d="M13.5 2 3.5 13.5H11L10 22l10.5-12H13l.5-8z"/>');
+    }
+    /* 速度格全称：aria-label 供读屏（格面精简/省略时仍得全文），data-zu-full 供「···」菜单显示完整状态词。
+     * 两处来源不同：aria-label 取展示视图（与格面同节奏，高频速度更新不触发重复播报）；
+     * data-zu-full 取真实视图 live（缺省回退 full）——菜单值保持最新。zuSpeedCellAttrs 供 07
+     * 整条渲染拼开标签，zuSpeedCellSync 供 08 原地更新（值未变不写）。 */
+    function zuSpeedAria(full) {
+      var name = L("生成速度", "Generation speed"), text = String(full || "");
+      return text ? name + " " + text : name;
+    }
+    function zuSpeedCellAttrs(full, live) {
+      return 'aria-label="' + escAttr(zuSpeedAria(full)) + '" data-zu-full="' + escAttr(String(live || full || "")) + '"';
+    }
+    function zuSpeedCellSync(cell, full, live) {
+      if (!cell) return;
+      var text = String(live || full || "");
+      if (cell.dataset && cell.dataset.zuFull !== text) cell.dataset.zuFull = text;
+      var aria = zuSpeedAria(String(full || ""));
+      if (cell.setAttribute && cell.__zuSpAria !== aria) { cell.setAttribute("aria-label", aria); cell.__zuSpAria = aria; }
     }
     function ttH(t) { return '<div class="rt-h">' + ttEsc(t) + "</div>"; }
     var RT_ATOM_RE = /(?:[¥$]\d[\d,.]*|\b\d[\d,.]*(?:\s*(?:tok\/s|t\/s|tokens?|requests?|calls?|s|ms|次|轮|万|亿|%))(?=$|[\s，；。·（）()]))/g;
@@ -930,13 +1029,13 @@
       var sess = d.session || {}, lt = d.last_turn || {}, today = d.today || {}, last = d.last || {};
       var tls = d.tools || { total: 0, errors: 0, list: [] };
       var items = [], tips = [], barItemKey = "system";
-      function it(inner, tipContent, cls) {
+      function it(inner, tipContent, cls, attrs) {
         var interactive = cls === "zu-sub";
         var key = barItemKey;
         items.push('<' + (interactive
           ? 'button type="button" aria-label="' + L("子代理", "Sub-agents") + '"'
           : 'span tabindex="0"') +
-          ' class="it' + (cls ? " " + cls : "") + '" data-zu-key="' + key + '">' + inner + (interactive ? "</button>" : "</span>"));
+          ' class="it' + (cls ? " " + cls : "") + '" data-zu-key="' + key + '"' + (attrs ? " " + attrs : "") + '>' + inner + (interactive ? "</button>" : "</span>"));
         tips.push({key: key, content: tipContent || null, index: tips.length});
       }
       function hasNumber(obj, key) { return !!obj && typeof obj[key] === "number" && isFinite(obj[key]); }
@@ -984,16 +1083,16 @@
       barItemKey = "speed";
       var dbTps = last.tps || 0;
       var sessAvg = (sess && typeof sess.avg_tps === "number" && isFinite(sess.avg_tps) && sess.avg_tps > 0) ? sess.avg_tps : 0;
-      var speedView = liveStatsCur ? zuBarSpeedView(liveStatsCur, bridge.handle && bridge.handle.charsPerToken, subRate.sum, sessAvg) : null;
+      var speedRaw = liveStatsCur ? zuBarSpeedView(liveStatsCur, bridge.handle && bridge.handle.charsPerToken, subRate.sum, sessAvg) : null;
+      /* 格面用展示视图（展示协调器防抖/节流后的快照）；tooltip 仍读真实视图 speedRaw */
+      var speedView = typeof zuSpDispPick === "function" ? zuSpDispPick(speedRaw, Date.now()) : speedRaw;
       if (speedView) {
         liveKindCur = "live";
         livePhaseCur = speedView.phase || "";
         liveIconCur = speedView.phase === "thinking" ? "think" : speedView.phase === "tool" ? "tool" : speedView.phase ? "generate" : "bolt";
-        it((speedView.phase === "thinking" ? zuIcoThinking()
-          : speedView.phase === "tool" ? ico('<path d="M14.5 2.5a6 6 0 0 0-5.6 8.1L3.3 16.2a3.2 3.2 0 0 0 4.5 4.5l5.6-5.6a6 6 0 0 0 8.1-5.6l-4.1 3-3.8-3.8 3-4.1a6 6 0 0 0-2.1-2.1z"/>')
-          : ico('<path d="M13.5 2 3.5 13.5H11L10 22l10.5-12H13l.5-8z"/>')) +
-          '<span class="zu-live ' + speedView.cls + (speedView.word ? " zu-shimmer" : "") + '">' + zuLiveFaceHtml(speedView.text) + "</span>",
-          buildLiveTip(speedView));
+        it(zuSpeedIconHtml(speedView.phase) +
+          '<span class="zu-live ' + speedView.cls + (speedView.word ? " zu-shimmer" : "") + '">' + zuSpeedFaceHtml(speedView) + "</span>",
+          buildLiveTip(speedRaw), "zu-speed", zuSpeedCellAttrs(speedView.text, speedRaw && speedRaw.text));
       } else if ((sessAvg || dbTps) && isFinite(sessAvg || dbTps) && (sessAvg || dbTps) > 0) {
         /* v127：负数/±Infinity 是异常数据，按无数据处理（整枚 chip 不渲染，与
          * NaN/0 一致），绝不判成低速；正有限值按 TPS_BANDS 分档，档位行动态显示。
@@ -1090,10 +1189,13 @@
         /* v298（用户拍板）：chip 主数字=最后一轮真实速度（最近一段，不再取会话均、
          * 不带「均」前缀）；tooltip 左卡仍为会话加权平均（"平均速度"语义不变） */
         var chipBand = tpsBand(chipTps);
-        var chipFace = chipTps > 0 ? ((chipTps % 1 ? chipTps.toFixed(1) : String(chipTps)) + '<span class="dim">t/s</span>') : "";   // 最后一轮无效：面空（含单位），仅留图标作悬停锚；空面补 aria-label 保可访问名（review 修复）。v319 补空格→v321 flex 豁免后空格生效→v324 去空格（曾零间隔）→v326 统一 gap:5px 机制：完成态与动态态同为「数字+dim」两 item、间距恒 5px（用户屏幕验证）
-        it(ico('<path d="M13.5 2 3.5 13.5H11L10 22l10.5-12H13l.5-8z"/>') +
-          '<span class="zu-live ' + (chipBand ? chipBand.cls : "dim") + '"' + (chipFace ? "" : ' aria-label="' + L("生成速度", "Generation speed") + '"') + '>' + chipFace + '</span>',
-          speedTipRebuild(speedChartHover, v2sel));
+        /* 最后一轮无效：面空（含单位），仅留图标作悬停锚；空面仍带 aria-label 保可访问名（review 修复）。
+         * 面走展示模型（标签「历史」+ 数值 + 单位，specs/speed-chip-stable-slot.md）；数值格式与 v298 一致 */
+        var fbText = chipTps > 0 ? (chipTps % 1 ? chipTps.toFixed(1) : String(chipTps)) + L(" t/s", " t/s") : "";
+        it(zuSpeedIconHtml(null) +
+          '<span class="zu-live ' + (chipBand ? chipBand.cls : "dim") + '">' +
+          zuSpeedFaceHtml({ kind: "real", db: true, speedValue: chipTps > 0 ? chipTps : null }) + '</span>',
+          speedTipRebuild(speedChartHover, v2sel), "zu-speed", zuSpeedCellAttrs(chipTps > 0 ? L("最近一段 ", "Latest segment ") + fbText : ""));
       } else {
         liveKindCur = "none";
         livePhaseCur = "";

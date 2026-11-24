@@ -90,6 +90,21 @@ const NAMED_SLICES = {
    * tip-layout/tooltip-span/speed-chart 家族只切 07 分片进 VM，html() 新引用模块级助手
    * 时必须把这个切片前置拼进 helpers（zuBarSortItems is not defined 断链，62 例回归根因）。 */
   barOrderHelpers: ['  var ZU_BAR_KEYS =', '  var state = {'],
+  /* 速度格稳定占位（specs/speed-chip-stable-slot.md）：展示协调器（08，updateLive 尾部到 liveTipBuiltAt
+   * 声明之前的全部实例级状态）与折叠段的折叠/回展循环（12，候选计算到 speedMinOn 回写）。
+   * 行为测试见 overlay-speed-slot.test.cjs（协调器时间戳显式注入；折叠循环用可控 scrollWidth 桩）。 */
+  speedDisp: ['    /* ---------- 展示协调器（specs/speed-chip-stable-slot.md）', '    var liveTipBuiltAt = -Infinity'],
+  speedFoldLoop: ['      var candidates = zuBarFoldOrder(rows.map(', '      syncSeparators();\n      var hidden = rows.filter('],
+  /* 精简主题速率 chip 的面/档位色/全称取值段（11 分片 syncTpsChip） */
+  tpsChipFace: ['      var fv = v.kind === "live" ? (v.face || v.sv) : { kind: "real", db: true, speedValue: v.dbTps > 0 ? v.dbTps : null };', '      var prevT = chip.__zuT;'],
+  /* 折叠判据的内容宽：可见子项 rect 宽度和 + gap（scrollWidth 以 clientWidth 为下限，量不出富余） */
+  speedContentWidth: ['    function zuBarContentWidth() {', '    function syncBarOverflow() {'],
+  /* 折叠重算开头：清空上一轮折叠集与速度格极窄档（每轮从头重算） */
+  speedFoldReset: ['      rows.forEach(function (el) { el.dataset.zuFolded = "0"; delete el.dataset.zuEndlead; });', '      function syncSeparators() {'],
+  /* 药丸速度格档位升降（12 分片，条宽触顶降档、富余够升档） */
+  speedPillTier: ['    var pillSpeedTier = 0, pillSpeedEmAt = 0, pillSpeedEm = 14;', '    function barMorePosition() {'],
+  /* 精简速率 chip 的布局档位（11 分片）：纯函数 zuTsbTierNext + 测量/写类名 zuTsbTierSync */
+  tsbTier: ['    var ZU_TSB_TIERS = [', '    function syncTpsChip() {'],
 };
 
 /**

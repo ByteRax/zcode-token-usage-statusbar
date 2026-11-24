@@ -4042,27 +4042,30 @@
         if (grp && grp.kind === "explore") { verb = L("查阅·执行中", "Explore·executing"); grpKind = "explore"; }
         else if (grp && grp.kind === "terminal") { verb = L("终端·执行中", "Terminal·executing"); grpKind = "terminal"; }
         var st = grp && grp.startedAt != null ? grp.startedAt : stats.runningTool.startedAt;
-        var elapsed = "";
+        var elapsed = "", elapsedMs = null;
         if (typeof st === "number" && st > 0 && Date.now() >= st) {
-          elapsed = ((Date.now() - st) / 1000).toFixed(1) + "s";   // v151 去中点 + v153 执行中（用户规格）
+          elapsedMs = Date.now() - st;   // 数值形态供格面紧凑计时（specs/speed-chip-stable-slot.md）
+          elapsed = (elapsedMs / 1000).toFixed(1) + "s";   // v151 去中点 + v153 执行中（用户规格）
           verb += " " + elapsed;
         }
         var base = { cls: "dim", text: verb, phase: "tool", word: true };   // v159：纯状态词带流光（宿主 zcode-loading-label 同款）
         if (grpKind)
-          return Object.assign(base, { kind: "toolgroup",
+          return Object.assign(base, { kind: "toolgroup", groupKind: grpKind,
             statusText: L("工具组执行中", "Tool group running"),
             nameText: grpKind === "explore" ? L("查阅", "Explore") : L("终端", "Terminal"),
-            elapsedText: elapsed,
+            elapsedText: elapsed, elapsedMs: elapsedMs,
             noteText: L("工具组 · 正在执行", "Tool group · executing") });
         if (skName)
           return Object.assign(base, { kind: "skill",
             statusText: L("Skill 执行中", "Executing skill"),
-            nameText: skName, nameFull: skFull, elapsedText: elapsed,
+            nameText: skName, nameFull: skFull, elapsedText: elapsed, elapsedMs: elapsedMs,
             noteText: L("Skill · 正在执行", "Skill · executing") });
         base.kind = "tool";
         base.statusText = L("工具执行中", "Tool running");
         base.nameText = zuToolVerb(stats.runningTool.name);
+        base.toolName = stats.runningTool.name;
         base.elapsedText = elapsed;
+        base.elapsedMs = elapsedMs;
         base.noteText = L("工具 · 正在执行", "Tool · executing");
         return base;
       }
@@ -4089,7 +4092,7 @@
         return { cls: "dim", text: L("思考中…", "thinking…") + thinkText,
                  phase: "thinking", word: true,
                  kind: "thinking", statusText: L("思考中", "Thinking"),
-                 elapsedText: thinkText,
+                 elapsedText: thinkText, elapsedMs: elapsedMs,
                  noteText: L("生成尚未开始", "Generation not started") };
       }
       var est = stats.characterRate / (charsPerToken || DEFAULT_CHARS_PER_TOKEN);
@@ -4140,6 +4143,10 @@
              speedValue: stats.tokenRate, speedIsEstimated: false, speedSource: "real",
              noteText: L("本轮实际速度", "Actual speed this turn") };
   }
+  /* 速度格稳定占位（specs/speed-chip-stable-slot.md）：展示协调器阈值集中在此（模块级——08 的协调器
+   * 按名引用，全源测试夹具也按模块级名字置 0 以保持「立即展示」语义）。无定时器：只在既有 100ms 心跳 /
+   * store 通知到达时按时间戳裁决。格面的展示模型（标签 / 数值 / 单位）在 07 分片渲染助手区。 */
+  var ZU_SPEED_DISP_MS = { debounce: 180, minShow: 400, num: 600, color: 400, time: 1000 };
   /* ---------- v254 生成速度 Tooltip 重构：双 Tab / 维度 / 16 柱 / hover 五字段 ----------
    * 数据面 = 快照顶层 speed_history（zusage 真实库有界扫描，单一轮表；短键 + 索引表）。
    * 全部筛选与聚合都在纯函数里完成，不新增 IPC/定时器/DOM 监听：Tab/dim/柱 hover 经
@@ -13849,6 +13856,38 @@
        * item 不受影响）。豁免后内部回块级流，空格恢复渲染，v319 的 word-spacing:4px 真正生效，
        * 间隔=动态态的 ~7.7px。.zu-live 作为 .it 的 flex item 会被块化，外部布局零变化。 */
       ".zusage-root .it{line-height:1.3}.zusage-root .it>span:not(.eb):not(.zu-live){display:inline-flex;align-items:center;min-height:1.3em}" +
+      /* 速度格稳定占位（specs/speed-chip-stable-slot.md）：外宽只随布局档位变、不随状态文字变。
+       * 档位=既有窄宽类与折叠段属性（零新增测量）：宽裕 12.6em（14px 基准 176px）；zu-tight 10.9em（12px
+       * 基准 131px）；zu-narrow 7.2em
+       *（去标签与单位，图标+数值——按最长无标签面「图标+23:59:59」标定：格字号 12px 时速度格 86.4px、
+       * 内容自然宽 78.3px；旧值 6.4em 对该面越界 1.5px，被 scrollWidth 取整掩盖）；data-zu-speed-min
+       * （折叠段内轮到速度格）仅图标。em 随格字号缩放，界面字号 11/14/20px 宿主实测余量 6~21px（2026-11-23）。
+       * 面结构=标签（吃剩余空间、省略）+数值（不收缩、右对齐）+单位；数字与单位仍是零空格两 item、
+       * 间距由 gap 提供（v326 机制）。overflow:hidden 兜底裁切，任何情况下不推邻格。流光沿用包装层
+       * .zu-live.zu-shimmer 既有规则（flex 子项与标签 overflow 下宿主实测可正常渲染）。精简 chip
+       * .zu-tsb 同样不随状态文字变：它挂在宿主工具行、没有窄宽状态机，三档由 11 分片 zuTsbTierSync
+       * 按宿主工具行的真实空位选（规则与标定见 .zu-tsb 规则处的注释）。 */
+      ".zusage-root .zu-main>.it.zu-speed{box-sizing:border-box;width:12.6em;overflow:hidden}" +
+      ".zusage-root.zu-tight .zu-main>.it.zu-speed{width:10.9em}" +
+      ".zusage-root.zu-narrow .zu-main>.it.zu-speed{width:7.2em}" +
+      /* 药丸无窄宽状态机：速度格档位类由 track 按卡片可用宽度升降（zuPillSpeedTierSync）——中等去分隔符；
+       * 中等/紧张档与默认条窄档同款同宽（药丸条上没有 zu-tight 类，缩字号公式与内边距在档位规则里自带：
+       * 14px 字号下要塞进中等档宽度，两字标签会被挤成省略号） */
+      ".zusage-root.zu-pill.zu-speed-mid .zu-main>.it.zu-speed{width:10.9em;padding-left:4px;padding-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}" +
+      ".zusage-root.zu-pill.zu-speed-mid .it.zu-speed>.zu-live>.zu-sp-label:not(:empty)::after{content:none}" +
+      ".zusage-root.zu-pill.zu-speed-tight .zu-main>.it.zu-speed{width:7.2em;padding-left:4px;padding-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}" +
+      ".zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-label,.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-unit{display:none}" +
+      ".zusage-root .zu-main>.it.zu-speed[data-zu-speed-min='1']{width:2.75em}" +
+      ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live{display:flex;flex:1 1 auto;min-width:0;align-items:baseline}" +
+      ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}" +
+      ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-val{flex:0 0 auto;white-space:nowrap;text-align:right}" +
+      ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-unit{flex:0 0 auto}" +
+      ".zusage-root .it.zu-speed>.zu-live>.zu-sp-label:not(:empty)::after{content:' · ';padding:0 4px}" +
+      ".zusage-root.zu-tight .it.zu-speed>.zu-live>.zu-sp-label:not(:empty)::after{content:none}" +
+      ".zusage-root.zu-narrow .it.zu-speed>.zu-live>.zu-sp-label,.zusage-root.zu-narrow .it.zu-speed>.zu-live>.zu-sp-unit{display:none}" +
+      /* 最窄档标签隐藏后没有「吃剩余空间」的弹簧把数值推到右边——显式靠右，与宽裕/中等档的数值右缘一致（位数变化不动右缘） */
+      ".zusage-root.zu-narrow .it.zu-speed>.zu-live,.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live{justify-content:flex-end}" +
+      ".zusage-root .zu-main>.it.zu-speed[data-zu-speed-min='1']>.zu-live{display:none}" +
       ".zusage-root .eb .ico{width:12px;height:12px;transform:none}" +
       ".zusage-root .zu-think{color:var(--color-brand,#8171e8);opacity:1}" +
       /* 工具错误数徽标 */
@@ -14039,7 +14078,19 @@
        * 速率色档复用全局 .ok/.warm/.hot 与 TPS 十档类（含 Ultra 渐变 ✦）；浅色组靠 chip
        * 自身的 .zu-light 类补链（条隐藏后 .zu-light 祖先缺失）。 */
       ".zu-tsb{display:inline-flex;align-items:center;gap:5px;height:1.75rem;padding:0 6px;border-radius:.5rem;cursor:pointer;user-select:none;flex:0 0 auto;" +
+      /* 稳定占位（specs/speed-chip-stable-slot.md）：chip 外宽只随布局档位变，标签+数值+单位随状态换而不推 git chip。
+       * 三档类名与药丸档位同名，规则只作用于 .zu-tsb；档位由 11 分片 zuTsbTierSync 按宿主工具行的真实空位选
+       * （chip 先让位，不拿宿主自己的按钮换宽度）。宽裕 12.4em=标签+数值+单位，按最宽的无省略面
+       * 「代理×12 ≈1286.5 t/s」标定（13px 粗体，六种字体栈下自然宽最大 157.8px；旧单一宽 10.5em 对它越界 7.3px）；
+       * 中等 9.7em=去单位（「Think 23:59:59」123.5px）；紧张 6.6em=仅数值靠右（「23:59:59」82.9px）。
+       * chip 无图标，故没有「仅图标」的最窄档。 */
+      "box-sizing:border-box;width:12.4em;" +
       "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--text-ui-base,var(--ui-font-size,14px)) - 1px);font-weight:700;font-variant-numeric:tabular-nums}" +
+      ".zu-tsb.zu-speed-mid{width:9.7em}" +
+      ".zu-tsb.zu-speed-mid>.zu-live>.zu-sp-unit{display:none}" +
+      ".zu-tsb.zu-speed-tight{width:6.6em}" +
+      ".zu-tsb.zu-speed-tight>.zu-live>.zu-sp-label,.zu-tsb.zu-speed-tight>.zu-live>.zu-sp-unit{display:none}" +
+      ".zu-tsb.zu-speed-tight>.zu-live{justify-content:flex-end}" +
       ".zu-tsb:hover,.zu-tsb:focus-visible{background:var(--color-hover,rgba(255,255,255,.08));outline:none}" +
       /* v356 系统状态（issue #338）：格面值/标签继承 .it .v/.dim 基础样式，zu-sys-* 只承载
        * 结构布局与预警色（柔和黄/红只染数值与图标，浅色档双套同源深化）；stale 整段降
@@ -16527,15 +16578,114 @@
     /* 结构化 tooltip（v67.1）：\x01 前缀标记 HTML 内容（drawTip 分流），行/脚注排版与
      * 回复末尾统计行 tooltip 同款；动态值一律过 ttEsc（innerHTML 安全，如工具名/错误文案） */
     function ttEsc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
-    /* v326：动态态与完成态统一「数字 + dim 单位」两 item 结构——.zu-live 用 inline-flex+gap:5px
-     * 控制数字与 t/s 间距（word-spacing 已除：对完成态无空格字符、动态态单文本均无视觉效果）。
-     * t/s 结尾才拆（状态词态保持单文本）。声明必须在实例一级：07 render live 分支、08 updateLive
-     * 原地更新、11 compact chip 三处消费——放在 html(d) 分支块内是 Annex B 块级函数声明，
-     * live 分支执行时绑定未初始化（TypeError），跨分片 08 直接 ReferenceError（实测 44 测试红）。 */
-    function zuLiveFaceHtml(text) {
-      return typeof text === "string" && / t\/s$/.test(text)
-        ? ttEsc(text.slice(0, -4)) + '<span class="dim">t/s</span>'
-        : ttEsc(text);
+    /* ---------- 速度格稳定占位：展示模型（specs/speed-chip-stable-slot.md） ----------
+     * 状态判定仍只在 02 分片 zuBarSpeedView；这里把它的结构化字段翻成格面的「标签 / 数值 / 单位」，
+     * 禁止解析 text 文案反推状态。全称 text 继续供 tooltip、aria-label 与「···」菜单使用。纯函数放在
+     * 实例级渲染助手区：html() 的 VM 切片夹具统一按「ttEsc 到 stubFor」区间取助手，放模块级会让
+     * 53 例布局回归同时 ReferenceError（zuSpeedFace is not defined）。
+     * 工具短名表：完整动词表在 03 分片 ZU_TOOL_VERBS，tooltip 仍用完整态。 */
+    var ZU_SPEED_TOOL_LABELS = {
+      Read: ["读取", "Read"], Write: ["写入", "Write"], Edit: ["编辑", "Edit"], ApplyPatch: ["编辑", "Edit"],
+      Bash: ["执行", "Run"], Grep: ["搜索", "Find"], Glob: ["搜索", "Find"], WebSearch: ["搜索", "Find"],
+      web_search: ["搜索", "Find"], WebFetch: ["网页", "Fetch"],
+      TodoWrite: ["待办", "Todo"], TodoRead: ["待办", "Todo"], Skill: ["技能", "Skill"],
+      ReadSessionContext: ["上下文", "Ctx"], Agent: ["代理", "Agent"], Task: ["代理", "Agent"],
+      SendMessage: ["消息", "Send"], TaskOutput: ["输出", "Out"], TaskStop: ["停止", "Stop"],
+      CreateWorkflow: ["流程", "Flow"],
+    };
+    function zuSpPad(n) { return n < 10 ? "0" + n : String(n); }
+    /* 格面紧凑时间（时间格式表）：不足 1 秒一位小数（0.5s，向下截断不进位），其后整数秒两位补零
+     * （03s），分:秒，时:分:秒，跨天 天+时。刷新节奏由展示协调器的计时节流（ZU_SPEED_DISP_MS.time）
+     * 决定——同一状态里耗时文本每 time 毫秒才换一次，格式本身不决定刷新频率。只影响格面；
+     * tooltip 与统计行的既有时间文案不变。非法值返回空串（格面不显示数值）。 */
+    function zuSpTime(ms) {
+      if (typeof ms !== "number" || !isFinite(ms) || ms < 0) return "";
+      var s = Math.floor(ms / 1000);
+      if (s < 1) return (((ms / 100) | 0) / 10).toFixed(1) + "s";
+      if (s < 60) return zuSpPad(s) + "s";
+      if (s < 3600) return Math.floor(s / 60) + ":" + zuSpPad(s % 60);
+      if (s < 86400) return Math.floor(s / 3600) + ":" + zuSpPad(Math.floor(s / 60) % 60) + ":" + zuSpPad(s % 60);
+      return Math.floor(s / 86400) + L("天", "d ") + (Math.floor(s / 3600) % 24) + L("时", "h");
+    }
+    /* 格面数值：万以上缩写（仅展示层，不参与分档；k/M/B/T 逐级，进位不跨档：999999→1.0M）；
+     * 估算态恒一位小数，完成态沿用既有「整数不带小数」格式。非有限/负值返回空串
+     * （调用方既有策略已拒绝，绝不伪造 0）。tooltip 读真实视图，保留原始精确数值。 */
+    function zuSpNum(v, est) {
+      if (typeof v !== "number" || !isFinite(v) || v < 0) return "";
+      if (v < 10000) return (est || v % 1) ? v.toFixed(1) : String(v);
+      var units = ["k", "M", "B", "T"], i = 0, x = v / 1000;
+      while (i < units.length - 1 && x >= 999.95) { x /= 1000; i++; }   // 候选缩写值进位到 1000.x 就升一级单位
+      return (x >= 1000 ? String(Math.round(x)) : x.toFixed(1)) + units[i];
+    }
+    /* 展示模型：{label, value, unit}。view = zuBarSpeedView 的返回值，或 DB 回退伪视图
+     * {kind:"avg"|"real", db:true, speedValue}。kind avg 的面数字取 latest（最后一轮真实
+     * 速度，v298），不取 speedValue（那是会话均，只在 tooltip）。无值可显返回 null。 */
+    function zuSpeedFace(view) {
+      if (!view) return null;
+      var k = view.kind, lab = "", val = "", unit = "";
+      if (k === "subagent") {
+        lab = L("代理", "Agt") + (view.activeCount > 1 ? "×" + view.activeCount : "");
+        val = "≈" + zuSpNum(view.speedValue, true); unit = "t/s";
+      } else if (k === "estimate") {
+        lab = L("生成", "Gen"); val = "≈" + zuSpNum(view.speedValue, true); unit = "t/s";
+      } else if (k === "avg" || k === "real") {
+        /* 精度逐字沿用 text：real 恒一位小数（250.0），avg 与 DB 回退整数不带小数（250） */
+        val = zuSpNum(view.latest != null ? view.latest : view.speedValue, k === "real" && !view.db);
+        if (!val) return null;
+        unit = "t/s";
+        if (view.db) lab = L("历史", "Hist");
+      } else if (k === "thinking") {
+        lab = L("思考", "Think"); val = zuSpTime(view.elapsedMs);
+      } else if (k === "toolgroup") {
+        lab = view.groupKind === "terminal" ? L("终端", "Shell") : L("查阅", "Scan");
+        val = zuSpTime(view.elapsedMs);
+      } else if (k === "skill") {
+        lab = view.nameText || L("技能", "Skill"); val = zuSpTime(view.elapsedMs);
+      } else {
+        var tn = String(view.toolName || ""), pair = ZU_SPEED_TOOL_LABELS[tn];
+        if (pair) lab = L(pair[0], pair[1]);
+        else if (tn.indexOf("mcp__computer-use__") === 0) lab = L("电脑", "Cua");
+        else if (tn.indexOf("mcp__") === 0) lab = tn.slice(5).split("__")[0] || L("工具", "Tool");
+        else if (tn.indexOf("js") === 0) lab = L("代码", "Code");
+        else lab = tn || L("执行", "Run");
+        val = zuSpTime(view.elapsedMs);
+      }
+      return { label: lab, value: val, unit: unit };
+    }
+    /* 速度格稳定占位：格面=标签 + 数值 + 单位三个 span，文案由上方展示模型 zuSpeedFace 从结构化
+     * 字段翻出（不解析 text）；数字与单位仍是零空格两 item、
+     * 间距由 gap 提供（v326 机制延续）。声明必须在实例一级：07 render、08 updateLive 原地更新、
+     * 11 compact chip 三处消费——放在 html(d) 分支块内是 Annex B 块级函数声明，live 分支执行时
+     * 绑定未初始化（TypeError），跨分片 08 直接 ReferenceError（实测 44 测试红）。 */
+    function zuSpeedFaceHtml(view) {
+      var f = zuSpeedFace(view);
+      if (!f) return "";
+      return '<span class="zu-sp-label">' + ttEsc(f.label) + '</span><span class="zu-sp-val">' + ttEsc(f.value) + '</span>' +
+        (f.unit ? '<span class="zu-sp-unit dim">' + ttEsc(f.unit) + '</span>' : "");
+    }
+    /* 速度格图标：思考=动效脑、工具=扳手、其余相位=闪电。07 整条渲染与 08 原地换图标共用同一出口。 */
+    function zuSpeedIconHtml(phase) {
+      return phase === "thinking" ? zuIcoThinking()
+        : phase === "tool" ? ico('<path d="M14.5 2.5a6 6 0 0 0-5.6 8.1L3.3 16.2a3.2 3.2 0 0 0 4.5 4.5l5.6-5.6a6 6 0 0 0 8.1-5.6l-4.1 3-3.8-3.8 3-4.1a6 6 0 0 0-2.1-2.1z"/>')
+        : ico('<path d="M13.5 2 3.5 13.5H11L10 22l10.5-12H13l.5-8z"/>');
+    }
+    /* 速度格全称：aria-label 供读屏（格面精简/省略时仍得全文），data-zu-full 供「···」菜单显示完整状态词。
+     * 两处来源不同：aria-label 取展示视图（与格面同节奏，高频速度更新不触发重复播报）；
+     * data-zu-full 取真实视图 live（缺省回退 full）——菜单值保持最新。zuSpeedCellAttrs 供 07
+     * 整条渲染拼开标签，zuSpeedCellSync 供 08 原地更新（值未变不写）。 */
+    function zuSpeedAria(full) {
+      var name = L("生成速度", "Generation speed"), text = String(full || "");
+      return text ? name + " " + text : name;
+    }
+    function zuSpeedCellAttrs(full, live) {
+      return 'aria-label="' + escAttr(zuSpeedAria(full)) + '" data-zu-full="' + escAttr(String(live || full || "")) + '"';
+    }
+    function zuSpeedCellSync(cell, full, live) {
+      if (!cell) return;
+      var text = String(live || full || "");
+      if (cell.dataset && cell.dataset.zuFull !== text) cell.dataset.zuFull = text;
+      var aria = zuSpeedAria(String(full || ""));
+      if (cell.setAttribute && cell.__zuSpAria !== aria) { cell.setAttribute("aria-label", aria); cell.__zuSpAria = aria; }
     }
     function ttH(t) { return '<div class="rt-h">' + ttEsc(t) + "</div>"; }
     var RT_ATOM_RE = /(?:[¥$]\d[\d,.]*|\b\d[\d,.]*(?:\s*(?:tok\/s|t\/s|tokens?|requests?|calls?|s|ms|次|轮|万|亿|%))(?=$|[\s，；。·（）()]))/g;
@@ -17341,13 +17491,13 @@
       var sess = d.session || {}, lt = d.last_turn || {}, today = d.today || {}, last = d.last || {};
       var tls = d.tools || { total: 0, errors: 0, list: [] };
       var items = [], tips = [], barItemKey = "system";
-      function it(inner, tipContent, cls) {
+      function it(inner, tipContent, cls, attrs) {
         var interactive = cls === "zu-sub";
         var key = barItemKey;
         items.push('<' + (interactive
           ? 'button type="button" aria-label="' + L("子代理", "Sub-agents") + '"'
           : 'span tabindex="0"') +
-          ' class="it' + (cls ? " " + cls : "") + '" data-zu-key="' + key + '">' + inner + (interactive ? "</button>" : "</span>"));
+          ' class="it' + (cls ? " " + cls : "") + '" data-zu-key="' + key + '"' + (attrs ? " " + attrs : "") + '>' + inner + (interactive ? "</button>" : "</span>"));
         tips.push({key: key, content: tipContent || null, index: tips.length});
       }
       function hasNumber(obj, key) { return !!obj && typeof obj[key] === "number" && isFinite(obj[key]); }
@@ -17395,16 +17545,16 @@
       barItemKey = "speed";
       var dbTps = last.tps || 0;
       var sessAvg = (sess && typeof sess.avg_tps === "number" && isFinite(sess.avg_tps) && sess.avg_tps > 0) ? sess.avg_tps : 0;
-      var speedView = liveStatsCur ? zuBarSpeedView(liveStatsCur, bridge.handle && bridge.handle.charsPerToken, subRate.sum, sessAvg) : null;
+      var speedRaw = liveStatsCur ? zuBarSpeedView(liveStatsCur, bridge.handle && bridge.handle.charsPerToken, subRate.sum, sessAvg) : null;
+      /* 格面用展示视图（展示协调器防抖/节流后的快照）；tooltip 仍读真实视图 speedRaw */
+      var speedView = typeof zuSpDispPick === "function" ? zuSpDispPick(speedRaw, Date.now()) : speedRaw;
       if (speedView) {
         liveKindCur = "live";
         livePhaseCur = speedView.phase || "";
         liveIconCur = speedView.phase === "thinking" ? "think" : speedView.phase === "tool" ? "tool" : speedView.phase ? "generate" : "bolt";
-        it((speedView.phase === "thinking" ? zuIcoThinking()
-          : speedView.phase === "tool" ? ico('<path d="M14.5 2.5a6 6 0 0 0-5.6 8.1L3.3 16.2a3.2 3.2 0 0 0 4.5 4.5l5.6-5.6a6 6 0 0 0 8.1-5.6l-4.1 3-3.8-3.8 3-4.1a6 6 0 0 0-2.1-2.1z"/>')
-          : ico('<path d="M13.5 2 3.5 13.5H11L10 22l10.5-12H13l.5-8z"/>')) +
-          '<span class="zu-live ' + speedView.cls + (speedView.word ? " zu-shimmer" : "") + '">' + zuLiveFaceHtml(speedView.text) + "</span>",
-          buildLiveTip(speedView));
+        it(zuSpeedIconHtml(speedView.phase) +
+          '<span class="zu-live ' + speedView.cls + (speedView.word ? " zu-shimmer" : "") + '">' + zuSpeedFaceHtml(speedView) + "</span>",
+          buildLiveTip(speedRaw), "zu-speed", zuSpeedCellAttrs(speedView.text, speedRaw && speedRaw.text));
       } else if ((sessAvg || dbTps) && isFinite(sessAvg || dbTps) && (sessAvg || dbTps) > 0) {
         /* v127：负数/±Infinity 是异常数据，按无数据处理（整枚 chip 不渲染，与
          * NaN/0 一致），绝不判成低速；正有限值按 TPS_BANDS 分档，档位行动态显示。
@@ -17501,10 +17651,13 @@
         /* v298（用户拍板）：chip 主数字=最后一轮真实速度（最近一段，不再取会话均、
          * 不带「均」前缀）；tooltip 左卡仍为会话加权平均（"平均速度"语义不变） */
         var chipBand = tpsBand(chipTps);
-        var chipFace = chipTps > 0 ? ((chipTps % 1 ? chipTps.toFixed(1) : String(chipTps)) + '<span class="dim">t/s</span>') : "";   // 最后一轮无效：面空（含单位），仅留图标作悬停锚；空面补 aria-label 保可访问名（review 修复）。v319 补空格→v321 flex 豁免后空格生效→v324 去空格（曾零间隔）→v326 统一 gap:5px 机制：完成态与动态态同为「数字+dim」两 item、间距恒 5px（用户屏幕验证）
-        it(ico('<path d="M13.5 2 3.5 13.5H11L10 22l10.5-12H13l.5-8z"/>') +
-          '<span class="zu-live ' + (chipBand ? chipBand.cls : "dim") + '"' + (chipFace ? "" : ' aria-label="' + L("生成速度", "Generation speed") + '"') + '>' + chipFace + '</span>',
-          speedTipRebuild(speedChartHover, v2sel));
+        /* 最后一轮无效：面空（含单位），仅留图标作悬停锚；空面仍带 aria-label 保可访问名（review 修复）。
+         * 面走展示模型（标签「历史」+ 数值 + 单位，specs/speed-chip-stable-slot.md）；数值格式与 v298 一致 */
+        var fbText = chipTps > 0 ? (chipTps % 1 ? chipTps.toFixed(1) : String(chipTps)) + L(" t/s", " t/s") : "";
+        it(zuSpeedIconHtml(null) +
+          '<span class="zu-live ' + (chipBand ? chipBand.cls : "dim") + '">' +
+          zuSpeedFaceHtml({ kind: "real", db: true, speedValue: chipTps > 0 ? chipTps : null }) + '</span>',
+          speedTipRebuild(speedChartHover, v2sel), "zu-speed", zuSpeedCellAttrs(chipTps > 0 ? L("最近一段 ", "Latest segment ") + fbText : ""));
       } else {
         liveKindCur = "none";
         livePhaseCur = "";
@@ -18709,47 +18862,75 @@
       stats = synthesizeBackgroundStats(stats);   // v336：主会话无实时轮而后台槽位在跑——合成子代理运行态（速度格不再静态）
       renderSubAgentRows();   // v176：Agent 行内速率 chip 对账（槽位估算/快照真实值两态）
       var wasLive = liveKindCur === "live";
-      var view = stats ? zuBarSpeedView(stats, h && h.charsPerToken, subRate.sum,
+      /* rview=真实视图（tooltip、失鲜标记只读它）；view=展示视图（展示协调器按防抖/节流给出的
+       * 快照，只供格面，specs/speed-chip-stable-slot.md） */
+      var rview = stats ? zuBarSpeedView(stats, h && h.charsPerToken, subRate.sum,
         /* 本 pane 会话行（render 缓存），不取 payload 顶层 session——那是全局最近活跃
          * 会话，多窗/分栏下会把别的会话的会话均串进本格（v181 补修）。 */
         (lastView && lastView.session && typeof lastView.session.avg_tps === "number" &&
          isFinite(lastView.session.avg_tps) && lastView.session.avg_tps > 0) ? lastView.session.avg_tps : 0) : null;
       liveStatsCur = stats;
       if (state.theme === "compact") {
+        if (!rview && typeof zuSpDispPick === "function") zuSpDispPick(null, Date.now());   // 无实时视图即清展示缓存（精简 chip 的实时态在 tpsChipView 内裁决）
         syncTpsChip();   // v146：精简模式速率走工具行 chip（10Hz 心跳原地跟随，条面不重建）
         if (typeof syncSysmonChip === "function") syncSysmonChip();   // v356：系统状态 chip 同链（短路 return 到不了公共尾部）
         if (typeof sysmonWantRecalc === "function") sysmonWantRecalc();   // v356：chip 挂载即订阅采样
         return;
       }
+      var view = typeof zuSpDispPick === "function" ? zuSpDispPick(rview, Date.now()) : rview;
       // 用 view（而非 stats）判定快速路径：stats 非空但 view 为 null（历史存量，见
       // zuBarSpeedView）时结构要切回降级拼法，必须走下面的整条重渲染，不能原地改字。
-      // 阶段（思考↔工具↔正文）切换会更换 chip 的图标（动效脑/闪电），同样只能整条
-      // 重渲染——原地改字换不了图标。
       var phase = view && view.phase ? view.phase : "";
-      if (view && wasLive && phase === livePhaseCur) {
+      if (view && wasLive) {
         liveTextCur = view.text;
         if (!liveEl) { render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 }); return; }
-        /* v326：原地更新同样写「数字+dim」两 item 结构（gap:5px 需两 item；textContent
-         * 会把结构转义成纯文本）。innerHTML 小串无压力，相位切换仍走整条重渲染。 */
-        var faceHtml = zuLiveFaceHtml(view.text);
-        if (liveEl.innerHTML !== faceHtml) liveEl.innerHTML = faceHtml;
+        var liveCell = liveEl.closest ? liveEl.closest(".it") : null;
+        if (phase !== livePhaseCur) {
+          /* 相位切换（思考↔工具↔正文↔完成）：只重写本格（图标 + 面同拍换），格元素、焦点、
+           * tooltip 锚点与折叠属性原地保留——此前每次相位切换都整条 render（重建 .zu-main、
+           * 重启呼吸灯/红点动画并触发窄宽探针重测）。找不到格元素（VM 字符串回放夹具）
+           * 时回退整条渲染。 */
+          if (!liveCell) { render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 }); return; }
+          liveCell.innerHTML = zuSpeedIconHtml(phase) +
+            '<span class="zu-live ' + view.cls + (view.word ? " zu-shimmer" : "") + '">' + zuSpeedFaceHtml(view) + "</span>";
+          liveEl = liveCell.querySelector(".zu-live");
+          livePhaseCur = phase;
+          liveEl.__zuSpLabel = null;
+        } else {
+        /* v326 机制延续：原地更新写「数值 + dim 单位」零空格 item 结构（textContent 会把结构
+         * 转义成纯文本）。innerHTML 小串无压力；内容未变不写。 */
+        var faceHtml = zuSpeedFaceHtml(view);
+        if (liveEl.innerHTML !== faceHtml) {
+          var prevLabel = liveEl.__zuSpLabel;
+          liveEl.innerHTML = faceHtml;
+          if (liveEl.querySelector) {
+            var labEl = liveEl.querySelector(".zu-sp-label");
+            var labelNow = labEl ? labEl.textContent : "";
+            /* 纯内容切换的短透明度过渡：只在标签文字变化时播（数值走字不播），Element.animate 缺位静默跳过 */
+            if (labEl && prevLabel != null && labelNow !== prevLabel && typeof labEl.animate === "function")
+              labEl.animate([{ opacity: 0.45 }, { opacity: 1 }], 120);
+            liveEl.__zuSpLabel = labelNow;
+          }
+        }
+        }
         liveIconCur = phase === "thinking" ? "think" : phase === "tool" ? "tool" : phase ? "generate" : "bolt";
+        zuSpeedCellSync(liveCell, view.text, rview && rview.text);
         var cls = "zu-live " + view.cls + (view.word ? " zu-shimmer" : "");
         if (liveEl.className !== cls) liveEl.className = cls;
         /* v97：子代理速率是渲染端实时状态（不在泵快照里），tooltip 里的逐子代理
          * 行随原地改字一起刷新——内容签名没变时 drawTip 幂等只调位置，不闪烁。
          * 性能治理（specs/perf-lag-reduction.md §4）：未悬停本格时不再每拍白建整张 V2 速度卡
          * （心跳 10Hz + store 通知，6000 轮历史时 ~5ms/次）——只记最新 view 并标失鲜，
-         * drawTip 打开瞬间经 liveTipRefresh 补建，兜底每 1s 保鲜一次；悬停本格仍每拍构建。 */
-        var liveCell = liveEl.closest ? liveEl.closest(".it") : null;
+         * drawTip 打开瞬间经 liveTipRefresh 补建，兜底每 1s 保鲜一次；悬停本格仍每拍构建。
+         * tooltip 一律读真实视图 rview（不受格面防抖/节流影响）。 */
         var hoverLive = !!liveCell && typeof tipFor !== "undefined" && tipFor === liveCell;
         if (liveCell && !hoverLive && Date.now() - liveTipBuiltAt < 1000) {
-          liveCell.__zuTipView = view;
+          liveCell.__zuTipView = rview;
           liveCell.__zuTipStale = true;
           return;
         }
         liveTipBuiltAt = Date.now();
-        var tip1 = buildLiveTip(view);
+        var tip1 = buildLiveTip(rview);
         if (liveCell) liveCell.__zuTipStale = false;
         if (liveCell && liveCell.__tip !== tip1) {
           /* v224 修复：__tip 宿主与 drawTip 读取都在 .it 格元素上（render 挂 tips[i]、
@@ -18788,6 +18969,49 @@
       idleRenderData = state.data;
       idleRenderAt = Date.now();
       render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 });
+    }
+    /* ---------- 展示协调器（specs/speed-chip-stable-slot.md）：真实视图 → 展示视图 ----------
+     * 无定时器：每次 updateLive / html() 到达时按时间戳裁决，实例闭包状态随实例销毁，按
+     * 「会话 sid + 轮 id」隔离。硬边界立即上屏（身份变化、数据源切换、最终态 avg/real 进出）；
+     * 运行态之间的切换需候选连续保持 debounce 毫秒，且 thinking/estimate 这类非关键中间态至少
+     * 展示 minShow 毫秒——工具类状态不被挽留（工具结束不会 lingering「执行中」超过一个防抖窗）。
+     * 颜色稳定：灰（工具/思考/无速率子代理）↔ 档位色互换后至少 color 毫秒不再变色，同色切换不受
+     * 约束，硬边界优先。同态下估算/子代理数值与档位色取同一真实快照、≥num 毫秒换一次（num ≥ color，
+     * 档位色随数值换时天然满足稳定期）；子代理数量变化即时。计时节流：同态内耗时文本每 time 毫秒
+     * 才换一次（首拍即取当前真实耗时；无值→有值立即）——只管同一状态内的文本刷新，状态进出
+     * （工具结束、报错、桥断开）不受它约束，且耗时始终取真实时间戳差不重新起算。
+     * 态键含同态内的「面」身份（工具名/工具组类别/技能名）：同类工具直接换手也要过防抖。
+     * 只影响格面：tooltip、统计与历史一律读真实视图。阈值在 02 分片 ZU_SPEED_DISP_MS。 */
+    var spdDisp = null;
+    function zuSpDispPick(view, now) {
+      if (!view) { spdDisp = null; return null; }
+      var T = typeof ZU_SPEED_DISP_MS !== "undefined" ? ZU_SPEED_DISP_MS : { debounce: 0, minShow: 0, num: 0 };
+      var bh = typeof bridge !== "undefined" && bridge ? bridge : null;
+      var ident = String((bh && bh.handle && bh.handle.sid) || "") + "|" + String((bh && bh.turnId) || "");
+      var key = view.kind + "|" + (view.phase || "") + "|" + String(view.toolName || view.groupKind || view.nameText || "");
+      var d = spdDisp, shown = d && d.view;
+      var final = view.kind === "avg" || view.kind === "real";
+      var timed = view.kind === "tool" || view.kind === "toolgroup" || view.kind === "skill" || view.kind === "thinking";
+      if (shown && key === d.key && ident === d.ident && !final) {
+        var throttled = view.kind === "estimate" || view.kind === "subagent";
+        d.candKey = key;   // 真实状态回到已展示态：候选作废（A→B→A 抖动时 B 不得累积防抖时长）
+        if (throttled && now - d.numAt < T.num && !(shown.kind === "subagent" && shown.activeCount !== view.activeCount)) return shown;
+        if (throttled) d.numAt = now;
+        if (timed && typeof shown.elapsedMs === "number" && now - d.timeAt < T.time) return shown;
+        if (timed) d.timeAt = now;
+        d.view = view;
+        return view;
+      }
+      if (shown && ident === d.ident && !final && shown.kind !== "avg" && shown.kind !== "real") {
+        if (d.candKey !== key) { d.candKey = key; d.candAt = now; }
+        if (shown.cls !== view.cls && now - d.colorAt < T.color) return shown;   // 变色且当前颜色不足 color 毫秒：保持
+        if (now - d.candAt < T.debounce ||
+            ((shown.kind === "thinking" || shown.kind === "estimate") && now - d.at < T.minShow)) return shown;
+      }
+      /* colorAt=当前颜色开始显示的时刻：与上一展示同色（含硬边界切换）则沿用，否则从现在起算 */
+      spdDisp = { ident: ident, key: key, view: view, at: now, candKey: key, candAt: now, numAt: now, timeAt: now,
+        colorAt: shown && shown.cls === view.cls ? d.colorAt : now };
+      return view;
     }
     var liveTipBuiltAt = -Infinity, idleRenderData = null, idleRenderAt = -Infinity;   // 实例级节流状态（updateLive 切片内声明，VM 夹具同源；初值 -Infinity：首拍恒构建/渲染，不依赖时钟绝对值）
     /* v90：心跳 0.5s→0.1s——0.5s 秒数走字仍有可感卡顿；render 有 lastHtml 幂等守卫，
@@ -23625,10 +23849,14 @@
                   isFinite(lastView.session.avg_tps) && lastView.session.avg_tps > 0) ? lastView.session.avg_tps : 0;
       var sv = liveStatsCur ? zuBarSpeedView(liveStatsCur, bridge.handle && bridge.handle.charsPerToken, subRate.sum, cAvg) : null;
       if (sv) {
-        liveKindCur = "live";
-        livePhaseCur = sv.phase || "";
-        return { kind: "live", sv: sv };
-      }
+        /* 格面用展示视图（展示协调器防抖/节流后的快照，与条面同款）；tooltip 仍读真实视图 sv */
+        var dsv = typeof zuSpDispPick === "function" ? zuSpDispPick(sv, Date.now()) : sv;
+        if (dsv) {
+          liveKindCur = "live";
+          livePhaseCur = sv.phase || "";
+          return { kind: "live", sv: sv, face: dsv };
+        }
+      } else if (typeof zuSpDispPick === "function") zuSpDispPick(null, Date.now());   // 无实时视图即清展示缓存
       var dbTps = lastView && lastView.last ? lastView.last.tps : 0;
       if ((cAvg || dbTps) && isFinite(cAvg || dbTps) && (cAvg || dbTps) > 0) {
         liveKindCur = "fallback";
@@ -23781,6 +24009,50 @@
         if (chip.__zuOpen) chip.__zuOpen();
       });
     }
+    /* 精简速率 chip 的布局档位（specs/speed-chip-stable-slot.md）：外宽只随档位变、不随状态文字变；档位只由宿主
+     * 工具行的真实空间决定，与本 chip 自身宽度无关——空位 = 前导区可用宽度（宿主 flex:1 的
+     * [data-composer-leading-actions]）− 同区其它内容（宿主按钮 + 本插件其它 chip）。宿主放不下时会逐级压缩
+     * 它自己的按钮（useComposerToolbarFit），所以本 chip 先让位：放不下就在同一次判定里降到装得下的那一档
+     * （空位与自身宽度无关，同拍算到底安全；挂载当拍即到位），宿主已在压缩则再让一档、一次只让一档；升档只在
+     * 距上一次降档或见到宿主压缩 ≥2s、且空位 ≥ 上一档宽度 + FOLD_HYS 时发生。因宿主压缩而降档后，宿主若因此展开，空位必然
+     * 小于刚让出的那一档，升档条件不成立——两侧不会互相拉锯。同区的 Git/系统状态 chip 按对称公式各自升降
+     * （gitMeasureAvail），同一拍双双升档撑破一行时，本 chip 的 2s 静默期保证下一轮只有一边先升、另一边
+     * 发现空间不够而停住。挂载当拍即量（chip 插入后、宿主 ResizeObserver 之前），空间不够时 chip 已先降档，
+     * 宿主不必压缩。找不到宿主前导区（其它宿主/旧布局）或前导区尚无尺寸（窗口最小化、后台分栏）时不分档、
+     * 不改动。zuTsbTierNext 是纯函数（回归在 tests/overlay-speed-slot.test.cjs）；测量与写类名在 zuTsbTierSync，
+     * 至多每 250ms 量一次（窗口拖窄时两档让位在半秒内完成，宿主按钮的压缩只闪一下；心跳 10Hz 进来只做时间戳比较）。 */
+    var ZU_TSB_TIERS = [12.4, 9.7, 6.6];   // em：宽裕（标签+数值+单位）/ 中等（去单位）/ 紧张（仅数值），与 06 分片样式同源
+    var ZU_TSB_TIER_MS = { measure: 250, dwell: 2000 };   // 测量至多 4Hz（条内窄宽状态机是逐帧 60Hz）；降档后 2s 静默期
+    var tsbTier = 0, tsbTierAt = 0, tsbTightAt = 0;
+    function zuTsbTierNext(cur, tight, room, emPx, hys, mayRise) {
+      while (cur < ZU_TSB_TIERS.length - 1 && room < ZU_TSB_TIERS[cur] * emPx) cur++;   // 放不下：同一次判定直接降到装得下的那一档（空位与自身宽度无关，所以算到底是安全的；挂载当拍就到位，宿主不必先压缩）
+      if (cur < ZU_TSB_TIERS.length - 1 && tight) return cur + 1;                       // 宿主已在压缩：让一档，一次只让一档（防拉锯证明依赖这一点）
+      if (cur > 0 && mayRise && room >= ZU_TSB_TIERS[cur - 1] * emPx + hys) return cur - 1;   // 升档：一次一档，带迟滞与静默期
+      return cur;
+    }
+    function zuTsbTierSync(chip) {
+      var lead = chip.closest("[data-composer-leading-actions]"), content = chip.closest("[data-composer-leading-content]");
+      var now = Date.now();
+      if (!lead || !content || !lead.parentElement) {   // 无宿主前导区：不分档
+        if (tsbTier) { tsbTier = 0; chip.classList.remove("zu-speed-mid", "zu-speed-tight"); }
+        return;
+      }
+      if (now - tsbTierAt < ZU_TSB_TIER_MS.measure) return;
+      var leadW = lead.getBoundingClientRect().width;
+      if (!(leadW > 0)) return;   // 尚无尺寸：不判定（否则空位算成 0 会误降到最窄档）
+      tsbTierAt = now;
+      var root = lead.parentElement;
+      var room = leadW - (content.getBoundingClientRect().width - chip.getBoundingClientRect().width);
+      var tight = !!(root.querySelector("[data-composer-compact]") || root.dataset.composerProviderCompact || root.dataset.composerModelIcon);
+      if (tight) tsbTightAt = now;
+      var next = zuTsbTierNext(tsbTier, tight, room, parseFloat(getComputedStyle(chip).fontSize) || 13, FOLD_HYS,
+        now - tsbTightAt >= ZU_TSB_TIER_MS.dwell);
+      if (next === tsbTier) return;
+      if (next > tsbTier) tsbTightAt = now;   // 刚让过位：静默期内不回升
+      tsbTier = next;
+      chip.classList.toggle("zu-speed-mid", next === 1);
+      chip.classList.toggle("zu-speed-tight", next === 2);
+    }
     function syncTpsChip() {
       if (state.theme !== "compact") { restoreTpsChip(); return; }   // v146：速率 chip 是精简模式专属载体
       if (inactive()) { restoreTpsChip(); return; }
@@ -23829,21 +24101,27 @@
          * __zuOpen 缺失一并补齐，否则热更采纳的 chip 悬停/键盘/设置入口全部失效。 */
         if (!chip.__zuWired) wireTpsChip(chip);
         tpsChipCache = chip;
+        tsbTier = 0; tsbTierAt = 0;   // 新挂或换宿主：档位从头量（本拍末尾即量，见 zuTsbTierSync）
+        chip.classList.remove("zu-speed-mid", "zu-speed-tight");
       }
       var misplaced;
       /* 用 nextElementSibling 判位（nextSibling 会被文本节点打乱，造成每拍重插） */
       if (insBefore) misplaced = chip.nextElementSibling !== insBefore;
       else misplaced = (afterNode ? afterNode.nextElementSibling !== chip : host.lastElementChild !== chip);   // 锚位语义同 git 兜回（下一元素已是自己=就位，不得自插）
       if (misplaced) host.insertBefore(chip, insBefore ? insBefore : (afterNode ? afterNode.nextElementSibling : null));
-      var txt = v.kind === "live" ? v.sv.text
-        : (v.dbTps ? v.dbTps + " t/s" : "");   /* v298（用户拍板）：chip=最后一轮真实速度（去「均」前缀与会话均） */
-      var cls = "zu-live " + (v.kind === "live" ? v.sv.cls + (v.sv.word ? " zu-shimmer" : "") : v.band.cls);
-      var sig = v.kind + "|" + cls + "|" + txt;
+      /* v298（用户拍板）：chip=最后一轮真实速度（去「均」前缀与会话均）。格面走展示模型
+       * （标签+数值+单位，specs/speed-chip-stable-slot.md）：实时态的数值与档位色取同一展示快照；
+       * 回退态档位色按面上数字（最后一轮）分档——v.band 是会话均的档，只供 tooltip 左卡。 */
+      var fv = v.kind === "live" ? (v.face || v.sv) : { kind: "real", db: true, speedValue: v.dbTps > 0 ? v.dbTps : null };
+      var txt = v.kind === "live" ? v.sv.text : (v.dbTps ? v.dbTps + " t/s" : "");
+      var fbBand = v.dbTps > 0 ? tpsBand(v.dbTps) : null;
+      var cls = "zu-live " + (v.kind === "live" ? fv.cls + (fv.word ? " zu-shimmer" : "") : (fbBand ? fbBand.cls : "dim"));
+      var face = zuSpeedFaceHtml(fv);
+      var sig = v.kind + "|" + cls + "|" + face;
       if (chip.__zuSig !== sig) {   // 幂等：内容没变不重建，悬停/焦点态不被打断
         chip.__zuSig = sig;
-        /* v326：两 item 结构（数字+dim），与条内速度格同一 gap:5px 机制（.zu-live 规则全局作用域，
-         * compact chip 同吃 inline-flex——单文本时 gap 无 item 可分，间距退回裸空格 ~3.7px） */
-        chip.innerHTML = '<span class="' + cls + '">' + zuLiveFaceHtml(txt) + "</span>";
+        /* 标签/数值/单位三 item 与条内速度格同构（间距由 gap 提供，v326 机制延续） */
+        chip.innerHTML = '<span class="' + cls + '">' + face + "</span>";
         chip.setAttribute("aria-label", L("生成速度 ", "Generation speed ") + txt);
       }
       var prevT = chip.__zuT;
@@ -23868,6 +24146,7 @@
       syncCtxLite(chip, lite);
       chip.classList.toggle("zu-light", lite);   // 速率档色的浅色组按 .zu-light 祖先匹配（条隐藏后祖先缺失，类挂 chip 自身补链）
       if (tpsTipFor === chip) showTpsTip(chip);   // 悬停中随心跳/推送刷新：签名不变不重建
+      zuTsbTierSync(chip);
     }
     function restoreTpsChip() {
       if (!tpsChipCache) return;
@@ -26078,6 +26357,8 @@
       }
       shrink = 0;
       bar.classList.remove("zu-narrow", "zu-tight");
+      bar.classList.remove("zu-speed-mid", "zu-speed-tight");   // 药丸速度格档位随主题切换重置
+      pillSpeedTier = 0;
       narrowMeasureKey = ""; narrowWidths = null;
       main.classList.remove("zu-clip", "zu-clip-left");
       render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 });
@@ -26397,9 +26678,42 @@
      * 不伪造 0）。宽/字号(含字族)/优先级签名+foldDirty 门控
      * 重算；每帧另测一次溢出（流式原地改字会变宽，签名探测不到）；恢复带 FOLD_HYS 迟滞带，
      * 阈值附近数字刷新不再整格反复翻转。 */
-    var foldDirty = true, foldWidth = -1, foldFont = "", foldPrioritySig = "", foldedKeys = "";
+    var foldDirty = true, foldWidth = -1, foldMainW = -1, foldFont = "", foldPrioritySig = "", foldedKeys = "";
     var foldTrigger = true;
+    var speedMinOn = false;   // 速度格「极窄」档（data-zu-speed-min，仅图标）是否在用：离开折叠态时的清理判据（specs/speed-chip-stable-slot.md）
     var FOLD_HYS = 24;   // 迟滞带（px）：进入折叠 ov>1；折叠态需 slack≥FOLD_HYS 才尝试回展
+    var ZU_SPEED_FACE_KEY_RE = /(<span class="zu-live[^"]*">)[\s\S]*?<\/span><\/span><\/span>/;   // 窄宽探针测量签名剔除速度格面内容（见 track 内注释）
+    var ZU_SPEED_FULL_ATTRS_RE = / aria-label="[^"]*" data-zu-full="[^"]*"/;   // 同上：剔除速度格全称属性（随状态/计时变化，不影响布局）
+    /* 药丸速度格档位（specs/speed-chip-stable-slot.md）：药丸条按内容定宽、没有窄宽状态机——速度格
+     * 档位随卡片可用宽度升降：条宽触顶（被 max-width 钳住）即降一档（同帧量到不再触顶为止，最多
+     * 两步），升一档所需的宽度增量加 24px 迟滞带装得下才升。档宽差按 em 计：宽裕→中等 3.4em（上界
+     * 3.38em 在界面字号 13px）、中等→紧张 3.8em（上界 3.7em 在 11px）——中等/紧张档缩字号、宽裕档
+     * 不缩，上界不在同一字号处。估计偏小会在「升档后触顶→再降档」
+     * 间振荡，tests/overlay-speed-slot 锁定估计 ≥ 真实档宽差）；字号缓存 5s。只在药丸档 track 帧里
+     * 调用（width 复用该帧已量的条宽，不新增读取）。 */
+    var pillSpeedTier = 0, pillSpeedEmAt = 0, pillSpeedEm = 14;
+    function zuPillSpeedTierSync(width, avail) {
+      var now = Date.now(), w = width;
+      if (now - pillSpeedEmAt > 5000) {
+        pillSpeedEmAt = now;
+        try { pillSpeedEm = parseFloat(getComputedStyle(bar).fontSize) || 14; } catch (e) { }
+      }
+      function pillApply(t) {
+        pillSpeedTier = t;
+        bar.classList.toggle("zu-speed-mid", t === 1);
+        bar.classList.toggle("zu-speed-tight", t === 2);
+      }
+      if (pillSpeedTier < 2 && w >= avail - 0.5) {
+        pillApply(pillSpeedTier + 1);
+        w = bar.getBoundingClientRect().width;
+        if (pillSpeedTier < 2 && w >= avail - 0.5) pillApply(pillSpeedTier + 1);
+      } else {
+        while (pillSpeedTier > 0 && w + (pillSpeedTier === 2 ? 3.8 : 3.4) * pillSpeedEm + 24 <= avail) {
+          pillApply(pillSpeedTier - 1);
+          w = bar.getBoundingClientRect().width;
+        }
+      }
+    }
     function barMorePosition() {
       if (!morePanel.classList.contains("open")) return;
       var a = moreButton.getBoundingClientRect(), h = morePanel.offsetHeight, w = morePanel.offsetWidth;
@@ -26415,6 +26729,8 @@
       moreButton.setAttribute("aria-expanded", "false");
       if (restoreFocus && moreButton.focus) moreButton.focus();
     }
+    /* 菜单项实时值：速度格面是精简文案（标签+数值），完整状态词在 data-zu-full（specs/speed-chip-stable-slot.md）；
+     * 其余格无该属性回退 textContent。两处同步点内联同一表达式（切片夹具按函数锚点提取，勿抽成外部助手）。 */
     function moreEntriesSync() {
       var list = Array.prototype.filter.call(main.querySelectorAll(":scope > .it"), function (el) {
         return el.dataset.zuFolded === "1";
@@ -26436,7 +26752,7 @@
         button.appendChild(name);
         var value = document.createElement("span");
         value.className = "zu-more-value";
-        value.textContent = (el.textContent || "").trim();
+        value.textContent = (el.dataset && el.dataset.zuFull) || (el.textContent || "").trim();
         button.appendChild(value);
         button.__zuCell = el;   // 活格引用：点击/刷新按 key 现查活格（菜单打开期间条面会被数据泵重建）
         button.__tip = el.__tip;   // 兜底快照：活格查不到时仍有内容可弹
@@ -26461,11 +26777,26 @@
         if (el.dataset.zuFolded !== "1") return;
         var value = b.querySelector(".zu-more-value");
         if (value) {
-          var v = (el.textContent || "").trim();
+          var v = (el.dataset && el.dataset.zuFull) || (el.textContent || "").trim();
           if (value.textContent !== v) value.textContent = v;
         }
         if (b.__tip !== el.__tip) b.__tip = el.__tip;
       });
+    }
+    /* 条面内容宽（specs/statusbar-layout.md「真实布局测量」的补充，specs/speed-chip-stable-slot.md 定案）：
+     * .zu-main 用 space-between 摊开子项，scrollWidth 以 clientWidth 为下限——非溢出态恒等于
+     * clientWidth（宿主实测：内容 151px 装进 300px 容器 scrollWidth=300），「富余 ≥FOLD_HYS 才回展」
+     * 的判据因此从未成立：折叠循环每轮多折一格，折叠态的逐帧回展触发器是死分支。这里按可见子项
+     * 宽度和计内容宽（可小于容器）。只在折叠重算与「已折叠且未溢出」的逐帧探测里调用，不进常规
+     * 逐帧路径；折叠格 display:none 宽度为 0，另按 data-zu-folded 跳过。 */
+    function zuBarContentWidth() {
+      var kids = main.children, w = 0, n = 0;
+      for (var i = 0; i < kids.length; i++) {
+        if (kids[i].dataset && kids[i].dataset.zuFolded === "1") continue;
+        var cw = kids[i].getBoundingClientRect().width;
+        if (cw > 0) { w += cw; n++; }
+      }
+      return w + Math.max(0, n - 1);   // .zu-main gap:1px
     }
     function syncBarOverflow() {
       /* 折叠只在 default 且窄宽已到 shrink===2（次要已藏）仍溢出时接管；其余档位清折叠态。
@@ -26473,9 +26804,10 @@
        * 窄宽块（本函数之前）维护，折叠收敛后的修正走尾部 clipNow toggle。 */
       if (state.theme !== "default" || shrink !== 2) {
         if (moreButton.dataset.zuVisible !== "0") moreButton.dataset.zuVisible = "0";
-        if (foldDirty || foldedKeys) {
+        if (foldDirty || foldedKeys || speedMinOn) {
           main.querySelectorAll("[data-zu-folded]").forEach(function (el) { el.removeAttribute("data-zu-folded"); });
           main.querySelectorAll("[data-zu-endlead]").forEach(function (el) { el.removeAttribute("data-zu-endlead"); });
+          if (speedMinOn) { main.querySelectorAll("[data-zu-speed-min]").forEach(function (el) { delete el.dataset.zuSpeedMin; }); speedMinOn = false; }
           foldedKeys = "";
           foldDirty = false;
         }
@@ -26487,21 +26819,26 @@
       var width = bar.clientWidth;
       var font = cs.fontSize + "/" + cs.fontFamily;   // 字族切换不改 fontSize 但变项宽，一并进签名
       var prioritySig = JSON.stringify(state.barPriority);
-      if (!foldDirty && width === foldWidth && font === foldFont && prioritySig === foldPrioritySig) {
+      /* 门口同时记 .zu-main 自身宽度：折叠判据的容器是它（条宽不变而 main 可用宽变化时也要重算） */
+      var mainW = main.clientWidth;
+      if (!foldDirty && width === foldWidth && mainW === foldMainW && font === foldFont && prioritySig === foldPrioritySig) {
         /* 内容宽探测（带迟滞的双向触发器）：流式原地改字/宽度跳变不触发重建，签名不变但
          * 折叠需求可能已变。展开态 ov>1 即触发折叠；折叠态 slack≥FOLD_HYS 才触发回展尝试
          * ——单向「当前是否溢出」探针是错的：从「已折叠且刚好装下」直接变宽的状态不经过
          * 溢出态，探针永不翻转，折叠集冻结（pill 夹具实证）。每帧一次 scrollWidth 读，
          * 与 base track 同款成本。 */
-        var ovNow = main.scrollWidth - main.clientWidth;
+        var ovNow = main.scrollWidth - mainW;
+        if (foldedKeys && ovNow <= 1) ovNow = zuBarContentWidth() - mainW;   // 折叠且未溢出：取真实内容宽（富余可为负；scrollWidth 以 clientWidth 为下限量不出）
         var trigger = foldedKeys ? ovNow <= 1 - FOLD_HYS : ovNow > 1;
         if (trigger !== foldTrigger) { foldDirty = true; foldTrigger = trigger; }
         else { barMorePosition(); return; }
       }
-      foldDirty = false; foldWidth = width; foldFont = font; foldPrioritySig = prioritySig;
+      foldDirty = false; foldWidth = width; foldMainW = mainW; foldFont = font; foldPrioritySig = prioritySig;
       var rows = Array.prototype.slice.call(main.querySelectorAll(":scope > .it"));
       var separators = Array.prototype.slice.call(main.querySelectorAll(":scope > .sep"));
       rows.forEach(function (el) { el.dataset.zuFolded = "0"; delete el.dataset.zuEndlead; });   // data-zu-endlead（CSS/清理同名；曾误写驼峰 zuEndLead 生成 data-zu-end-lead 永不匹配）
+      rows.forEach(function (el) { if (el.dataset.zuSpeedMin === "1") delete el.dataset.zuSpeedMin; });   // 速度格极窄档随折叠集每轮从头重算
+      speedMinOn = false;
       separators.forEach(function (el) { el.dataset.zuFolded = "0"; });
       moreButton.dataset.zuVisible = "0";
       function syncSeparators() {
@@ -26522,21 +26859,32 @@
       var candidates = zuBarFoldOrder(rows.map(function (el) { return el.dataset.zuKey || "system"; }), state.barPriority)
         .map(function (c) { return { el: rows[c.i] }; });
       var fi = 0;
-      if (main.scrollWidth > main.clientWidth + 1) {
+      if (zuBarContentWidth() > main.clientWidth + 1) {
         moreButton.dataset.zuVisible = "1";
-        for (; fi < candidates.length && main.scrollWidth > main.clientWidth + 1; fi++) {
-          candidates[fi].el.dataset.zuFolded = "1";
+        for (; fi < candidates.length && zuBarContentWidth() > main.clientWidth + 1; fi++) {
+          /* 速度格稳定占位（specs/speed-chip-stable-slot.md）：轮到速度格先降「极窄」（仅图标）
+           * 再判溢出——装得下就停在这一步，仍溢出才折叠。固定语义的最后一步保留。 */
+          var foldEl = candidates[fi].el;
+          if (foldEl.dataset.zuKey === "speed" && foldEl.dataset.zuSpeedMin !== "1") {
+            foldEl.dataset.zuSpeedMin = "1"; speedMinOn = true;
+            if (zuBarContentWidth() <= main.clientWidth + 1) break;
+          }
+          foldEl.dataset.zuFolded = "1";
           syncSeparators();
         }
         /* 迟滞恢复：折叠到刚好 fit 后，富余 ≥FOLD_HYS 才回展一格——进入折叠 ov>1、
-         * 退出需 slack≥FOLD_HYS，与旧 v66 收缩迟滞(+12/-120)同构的折叠版等价物。 */
+         * 退出需 slack≥FOLD_HYS，与旧 v66 收缩迟滞(+12/-120)同构的折叠版等价物。
+         * 速度格极窄不在这里回展：降极窄的前提是完整宽溢出，同一轮里「解除后富余够」
+         * 不可达；变宽后的解除靠每轮开头的清空（上方 rows.forEach）从头重算。 */
         while (fi < candidates.length) {
-          candidates[fi].el.dataset.zuFolded = "0";
+          var backEl = candidates[fi].el;
+          backEl.dataset.zuFolded = "0";
           syncSeparators();
-          if (main.scrollWidth <= main.clientWidth + 1 - FOLD_HYS) fi++;
-          else { candidates[fi].el.dataset.zuFolded = "1"; syncSeparators(); break; }
+          if (zuBarContentWidth() <= main.clientWidth + 1 - FOLD_HYS) fi++;
+          else { backEl.dataset.zuFolded = "1"; syncSeparators(); break; }
         }
       }
+      speedMinOn = rows.some(function (el) { return el.dataset.zuSpeedMin === "1"; });
       syncSeparators();
       var hidden = rows.filter(function (el) { return el.dataset.zuFolded === "1"; });
       moreButton.dataset.zuVisible = hidden.length ? "1" : "0";
@@ -26558,7 +26906,8 @@
       }
       if (!hidden.length) closeMore(false);
       var ovEnd = main.scrollWidth - main.clientWidth;
-      foldTrigger = foldedKeys ? ovEnd <= 1 - FOLD_HYS : ovEnd > 1;
+      /* 触发器基线与逐帧探测同口径：折叠态按内容宽取富余（否则基线恒 false、逐帧恒 true，每帧重算） */
+      foldTrigger = foldedKeys ? zuBarContentWidth() - main.clientWidth <= 1 - FOLD_HYS : ovEnd > 1;
       main.classList.toggle("zu-clip", ovEnd > 1);
       /* 打开的菜单不能每次数字刷新都 innerHTML 重建：会抢走焦点；原地同步数值即可。 */
       if (morePanel.classList.contains("open")) moreEntriesRefresh();
@@ -26736,6 +27085,7 @@
             if (bar.style.maxWidth !== maxW) bar.style.maxWidth = maxW;
             var width = bar.getBoundingClientRect().width;
             left = Math.max(8, Math.min(Math.round(ar.left + (ar.width - width) / 2), Math.round(innerWidth - width - 8)));
+            zuPillSpeedTierSync(width, available);
           } else {
             /* 宽度锁死卡片（v63 对齐，v66 收缩）：min=max-width = 卡片实测宽。 */
             var minW = Math.max(60, Math.round(ar.width));
@@ -26752,11 +27102,16 @@
         if (state.theme === "default" && main.clientWidth > 0 && Date.now() - narrowCheckAt >= 250) {
           narrowCheckAt = Date.now();
           var mainStyle = getComputedStyle(main);
-          var measureKey = main.innerHTML + "|" + mainStyle.font + "|" + mainStyle.letterSpacing + "|" + mainStyle.fontVariantNumeric + "|" + state.barJust + "|" + Math.floor(Date.now() / 10000);
+          /* 速度格稳定占位（specs/speed-chip-stable-slot.md）：速度格外宽固定、其面文字不影响自然宽，
+           * 测量签名把 .zu-live 内容与格上的全称属性（aria-label / data-zu-full，随状态与计时变化）
+           * 剔除——计时/速度走字不再触发整条克隆重测（此前每 250ms 一次）。面结构恒为「.zu-live
+           * 包装层 + 2~3 个无嵌套子 span + 格收尾」，包装层收尾唯一可辨；两属性由 zuSpeedCellAttrs
+           * 以固定相邻顺序产出，仅速度格携带 data-zu-full。 */
+          var measureKey = main.innerHTML.replace(ZU_SPEED_FULL_ATTRS_RE, "").replace(ZU_SPEED_FACE_KEY_RE, "$1</span>") + "|" + mainStyle.font + "|" + mainStyle.letterSpacing + "|" + mainStyle.fontVariantNumeric + "|" + state.barJust + "|" + Math.floor(Date.now() / 10000);
           if (!narrowWidths || measureKey !== narrowMeasureKey) {
             var probe = document.createElement("div");
             probe.className = bar.className;
-            probe.classList.remove("zu-narrow", "zu-tight", "zu-in", "zu-just-end");
+            probe.classList.remove("zu-narrow", "zu-tight", "zu-in", "zu-just-end", "zu-speed-mid", "zu-speed-tight");
             probe.style.cssText = "position:fixed;left:-10000px;top:0;visibility:hidden;pointer-events:none;width:max-content;min-width:0;max-width:none";
             probe.style.fontFamily = mainStyle.fontFamily;
             probe.style.fontSize = mainStyle.fontSize;
@@ -26765,6 +27120,9 @@
              * 规则把已折叠格量成 0 宽，shrink 档据此误判「完整宽装得下」→ 反复展/折叠
              * 以约 2Hz 震荡（v352 探针写于折叠机制之前，串联时未教它剥折叠态）。 */
             probeMain.querySelectorAll("[data-zu-folded]").forEach(function (el) { el.removeAttribute("data-zu-folded"); });
+            /* 同理剥速度格极窄档：折叠段内写入的 data-zu-speed-min 若被探针量到，自然宽会随
+             * 档位反转（极窄装得下→离开折叠→恢复全宽→又溢出），与 v357 同款震荡环 */
+            probeMain.querySelectorAll("[data-zu-speed-min]").forEach(function (el) { el.removeAttribute("data-zu-speed-min"); });
             probeMain.classList.remove("zu-clip", "zu-clip-left");
             probeMain.style.cssText = "width:max-content;min-width:max-content;flex:none;overflow:visible";
             /* v356 修复（用户实报「开启系统状态后整条抖动」）：format:"auto" 的系统状态面随

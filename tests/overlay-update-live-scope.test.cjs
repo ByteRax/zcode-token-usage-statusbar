@@ -75,8 +75,10 @@ function runFastPath({ tipForOnCell = true, sameTip = false } = {}) {
     renderRunningSubagentItems: () => {},   // v333（本切片外定义）
     subRate: { sum: null },
     zuBarSpeedView: () => view,
-    /* v326：updateLive 经 zuLiveFaceHtml 写「数字+dim」两 item——切片环境提供同款实现 */
-    zuLiveFaceHtml: (t) => (typeof t === 'string' && / t\/s$/.test(t) ? t.slice(0, -4) + '<span class="dim">t/s</span>' : t),
+    /* 稳定占位后 updateLive 经 zuSpeedFaceHtml 写「标签+数值+单位」item（specs/speed-chip-stable-slot.md）——
+     * 切片环境提供同款等价实现；全称同步（aria/data-zu-full，07 分片）在本切片外，给空桩 */
+    zuSpeedFaceHtml: (v) => (typeof v.text === 'string' && / t\/s$/.test(v.text) ? v.text.slice(0, -4) + '<span class="zu-sp-unit dim">t/s</span>' : v.text),
+    zuSpeedCellSync: () => {},
     buildLiveTip: v => (sameTip ? 'TIP:233.6 t/s' : 'TIP:' + v.text),
     syncTpsChip: () => {},
     liveKindCur: 'live', livePhaseCur: 'generate', liveStatsCur: null,
@@ -135,7 +137,8 @@ function makeLiveEnv({ tipForOnCell = false, tipForOther = false, withView = tru
       views.push(v);
       return v;
     },
-    zuLiveFaceHtml: (t) => t,
+    zuSpeedFaceHtml: (v) => v.text,
+    zuSpeedCellSync: () => {},
     buildLiveTip: v => { calls.build++; return 'TIP#' + calls.build; },
     syncTpsChip: () => {},
     liveKindCur: kind, livePhaseCur: 'generate', liveStatsCur: null, liveTextCur: '', liveIconCur: '',

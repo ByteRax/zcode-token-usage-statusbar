@@ -565,6 +565,38 @@
        * item 不受影响）。豁免后内部回块级流，空格恢复渲染，v319 的 word-spacing:4px 真正生效，
        * 间隔=动态态的 ~7.7px。.zu-live 作为 .it 的 flex item 会被块化，外部布局零变化。 */
       ".zusage-root .it{line-height:1.3}.zusage-root .it>span:not(.eb):not(.zu-live){display:inline-flex;align-items:center;min-height:1.3em}" +
+      /* 速度格稳定占位（specs/speed-chip-stable-slot.md）：外宽只随布局档位变、不随状态文字变。
+       * 档位=既有窄宽类与折叠段属性（零新增测量）：宽裕 12.6em（14px 基准 176px）；zu-tight 10.9em（12px
+       * 基准 131px）；zu-narrow 7.2em
+       *（去标签与单位，图标+数值——按最长无标签面「图标+23:59:59」标定：格字号 12px 时速度格 86.4px、
+       * 内容自然宽 78.3px；旧值 6.4em 对该面越界 1.5px，被 scrollWidth 取整掩盖）；data-zu-speed-min
+       * （折叠段内轮到速度格）仅图标。em 随格字号缩放，界面字号 11/14/20px 宿主实测余量 6~21px（2026-11-23）。
+       * 面结构=标签（吃剩余空间、省略）+数值（不收缩、右对齐）+单位；数字与单位仍是零空格两 item、
+       * 间距由 gap 提供（v326 机制）。overflow:hidden 兜底裁切，任何情况下不推邻格。流光沿用包装层
+       * .zu-live.zu-shimmer 既有规则（flex 子项与标签 overflow 下宿主实测可正常渲染）。精简 chip
+       * .zu-tsb 同样不随状态文字变：它挂在宿主工具行、没有窄宽状态机，三档由 11 分片 zuTsbTierSync
+       * 按宿主工具行的真实空位选（规则与标定见 .zu-tsb 规则处的注释）。 */
+      ".zusage-root .zu-main>.it.zu-speed{box-sizing:border-box;width:12.6em;overflow:hidden}" +
+      ".zusage-root.zu-tight .zu-main>.it.zu-speed{width:10.9em}" +
+      ".zusage-root.zu-narrow .zu-main>.it.zu-speed{width:7.2em}" +
+      /* 药丸无窄宽状态机：速度格档位类由 track 按卡片可用宽度升降（zuPillSpeedTierSync）——中等去分隔符；
+       * 中等/紧张档与默认条窄档同款同宽（药丸条上没有 zu-tight 类，缩字号公式与内边距在档位规则里自带：
+       * 14px 字号下要塞进中等档宽度，两字标签会被挤成省略号） */
+      ".zusage-root.zu-pill.zu-speed-mid .zu-main>.it.zu-speed{width:10.9em;padding-left:4px;padding-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}" +
+      ".zusage-root.zu-pill.zu-speed-mid .it.zu-speed>.zu-live>.zu-sp-label:not(:empty)::after{content:none}" +
+      ".zusage-root.zu-pill.zu-speed-tight .zu-main>.it.zu-speed{width:7.2em;padding-left:4px;padding-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}" +
+      ".zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-label,.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-unit{display:none}" +
+      ".zusage-root .zu-main>.it.zu-speed[data-zu-speed-min='1']{width:2.75em}" +
+      ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live{display:flex;flex:1 1 auto;min-width:0;align-items:baseline}" +
+      ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}" +
+      ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-val{flex:0 0 auto;white-space:nowrap;text-align:right}" +
+      ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-unit{flex:0 0 auto}" +
+      ".zusage-root .it.zu-speed>.zu-live>.zu-sp-label:not(:empty)::after{content:' · ';padding:0 4px}" +
+      ".zusage-root.zu-tight .it.zu-speed>.zu-live>.zu-sp-label:not(:empty)::after{content:none}" +
+      ".zusage-root.zu-narrow .it.zu-speed>.zu-live>.zu-sp-label,.zusage-root.zu-narrow .it.zu-speed>.zu-live>.zu-sp-unit{display:none}" +
+      /* 最窄档标签隐藏后没有「吃剩余空间」的弹簧把数值推到右边——显式靠右，与宽裕/中等档的数值右缘一致（位数变化不动右缘） */
+      ".zusage-root.zu-narrow .it.zu-speed>.zu-live,.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live{justify-content:flex-end}" +
+      ".zusage-root .zu-main>.it.zu-speed[data-zu-speed-min='1']>.zu-live{display:none}" +
       ".zusage-root .eb .ico{width:12px;height:12px;transform:none}" +
       ".zusage-root .zu-think{color:var(--color-brand,#8171e8);opacity:1}" +
       /* 工具错误数徽标 */
@@ -755,7 +787,19 @@
        * 速率色档复用全局 .ok/.warm/.hot 与 TPS 十档类（含 Ultra 渐变 ✦）；浅色组靠 chip
        * 自身的 .zu-light 类补链（条隐藏后 .zu-light 祖先缺失）。 */
       ".zu-tsb{display:inline-flex;align-items:center;gap:5px;height:1.75rem;padding:0 6px;border-radius:.5rem;cursor:pointer;user-select:none;flex:0 0 auto;" +
+      /* 稳定占位（specs/speed-chip-stable-slot.md）：chip 外宽只随布局档位变，标签+数值+单位随状态换而不推 git chip。
+       * 三档类名与药丸档位同名，规则只作用于 .zu-tsb；档位由 11 分片 zuTsbTierSync 按宿主工具行的真实空位选
+       * （chip 先让位，不拿宿主自己的按钮换宽度）。宽裕 12.4em=标签+数值+单位，按最宽的无省略面
+       * 「代理×12 ≈1286.5 t/s」标定（13px 粗体，六种字体栈下自然宽最大 157.8px；旧单一宽 10.5em 对它越界 7.3px）；
+       * 中等 9.7em=去单位（「Think 23:59:59」123.5px）；紧张 6.6em=仅数值靠右（「23:59:59」82.9px）。
+       * chip 无图标，故没有「仅图标」的最窄档。 */
+      "box-sizing:border-box;width:12.4em;" +
       "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--text-ui-base,var(--ui-font-size,14px)) - 1px);font-weight:700;font-variant-numeric:tabular-nums}" +
+      ".zu-tsb.zu-speed-mid{width:9.7em}" +
+      ".zu-tsb.zu-speed-mid>.zu-live>.zu-sp-unit{display:none}" +
+      ".zu-tsb.zu-speed-tight{width:6.6em}" +
+      ".zu-tsb.zu-speed-tight>.zu-live>.zu-sp-label,.zu-tsb.zu-speed-tight>.zu-live>.zu-sp-unit{display:none}" +
+      ".zu-tsb.zu-speed-tight>.zu-live{justify-content:flex-end}" +
       ".zu-tsb:hover,.zu-tsb:focus-visible{background:var(--color-hover,rgba(255,255,255,.08));outline:none}" +
       /* v356 系统状态（issue #338）：格面值/标签继承 .it .v/.dim 基础样式，zu-sys-* 只承载
        * 结构布局与预警色（柔和黄/红只染数值与图标，浅色档双套同源深化）；stale 整段降

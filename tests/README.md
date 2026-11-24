@@ -62,6 +62,17 @@ python3 -B tests/plugin-commands-cli-smoke.py
 
 `plugin-commands-cli-smoke.py` 使用真实客户端 CLI 和临时 bundle 副本，验证三个裸名命令的 list/inspect、实际协议命令目录与纯文本参数展开，旧插件前缀名明确 not-found；还验证旧聊天安装/更新子命令只返回 Usage，以及短 MCP 服务键对应的模型工具名。只复制清单、命令和被测分派代码，不复制或运行 hook/安装器；不启动模型、NDJSON 会话或 UI，因此不是界面端到端测试。bundle 结构改变时会明确失败，不退回模拟实现。
 
+## 速度格实机量宽探针
+
+```bash
+python3 -B tests/speed-slot-live-probe.py              # 逐档量全部状态面（静态）
+python3 -B tests/speed-slot-live-probe.py --watch 60   # 真实对话进行时持续观察 60 秒
+```
+
+在装了本插件的 ZCode 桌面端所在机器上运行（macOS / Windows / Linux，只需 Python 3.8+，不需要 Node）。脚本经宿主的 CDP 调试口（`inject-main.cjs` 启动时强制补开 9229）把 `tests/speed-slot-live-probe.js` 送进渲染进程，对当前页面的第一条状态条逐档、逐状态面量速度格与邻格的矩形，量完原样还原；页面里有精简样式的速率 chip（`.zu-tsb`）时另量它的三档（精简样式下状态条隐藏、可能没有速度格，此时只量 chip）。只读，不改任何文件、不写入数据。判据：同一档位里全部状态面的速度格宽度只有一个值、邻格位置只有一个值、数值不越界（亚像素），界面字号 14px 时再核对目标区间；退出码 0 通过 / 1 有异常 / 2 连不上或页面里没有状态条。用于真实 ZCode 布局与 Windows 校准（[specs/speed-chip-stable-slot.md](../specs/speed-chip-stable-slot.md)），不属于默认回归。
+
+`--watch N` 是持续观察模式：在 ZCode 窗口可见、对话正在进行时运行，页面侧脚本（`tests/speed-slot-live-watch.js`）每 100ms 读一次每条状态条的速度格，按与速度格自身宽度无关的布局签名归组，报告同组宽度是否恒定、数值是否越界、格面切换序列与各态停留时长下界、同可用宽度下的档位来回次数。只读，到时自停并清掉定时器（Python 一侧被中断时页面侧最多再跑到 N 秒上限后自停）；只观察调试口列出的第一个页面目标，多窗口时是其中一个窗口里的全部状态条。退出码 0 通过（采到可量样本、格面发生过变化、无异常）/ 1 异常 / 2 连不上或观察中断 / 3 观察期间没有可量样本或格面从未变化（例如窗口隐藏、会话空闲），3 不算通过。判定函数的隔离回归在 `tests/test_speed_slot_live_probe.py`。
+
 ## 设置面板交互
 
 ```bash
