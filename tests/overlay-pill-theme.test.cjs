@@ -23,6 +23,7 @@ const chrome = chromeCandidates.find(file => {
 });
 const skipReason = !chrome ? 'Chromium/Chrome not available' : typeof WebSocket !== 'function' ? 'Node WebSocket not available' : false;
 const overlay = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
+const turnStats = fs.readFileSync(path.join(__dirname, '..', 'turn-stats.js'), 'utf8');   // 统计内核（线上注入序：先于 overlay.js）
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function getJson(port, url) {
@@ -182,8 +183,8 @@ const payload = {
     windows: { fiveHour: { percent: 26, resetsAt: null, details: [] }, weekly: { percent: 12, resetsAt: null, details: [] } }, tools: { used: 48, total: 4000 } },
 };
 
-async function reset(browser, { stored, brokenRead = false, brokenWrite = false, width = 1200, narrow = false, freeze600 = false } = {}) {
-  await browser.call('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
+async function reset(browser, { stored, brokenRead = false, brokenWrite = false, width = 1200, narrow = false, freeze600 = false, withKernel = false, ls = {}, dsf = 1 } = {}) {
+  await browser.call('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: dsf, mobile: false });
   const token = Math.random().toString(36).slice(2);
   await browser.call('Page.navigate', { url: browser.url + '?case=' + token });
   await browser.waitFor(`document.readyState === "complete" && location.search === '?case=${token}'`, 'fixture page did not load');
@@ -191,6 +192,7 @@ async function reset(browser, { stored, brokenRead = false, brokenWrite = false,
     document.body.innerHTML = ${JSON.stringify(fixtureHtml)};
     localStorage.clear();
     ${stored === undefined ? '' : `localStorage.setItem('zusage3.theme', ${JSON.stringify(stored)});`}
+    ${Object.entries(ls).map(([k, v]) => `localStorage.setItem(${JSON.stringify(k)}, ${JSON.stringify(v)});`).join('\n')}
     window.__testWrites = [];
     const originalSet = Storage.prototype.setItem;
     Storage.prototype.setItem = function(k, v) {
@@ -207,6 +209,10 @@ async function reset(browser, { stored, brokenRead = false, brokenWrite = false,
       }, ms); };` : ''}
     ${narrow ? `document.querySelector('#pane-b').remove(); Object.assign(document.querySelector('#pane-a').style, { left: '-50px', width: '600px' });` : ''}
   })()`);
+  if (withKernel) {   // 走实时数据链的用例：先装桥接口与统计内核，再注入 overlay（注入序同线上）
+    await browser.evaluate(`(${liveProbeBoot.toString()})()`);
+    await browser.evaluate(turnStats);
+  }
   await browser.evaluate(overlay);
   const count = narrow ? 1 : 2;
   await browser.waitFor(`document.querySelectorAll('.zusage-root').length === ${count} && [...document.querySelectorAll('.zusage-root')].every(b => getComputedStyle(b).display !== 'none')`, 'bars did not mount');
@@ -216,7 +222,58 @@ async function reset(browser, { stored, brokenRead = false, brokenWrite = false,
   await browser.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
 }
 
+/* ---------- 实时数据链（updateLive）用例的页面侧辅助，经 toString() 送进夹具页面 ---------- */
+/* 伪造 renderer 会话 store 桥（与 tests/overlay-bridge.test.cjs 的 harness 同语义）+ 快照构造器。
+ * 注入序与线上一致：桥接口 → turn-stats.js → overlay.js。 */
+function liveProbeBoot() {
+  const P = window.__liveProbe = { sessions: [] };
+  P.mkStore = snapshot => { const subs = new Set(); return { state: snapshot,
+    getState() { return this.state === null ? null : { snapshot: this.state, status: 'live' }; },
+    subscribe(fn) { subs.add(fn); return () => subs.delete(fn); }, off() {},
+    set(s) { this.state = s; for (const fn of [...subs]) fn(); } }; };
+  P.snap = (seq, rows) => ({ sessionId: 'sid_a', logEpoch: 'e1', seq, rows: { window: rows } });
+  P.header = (state, extra) => Object.assign({ rowId: 1, turnId: 't1', productTurnId: 'pt1', kind: 'turnHeader', state }, extra || {});
+  P.text = value => ({ rowId: 2, turnId: 't1', productTurnId: 'pt1', kind: 'assistantText', text: value });
+  P.tool = (status, extra) => Object.assign({ rowId: 5, turnId: 't1', productTurnId: 'pt1', kind: 'toolCall', toolName: 'Read', inputText: '{}', status }, extra || {});
+  window.__zusageConversationDiagnostics = () => ({ keys: P.sessions.map(s => s.key), sessions: P.sessions });
+  window.__zusageGetExistingConversationStore = scope => {
+    if (!scope || typeof scope.sessionId !== 'string') return null;
+    const ws = (typeof scope.workspaceIdentity === 'string' && scope.workspaceIdentity.trim()) || scope.workspacePath;
+    if (!ws) return null;
+    const remote = scope.remoteSessionId || '__base__';
+    const entry = P.sessions.find(s => s.topic === 'conversation/' + scope.sessionId && s.key === remote + ' ' + ws);
+    return entry && entry.store || null;
+  };
+  /* pane-a 的速度格：卡内形态的条在 #pane-a 里；药丸条挂在 body 级——按实例序取第一条（a 在前） */
+  P.cell = () => {
+    const bars = [...document.querySelectorAll('.zusage-root')];
+    const bar = bars.find(x => x.closest('#pane-a')) || bars[0];
+    return bar ? bar.querySelector('.zu-main > .it.zu-speed') : null;
+  };
+}
+/* 速度格与邻格的几何（CSS 像素，保留两位）与语义。图标按类名/路径区分：脑（思考）/ 扳手（工具）/ 闪电。 */
+function liveGeo() {
+  const cell = window.__liveProbe.cell();
+  if (!cell) return null;
+  const r = e => { if (!e) return null; const b = e.getBoundingClientRect(); return [b.left, b.top, b.width, b.height].map(x => Math.round(x * 100) / 100); };
+  const ico = cell.querySelector('.ico'), live = cell.querySelector('.zu-live');
+  const lab = cell.querySelector('.zu-sp-label'), val = cell.querySelector('.zu-sp-val'), unit = cell.querySelector('.zu-sp-unit');
+  const main = cell.closest('.zu-main'), bar = cell.closest('.zusage-root'), card = document.querySelector('#card-a');
+  const iconKind = !ico ? null : ico.classList.contains('zu-think') ? 'think' : /M14\.5 2\.5a6 6/.test(ico.innerHTML) ? 'tool' : 'bolt';
+  const cells = [...main.querySelectorAll(':scope > .it')].filter(e => e.dataset.zuFolded !== '1').map(e => [e.dataset.zuKey, r(e)]);
+  const c = card.getBoundingClientRect(), br = bar.getBoundingClientRect();
+  return { label: lab ? lab.textContent : null, value: val ? val.textContent : null, unit: unit ? unit.textContent : null,
+    cls: live.className, iconKind, cell: r(cell), icon: r(ico), live: r(live), labelRect: r(lab), val: r(val), unitRect: r(unit),
+    cells, scrollLeft: main.scrollLeft, bar: r(bar), barCenter: br.left + br.width / 2, cardCenter: c.left + c.width / 2,
+    barCls: bar.className, tier: bar.classList.contains('zu-narrow') ? 'narrow' : bar.classList.contains('zu-tight') ? 'tight'
+      : bar.classList.contains('zu-speed-tight') ? 'pill-tight' : bar.classList.contains('zu-speed-mid') ? 'pill-mid' : 'wide',
+    aria: cell.getAttribute('aria-label'), full: cell.dataset.zuFull,
+    ariaLive: cell.getAttribute('aria-live') || (cell.closest('[aria-live]') ? 'ancestor' : null),
+    iconAriaHidden: ico ? ico.getAttribute('aria-hidden') : null, focusable: cell.tabIndex };   // 图标是装饰（aria-hidden），含义由 aria-label 承载
+}
+
 async function choose(browser, value, panelIndex = 0) {
+
   await browser.evaluate(`(() => {
     const panels = document.querySelectorAll('.zu-settings');
     const input = panels[${panelIndex}].querySelector('.zu-theme-choice[value="${value}"]');
@@ -239,25 +296,92 @@ async function compareSurface(browser, barIndex, selector) {
   })()`);
 }
 
+/* 速度格稳定占位的真实布局探针（specs/speed-chip-stable-slot.md；在夹具页面里执行，自包含）：对真实
+   overlay 建出来的状态条，逐档（默认四档 + 药丸三档）逐状态面写入格面并量矩形。状态面与
+   zuSpeedFaceHtml 同构、不经数据链（展示时机由 overlay-speed-slot 锁）。越界判据=最后一个可见项
+   右缘超过速度格内容区右缘（亚像素）——scrollWidth/clientWidth 是取整整数，会掩盖 1~3px 的越界
+   （紧张档 6.4em 时期「思考 23:59:59」实测越界 1.5px 即被掩盖）。量完全部还原。 */
+function speedSlotProbe() {
+  const bar = document.querySelector('#pane-a .zusage-root'), main = bar.querySelector('.zu-main');
+  const speed = main.querySelector('.it.zu-speed');
+  if (!speed) return { error: 'speed cell missing' };
+  const F = (label, val, unit) => '<span class="zu-sp-label">' + label + '</span><span class="zu-sp-val">' + val + '</span>' + (unit ? '<span class="zu-sp-unit dim">' + unit + '</span>' : '');
+  const faces = {
+    real201: F('', '201', 't/s'), hist: F('历史', '201.4', 't/s'), real99: F('', '9.9', 't/s'), real250: F('', '250.0', 't/s'),
+    est: F('生成', '≈128.6', 't/s'), estMax: F('生成', '≈9999.9', 't/s'), estK: F('生成', '≈12.9k', 't/s'),
+    thinkHalf: F('思考', '0.5s'), think: F('思考', '6:33'), thinkHour: F('思考', '1:05:00'), thinkDay: F('思考', '23:59:59'), thinkOver: F('思考', '1天3时'),
+    tool: F('读取', '01s'), group: F('查阅', '03s'), skill: F('代码审查与修复', '12s'),
+    sub1: F('代理', '≈1286.5', 't/s'), sub3: F('代理×3', '≈28.8', 't/s'), sub12: F('代理×12', '≈1286.5', 't/s'),
+    enThink: F('Think', '23:59:59'), enOver: F('Think', '1d 3h'), enAgt: F('Agt×12', '≈1286.5', 't/s'), enGen: F('Gen', '≈9999.9', 't/s'), enSkill: F('code-review-and-fix', '12s'),
+  };
+  const tiers = [
+    ['默认 宽裕', [], null, ''], ['默认 中等', ['zu-tight'], null, ''], ['默认 紧张', ['zu-tight', 'zu-narrow'], null, ''], ['默认 极窄', ['zu-tight', 'zu-narrow'], '1', ''],
+    ['药丸 宽裕', ['zu-pill'], null, 'p'], ['药丸 中等', ['zu-pill', 'zu-speed-mid'], null, 'p'], ['药丸 紧张', ['zu-pill', 'zu-speed-tight'], null, 'p'],
+  ];
+  const first = speed.querySelector('.zu-live');
+  const origLive = first && first.outerHTML;
+  const save = { barStyle: bar.getAttribute('style'), barCls: bar.className, rootVar: document.documentElement.style.getPropertyValue('--ui-font-size') };
+  const R = e => e.getBoundingClientRect();
+  const setFace = html => {
+    const cur = speed.querySelector('.zu-live'), next = '<span class="zu-live zu-sky">' + html + '</span>';
+    if (cur) cur.outerHTML = next; else speed.insertAdjacentHTML('beforeend', next);
+  };
+  const setVar = v => { if (v) document.documentElement.style.setProperty('--ui-font-size', v); else document.documentElement.style.removeProperty('--ui-font-size'); };
+  const res = {};
+  try {
+    const lockBase = Math.round(R(bar.parentElement).width) + 'px';
+    for (const ui of ['', '11px', '20px']) {
+      setVar(ui || save.rootVar);
+      for (const [name, cls, min, mode] of tiers) {
+        bar.className = 'zusage-root' + (mode === 'p' ? ' zu-pill' : ' zu-in') + cls.map(c => ' ' + c).join('');
+        const lock = mode === 'p' ? '' : lockBase;
+        bar.style.minWidth = lock; bar.style.maxWidth = lock;
+        if (min) speed.dataset.zuSpeedMin = min; else delete speed.dataset.zuSpeedMin;
+        const turn = main.querySelector('.it[data-zu-key="turn"]');
+        const row = { fs: getComputedStyle(speed).fontSize, speedW: [], turnL: [], overflow: [], minSlack: Infinity, minLead: Infinity };
+        res[(ui || 'default') + ' ' + name] = row;
+        const set = mode === 'min' ? { real201: faces.real201, hist: faces.hist } : faces;
+        for (const [key, html] of Object.entries(set)) {
+          setFace(html);
+          const cs = getComputedStyle(speed), box = R(speed);
+          const items = [...speed.querySelectorAll('.zu-live > *')].filter(e => getComputedStyle(e).display !== 'none');
+          row.speedW.push(Math.round(box.width * 100) / 100);
+          if (turn) row.turnL.push(Math.round(R(turn).left * 100) / 100);
+          if (!items.length) continue;
+          const slack = (box.right - parseFloat(cs.paddingRight)) - R(items[items.length - 1]).right;   // 右侧余量（<0 即越界）
+          const lead = R(items[0]).left - R(speed.querySelector('.zu-live')).left;                      // 左侧余量：最窄档数值靠右，余量在左
+          row.minSlack = Math.min(row.minSlack, Math.round(slack * 100) / 100);
+          row.minLead = Math.min(row.minLead, Math.round(lead * 100) / 100);
+          if (slack < -0.05) row.overflow.push(key);
+        }
+      }
+    }
+  } finally {
+    setVar(save.rootVar);
+    bar.setAttribute('style', save.barStyle || ''); bar.className = save.barCls;
+    if (origLive && speed.querySelector('.zu-live')) setFace(origLive.replace(/^<span class="zu-live[^"]*">/, '').replace(/<\/span>$/, ''));
+    delete speed.dataset.zuSpeedMin;
+  }
+  return res;
+}
+
 test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, timeout: 90000 }, async t => {
   const b = await startBrowser(t);
 
-  await t.test('switching from scrolled default to pill resets the offset', async () => {
-    await reset(b);
-    await b.evaluate(`document.querySelector('#pane-a').style.width = '220px'`);
-    /* v357① 探针修复后 220px 是稳定终态：全折后残部（speed+⋯+齿轮）恰好装下、
-     * 无可横滚内容（旧「220px 必溢出」断言骑在探针震荡的展开相上）。钳 .zu-main
-     * 宽度制造真实横滚，验证切药丸档时偏移归零。 */
-    await b.waitFor(`(() => {
-      const bar = document.querySelector('#pane-a .zusage-root'), m = bar.querySelector('.zu-main');
-      return bar.classList.contains('zu-narrow') && m.scrollWidth <= m.clientWidth + 1 && !m.classList.contains('zu-clip');
-    })()`, 'narrow bar did not settle fully folded');
-    await b.evaluate(`(() => { document.querySelector('#pane-a .zu-main').style.maxWidth = '48px'; })()`);
-    await b.waitFor(`(() => { const m = document.querySelector('#pane-a .zu-main'); return m.scrollWidth > m.clientWidth + 1 && m.classList.contains('zu-clip'); })()`, 'clamped bar did not scroll-fade');
-    await b.evaluate(`(() => { const m = document.querySelector('#pane-a .zu-main'); m.scrollLeft = m.scrollWidth; })()`);
-    assert.ok(await b.evaluate(`document.querySelector('#pane-a .zu-main').scrollLeft`) > 0);
-    await b.evaluate(`window.__testMain = document.querySelector('#pane-a .zu-main')`);
-    await choose(b, 'pill');
+  await t.test('theme change resets the main scroll offset (scrolled pill → default)', async () => {
+    /* 速度格稳定占位（specs/speed-chip-stable-slot.md）后默认条的横向滚动不再可达：折叠回展触发器改按
+       真实内容宽判富余（scrollWidth 以 clientWidth 为下限，旧判据从未成立、回展分支是死分支），默认条
+       钳 .zu-main 会触发重算，把剩余格（含速度格）折进「···」吸收溢出。旧版本「默认条 220px 全折后钳
+       48px 制造横滚再切药丸」的前置不再成立；改在药丸条（按内容定宽、原生横滚）上制造真实偏移，验证
+       切档归零（setBarTheme 对任何主题变化都置 scrollLeft=0）。 */
+    await reset(b, { stored: 'pill' });
+    await b.evaluate(`Object.assign(document.querySelector('#pane-a').style, { left: '20px', width: '240px' })`);
+    /* 药丸条挂 body 级（不在 #pane-a 子树内），按卡片顺序取第 0 个条（同下文 pill 跟随卡片的取法） */
+    await b.waitFor(`(() => { const m = document.querySelectorAll('.zusage-root')[0].querySelector('.zu-main'); return m.scrollWidth > m.clientWidth + 1; })()`, 'narrow pill did not scroll');
+    await b.evaluate(`(() => { const m = document.querySelectorAll('.zusage-root')[0].querySelector('.zu-main'); m.scrollLeft = m.scrollWidth; })()`);
+    assert.ok(await b.evaluate(`document.querySelectorAll('.zusage-root')[0].querySelector('.zu-main').scrollLeft`) > 0, 'pill main is really scrolled');
+    await b.evaluate(`window.__testMain = document.querySelectorAll('.zusage-root')[0].querySelector('.zu-main')`);
+    await choose(b, 'default');
     assert.equal(await b.evaluate(`window.__testMain.scrollLeft`), 0);
   });
 
@@ -293,7 +417,7 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
     await b.waitFor(`(() => { const b = document.querySelector('#pane-a .zusage-root'); return !b.classList.contains('zu-tight') && !b.classList.contains('zu-narrow'); })()`, 'full counts did not return');
   });
 
-  await t.test('default bar adapts counts, scrolls and restores independently', async () => {
+  await t.test('default bar adapts counts, folds through the speed cell, and restores independently', async () => {
     await reset(b);
     await b.evaluate(`document.querySelector('#pane-a').style.width = '1100px'`);
     await b.waitFor(`!document.querySelector('#pane-a .zusage-root').classList.contains('zu-narrow')`, 'wide bar did not restore');
@@ -306,12 +430,8 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
     assert.ok(compact.counts.every(x => x[1] === 'hidden'));
     await b.evaluate(`document.querySelector('#pane-a').style.width = '220px'`);
     /* v357① 探针剥折叠态修复后，220px 是稳定终态：可折叠格全部折进「···」，残部
-     * （speed+⋯+齿轮）恰好装下——旧断言「此时必须溢出+渐隐」实际骑在折叠↔展开
-     * 震荡的展开相上（探针把已折叠克隆量成全宽装下→shrink 回 0，约 2Hz）。渐隐
-     * 兜底无法靠继续缩面板触发：夹具卡片 chrome（⋯+齿轮）恒占 ~68px，150/200px
-     * 实测均全折装下、再小进入卡片退化区。钳 .zu-main 宽度等价制造「全折仍超宽」
-     * ——speed 是最后候选折叠（zuBarFoldOrder rank -1 仅降序不豁免），残部 chrome
-     * 不可折叠，溢出/横滚/渐隐走真实折叠与渐隐链。 */
+       （speed+⋯+齿轮）恰好装下——旧断言「此时必须溢出+渐隐」实际骑在折叠↔展开
+       震荡的展开相上（探针把已折叠克隆量成全宽装下→shrink 回 0，约 2Hz）。 */
     await b.waitFor(`(() => {
       const bar = document.querySelector('#pane-a .zusage-root'), m = bar.querySelector('.zu-main');
       const folded = [...m.querySelectorAll(':scope > .it')].filter(e => (e.dataset.zuKey || 'system') !== 'speed');
@@ -320,17 +440,70 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
         bar.querySelector('.zu-more').dataset.zuVisible === '1' &&
         m.scrollWidth <= m.clientWidth + 1 && !m.classList.contains('zu-clip');
     })()`, 'narrow bar did not settle fully folded');
-    await b.evaluate(`(() => { document.querySelector('#pane-a .zu-main').style.maxWidth = '48px'; })()`);
-    await b.waitFor(`(() => { const m = document.querySelector('#pane-a .zu-main'); return m.scrollWidth > m.clientWidth + 1 && m.classList.contains('zu-clip'); })()`, 'fully folded bar did not fall back to scroll fade');
-    await b.evaluate(`(() => { const m = document.querySelector('#pane-a .zu-main'); m.scrollLeft = m.scrollWidth; })()`);
-    await b.waitFor(`(() => { const m = document.querySelector('#pane-a .zu-main'); return m.classList.contains('zu-clip-left') && !m.classList.contains('zu-clip'); })()`, 'end fade did not update');
-    const scrolled = await b.evaluate(`(() => { const bar = document.querySelector('#pane-a .zusage-root'), m = bar.querySelector('.zu-main'), gear = bar.querySelector('.zu-gear'), r = gear.getBoundingClientRect(); return { left: m.scrollLeft, hit: document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === gear || gear.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)) }; })()`);
-    assert.ok(scrolled.left > 0 && scrolled.hit, 'scrolling keeps gear clickable');
-    await b.evaluate(`(() => { document.querySelector('#pane-a .zu-main').style.maxWidth = ''; })()`);
+    /* 速度格稳定占位（specs/speed-chip-stable-slot.md）：钳 .zu-main 触发折叠重算（已折叠态的富余按
+       真实内容宽计，失去富余即重算）。速度格是最后候选——先降「极窄」（data-zu-speed-min，仅图标，
+       装得下且富余≥FOLD_HYS 就停），再窄才折进「···」；解除钳制按同一序列回展。旧版本靠钳 48px
+       制造「全折仍溢出→横滚渐隐」已不可达（重算会吸收溢出）。 */
+    const clamp = px => b.evaluate(px ? `document.querySelector('#pane-a .zu-main').style.maxWidth = '${px}px'` : `document.querySelector('#pane-a .zu-main').style.maxWidth = ''`);
+    await clamp(64);
+    await b.waitFor(`(() => {
+      const bar = document.querySelector('#pane-a .zusage-root'), m = bar.querySelector('.zu-main');
+      const speed = m.querySelector('.it[data-zu-key="speed"]');
+      return bar.classList.contains('zu-narrow') && !!speed && speed.dataset.zuSpeedMin === '1' && speed.dataset.zuFolded === '0' &&
+        [...m.querySelectorAll(':scope > .it')].filter(e => e !== speed).every(e => e.dataset.zuFolded === '1') &&
+        m.scrollWidth <= m.clientWidth + 1 && !m.classList.contains('zu-clip');
+    })()`, 'speed cell did not degrade to icon-only before folding');
+    assert.deepEqual(await b.evaluate(`[...document.querySelectorAll('#pane-a .zu-main > .it')].filter(e => e.dataset.zuFolded !== '1').map(e => e.dataset.zuKey)`), ['speed'], 'only the speed cell stays on the bar, icon-only');
+    await clamp(48);
+    await b.waitFor(`(() => { const m = document.querySelector('#pane-a .zu-main'); return [...m.querySelectorAll(':scope > .it')].every(e => e.dataset.zuFolded === '1') && m.scrollWidth <= m.clientWidth + 1; })()`, 'speed cell did not fold when even icon-only leaves no hysteresis slack');
+    assert.equal(await b.evaluate(`document.querySelector('#pane-a .zu-more').dataset.zuVisible`), '1', 'everything is reachable from the ⋯ menu');
+    await clamp('');
+    await b.waitFor(`(() => {
+      const bar = document.querySelector('#pane-a .zusage-root'), m = bar.querySelector('.zu-main');
+      const speed = m.querySelector('.it[data-zu-key="speed"]');
+      const folded = [...m.querySelectorAll(':scope > .it')].filter(e => (e.dataset.zuKey || 'system') !== 'speed');
+      return bar.classList.contains('zu-narrow') && !!speed && speed.dataset.zuSpeedMin !== '1' && speed.dataset.zuFolded === '0' &&
+        folded.every(e => e.dataset.zuFolded === '1') && m.scrollWidth <= m.clientWidth + 1;
+    })()`, 'speed cell did not restore after unclamping');
     await b.evaluate(`document.querySelector('#pane-a').style.width = '1100px'`);
-    await b.waitFor(`!document.querySelector('#pane-a .zusage-root').classList.contains('zu-narrow')`, 'wide bar did not restore after scrolling');
+    await b.waitFor(`!document.querySelector('#pane-a .zusage-root').classList.contains('zu-narrow')`, 'wide bar did not restore after folding');
     const restored = await b.evaluate(`(() => { const bar = document.querySelector('#pane-a .zusage-root'); return [...bar.querySelectorAll('.zu-secondary')].map(x => getComputedStyle(x).visibility); })()`);
     assert.ok(restored.every(x => x === 'visible'));
+    assert.equal(await b.evaluate(`[...document.querySelectorAll('#pane-a .zu-main > .it')].every(e => e.dataset.zuFolded !== '1')`), true, 'no cell stays folded on the wide bar');
+  });
+
+  /* 速度格稳定占位（specs/speed-chip-stable-slot.md）核心不变量的真实布局证据：同一布局档位里，状态
+     面怎么变速度格宽度都恒定、邻格 left 不动；数值右缘不得越过速度格内容区（亚像素判据）；三种界面
+     字号覆盖 em 随字号缩放与图标定宽的交互；药丸紧张档与默认条紧张档同宽。 */
+  await t.test('speed cell keeps one slot width per layout tier across all state faces; neighbours never move; no value crosses the cell edge', async () => {
+    await reset(b);
+    await b.evaluate(`document.querySelector('#pane-a').style.width = '1100px'`);
+    await b.waitFor(`!document.querySelector('#pane-a .zusage-root').classList.contains('zu-tight')`, 'wide bar did not restore');
+    const report = await b.evaluate(`(${speedSlotProbe.toString()})()`);
+    assert.ok(!report.error, report.error);
+    assert.equal(Object.keys(report).length, 21, '3 interface font sizes × 7 tiers');
+    for (const [tier, r] of Object.entries(report)) {
+      assert.equal(new Set(r.speedW).size, 1, `${tier}: speed width varies with state: ${[...new Set(r.speedW)]}`);
+      assert.ok(r.turnL.length > 0 && new Set(r.turnL).size === 1, `${tier}: neighbour cell moved: ${[...new Set(r.turnL)]}`);
+      assert.deepEqual(r.overflow, [], `${tier}: value crosses the cell edge`);
+    }
+    for (const ui of ['default', '11px', '20px']) {
+      const d = report[ui + ' 默认 紧张'], p = report[ui + ' 药丸 紧张'];
+      assert.equal(d.fs, p.fs, `${ui}: pill tight tier uses the default bar's narrow font size`);
+      assert.equal(d.speedW[0], p.speedW[0], `${ui}: pill tight tier is as wide as the default bar's narrow tier`);
+      assert.ok(Math.min(d.minLead, p.minLead) >= 4, `${ui}: narrow tier lead ≥4px (got default ${d.minLead}, pill ${p.minLead})`);
+      assert.ok(report[ui + ' 默认 极窄'].speedW[0] < d.speedW[0] / 2, `${ui}: icon-only tier`);
+      assert.ok(d.speedW[0] < report[ui + ' 默认 中等'].speedW[0] && report[ui + ' 默认 中等'].speedW[0] < report[ui + ' 默认 宽裕'].speedW[0], `${ui}: tiers shrink monotonically`);
+      const m = report[ui + ' 药丸 中等'], dm = report[ui + ' 默认 中等'];
+      assert.equal(dm.fs, m.fs, `${ui}: pill mid tier uses the default bar's compact font size`);
+      assert.equal(dm.speedW[0], m.speedW[0], `${ui}: pill mid tier is as wide as the default bar's compact tier`);
+    }
+    /* 目标 §5 四档宽度区间（按默认界面字号 14px 校验；其它界面字号随 em 等比缩放）：宽裕 160–180 / 中等 112–132 / 紧张 72–88 / 极窄 32–40 */
+    const inRange = (tier, lo, hi) => { const w = report['default ' + tier].speedW[0]; assert.ok(w >= lo && w <= hi, `${tier}: ${w}px outside ${lo}–${hi}`); };
+    inRange('默认 宽裕', 160, 180); inRange('默认 中等', 112, 132); inRange('默认 紧张', 72, 88); inRange('默认 极窄', 32, 40);
+    inRange('药丸 宽裕', 160, 180); inRange('药丸 中等', 112, 132); inRange('药丸 紧张', 72, 88);
+    assert.ok(report['default 默认 宽裕'].speedW[0] > report['11px 默认 宽裕'].speedW[0] && report['20px 默认 宽裕'].speedW[0] > report['default 默认 宽裕'].speedW[0], 'em scales with the interface font size');
+    assert.equal(await b.evaluate(`getComputedStyle(document.querySelector('#pane-a .zusage-root')).display !== 'none' && !!document.querySelector('#pane-a .it.zu-speed .zu-live') && !document.documentElement.style.getPropertyValue('--ui-font-size')`), true, 'bar and font variable restored after the probe');
   });
 
   await t.test('default and invalid values fall back; pill restores on boot', async () => {
@@ -2137,5 +2310,566 @@ test('v146 compact theme browser behaviour (isolated fixture)', { skip: skipReas
     await b.waitFor(`(() => { const bar = document.querySelector('#zusage-bar');
       return getComputedStyle(bar).display === 'none' && document.querySelectorAll('.zu-tsb').length === 2; })()`,
       'compact round-trip failed');
+  });
+});
+
+/* ---------- 速度格走真实数据链（目标 §1.2 / §4.2 / §6.2）：伪造会话 store → turn-stats.js →
+   zuBarSpeedView → 展示协调器 → updateLive → 真实布局。生产阈值（防抖 180 / 最短显示 400 / 数值 600 /
+   颜色 400 / 计时 1000）下按真实节奏推进：每个状态等它上屏后再量几何。断言：
+   ①同一档位里图标切换（脑/扳手/闪电）不改变图标盒、不推动文字；②数值右缘不随位数/小数位变化；
+   ③邻格矩形不变；④右对齐无水平位移；⑤药丸居中坐标不变；⑥工具错误徽标与速度格互不阻塞。 ---------- */
+test('speed slot through the live data chain (isolated fixture)', { skip: skipReason, timeout: 180000 }, async t => {
+  const b = await startBrowser(t);
+  const H = (state, extra) => `P.header(${JSON.stringify(state)}, ${JSON.stringify(extra || {})})`;
+  const T = text => `P.text(${JSON.stringify(text)})`;
+  const TOOL = (status, extraSrc) => `P.tool(${JSON.stringify(status)}, ${extraSrc})`;
+  const push = (seq, rows) => b.evaluate(`(() => { const P = window.__liveProbe; P.store.set(P.snap(${seq}, [${rows.join(', ')}])); return true; })()`);
+  const geo = async () => {
+    await b.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    return b.evaluate(`(${liveGeo.toString()})()`);
+  };
+  const face = label => b.waitFor(`(() => {
+    const c = window.__liveProbe.cell && window.__liveProbe.cell();
+    const l = c && c.querySelector('.zu-sp-label'), v = c && c.querySelector('.zu-sp-val');
+    return !!l && !!v && l.textContent === ${JSON.stringify(label)}${label ? '' : " && !/≈/.test(v.textContent)"};
+  })()`, `speed face "${label}" did not appear`, 600);
+  const bind = () => b.evaluate(`(() => { const P = window.__liveProbe; P.store = P.mkStore(P.snap(1, [P.header('running'), P.text('abc')]));
+    P.sessions.push({ key: '__base__ /fixture/ws', topic: 'conversation/sid_a', store: P.store }); return true; })()`);
+  const right = rect => rect && Math.round((rect[0] + rect[2]) * 100) / 100;
+
+  /* 思考 → 生成 → 读取（工具）→ 生成 → 完成；生成态内再推三次正文让数值变化。返回各态上屏后的几何。 */
+  async function runChain() {
+    await bind();
+    await face('思考');
+    const g = { think: await geo() };
+    await delay(500);
+    await push(2, [H('running'), T('abcdef')]);
+    await face('生成');
+    g.estimate = await geo();
+    g.estimateTicks = [];
+    for (const [i, text] of ['abcdefghi', 'abcdefghijkl', 'abcdefghijklmnopq'].entries()) {
+      await delay(300);
+      await push(3 + i, [H('running'), T(text)]);
+      await delay(130);                       // 至少一拍 100ms 心跳
+      g.estimateTicks.push(await geo());
+    }
+    await delay(500);
+    await push(6, [H('running'), T('abcdefghijklmnopq'), TOOL('running', '{ startedAt: Date.now() }')]);
+    await face('读取');
+    g.tool = await geo();
+    await delay(500);
+    await push(7, [H('running'), T('abcdefghijklmnopqrstuvwx'), TOOL('completed', '{ startedAt: Date.now() - 1500 }')]);
+    await face('生成');
+    g.estimate2 = await geo();
+    await push(8, [H('completedSuccess', { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), T('abcdefghijklmnopqrstuvwx')]);
+    await face('');
+    g.final = await geo();
+    return g;
+  }
+
+  /* 三种布局共用：速度格/图标盒/文字左缘/数值右缘/邻格在整个序列里不变；图标确实切换过 */
+  function assertStableSlot(g, label) {
+    const all = [g.think, g.estimate, ...g.estimateTicks, g.tool, g.estimate2, g.final];
+    assert.ok(all.every(Boolean), `${label}: speed cell present in every state`);
+    assert.deepEqual(g.think.iconKind, 'think', `${label}: thinking shows the brain icon`);
+    assert.deepEqual(g.tool.iconKind, 'tool', `${label}: tool shows the wrench icon`);
+    assert.deepEqual(g.final.iconKind, 'bolt', `${label}: final shows the bolt icon`);
+    for (const snap of [g.think, g.tool, g.final]) {
+      assert.equal(snap.iconAriaHidden, 'true', `${label}: state icon is decorative (aria-hidden); the full text lives in aria-label`);
+      assert.equal(snap.focusable, 0, `${label}: speed cell is keyboard reachable (tooltip on focus)`);
+    }
+    assert.match(g.think.value, /^\d/, `${label}: thinking shows an elapsed time`);
+    assert.match(g.estimate.value, /^≈\d/, `${label}: estimate shows ≈ value`);
+    assert.deepEqual(g.tool.label, '读取', `${label}: tool label`);
+    assert.doesNotMatch(g.final.value, /≈/, `${label}: final shows the real speed without ≈`);
+    assert.deepEqual(g.final.label, '', `${label}: final has no label`);
+    for (const snap of all) assert.equal(snap.tier, g.think.tier, `${label}: layout tier unchanged across the sequence (${snap.label}|${snap.value})`);
+    for (const [name, snap] of [['estimate', g.estimate], ['tool', g.tool], ['estimate2', g.estimate2], ['final', g.final]]) {
+      assert.deepEqual(snap.cell, g.think.cell, `${label}: cell box unchanged across ${name}`);
+      assert.deepEqual(snap.icon, g.think.icon, `${label}: icon box unchanged across ${name} (icon switch does not push text)`);
+      assert.deepEqual(snap.live, g.think.live, `${label}: text box unchanged across ${name}`);
+    }
+    g.estimateTicks.forEach((snap, i) => assert.deepEqual(snap.cell, g.think.cell, `${label}: cell box unchanged on value tick ${i}`));
+    for (const snap of [g.think, g.estimate, ...g.estimateTicks, g.tool, g.estimate2, g.final]) {
+      assert.deepEqual(snap.cells.filter(([k]) => k !== 'speed'), g.think.cells.filter(([k]) => k !== 'speed'), `${label}: neighbour cells unchanged (${snap.label}|${snap.value})`);
+    }
+    /* 数值右缘：宽裕/中等档里带单位的态以单位右缘为准，不带单位的态（思考/工具计时）数值右缘落在同一条线上；
+     * 最窄档单位隐藏，所有态的数值右缘同线 */
+    const unitShown = g.estimate.unitRect[2] > 0;
+    const edge = unitShown ? right(g.estimate.unitRect) : right(g.estimate.val);
+    const edgeOf = snap => unitShown && snap.unitRect && snap.unitRect[2] > 0 ? right(snap.unitRect) : right(snap.val);
+    for (const [name, snap] of [['estimate2', g.estimate2], ['final', g.final], ['thinking', g.think], ['tool', g.tool]]) {
+      assert.equal(edgeOf(snap), edge, `${label}: value right edge fixed (${name})`);
+    }
+    /* 数值位数变化（估算态连续三次推送）：右缘不动 */
+    g.estimateTicks.forEach((snap, i) => assert.equal(edgeOf(snap), edge, `${label}: estimate right edge fixed on tick ${i} (${snap.value})`));
+    /* 文字：标签盒吃掉数值让出的剩余空间（宽度随数值变是设计），但左缘/基线不动——图标切换与换文案都不推动文字 */
+    const labelAnchor = rect => rect && [rect[0], rect[1], rect[3]];
+    for (const snap of [g.estimate, ...g.estimateTicks, g.tool]) assert.deepEqual(labelAnchor(snap.labelRect), labelAnchor(g.think.labelRect), `${label}: label left edge fixed (${snap.label})`);
+    assert.ok(g.think.live[0] === g.think.icon[0] + g.think.icon[2] + (g.think.live[0] - g.think.icon[0] - g.think.icon[2]), 'sanity');
+    /* 无障碍：完整 aria-label、不在 live region（高频速度更新不触发重复播报）。
+     * 两处全称来源不同：aria-label 跟格面（数值 = 格面此刻显示的值，随 600ms 节流）；
+     * data-zu-full（「···」菜单用）跟真实视图——节流窗内领先于格面。 */
+    for (const snap of all) {
+      assert.match(snap.aria || '', /^生成速度 .+/, `${label}: full aria-label`);
+      assert.ok(snap.full && snap.full.length > 0, `${label}: data-zu-full present`);
+      assert.equal(snap.ariaLive, null, `${label}: speed cell is not a live region`);
+    }
+    for (const snap of [g.estimate, ...g.estimateTicks, g.estimate2, g.final]) {
+      assert.ok(snap.aria.includes(String(snap.value).replace('≈', '') + ' ' + snap.unit), `${label}: aria-label carries the displayed value (${snap.aria} | ${snap.value})`);
+    }
+    assert.ok(g.estimateTicks.some(snap => snap.aria !== '生成速度 ' + snap.full), `${label}: inside the numeric throttle the menu text (real view) leads the aria-label (display view)`);
+  }
+
+  /* 卡片宽度决定档位：1100px=宽裕（四档的完整面）；420px=最窄档（图标+数值，标签与单位隐藏）；
+     药丸按卡片宽度走自己的档位。先等档位稳定再推数据。 */
+  for (const [name, opts, paneWidth, tierReady] of [
+    ['default-wide', { withKernel: true }, 1100, `!bar.classList.contains('zu-tight')`],
+    ['right-aligned', { withKernel: true, ls: { 'zusage3.barJust': 'end' } }, 1100, `!bar.classList.contains('zu-tight')`],
+    ['default-narrow', { withKernel: true }, 420, `bar.classList.contains('zu-narrow')`],
+    ['pill', { withKernel: true, stored: 'pill' }, 1100, `true`],
+  ]) {
+    await t.test(`${name}: icon switches and value changes never move text or neighbours`, async () => {
+      await reset(b, opts);
+      await b.evaluate(`document.querySelector('#pane-a').style.width = '${paneWidth}px'`);
+      await b.waitFor(`(() => { const c = window.__liveProbe.cell(); const bar = c && c.closest('.zusage-root'); return !!bar && (${tierReady}); })()`, `${name}: layout tier did not settle`, 400);
+      const g = await runChain();
+      assertStableSlot(g, name);
+      for (const snap of [g.estimate, ...g.estimateTicks, g.tool, g.estimate2, g.final]) assert.deepEqual(snap.bar, g.think.bar, `${name}: bar box unchanged (${snap.label}|${snap.value})`);
+      assert.equal(g.think.tier, name === 'default-narrow' ? 'narrow' : name === 'pill' ? g.think.tier : 'wide', `${name}: expected tier`);
+      if (name === 'right-aligned') {
+        assert.match(g.think.barCls, /zu-just-end/, 'right alignment active');
+        for (const snap of [g.estimate, ...g.estimateTicks, g.tool, g.estimate2, g.final]) assert.equal(snap.scrollLeft, 0, `${name}: no horizontal shift`);
+        const last = g.think.cells[g.think.cells.length - 1];
+        for (const snap of [g.estimate, g.tool, g.final]) assert.deepEqual(snap.cells[snap.cells.length - 1], last, `${name}: right-most cell fixed`);
+      }
+      if (name === 'pill') {
+        for (const snap of [g.think, g.estimate, ...g.estimateTicks, g.tool, g.estimate2, g.final]) {
+          assert.ok(Math.abs(snap.barCenter - snap.cardCenter) < 1, `${name}: pill stays centred (bar ${snap.barCenter} vs card ${snap.cardCenter})`);
+        }
+      }
+    });
+  }
+
+  await t.test('tool error badge renders from the database snapshot without waiting for the speed coordinator', async () => {
+    await reset(b, { withKernel: true });
+    await bind();
+    await face('思考');
+    const t0 = Date.now();
+    const withErrors = JSON.parse(JSON.stringify(payload));
+    withErrors.recent = withErrors.recent.map(row => row.sid === 'sid_a' ? Object.assign(row, { tools: { total: 3, errors: 1, list: [] } }) : row);
+    await b.evaluate(`(() => { window.__zusageUpdate(${JSON.stringify(withErrors)}); return true; })()`);
+    await b.waitFor(`!!document.querySelector('#pane-a .it[data-zu-key="tools"] .eb')`, 'error badge did not render', 40);
+    const elapsed = Date.now() - t0;
+    assert.ok(elapsed < 400, `error badge appears promptly (${elapsed}ms) while the speed cell is inside its 400ms minimum display`);
+    const geo1 = await b.evaluate(`(${liveGeo.toString()})()`);
+    assert.deepEqual(geo1.label, '思考', 'speed cell keeps its own cadence');
+    /* 窄屏规格「工具错误不随精简隐藏」：逐级收窄卡片。窄档（zu-tight/zu-narrow）只藏次要数字，工具格还在条上时
+     * 徽标必须可见；整格折进「···」是更后面的一层（按优先级折叠，非本次范围）。 */
+    let sawNarrowWithTools = false;
+    for (const width of [700, 620, 560, 500, 450]) {
+      await b.evaluate(`document.querySelector('#pane-a').style.width = '${width}px'`);
+      await delay(450);                       // 窄宽状态机 250ms 节流 + 迟滞
+      const st = await b.evaluate(`(() => { const c = window.__liveProbe.cell(); const bar = c.closest('.zusage-root');
+        const tools = bar.querySelector('.it[data-zu-key="tools"]'); const e = tools.querySelector('.eb');
+        return { tier: bar.classList.contains('zu-narrow') ? 'narrow' : bar.classList.contains('zu-tight') ? 'tight' : 'wide',
+          folded: tools.dataset.zuFolded === '1', visible: !!e && getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().width > 0 }; })()`);
+      if (st.folded) continue;
+      assert.ok(st.visible, `error badge visible at ${width}px (${st.tier})`);
+      if (st.tier !== 'wide') sawNarrowWithTools = true;
+    }
+    assert.ok(sawNarrowWithTools, 'a compact tier with the tools cell still on the bar was exercised');
+  });
+
+  /* 探针报告的共用判据：同档宽度单一、邻格不动、无越界；界面字号 14px 下落在目标 §5 区间内 */
+  const RANGE = { '默认 宽裕': [160, 180], '默认 中等': [112, 132], '默认 紧张': [72, 88], '默认 极窄': [32, 40],
+    '药丸 宽裕': [160, 180], '药丸 中等': [112, 132], '药丸 紧张': [72, 88] };
+  function checkSlotReport(report, tag) {
+    assert.equal(Object.keys(report).length, 21, `${tag}: 3 interface font sizes × 7 tiers`);
+    for (const [tier, r] of Object.entries(report)) {
+      assert.equal(new Set(r.speedW).size, 1, `${tag} ${tier}: speed width varies with state: ${[...new Set(r.speedW)]}`);
+      assert.equal(new Set(r.turnL).size, 1, `${tag} ${tier}: neighbour cell moved: ${[...new Set(r.turnL)]}`);
+      assert.deepEqual(r.overflow, [], `${tag} ${tier}: value crosses the cell edge`);
+    }
+    for (const [tier, [lo, hi]] of Object.entries(RANGE)) {
+      const w = report['default ' + tier].speedW[0];
+      assert.ok(w >= lo && w <= hi, `${tag} ${tier}: ${w}px outside ${lo}–${hi}`);
+    }
+    return Object.fromEntries(Object.entries(report).filter(([k]) => /紧张/.test(k)).map(([k, r]) => [k, r.minLead]));
+  }
+
+  await t.test('speed slot geometry is device-pixel-ratio independent (1.25×, 1.5×, 1.75×, 2×; high-DPI scaling)', async () => {
+    for (const dsf of [1.25, 1.5, 1.75, 2]) {
+      await reset(b, { dsf });
+      await b.evaluate(`document.querySelector('#pane-a').style.width = '1100px'`);
+      await b.waitFor(`!document.querySelector('#pane-a .zusage-root').classList.contains('zu-tight')`, `dsf ${dsf}: wide tier did not settle`);
+      const report = await b.evaluate(`(${speedSlotProbe.toString()})()`);
+      const slack = checkSlotReport(report, `dsf ${dsf}`);
+      for (const [tier, v] of Object.entries(slack)) assert.ok(v >= 4, `dsf ${dsf} ${tier}: slack ${v}px`);
+      t.diagnostic(`dsf ${dsf}: narrow-tier lead ${JSON.stringify(slack)}`);
+    }
+    await reset(b);   // 还原 1×
+  });
+
+  await t.test('speed slot stays inside its tier box under alternative font stacks (font-metric robustness)', async () => {
+    await reset(b);
+    await b.evaluate(`document.querySelector('#pane-a').style.width = '1100px'`);
+    await b.waitFor(`!document.querySelector('#pane-a .zusage-root').classList.contains('zu-tight')`, 'wide tier did not settle');
+    /* Windows 常见字体栈放在最前：本机没装的字体回落到系统默认，断言对「装了什么」不敏感，只保证不越界 */
+    const stacks = [
+      '"Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif',
+      '"Helvetica Neue", Helvetica, Arial, sans-serif',
+      'Verdana, Tahoma, sans-serif',
+      '"PingFang SC", "Hiragino Sans GB", "Heiti SC", sans-serif',
+      '"Songti SC", "STSong", serif',
+      'Menlo, Consolas, monospace',
+    ];
+    for (const stack of stacks) {
+      await b.evaluate(`document.documentElement.style.setProperty('--font-sans', ${JSON.stringify(stack)})`);
+      const report = await b.evaluate(`(${speedSlotProbe.toString()})()`);
+      const slack = checkSlotReport(report, stack.slice(0, 28));
+      t.diagnostic(`${stack.slice(0, 40)}: narrow-tier lead ${JSON.stringify(slack)}`);
+      await b.evaluate(`document.documentElement.style.removeProperty('--font-sans')`);
+    }
+  });
+
+  /* 持续观察的页面侧采样器（tests/speed-slot-live-watch.js，供 tests/speed-slot-live-probe.py --watch 用）：同一条数据链在
+   * 观察期内走一遍，样本必须落在同一个布局签名里、宽度只有一个值、各态都采到；把速度格改成宽度随内容后，同一签名里
+   * 必须出现多个宽度（工具有牙）。判定（summarize）在 Python 侧，由 tests/test_speed_slot_live_probe.py 用构造样本锁定。 */
+  await t.test('speed slot watch-mode sampler: one width per layout signature through live transitions, and it sees a resizing slot', async () => {
+    const watchSrc = fs.readFileSync(path.join(__dirname, 'speed-slot-live-watch.js'), 'utf8');
+    for (const [label, breakSlot] of [['intact slot', false], ['slot whose width follows content', true]]) {
+      await reset(b, { withKernel: true });
+      await b.evaluate(`document.querySelector('#pane-a').style.width = '1100px'`);
+      await b.waitFor(`(() => { const c = window.__liveProbe.cell(); const bar = c && c.closest('.zusage-root'); return !!bar && !bar.classList.contains('zu-tight'); })()`, 'wide tier did not settle', 400);
+      if (breakSlot) await b.evaluate(`(() => { const s = document.createElement('style'); s.textContent = '.zusage-root .zu-main>.it.zu-speed{width:auto!important}'; document.head.appendChild(s); return true; })()`);
+      await b.evaluate(`(() => { window.__watch = (${watchSrc})({ seconds: 6, every: 50 }); return true; })()`);
+      await runChain();
+      const out = await b.evaluate('window.__watch');
+      assert.equal(await b.evaluate(`typeof window.__zuSpeedWatchStop`), 'undefined', `${label}: sampler stops and cleans up when the watch ends`);
+      /* 夹具有两个分栏、两条状态条，采样器全部观察；本用例只推了 #pane-a 的那条 */
+      const paneBar = await b.evaluate(`[...document.querySelectorAll('.zusage-root')].findIndex(x => x.closest('#pane-a'))`);
+      assert.ok(paneBar >= 0, `${label}: pane-a bar located`);
+      const ok = out.samples.filter(s => !s.none && s.b === paneBar);
+      assert.ok(ok.length >= 20, `${label}: enough measurable samples (${ok.length})`);
+      const sigs = [...new Set(ok.map(s => out.sigs[s.s]))];
+      assert.equal(sigs.length, 1, `${label}: every sample falls in one layout signature: ${JSON.stringify(sigs)}`);
+      assert.equal(sigs[0].split('|')[4], String(out.meta.width), `${label}: signature carries the window width`);
+      const widths = [...new Set(ok.map(s => s.w))];
+      const faces = [...new Set(ok.map(s => s.f))];
+      if (breakSlot) {
+        assert.ok(widths.length > 1, `${label}: sampler must see the slot resize (${widths})`);
+        continue;
+      }
+      assert.deepEqual(widths.length, 1, `${label}: one speed width through every state (${widths})`);
+      assert.ok(ok.every(s => !s.ov), `${label}: no overflow sampled`);
+      for (const re of [/^think\|思考 /, /^bolt\|生成 ≈/, /^tool\|读取 /, /^bolt\|\d/]) {
+        assert.ok(faces.some(f => re.test(f)), `${label}: face ${re} sampled (${faces.join(' / ')})`);
+      }
+    }
+  });
+});
+
+/* ---------- 精简主题工具栏速率 chip（.zu-tsb）走完整数据链（specs/speed-chip-stable-slot.md） ----------
+ * 宿主工具行同构（packages/ui/src/prompt-editor/ChatPromptEditor.tsx + useComposerToolbarFit.ts）：前导区可用宽度 =
+ * flex:1 的 [data-composer-leading-actions]；前导内容 = 宿主按钮（可压缩的 Plan、cua）+ 本插件 chip，不收缩；尾随区在右。
+ * 宿主压缩只模拟第一级：完整布局放不下时把 Plan 的文字收成图标（data-composer-compact），从完整布局量、状态粘滞，
+ * 由 ResizeObserver / MutationObserver 在本插件 chip 插入之后的后续帧触发——与真宿主同一时序。 */
+function tsbGeo() {
+  const chip = document.querySelector('#pane-a .zu-tsb');
+  if (!chip) return null;
+  const r = e => { if (!e) return null; const b = e.getBoundingClientRect(); return [b.left, b.top, b.width, b.height].map(x => Math.round(x * 100) / 100); };
+  const r2 = x => Math.round(x * 100) / 100;
+  const lead = chip.closest('[data-composer-leading-actions]'), content = chip.closest('[data-composer-leading-content]'), root = lead && lead.parentElement;
+  const live = chip.querySelector('.zu-live'), lab = chip.querySelector('.zu-sp-label'), val = chip.querySelector('.zu-sp-val'), unit = chip.querySelector('.zu-sp-unit');
+  const shown = e => !!e && getComputedStyle(e).display !== 'none';
+  const items = live ? [...live.children].filter(shown) : [];
+  const cs = getComputedStyle(chip), box = chip.getBoundingClientRect();
+  return { chip: r(chip), cua: r(chip.previousElementSibling), git: r(chip.nextElementSibling), plan: r(root && root.querySelector('.hplan')),
+    room: lead ? r2(lead.getBoundingClientRect().width - (content.getBoundingClientRect().width - box.width)) : null,
+    hostCompact: !!(root && (root.querySelector('[data-composer-compact]') || root.dataset.composerModelIcon || root.dataset.composerProviderCompact)),
+    everCompact: !!window.__hostEverCompact,
+    tier: chip.classList.contains('zu-speed-tight') ? 'tight' : chip.classList.contains('zu-speed-mid') ? 'mid' : 'wide',
+    label: lab.textContent, value: val.textContent, unit: unit ? unit.textContent : null, unitShown: shown(unit), labelShown: shown(lab),
+    slack: items.length ? r2((box.right - parseFloat(cs.paddingRight)) - items[items.length - 1].getBoundingClientRect().right) : null,
+    labelClipped: shown(lab) && lab.scrollWidth > lab.clientWidth + 0.5,
+    edge: r2((shown(unit) ? unit : val).getBoundingClientRect().right), labelLeft: shown(lab) ? r2(lab.getBoundingClientRect().left) : null,
+    sameNode: chip === window.__tsbRef, aria: chip.getAttribute('aria-label'), icon: !!chip.querySelector('.ico'), focusable: chip.tabIndex };
+}
+/* 逐档 × 逐状态面量精简 chip：数值不越界、标签不被裁。例外只有中等档装不下的三个长标签面（两个「×12 + 四位数」、
+ * 长技能名）——标签省略号是设计内的降级（完整文字在 tooltip 与 aria-label）。量完还原。 */
+function tsbFaceProbe(faces) {
+  const chip = document.querySelector('#pane-a .zu-tsb'), save = { html: chip.innerHTML, cls: chip.className }, bad = [];
+  const clipOk = { mid: ['代理×12 1286.5', 'en Agt×12 1286.5', '技能 代码审查与修复 12s'] };
+  const r2 = x => Math.round(x * 100) / 100;
+  try {
+    for (const [tier, cls] of [['wide', ''], ['mid', 'zu-speed-mid'], ['tight', 'zu-speed-tight']]) {
+      chip.className = 'zu-tsb' + (cls ? ' ' + cls : '');
+      for (const [key, html] of Object.entries(faces)) {
+        chip.innerHTML = '<span class="zu-live">' + html + '</span>';
+        const cs = getComputedStyle(chip), box = chip.getBoundingClientRect(), live = chip.querySelector('.zu-live'), lab = chip.querySelector('.zu-sp-label');
+        const shown = e => getComputedStyle(e).display !== 'none';
+        const items = [...live.children].filter(shown);
+        const slack = r2((box.right - parseFloat(cs.paddingRight)) - items[items.length - 1].getBoundingClientRect().right);
+        const clipped = shown(lab) && lab.scrollWidth > lab.clientWidth + 0.5;
+        if (slack < -0.05 || (clipped && !(clipOk[tier] || []).includes(key))) bad.push([tier, key, slack, clipped]);
+      }
+    }
+  } finally { chip.className = save.cls; chip.innerHTML = save.html; }
+  return bad;
+}
+
+test('speed slot in the compact toolbar chip through the live data chain (isolated fixture)', { skip: skipReason, timeout: 180000 }, async t => {
+  const b = await startBrowser(t);
+  const hostToolbar = '<div class="group/toolbar htb"><div class="hla" data-composer-leading-actions><div class="hlc" data-composer-leading-content>' +
+    '<button class="hplan" data-composer-collapse-priority="2">Plan</button><button class="hcua" data-testid="v4-composer-cua-entry">CUA</button></div></div>' +
+    '<div class="hta" data-composer-trailing-actions><span><button data-testid="chat-context-usage-trigger" aria-label="上下文总量 200,000"><svg width="16" height="16"><circle></circle><circle></circle></svg></button></span></div></div>';
+  const hostCss = '.htb{display:flex;align-items:center;gap:12px}.hla{display:flex;flex:1 1 0%;min-width:0;align-items:center}' +
+    '.hlc{display:flex;flex:0 0 auto;align-items:center;gap:4px}.hplan{width:110px;height:24px}.hplan.wide{width:150px}.hplan[data-composer-compact]{width:36px}' +
+    '.hcua{width:90px;height:24px}.hta{margin-left:auto;display:flex;flex:0 0 auto;align-items:center;justify-content:flex-end;gap:6px}';
+  const gitState = { ok: true, ts: 0, branch: 'main', ins: 3, del: 1, staged: 0, unstaged: 2, untracked: 0, conflicts: 0, changed: 2,
+    repoPath: '/repo/a', op: null, upstream: null, ahead: 1, behind: 0, detached: false, noCommits: false };
+  const noQuota = Object.assign({}, payload, { quota: null });
+  const H = (state, extra) => `P.header(${JSON.stringify(state)}, ${JSON.stringify(extra || {})})`;
+  const T = text => `P.text(${JSON.stringify(text)})`;
+  const TOOL = (status, extraSrc) => `P.tool(${JSON.stringify(status)}, ${extraSrc})`;
+  const push = (seq, rows) => b.evaluate(`(() => { const P = window.__liveProbe; P.store.set(P.snap(${seq}, [${rows.join(', ')}])); return true; })()`);
+  const geo = async () => {
+    await b.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    return b.evaluate(`(${tsbGeo.toString()})()`);
+  };
+  const face = label => b.waitFor(`(() => {
+    const c = document.querySelector('#pane-a .zu-tsb'); const l = c && c.querySelector('.zu-sp-label'), v = c && c.querySelector('.zu-sp-val');
+    return !!l && !!v && l.textContent === ${JSON.stringify(label)}${label ? '' : " && !/≈/.test(v.textContent)"};
+  })()`, `speed face "${label}" did not appear`, 600);
+  /* 装载：精简主题 + 宿主同构工具行 + 实时数据链（桥接口 → turn-stats.js → overlay.js），分栏先开到 900px。等全部
+   * chip 挂齐、宿主与 Git chip 的档位稳定后，targetRoom 给定时按实测空位换算分栏宽度（空位 = 前导区 − 同区其它内容，
+   * 随分栏宽度线性变化）。最后把速率 chip 摘掉让它在最终布局里重新挂载——挂载当拍的档位判定才是被测对象。 */
+  const settle = async (ms = 450) => {
+    await b.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    await delay(ms);
+  };
+  const setup = async targetRoom => {
+    await b.call('Emulation.setDeviceMetricsOverride', { width: 1200, height: 900, deviceScaleFactor: 1, mobile: false });
+    const token = Math.random().toString(36).slice(2);
+    await b.call('Page.navigate', { url: b.url + '?case=' + token });
+    await b.waitFor(`document.readyState === "complete" && location.search === '?case=${token}'`);
+    await b.evaluate(`(() => {
+      document.body.innerHTML = ${JSON.stringify(fixtureHtml)};
+      localStorage.clear(); localStorage.setItem('zusage3.theme', 'compact');
+      const pane = document.getElementById('pane-a'); document.getElementById('pane-b').remove();
+      pane.style.width = '900px';
+      pane.querySelector('[class*="group/toolbar"]').outerHTML = ${JSON.stringify(hostToolbar)};
+      const attrs = { 'data-zusage-scope-version': '1', 'data-zusage-pane-id': 'a', 'data-zusage-workspace-path': '/repo/a', 'data-zusage-workspace-identity': '', 'data-zusage-remote-session-id': '' };
+      for (const [k, v] of Object.entries(attrs)) pane.setAttribute(k, v);
+      const style = document.createElement('style'); style.textContent = ${JSON.stringify(hostCss)}; document.head.appendChild(style);
+      window.__hostEverCompact = false;
+      const root = pane.querySelector('.htb');
+      const fit = () => {   // 宿主第一级压缩：从完整布局量（Plan 的完整宽度默认 110，用例可用 data-full 改）、状态粘滞
+        const lead = root.querySelector('[data-composer-leading-actions]'), content = root.querySelector('[data-composer-leading-content]'), plan = root.querySelector('.hplan');
+        if (content.getBoundingClientRect().width - plan.getBoundingClientRect().width + (Number(plan.dataset.full) || 110) > lead.getBoundingClientRect().width + 0.01) {
+          plan.dataset.composerCompact = 'true'; window.__hostEverCompact = true;
+        } else delete plan.dataset.composerCompact;
+      };
+      const ro = new ResizeObserver(fit);
+      ro.observe(root);
+      root.querySelectorAll('[data-composer-leading-actions],[data-composer-leading-content],[data-composer-trailing-actions]').forEach(e => ro.observe(e));
+      new MutationObserver(fit).observe(root.querySelector('[data-composer-leading-content]'), { childList: true, subtree: true, characterData: true });
+      fit();
+    })()`);
+    await b.evaluate(`(${liveProbeBoot.toString()})()`);
+    await b.evaluate(turnStats);
+    await b.evaluate(overlay);
+    await b.waitFor(`document.querySelectorAll('.zusage-root').length === 1`, 'bar did not mount');
+    await b.evaluate(`window.__zusageUpdate(${JSON.stringify(noQuota)})`);   // 不带额度数据：额度 chip 不挂载，尾随区定宽
+    await b.waitFor(`document.querySelectorAll('.zu-tsb').length === 1`, 'rate chip did not mount');
+    await b.evaluate(`window.__zusageGitState('/repo/a', Object.assign(${JSON.stringify(gitState)}, { ts: Date.now() }))`);   // ts 过期则不挂载
+    await b.waitFor(`!!document.querySelector('#pane-a .zu-git')`, 'git chip did not mount beside the rate chip');
+    await settle();
+    let paneWidth = 900;
+    if (targetRoom !== undefined) {
+      const r0 = (await geo()).room;
+      paneWidth = Math.round(900 - (r0 - targetRoom));
+      await b.evaluate(`document.getElementById('pane-a').style.width = '${paneWidth}px'`);
+      /* 收窄的过渡期：宿主先压缩、chip 每 250ms 让一档、最后宿主再展开，整个过渡在半秒内。等三方稳定
+       * （连续 6 次读数相同，约 1.8 秒）再重挂 chip。 */
+      let last = '', same = 0;
+      for (let i = 0; i < 50 && same < 6; i++) {
+        await delay(300);
+        const s = await geo(), key = `${s.tier}|${s.hostCompact}|${Math.round(s.room)}`;
+        same = key === last ? same + 1 : 0; last = key;
+      }
+      assert.equal(same, 6, `layout did not settle at target room ${targetRoom} (${last})`);
+    }
+    await b.evaluate(`(() => { window.__hostEverCompact = false; document.querySelector('#pane-a .zu-tsb').remove(); return true; })()`);
+    await b.waitFor(`(() => { const c = document.querySelector('#pane-a .zu-tsb'); return !!c && c.nextElementSibling && c.nextElementSibling.classList.contains('zu-git'); })()`, 'rate chip did not remount immediately left of the git chip');
+    await b.evaluate(`(() => { window.__tsbRef = document.querySelector('#pane-a .zu-tsb'); return true; })()`);
+    return paneWidth;
+  };
+  const bind = () => b.evaluate(`(() => { const P = window.__liveProbe; P.store = P.mkStore(P.snap(1, [P.header('running'), P.text('abc')]));
+    P.sessions.push({ key: '__base__ /repo/a', topic: 'conversation/sid_a', store: P.store }); return true; })()`);
+  /* 思考 → 生成（数值换三次）→ 读取 → 生成 → 完成，返回各态上屏后的几何 */
+  async function runChain() {
+    await bind();
+    await face('思考');
+    const g = { think: await geo() };
+    await delay(500);
+    await push(2, [H('running'), T('abcdef')]);
+    await face('生成');
+    g.estimate = await geo();
+    g.estimateTicks = [];
+    for (const [i, text] of ['abcdefghi', 'abcdefghijkl', 'abcdefghijklmnopq'].entries()) {
+      await delay(300);
+      await push(3 + i, [H('running'), T(text)]);
+      await delay(130);
+      g.estimateTicks.push(await geo());
+    }
+    await delay(500);
+    await push(6, [H('running'), T('abcdefghijklmnopq'), TOOL('running', '{ startedAt: Date.now() }')]);
+    await face('读取');
+    g.tool = await geo();
+    await delay(500);
+    await push(7, [H('running'), T('abcdefghijklmnopqrstuvwx'), TOOL('completed', '{ startedAt: Date.now() - 1500 }')]);
+    await face('生成');
+    g.estimate2 = await geo();
+    await push(8, [H('completedSuccess', { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), T('abcdefghijklmnopqrstuvwx')]);
+    await face('');
+    g.final = await geo();
+    return g;
+  }
+  function assertStableSlot(g, label, tier) {
+    const all = [g.think, g.estimate, ...g.estimateTicks, g.tool, g.estimate2, g.final];
+    assert.ok(all.every(Boolean), `${label}: rate chip present in every state`);
+    assert.deepEqual([g.think.label, g.estimate.label, g.tool.label, g.final.label], ['思考', '生成', '读取', ''], `${label}: labels`);
+    assert.match(g.estimate.value, /^≈\d/, `${label}: estimate shows ≈ value`);
+    assert.doesNotMatch(g.final.value, /≈/, `${label}: final shows the real speed without ≈`);
+    for (const snap of all) {
+      assert.equal(snap.tier, tier, `${label}: tier ${tier} throughout (${snap.label}|${snap.value})`);
+      assert.ok(snap.sameNode, `${label}: chip node survives every state (tooltip anchor not recreated)`);
+      assert.equal(snap.icon, false, `${label}: the compact chip carries no icon — state is conveyed by the label text and aria-label`);
+      assert.equal(snap.focusable, 0, `${label}: chip is keyboard reachable (tooltip on focus)`);
+      assert.match(snap.aria || '', /^生成速度 .+/, `${label}: full aria-label`);
+      assert.ok(snap.slack >= -0.05, `${label}: value stays inside the chip (${snap.label}|${snap.value} slack ${snap.slack})`);
+      assert.equal(snap.labelClipped, false, `${label}: short label not clipped (${snap.label})`);
+      assert.equal(snap.unitShown, tier === 'wide' && !!snap.unit, `${label}: unit shown only in the wide tier, and only for faces that have one`);
+      assert.equal(snap.labelShown, tier !== 'tight', `${label}: label hidden only in the tight tier`);
+    }
+    for (const key of ['chip', 'cua', 'git', 'plan']) {
+      for (const snap of all) assert.deepEqual(snap[key], g.think[key], `${label}: ${key} box unchanged across ${snap.label}|${snap.value}`);
+    }
+    for (const snap of all) {
+      assert.equal(snap.edge, g.think.edge, `${label}: value right edge fixed (${snap.label}|${snap.value})`);
+      if (snap.labelLeft !== null) assert.equal(snap.labelLeft, g.think.labelLeft, `${label}: label left edge fixed (${snap.label})`);
+    }
+    for (const snap of all) assert.equal(snap.hostCompact, g.think.hostCompact, `${label}: host compaction state unchanged across the chain`);
+  }
+
+  /* 宽裕 161.2 / 中等 126.1 / 紧张 85.8px（chip 字号 13px）：空位决定档位；挂载当拍就选对档，chip 先让位，宿主按钮不被压缩 */
+  for (const [name, room, tier] of [['wide tier', 275, 'wide'], ['mid tier', 140, 'mid'], ['tight tier', 100, 'tight'], ['narrower than the tight tier', 20, 'tight']]) {
+    await t.test(`${name}: one chip width through 思考 → 生成 → 读取 → 生成 → 完成; neighbours and host controls stay put`, async () => {
+      await setup(room);
+      const g0 = await geo();
+      assert.equal(g0.tier, tier, `${name}: tier chosen at mount (room ${g0.room}px)`);
+      const g = await runChain();
+      assertStableSlot(g, name, tier);
+      if (tier !== 'tight' || room >= 85.8) {
+        assert.equal(g0.hostCompact, false, `${name}: host controls not compacted at mount`);
+        assert.equal(g.final.everCompact, false, `${name}: host compaction never observed from remount to the end`);
+      }
+    });
+  }
+
+  await t.test('control: with the chip pinned at the wide width the host does compact — so "never compacted" above is the chip yielding', async () => {
+    await setup(140);
+    assert.equal((await geo()).hostCompact, false);
+    await b.evaluate(`(() => { const s = document.createElement('style'); s.id = 'pin-wide'; s.textContent = '.zu-tsb{width:12.4em!important}'; document.head.appendChild(s); return true; })()`);
+    await settle();
+    assert.equal((await geo()).hostCompact, true, 'host compacts its own controls when the chip does not yield');
+    await b.evaluate(`document.getElementById('pin-wide').remove()`);
+    await settle();
+    assert.equal((await geo()).hostCompact, false, 'host expands again once the chip yields');
+  });
+
+  await t.test('widening the pane raises the tier back within a few seconds and then settles', async () => {
+    const pane = await setup(100);
+    assert.equal((await geo()).tier, 'tight');
+    await b.evaluate(`document.getElementById('pane-a').style.width = '${pane + 300}px'`);
+    await b.waitFor(`(() => { const c = document.querySelector('#pane-a .zu-tsb'); return !!c && !c.classList.contains('zu-speed-mid') && !c.classList.contains('zu-speed-tight'); })()`, 'tier did not rise back to wide', 200);
+    const seen = [];
+    for (let i = 0; i < 6; i++) { const s = await geo(); seen.push([s.tier, s.hostCompact]); await delay(500); }
+    assert.ok(seen.every(([x, c]) => x === 'wide' && !c), `stays wide with host controls expanded (${JSON.stringify(seen)})`);
+  });
+
+  await t.test('repeated layout changes (pane width, host button width) always settle: no flip-flop between host, git chip and rate chip', async () => {
+    const pane = await setup(275);
+    const steps = [[pane - 140, false], [pane - 190, false], [pane - 250, true], [pane - 320, true], [pane - 200, true], [pane - 90, false], [pane, false]];
+    for (const [width, wide] of steps) {
+      await b.evaluate(`(() => { document.getElementById('pane-a').style.width = '${width}px';
+        const p = document.querySelector('#pane-a .hplan'); p.classList.toggle('wide', ${wide}); if (${wide}) p.dataset.full = '150'; else delete p.dataset.full; return true; })()`);
+      const seen = [];
+      for (let i = 0; i < 12; i++) { await delay(250); const g = await geo(); seen.push([g.tier, g.hostCompact, Math.round(g.git[2]), Math.round(g.room)]); }
+      const tail = JSON.stringify(seen.slice(-6));
+      assert.equal(new Set(seen.slice(-6).map(x => JSON.stringify(x))).size, 1, `width ${width}, host button ${wide ? 'wide' : 'normal'}: settled for the last 1.5s (${JSON.stringify(seen)})`);
+      const [tier, compact, , room] = seen[seen.length - 1];
+      if (!compact) assert.ok(room + 0.5 >= [161.2, 126.1, 85.8][['wide', 'mid', 'tight'].indexOf(tier)], `${tail}: chip fits the room it settled in`);
+      else assert.equal(tier, 'tight', `${tail}: the host only stays compacted once the chip cannot yield more`);
+    }
+  });
+
+  await t.test('host compaction not caused by the chip: chip yields one tier, host expands again, chip does not climb back (no tug-of-war)', async () => {
+    await setup(170);   // 宽裕档 161.2 装得下
+    assert.equal((await geo()).tier, 'wide');
+    /* 钉住 Git chip 的宽度（否则它也按自己的档位收缩，三方一起动就看不清「宿主 ↔ 速率 chip」这一条链） */
+    await b.evaluate(`(() => {
+      const s = document.createElement('style'); s.id = 'pin-git'; s.textContent = '#pane-a .zu-git{width:137px!important;min-width:137px!important}'; document.head.appendChild(s);
+      const p = document.querySelector('#pane-a .hplan'); p.dataset.full = '150'; p.classList.add('wide');   // 宿主自己的按钮变宽 40px：空位 130，宽裕档放不下
+      return true;
+    })()`);
+    await b.waitFor(`!!document.querySelector('#pane-a .hplan[data-composer-compact]')`, 'host did not compact its own control', 80);
+    await b.waitFor(`document.querySelector('#pane-a .zu-tsb').classList.contains('zu-speed-mid')`, 'chip did not yield to the mid tier', 80);
+    await b.waitFor(`!document.querySelector('#pane-a .hplan[data-composer-compact]')`, 'host controls did not expand again after the chip yielded', 80);
+    const seen = [];
+    for (let i = 0; i < 10; i++) { await delay(500); const s = await geo(); seen.push([s.tier, s.hostCompact]); }
+    assert.ok(seen.every(([x, c]) => x === 'mid' && !c), `stays at mid with host controls expanded for 5s, past the 2s dwell (${JSON.stringify(seen)})`);
+  });
+
+  await t.test('the live width probe (tests/speed-slot-live-probe.js) measures the three compact chip tiers here and restores the chip', async () => {
+    await setup(275);
+    const probeSrc = fs.readFileSync(path.join(__dirname, 'speed-slot-live-probe.js'), 'utf8');
+    const before = await b.evaluate(`(() => { const c = document.querySelector('#pane-a .zu-tsb'); return [c.className, c.innerHTML]; })()`);
+    const out = await b.evaluate(probeSrc);
+    const rows = Object.entries(out.tiers).filter(([name]) => name.includes('精简'));
+    assert.equal(rows.length, 9, `3 interface font sizes × 3 compact tiers (${Object.keys(out.tiers).join(', ')})`);
+    for (const [name, r] of rows) {
+      assert.equal(r.speedW.length, 1, `${name}: one chip width (${r.speedW})`);
+      assert.ok(r.turnL.length <= 1, `${name}: neighbour stays put (${r.turnL})`);
+      assert.deepEqual(r.overflow, [], `${name}: no value crosses the chip edge`);
+    }
+    for (const [tier, [lo, hi]] of Object.entries({ 宽裕: [160, 180], 中等: [112, 132], 紧张: [72, 88] })) {
+      const w = out.tiers['14px 精简 ' + tier].speedW[0];
+      assert.ok(w >= lo && w <= hi, `14px 精简 ${tier}: ${w}px outside ${lo}–${hi}`);
+    }
+    assert.deepEqual(await b.evaluate(`(() => { const c = document.querySelector('#pane-a .zu-tsb'); return [c.className, c.innerHTML]; })()`), before, 'chip restored after the probe');
+  });
+
+  await t.test('every face fits its tier box under six font stacks; only three long-label faces clip in the mid tier', async () => {
+    await setup(275);
+    const F = (label, val, unit) => `<span class="zu-sp-label">${label}</span><span class="zu-sp-val">${val}</span>${unit ? `<span class="zu-sp-unit dim">${unit}</span>` : ''}`;
+    const faces = {
+      '完成 92': F('', '92', 't/s'), '完成 250.0': F('', '250.0', 't/s'), '回退 历史 201.4': F('历史', '201.4', 't/s'),
+      '估算 128.6': F('生成', '≈128.6', 't/s'), '估算 9999.9': F('生成', '≈9999.9', 't/s'), '估算 12.9k': F('生成', '≈12.9k', 't/s'),
+      '思考 0.5s': F('思考', '0.5s'), '思考 23:59:59': F('思考', '23:59:59'), '思考 1:05:00': F('思考', '1:05:00'), '思考 1天3时': F('思考', '1天3时'),
+      '读取 01s': F('读取', '01s'), '查阅 03s': F('查阅', '03s'), '终端 12s': F('终端', '12s'), '技能 代码审查与修复 12s': F('代码审查与修复', '12s'),
+      '代理 1286.5': F('代理', '≈1286.5', 't/s'), '代理×3 28.8': F('代理×3', '≈28.8', 't/s'), '代理×12 1286.5': F('代理×12', '≈1286.5', 't/s'),
+      'en Hist 201.4': F('Hist', '201.4', 't/s'), 'en Gen 9999.9': F('Gen', '≈9999.9', 't/s'), 'en Think 23:59:59': F('Think', '23:59:59'),
+      'en Agt×12 1286.5': F('Agt×12', '≈1286.5', 't/s'), 'en Scan 03s': F('Scan', '03s'),
+    };
+    const stacks = ['', '"Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif', 'Verdana, Tahoma, sans-serif',
+      '"PingFang SC", "Hiragino Sans GB", "Heiti SC", sans-serif', '"Songti SC", "STSong", serif', 'Menlo, Consolas, monospace'];
+    for (const stack of stacks) {
+      await b.evaluate(stack ? `document.documentElement.style.setProperty('--font-sans', ${JSON.stringify(stack)})` : `document.documentElement.style.removeProperty('--font-sans')`);
+      const bad = await b.evaluate(`(${tsbFaceProbe.toString()})(${JSON.stringify(faces)})`);
+      assert.deepEqual(bad, [], `${stack.slice(0, 28) || 'default stack'}: clipped or overflowing faces`);
+    }
   });
 });

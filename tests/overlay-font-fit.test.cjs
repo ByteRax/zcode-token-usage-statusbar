@@ -61,36 +61,40 @@ test('tooltip surfaces (exc card/rateTip inline fallback and stat/project/sub/sp
   }
 });
 
-test('speed number/unit spacing: gap:5px mechanism + zero-space faces (v326)', () => {
-  // v326 定稿：数字与 t/s 间距唯一机制 = .zu-live inline-flex+gap:5px+baseline；
-  // 完成态（chipFace）与动态态（zuLiveFaceHtml）都是「数字+dim」两 item、无空格字符。
-  // word-spacing 全链移除（对无空格完成态、单文本动态态均无视觉效果），不得回加。
+test('speed number/unit spacing: gap:5px mechanism + zero-space faces (v326 → 稳定占位三 item)', () => {
+  // v326 定稿：数字与 t/s 间距唯一机制 = gap（.zu-live inline-flex+gap:5px+baseline）。速度格稳定
+  // 占位后（specs/speed-chip-stable-slot.md）包装层在速度格内改 flex 容器，间距仍只由 gap 提供：
+  // 数值与单位是相邻两个 item、无空格字符。word-spacing 全链移除（对无空格结构无视觉效果），不得回加。
   const liveAt = source.indexOf('.zu-live{');
   assert.ok(liveAt >= 0, '.zu-live missing');
   const liveBody = source.slice(liveAt, source.indexOf('}', liveAt));
     assert.ok(liveBody.includes('display:inline-flex') && liveBody.includes('gap:5px') && liveBody.includes('align-items:baseline'),
     '.zu-live 须 inline-flex+gap:5px+baseline（v326 数字与 t/s 间距唯一机制）');
   assert.ok(!liveBody.includes('word-spacing'), '.zu-live 不得回加 word-spacing（完成态无空格、动态态单文本均无视觉效果，v326 已除）');
-  assert.ok(source.includes('+ zuLiveFaceHtml(speedView.text)'), '动态态整条渲染须走 zuLiveFaceHtml 拆「数字+dim」两 item（gap 需两 item）');
-  assert.ok(source.includes('zuLiveFaceHtml(view.text)'), '原地更新须写拆分后结构（textContent 会转义成纯文本）');
-  const at = source.indexOf('var chipFace = chipTps > 0');
-  assert.ok(at >= 0, 'chipFace missing');
-  const line = source.slice(at, source.indexOf(String.fromCharCode(10), at));
-  assert.ok(line.includes(") + '<span class=\"dim\">t/s</span>'"), 'chipFace 数字与单位间必须零间隔（v324 用户定稿：不得回加空格字符）');
+  assert.ok(source.includes('zuSpeedFaceHtml(speedView) + "</span>"'), '动态态整条渲染须走 zuSpeedFaceHtml 的「数值+单位」相邻 item 结构（gap 需相邻 item）');
+  assert.ok(source.includes('var faceHtml = zuSpeedFaceHtml(view);'), '原地更新须写同一结构（textContent 会转义成纯文本）');
+  assert.ok(source.includes('zuSpeedFaceHtml({ kind: "real", db: true, speedValue: chipTps > 0 ? chipTps : null })'), 'DB 回退态同走展示模型（标签「历史」+数值+单位）');
+  assert.ok(!source.includes('zuLiveFaceHtml('), '旧 zuLiveFaceHtml 不得残留（条面/原地/精简 chip 三处消费点均已迁移）');
 });
 
-test('zuLiveFaceHtml behaviour lock: splits exactly the " t/s" suffix into number+dim (v326)', () => {
+test('zuSpeedFaceHtml behaviour lock: 标签/数值/单位三 item、数值与单位零间隔、文案转义', () => {
   // 行为级锁（字符串存在性断言抓不住「函数被改成 no-op」——变异实验实证）：
-  // 从产物提取真函数体在隔离函数里执行，锁定拆分输出与转义边界
-  const fnSrc = source.slice(source.indexOf('function zuLiveFaceHtml(text)'),
-    source.indexOf('ttEsc(text);\n    }', source.indexOf('function zuLiveFaceHtml(text)')) + 'ttEsc(text);\n    }'.length);
-  assert.ok(fnSrc.includes('return typeof text === "string"'), '提取到的是完整函数体');
+  // 从产物提取真函数体在隔离函数里执行，锁定结构输出与转义边界
+  const start = source.indexOf('function zuSpeedFaceHtml(view) {');
+  assert.ok(start >= 0, 'zuSpeedFaceHtml missing');
+  const endMarker = '(f.unit ? \'<span class="zu-sp-unit dim">\' + ttEsc(f.unit) + \'</span>\' : "");\n    }';
+  const fnSrc = source.slice(start, source.indexOf(endMarker, start) + endMarker.length);
+  assert.ok(fnSrc.includes('var f = zuSpeedFace(view);'), '提取到的是完整函数体');
   const ttEsc = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const f = new Function('ttEsc', fnSrc + ';\nreturn zuLiveFaceHtml;')(ttEsc);
-  assert.equal(f('160.6 t/s'), '160.6<span class="dim">t/s</span>', 't/s 结尾拆两 item');
-  assert.equal(f('思考中…59秒'), '思考中…59秒', '状态词态不拆');
-  assert.equal(f('—'), '—', '无数据态不拆');
-  assert.equal(f('a<b&c t/s'), 'a&lt;b&amp;c<span class="dim">t/s</span>', '数字部分转义保留');
+  const zuSpeedFace = (view) => view;   // 展示模型已给出 {label,value,unit}
+  const f = new Function('ttEsc', 'zuSpeedFace', fnSrc + ';\nreturn zuSpeedFaceHtml;')(ttEsc, zuSpeedFace);
+  assert.equal(f({ label: '', value: '160.6', unit: 't/s' }),
+    '<span class="zu-sp-label"></span><span class="zu-sp-val">160.6</span><span class="zu-sp-unit dim">t/s</span>', '数值与单位相邻两 item、零空格');
+  assert.equal(f({ label: '查阅', value: '03s', unit: '' }),
+    '<span class="zu-sp-label">查阅</span><span class="zu-sp-val">03s</span>', '状态词态：标签+数值、无单位节点');
+  assert.equal(f(null), '', '无值可显返回空串');
+  assert.equal(f({ label: 'a<b&c', value: '1', unit: '' }),
+    '<span class="zu-sp-label">a&lt;b&amp;c</span><span class="zu-sp-val">1</span>', '文案转义');
 });
 
 test('speed cell must stay exempt from the segment flex rule (flex strips trailing spaces)', () => {

@@ -17,17 +17,17 @@
 
 ## 自动折叠（仅 default 主题）
 
-- 判定基于真实布局测量：`scrollWidth > clientWidth + 1`；不做字符数估算。折叠是**第四层**降级（v352 与窄宽收缩线串联）：完整条面 → `zu-tight` 缩字号 → `zu-narrow` 藏次要（窄宽状态机，250ms 节流探针+双向迟滞）→ **仅 shrink===2 仍溢出时折叠接管**（syncBarOverflow 入口门槛；窄宽档位切换置 foldDirty 联动重算）→ 全折仍装不下回横滚 + `zu-clip`/`zu-clip-left` 渐隐（窄宽块维护）。
-- 折叠序=`zuBarFoldOrder` 纯函数：低优先先折、同级按显示序靠右先折；`system` 与 `speed` rank=-1 排为**最后候选**——普通候选收尽仍溢出时照样折叠，并非豁免。`speed` 的「固定」徽标指有有效速度数据时优先保留（无数据仍不渲染，绝不伪造 0 t/s），不是常显占位。
-- 重算门控：宽度（bar.clientWidth）+ 字号/字族（getComputedStyle fontSize+fontFamily）+ 优先级签名 + `foldDirty`（重建/主题切换/优先级变更/窄宽档位切换/排序变更置位）。每帧另测一次溢出差 `ov = scrollWidth − clientWidth` 做双向触发：展开态 `ov>1` 触发折叠重算；折叠态 `ov ≤ 1−FOLD_HYS`（FOLD_HYS=24px）才触发回展尝试——迟滞带防数值刷新在阈值附近整格反复翻转。单向溢出探针是错的（「已折叠且刚好装下」直接变宽不经过溢出态，折叠集会冻结）。
+- 判定基于真实布局测量：溢出=`zuBarContentWidth() > clientWidth + 1`（可见子项 rect 宽度和加 `.zu-main` 的 1px gap；溢出态与 `scrollWidth` 等价）；不做字符数估算。折叠是**第四层**降级（v352 与窄宽收缩线串联）：完整条面 → `zu-tight` 缩字号 → `zu-narrow` 藏次要（窄宽状态机，250ms 节流探针+双向迟滞）→ **仅 shrink===2 仍溢出时折叠接管**（syncBarOverflow 入口门槛；窄宽档位切换置 foldDirty 联动重算）→ 全折仍装不下回横滚 + `zu-clip`/`zu-clip-left` 渐隐（窄宽块维护）。
+- 折叠序=`zuBarFoldOrder` 纯函数：低优先先折、同级按显示序靠右先折；`system` 与 `speed` rank=-1 排为**最后候选**——普通候选收尽仍溢出时照样折叠，并非豁免。`speed` 的「固定」徽标指有有效速度数据时优先保留（无数据仍不渲染，绝不伪造 0 t/s），不是常显占位。轮到 `speed` 候选时先降「极窄」（`data-zu-speed-min="1"`，仅图标）再判溢出，装得下就停在这一步、仍溢出才折叠；回展先试解除极窄。速度格固定占位与极窄档细则见 [specs/speed-chip-stable-slot.md](speed-chip-stable-slot.md)。
+- 重算门控：宽度（bar.clientWidth）+ 字号/字族（getComputedStyle fontSize+fontFamily）+ 优先级签名 + `foldDirty`（重建/主题切换/优先级变更/窄宽档位切换/排序变更置位）。每帧另测一次溢出差 `ov` 做双向触发：展开态 `ov = scrollWidth − clientWidth`，`ov>1` 触发折叠重算；**已折叠且未溢出**时 `ov` 改按内容宽计（`zuBarContentWidth() − clientWidth`，可为负），`ov ≤ 1−FOLD_HYS`（FOLD_HYS=24px）才触发回展尝试——迟滞带防数值刷新在阈值附近整格反复翻转。**富余不能读 `scrollWidth`**：它以 `clientWidth` 为下限，非溢出态恒等于 `clientWidth`（宿主实测内容 151px 装进 300px 容器 `scrollWidth=300`），旧判据 `scrollWidth ≤ clientWidth + 1 − FOLD_HYS` 因此从未成立——折叠循环每轮多折一格、回展触发器是死分支。重算循环与尾部触发器基线必须同用内容宽，否则基线恒假、逐帧恒真而每帧重算。单向溢出探针是错的（「已折叠且刚好装下」直接变宽不经过溢出态，折叠集会冻结）。
 - 折叠格 `data-zu-folded="1"` → `display:none`（CSS 属性选择器 + !important，React 不清理 data-*）；分隔线同步隐藏（首可见格前与相邻可见格间保留）。全折仍超宽由 `.zu-clip` 右缘渐隐兜底；「···」按钮与齿轮在 `.zu-main` 之外永不折叠。
 - 居右对齐（`zusage3.barJust=end`）下首格被折叠时 `:first-child` 的 auto margin 失效，重算把 `data-zu-endlead` 挪到第一个可见格接管右聚拢。
-- 折叠只影响显示：不写 `state.show`/localStorage；折叠集变化时关闭菜单并收起锚定在被折格/「···」按钮上的 tooltip（含折叠集清空后的零矩形锚）。窄宽状态机（shrink 0/1/2）与折叠相互独立：探针量的是脱离布局副本的**未折叠**自然宽——克隆后先剥 `data-zu-folded` 再量（v357 固化：否则折叠格在探针里命中 display:none 把自然宽量缩，shrink 档据此误判「完整宽装得下」，与折叠线互相拉扯约 2Hz 震荡闪现）；变宽时窄宽先降档，shrink 离开 2 即清折叠，宽了再回 2 时折叠按迟滞重新展开。
+- 折叠只影响显示：不写 `state.show`/localStorage；折叠集变化时关闭菜单并收起锚定在被折格/「···」按钮上的 tooltip（含折叠集清空后的零矩形锚）。窄宽状态机（shrink 0/1/2）与折叠相互独立：探针量的是脱离布局副本的**未折叠**自然宽——克隆后先剥 `data-zu-folded` 再量（v357 固化：否则折叠格在探针里命中 display:none 把自然宽量缩，shrink 档据此误判「完整宽装得下」，与折叠线互相拉扯约 2Hz 震荡闪现）；同理同时剥速度格的 `data-zu-speed-min`（同一类正反馈震荡环）。测量签名剔除速度格面与全称属性（其外宽固定，文字不影响自然宽）；变宽时窄宽先降档，shrink 离开 2 即清折叠（含极窄档），宽了再回 2 时折叠按迟滞重新展开。
 
 ## 「···」菜单（body 级 `.zu-more-panel`，实例级闭包）
 
 - 仅实际存在折叠项时显示（`data-zu-visible`），计数徽标=折叠格数；`aria-haspopup="menu"` + `aria-controls`。
-- 菜单项=克隆格图标 + `ZU_BAR_TITLES` 格名 + 实时值（活格 textContent）。打开期间每帧原地同步值与 `__tip`（textContent/属性写，不 innerHTML、不抢焦点）；点击时从活格现取 `__tip`，不用打开瞬间快照。
+- 菜单项=克隆格图标 + `ZU_BAR_TITLES` 格名 + 实时值（活格 `data-zu-full`，无该属性回退 `textContent`——速度格面是「标签+数值」精简文案，菜单显示完整状态词）。打开期间每帧原地同步值与 `__tip`（textContent/属性写，不 innerHTML、不抢焦点）；点击时从活格现取 `__tip`，不用打开瞬间快照。
 - 点击行为：sub 项开子代理统一浮层（pinned；再点 ⋯ 关闭并归还焦点，对齐 `.zu-sub` re-click 契约）；其余项关闭菜单、焦点归还 ⋯ 按钮、弹该项目原有完整 tooltip（锚定 ⋯ 按钮）。
 - 键盘：打开即焦点入首项；菜单内 ↑↓/Home/End 循环；Escape 在菜单内与焦点在 ⋯ 按钮上两条路径都关闭；外点（document pointerdown 捕获）关闭。tipOutsideDown 白名单与 boot 旧代清理串、`-webkit-app-region:no-drag` 联合规则均含 `.zu-more-panel`。
 - 生命周期：`hideBar`（条隐藏/宿主模态/分栏切换）与 dispose 摘除；菜单开着时 mousemove 不另开条面 tooltip。
