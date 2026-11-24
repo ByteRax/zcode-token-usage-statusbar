@@ -962,11 +962,17 @@
     for (var sid in richTextWants) {
       var w = richTextWants[sid];
       if (richTextCache[w.key]) continue;
-      if (instances.indexOf(w.owner) < 0) { zuBlockOnce(w.owner.pid + "|" + w.tid, "noInst"); continue; }
+      /* v458：子代理窗格观察器 owner 不在 instances 里，zuSubDetHasOwner（03 分片，函数声明
+       * 提升可跨片调用）放行；切片测试只装载 02 无 03 时 typeof 守卫走原行为。 */
+      var subOwner = typeof zuSubDetHasOwner === "function" && zuSubDetHasOwner(w.owner);
+      if (instances.indexOf(w.owner) < 0 && !subOwner) { zuBlockOnce(w.owner.pid + "|" + w.tid, "noInst"); continue; }
       /* 只追当前活跃轮：--current 只返回该会话最新一轮，给历史轮发请求会缓存错轮文本
        * （历史轮保持占位，与 v75 起的实际生效行为一致）。v360：该门在 sent++ 之前，
-       * 恒 false 时 sent 恒 0 且不留痕（报告者 rt 全 0 的候选落点之一），按轮键计一次。 */
-      if (!w.owner.isCurrentTurn || !w.owner.isCurrentTurn(w.tid)) { zuBlockOnce(w.owner.pid + "|" + w.tid, "notCur"); continue; }
+       * 恒 false 时 sent 恒 0 且不留痕（报告者 rt 全 0 的候选落点之一），按轮键计一次。
+       * v458：观察器 owner 不过本门——它的请求带页面轮号（下方 turnRef），主桥按轮号精确定位
+       * 那一轮，不依赖「最新一轮」；存量轮（tracker 无记录）的 isCurrentTurn 恒 false，
+       * 「只发窗格最后一轮」的限定在收集端（03 分片 zuSubDetIsLastTurnBox，纯 DOM 判据）。 */
+      if (!w.owner.isCurrentTurn || !(w.owner.isCurrentTurn(w.tid) || subOwner)) { zuBlockOnce(w.owner.pid + "|" + w.tid, "notCur"); continue; }
       var pending = richTextRequestTids[sid];
       if (!pending || pending.key !== w.key || pending.unit !== richTextUnitEpoch) {
         pending = { key: w.key, tid: w.tid, owner: w.owner, unit: richTextUnitEpoch, epoch: MY_GEN + ":" + (++richTextRequestEpoch), legacy: !pending && richTextUnitEpoch === 0 };
@@ -974,6 +980,7 @@
       }
       /* cn：万/亿开关当前值；为 0 时主进程给 token_rate.py 加 --no-cn-units */
       var req = { action: "turn-text", sid: sid, cn: cnUnits() ? 1 : 0, forceKmb: !!state.forceKmb, cost: state.cost === 0 ? 0 : 1, unitEpoch: pending.epoch };
+      if (subOwner) req.turnRef = w.tid;   // v458：页面轮号随请求下发，主桥据此走 token_rate --turn-ref（只认这一轮、轮已结束才出数）
       if (window.__zusagePluginRequests) window.__zusagePluginRequests.push(req);
       else window.__zusagePluginRequests = [req];
       capPut(richTextAttempts, w.key, (richTextAttempts[w.key] || 0) + 1, 256);
@@ -994,7 +1001,8 @@
   window.__zusageDeliverTurnText = function (sid, text, unitEpoch, reason) {
     if (stale() || typeof sid !== "string") return;
     var pending = richTextRequestTids[sid];
-    if (!pending || pending.unit !== richTextUnitEpoch || instances.indexOf(pending.owner) < 0 ||
+    /* v458：子代理窗格观察器 owner 同 noInst 门放行（typeof 守卫，见 zuFlushRichTextWants） */
+    if (!pending || pending.unit !== richTextUnitEpoch || instances.indexOf(pending.owner) < 0 && !(typeof zuSubDetHasOwner === "function" && zuSubDetHasOwner(pending.owner)) ||
         pending.owner.getSid() !== sid || zuRichKey(pending.owner, pending.tid) !== pending.key ||
         (unitEpoch == null ? !pending.legacy : unitEpoch !== pending.epoch)) {
       richTextDiag.stale++;
