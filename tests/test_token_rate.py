@@ -1137,6 +1137,7 @@ class SubagentLatestTurnTests(_RateCliMixin, unittest.TestCase):
         data = json.loads(self.run_rate("--turn", "--current", "--session", "sess_subagent_x", "--json").stdout)
         self.assertIsNone(data["turn"])
         self.assertTrue(data["noCurrentTurnData"])
+        self.assertEqual(data["currentTurnUnavailableReason"], "missingTurnIdentity")   # 原因分类同样只认 main_turn，与改动前一致
         # 对照：同一提问状态下不带 --current，回退照常生效
         self.assertIn("166.7 token/s(本轮)", self.run_rate("--turn", "--session", "sess_subagent_x").stdout)
 
@@ -1364,10 +1365,32 @@ class SubagentTurnRefTests(_RateCliMixin, unittest.TestCase):
         con.execute("insert into turn_usage values (?,?,?,?)", (self.SUB, "turn_s8", "completed", self.t0 + 42000))
         con.commit()
         con.close()
-        for bad in ("bad ref", "msg\nx", "a" * 81, ""):
+        for bad in ("bad ref", "msg\nx", "a" * 81, "", "-x"):
             r = self.run_rate("--turn", "--turn-ref", bad, "--session", self.SUB)
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(r.stdout, "", repr(bad))
+
+    def test_ref_starting_with_dash_is_rejected_even_if_seeded(self):
+        # 轮号以 - 开头像命令行开关：库里真有这样一个已结束的轮也不出数。--json 这种值还会同时被
+        # 当成输出开关——输出只能是空结果的 JSON，不能带出任何一轮
+        con = sqlite3.connect(self.db)
+        con.execute("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ref_row("s11", self.SUB, "turn_s11", "subagent", self.t0 + 60000, self.t0 + 61000, 1000,
+                            self.t0 + 62000, 100, 800, 0, "--json"))
+        con.execute("insert into turn_usage values (?,?,?,?)", (self.SUB, "turn_s11", "completed", self.t0 + 62000))
+        con.commit()
+        con.close()
+        for bad in ("--json", "-x", "--current"):
+            r = self.run_rate("--turn", "--turn-ref", bad, "--session", self.SUB)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(r.stderr, "", bad)
+            if bad == "--json":                    # 它同时被当成输出开关
+                data = json.loads(r.stdout)
+                self.assertIsNone(data["turn"], bad)
+                self.assertIsNone(data["turnId"], bad)
+                self.assertNotIn("tokPerSec", r.stdout, bad)
+            else:
+                self.assertEqual(r.stdout, "", bad)
 
     def test_missing_parent_column_or_turn_usage_table_fails_closed(self):
         rows = self.rows

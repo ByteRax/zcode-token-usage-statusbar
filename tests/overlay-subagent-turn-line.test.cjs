@@ -354,7 +354,9 @@ test('v458 生命周期：订阅的同步首跑身份不符 = 绑定失败——
   assert.equal(h.storeOffs.length, 2, '成功绑定后租约留在观察器上');
 });
 
-test('v458 生命周期：回调收到空快照（null / 无 snapshot）不抛——未入册时按绑定失败，已入册时撤除', () => {
+test('v458 回调防御：被直接喂空快照时不抛——未入册时按绑定失败，已入册时撤除', () => {
+  // 真实 subscribeStore 对空快照不调回调（tracker 吃不进就不通知），这条分支在真实链路上走不到；
+  // 这里直接调回调，钉的是回调自身的防御：不抛、不把空快照绑成「已绑定」、不留下没释放的东西
   for (const empty of [null, {}, { snapshot: null }, { snapshot: {} }]) {
     // 首跑就空：绑定失败
     const h = make03ctx({ tryStore: true, syncCbState: empty });
@@ -622,6 +624,32 @@ test('v458 扫描（行为）：tracker 记录为进行中的轮不发请求、�
   assert.equal(linesOf(h.body).length, 0);
 });
 
+test('v458 扫描（行为）：主会话实例 root 里的存量轮不走观察器旁路——不发请求、不插行、不建观察器', () => {
+  // 规格规则 7 的「主会话实例不受影响」：实例 root 下的 box 由实例认领，没有 tracker 记录时走既有的
+  // 「不插」分支；观察器旁路只属于注册表里的观察器
+  const h = makeChainctx({ tryStore: true });
+  const instRoot = new El('div', { 'data-session-id': 'sess_main' });
+  const box = new El('section', { 'data-turn-id': 'msg_old' });
+  instRoot.appendChild(box);
+  h.body.appendChild(instRoot);
+  h.ctx.instances.push({
+    pid: 'workspace-main', detRoot: () => instRoot, getSid: () => 'sess_main',
+    getScope: () => ({ sid: 'sess_main', identity: '', workspacePath: WS_PATH, remoteSessionId: '' }),
+    statsFor: () => null, isCurrentTurn: () => false,
+  });
+  assert.doesNotThrow(() => h.api.scan());
+  assert.equal(h.api.reqs().length, 0, '实例的存量轮不发请求');
+  assert.equal(linesOf(h.body).length, 0, '不插占位、不插「不可用」行');
+  assert.deepEqual(plain(h.api.diagSub()), { panes: 0, bound: 0, retrying: 0 });
+  // 对照：同一拍里子代理窗格的存量最后一轮照常发带轮号的请求
+  pane(h, ['msg_s1', 'msg_s2']);
+  h.api.scan();
+  assert.equal(h.api.reqs().length, 1);
+  assert.equal(h.api.reqs()[0].sid, SUB_SID);
+  assert.equal(h.api.reqs()[0].turnRef, 'msg_s2');
+  assert.equal(linesOf(box).length, 0);
+});
+
 test('v458 接线（行为）：主开关关闭那一拍撤行的同时释放全部观察器租约与订阅', () => {
   const h = makeChainctx({ tryStore: true });
   const t = pane(h, ['msg_t2']);
@@ -723,8 +751,12 @@ function make02ctx(opts) {
     console,
   });
   if (opts.has03) ctx.zuSubDetHasOwner = o => !!(o && o.__sub === true);
+  if (opts.realHasOwner) {   // 用 03 分片的真实实现（不再是 __sub 标记桩）：守护「它判实例 owner 为否」
+    ctx.o3 = make03ctx({ tryStore: true });
+    ctx.zuSubDetHasOwner = ctx.o3.api.hasOwner;
+  }
   const api = vm.runInContext(SLICE02, ctx);
-  return { ctx, api, rescans };
+  return { ctx, api, rescans, o3: ctx.o3 };
 }
 
 function wantFor(h, owner, tid) {
@@ -798,6 +830,44 @@ test('v458 门控：实例 owner 的 isCurrentTurn 门不回归（观察器短�
   h.api.flush();
   assert.equal(h.api.reqs().length, 0);
   assert.equal(h.api.diag.notCur, 1);   // 实例 owner 照旧被门拦
+});
+
+test('v458 门控（真实 03）：zuSubDetHasOwner 判实例 owner 为否——实例的历史轮照旧被 isCurrentTurn 门拦下', () => {
+  // 这个函数是 02 三处放行与 turnRef 下发的唯一开关：它对实例 owner 误判为真时，主会话的历史轮会
+  // 绕过 isCurrentTurn 门去要富文本，主桥对非子代理 sid 仍按「最新一轮」取，于是别的轮的富文本被挂到
+  // 历史轮下面。上面那条用例守的是「03 未装载」的 typeof 守卫，守不住这个函数本身
+  const o = Object.assign(subOwnerStub(), { pid: 'workspace-main' });   // 与观察器同 sid、长得像观察器，但不在注册表里
+  const h = make02ctx({ instances: [o], realHasOwner: true });
+  o.isCurrentTurn = () => false;
+  wantFor(h, o, 't_old');
+  h.api.flush();
+  assert.equal(h.api.reqs().length, 0, '实例的历史轮不发请求');
+  assert.equal(h.api.diag.notCur, 1);
+  assert.equal(h.api.diag.sent, 0);
+  // 对照：注册表里的真观察器照旧放行，请求带轮号（另起一个 02 上下文：flush 之后 wants 换了新对象，
+  // 旧句柄上再写的条目 flush 看不到）
+  const k = make02ctx({ instances: [o], realHasOwner: true });
+  const pane = k.o3.api.detOwnerOf(subTree(k.o3, 'sess_subagent_x').box);
+  assert.equal(k.ctx.zuSubDetHasOwner(pane), true);
+  pane.isCurrentTurn = () => false;
+  wantFor(k, pane, 'msg_t2');
+  k.api.flush();
+  assert.equal(k.api.reqs().length, 1);
+  assert.equal(k.api.reqs()[0].turnRef, 'msg_t2');
+});
+
+test('v458 观察器：zuSubDetHasOwner 只对注册表里的观察器为真（实例 / 形似对象 / null 都为否）', () => {
+  const empty = make03ctx({ tryStore: true });
+  for (const probe of [null, undefined, {}, { pid: 'subagent-pane:sess_subagent_x' }, subOwnerStub()]) {
+    assert.equal(empty.api.hasOwner(probe), false, '注册表为空：' + JSON.stringify(probe && probe.pid));
+  }
+  const h = make03ctx({ tryStore: true });
+  const w = h.api.detOwnerOf(subTree(h, SUB_SID).box);
+  assert.equal(h.api.hasOwner(w), true);
+  for (const probe of [null, undefined, {}, { pid: 'subagent-pane:' + SUB_SID },
+    { pid: 'workspace-main', getSid: () => SUB_SID, getScope: () => ({ sid: SUB_SID }), isCurrentTurn: () => true }]) {
+    assert.equal(h.api.hasOwner(probe), false, '有观察器在册：' + JSON.stringify(probe && probe.pid));
+  }
 });
 
 test('v458 门控：实例 owner 不受 typeof 守卫影响（既有路径回归保护）', () => {

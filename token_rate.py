@@ -365,7 +365,7 @@ def query_latest(session_id=None):
 
 # 一次用户消息的各段共享 turn_id。按整轮最早 started_at 排序，不能用完成时间：
 # 上轮迟到的完成/工具后续段可能比本轮更晚，但轮次身份仍属上轮。
-def latest_turn_id(db, sid, prompt_ts=None):
+def latest_turn_id(db, sid, prompt_ts=None, allow_fallback=True):
     if db is None:
         return None
     sql = ("select turn_id from model_usage where session_id=? and query_source='main_turn'"
@@ -374,15 +374,16 @@ def latest_turn_id(db, sid, prompt_ts=None):
     # v458：无 main_turn 的会话（子代理窗格 sess_subagent_*）在不带提问时刻（非 --current 路径）
     # 时回退该会话除压缩请求外的全部行——方向同 scope_for 的全量回退，但压缩请求不参与选轮
     # （宿主给压缩行的 turn_id 独立时会被当成最新一轮；query_source 为空的行照常参与）。
-    # --current 路径（prompt_ts 非空）的选轮与探测失败时都保持 main_turn 过滤：选轮结果与改动前
-    # 一致，宁可查不到也不放宽（fail-closed）。
+    # --current 路径（prompt_ts 非空）的选轮与探测失败时都保持 main_turn 过滤：与改动前一致，
+    # 宁可查不到也不放宽（fail-closed）。query_turn 里 --current 空结果的原因分类不带提问时刻，
+    # 由调用方显式关掉回退（allow_fallback=False），同样与改动前一致。
     try:
         has_main = db.execute(
             "select 1 from model_usage where session_id=? and query_source='main_turn' limit 1",
             args).fetchone()
     except sqlite3.OperationalError:
         has_main = True
-    if not has_main and prompt_ts is None:
+    if not has_main and prompt_ts is None and allow_fallback:
         sql = sql.replace(" and query_source='main_turn'",
                           " and (query_source is null or query_source!='compact')")
     if prompt_ts is not None:
@@ -396,7 +397,10 @@ def latest_turn_id(db, sid, prompt_ts=None):
     return row[0] if row else None
 
 
-TURN_REF_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+# 页面轮号：首字符不许 -（防止轮号被命令行解析当成开关，例如 --json 会同时被当成输出开关），
+# 只许字母 / 数字 / 下划线 / 连字符，至多 80 字符。真库轮号恒为 msg_ 开头、49 字符。
+# 用 fullmatch：re 的 $ 会放过结尾换行，JS 侧的正则不会，两端要一致。
+TURN_REF_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]{0,79}")
 
 
 def turn_id_for_ref(db, sid, ref):
@@ -469,7 +473,7 @@ def query_turn(session_id=None, current=False, turn_id=None, turn_ref=None):
             # 被挂到这一轮下面；进行中的轮还会取出半截统计。只认该会话内该轮号对应的唯一一轮，且轮
             # 已结束才出数（turn_ended：完成、取消或出错都算结束）；与 --current / --turn-id 同给时
             # 按 fail-closed 处理（不替调用方决定按哪个身份）。
-            if current or turn_id or db is None or not TURN_REF_RE.match(turn_ref):
+            if current or turn_id or db is None or not TURN_REF_RE.fullmatch(turn_ref):
                 return {"sessionId": sid, "turnId": None, "turn": None, "session": session}
             identity_source = "parentTurnRef"
             turn_id = turn_id_for_ref(db, sid, turn_ref)
@@ -483,10 +487,8 @@ def query_turn(session_id=None, current=False, turn_id=None, turn_ref=None):
             if turn_pending:
                 result["turnPending"] = True
             if current:
-                # 「该会话有没有轮身份」不带提问时刻去问：无 main_turn 行的会话因此答「有」，
-                # 原因记 noMatchingTurn（有轮、提问时刻之后没有匹配的轮）而不是 missingTurnIdentity。
-                # 只影响 --json 的这个诊断字段（没有运行时消费方），选轮与文本输出不受影响。
-                has_identity = db is not None and latest_turn_id(db, sid) is not None
+                # 「该会话有没有轮身份」：--current 路径只认 main_turn（关掉回退），与改动前一致
+                has_identity = db is not None and latest_turn_id(db, sid, allow_fallback=False) is not None
                 result.update(noCurrentTurnData=True,
                               currentTurnUnavailableReason="noMatchingTurn" if has_identity else "missingTurnIdentity")
             return result

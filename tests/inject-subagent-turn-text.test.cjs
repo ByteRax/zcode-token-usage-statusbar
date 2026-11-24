@@ -48,6 +48,14 @@ test('v458 主桥：子代理 sid 带页面轮号 → --turn --turn-ref <轮号>
   assert.equal(args.includes('--current'), false);
   assert.equal(val(args, '--turn-ref'), 'msg_mwt9w9x9_9');
   assert.equal(val(args, '--session'), 'sess_subagent_abc12');
+  // 格式上界：80 字符放行；首字符是下划线或数字也放行（真库轮号是 msg_ 开头，规则只禁首字符 -）
+  for (const ok of ['a'.repeat(80), '_msg_1', '9']) {
+    const k = harness();
+    call(k, 'sess_subagent_abc12', ok);
+    assert.equal(k.spawned.length, 1, ok);
+    assert.equal(argsOf(k).includes('--turn-ref'), true, ok);
+    assert.equal(argsOf(k).includes('--current'), false, ok);
+  }
 });
 
 test('v458 主桥：子代理 sid 不带轮号 → 维持 --current（不按会话取「最新一轮」，宁可不出行）', () => {
@@ -60,8 +68,8 @@ test('v458 主桥：子代理 sid 不带轮号 → 维持 --current（不按会�
   }
 });
 
-test('v458 主桥：非法轮号（空白 / 控制字符 / 超长 / 非字符串）不进 --turn-ref', () => {
-  for (const ref of ['msg 1', 'msg\n1', 'a'.repeat(81), 42, { id: 'msg_1' }, true]) {
+test('v458 主桥：非法轮号（空白 / 控制字符 / 超长 / 以 - 开头 / 非字符串）不进 --turn-ref', () => {
+  for (const ref of ['msg 1', 'msg\n1', 'a'.repeat(81), '-x', '--json', 42, { id: 'msg_1' }, true]) {
     const h = harness();
     call(h, 'sess_subagent_abc12', ref);
     const args = argsOf(h);

@@ -2282,10 +2282,12 @@ function queryTurnText(sid, wc, plainUnits, forceKmb, unitEpoch, noCost, turnRef
        是上一轮），进行中的轮还会取到半截统计。所以子代理 sid 且渲染端传来 turnRef
        （窗格里这一轮的 data-turn-id，即用量行上的 parent_user_message_id）时改走 --turn-ref：
        token_rate 只认该会话内该轮号对应的唯一一轮，且该轮已结束（turn_usage 有行：完成、
-       取消或出错都算结束）才出数，否则空输出、渲染端按既有节奏重试。没有 turnRef 的子代理
-       sid（旧渲染端不发子代理请求）与 sess_dwf-* 等其余 sid 一律维持 --current 口径。 */
+       取消或出错都算结束）才出数，否则空输出、渲染端按既有节奏重试。轮号缺席或不合法的子代理
+       sid（旧渲染端不发子代理请求，所以没有轮号）与 sess_dwf-* 等其余 sid 一律维持 --current。
+       轮号首字符不许 -：命令行按「--名字 值」解析，以 - 开头的值会被当成另一个开关（--json
+       还会同时被当成输出开关）。后缀上界 72 被外层 80 字符总长门遮蔽，与渲染端同一边界。 */
     const subAgentTurn = /^sess_subagent_[A-Za-z0-9_-]{1,72}$/.test(sid);
-    const ref = subAgentTurn && typeof turnRef === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(turnRef) ? turnRef : "";
+    const ref = subAgentTurn && typeof turnRef === "string" && /^[A-Za-z0-9_][A-Za-z0-9_-]{0,79}$/.test(turnRef) ? turnRef : "";
     py = spawn(readCfgCached().python_path,
       [TOKEN_RATE, "--turn"].concat(ref ? ["--turn-ref", ref] : ["--current"], ["--session", sid],
         plainUnits ? ["--no-cn-units"] : [], forceKmb ? ["--force-kmb"] : [], noCost ? ["--no-cost"] : []), { windowsHide: true });
