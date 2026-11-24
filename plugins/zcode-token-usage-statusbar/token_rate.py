@@ -367,7 +367,7 @@ def latest_turn_id(db, sid, prompt_ts=None):
     sql = ("select turn_id from model_usage where session_id=? and query_source='main_turn'"
            " and turn_id is not null and turn_id != '' group by turn_id")
     args = [sid]
-    # v460：无 main_turn 的会话（子代理窗格 sess_subagent_*）回退该会话全部行——
+    # v458：无 main_turn 的会话（子代理窗格 sess_subagent_*）回退该会话全部行——
     # 与 scope_for 同一语义；prompt_ts 过滤只在显式传入（--current 路径）时叠加。
     try:
         has_main = db.execute(

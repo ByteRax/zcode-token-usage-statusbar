@@ -327,8 +327,22 @@ function parseModelsPayload(data) {
   return Array.isArray(list) ? list : [];
 }
 
+/* 套餐列表的 HTTP 200 错误信封（specs/plan-model-list.md）：智谱系 Anthropic 兼容网关对鉴权与
+ * 业务失败回 200 + {code,msg,success:false}，信封里没有列表——必须按候选失败换下一端点，不能
+ * 当空列表报 no models in response。只回分类串：code 是 100–599 的整数（或纯数字串）时回
+ * "HTTP <code>"（与真实 HTTP 状态同形，渲染端既有展示零改动；200–299 是成功码，不冒充
+ * HTTP 状态），否则 "upstream error <code>"；
+ * msg 与任意服务端文本不进错误串（失败文案不引用原始响应体）。非信封返回空串。 */
+function planEnvelopeError(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body) || body.success !== false) return "";
+  const raw = body.code;
+  const code = typeof raw === "number" || (typeof raw === "string" && /^\d{1,6}$/.test(raw)) ? Number(raw) : NaN;
+  if (!Number.isInteger(code)) return "upstream error";
+  return code >= 100 && code <= 599 && !(code >= 200 && code <= 299) ? "HTTP " + code : "upstream error " + code;
+}
+
 module.exports = {
-  createModelPuller, sanitizeModelIds, parseModelsPayload, candidateUrls,
+  createModelPuller, sanitizeModelIds, parseModelsPayload, candidateUrls, planEnvelopeError,
   extractModelMeta, catalogEntries, matchCatalogEntry, inputFormatFrom, canonicalBasename,
   endsWithVersionSegment, rawModelId, apiCatalogEntries, buildEffortsIndex,
   anthropicBaseWithV1, classifyProbeStatus, maskSecrets, probeRepairCandidates,

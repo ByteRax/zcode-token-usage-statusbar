@@ -103,7 +103,7 @@
           p.hasAttribute && p.hasAttribute("data-session-id")) side = fiberSideIdOf(p);   // v258：宿主 testid 也缺失的表外版本兜底
       if (side) return owner && owner.pid === side && best === p ? owner : null;
     }
-    /* v460 子代理窗格（specs/subagent-turn-stats-line.md）：无实例认领的 box 回退观察器
+    /* v458 子代理窗格（specs/subagent-turn-stats-line.md）：无实例认领的 box 回退观察器
      * （发现即建、按 sid 幂等；窗格根=最近 sess_subagent_ 会话根，与实例 root 天然不嵌套）。 */
     if (!owner) {
       var sub = zuSubDetEnsure(box);
@@ -122,7 +122,7 @@
     var owner = detOwnerOf(box);
     return owner ? owner.statsFor(tid) : null;
   }
-  /* ===== v460 子代理窗格统计行（specs/subagent-turn-stats-line.md）：伪 owner 观察器 =====
+  /* ===== v458 子代理窗格统计行（specs/subagent-turn-stats-line.md）：伪 owner 观察器 =====
    * 子代理窗格（sess_subagent_* 只读分栏）没有 overlay 实例，det 链的实例归属/请求门/
    * 投递门三处都进不去。观察器以 sid 为键实现 owner 接口（getSid/getScope/detRoot/
    * statsFor/isCurrentTurn/bridgeInfo），detOwnerOf 与实例同规则认领——扫描、占位行、
@@ -384,7 +384,7 @@
         if (hasModel) { if (rec) rec.line = "model"; continue; }   // 模型历史统计行在位：不叠双行
         var stats = detStatsFor(box, tid);   // v174：按实例归属取数，不跨实例首命中
         if (rec) { rec.line = "none"; rec.st = zuDiagStats(stats); }
-        /* v460 补强：观察器 owner 的窗格存量轮（观察器绑定前已完成，tracker 无记录）——
+        /* v458 补强：观察器 owner 的窗格存量轮（观察器绑定前已完成，tracker 无记录）——
          * tracker 门放行为「纯富文本轮」：缓存命中直接插行；未命中且是窗格最后一轮才发
          * latestTurn 查询、**不插占位**（deliver 空回执不写缓存 → 旧主桥降级时永不插行，
          * 与「未观测轮不插行」现状一致，绝不显示误导性的「本轮统计不可用」）。富文本到达
@@ -420,7 +420,7 @@
             notCur: richTextDiag.notCur, noInst: richTextDiag.noInst },   // v343/v360 issue #321：回推失败与静默拒绝可观测（spawn/timeout/pyerr 需主进程同版；四类门控拒绝按轮键计一次，sent=0 而占位常驻时先看这里）
           bridge: instances.map(function (inst) { return inst.bridgeInfo ? inst.bridgeInfo() : null; }),
           nullOwner: scanDeterministicLines.nulls,   // v345 issue #327：带行 box 令牌取不到的累计拍数与原因、宽限命中数、撤行/换代数
-          sub: zuSubDetDiag(),   // v460：子代理窗格观察器（窗格数/已绑定数）
+          sub: zuSubDetDiag(),   // v458：子代理窗格观察器（窗格数/已绑定数）
           turns: diagTurns.slice(0, 40),
         };
       }
@@ -436,7 +436,7 @@
   }
   function cleanupDeterministic() {
     clearInterval(detTimer);
-    zuSubDetDisposeAll();   // v460：观察器租约随代际全释放（行节点在窗格 DOM 内随窗格生死）
+    zuSubDetDisposeAll();   // v458：观察器租约随代际全释放（行节点在窗格 DOM 内随窗格生死）
     zuResetRichText();
     try {
       document.querySelectorAll("[data-zusage-deterministic],[data-zusage-loading-status]").forEach(function (el) { el.remove(); });
@@ -493,7 +493,7 @@
    * 清理选择器保留（根清理 + dispose）：热更/重载后把旧版本可能残留的 span 清干净。 */
   function sharedTick() {
     if (stale()) return;
-    zuSubDetPaneTick();   // v460：观察器生命周期巡检搭 500ms 便车（零新增定时器/查询）
+    zuSubDetPaneTick();   // v458：观察器生命周期巡检搭 500ms 便车（零新增定时器/查询）
     scanDeterministicLines();
   }
   detTimer = setInterval(sharedTick, 500);   // v88：2s→0.5s，与速率行扫描/心跳同节奏

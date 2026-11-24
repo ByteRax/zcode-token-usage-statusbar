@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const { getInjectSlice } = require('./helpers/overlay-extract.cjs');
 
-// v460 子代理统计行（specs/subagent-turn-stats-line.md 规则 5）：主桥 queryTurnText 对
+// v458 子代理统计行（specs/subagent-turn-stats-line.md 规则 5）：主桥 queryTurnText 对
 // sess_subagent_* 前缀 sid 去掉 --current（走 token_rate latestTurn）——hook 只给用户提问
 // 记 promptTs，子会话带 --current 必然 fail-closed 空输出。sess_dwf-* 不在子代理前缀内，
 // 维持 --current；sid 边界与主渲染端 zuSubDetEnsure 同款正则（后缀 ≤72）。
@@ -34,7 +34,7 @@ function harness(opts) {
 
 const argsOf = h => h.spawned[0].args;
 
-test('v460 主桥：子代理 sid 的 spawn 参数形如 --turn --session <sid>（无 --current）', () => {
+test('v458 主桥：子代理 sid 的 spawn 参数形如 --turn --session <sid>（无 --current）', () => {
   const h = harness();
   h.fn('sess_subagent_abc12', h.wc);
   const args = argsOf(h);
@@ -44,7 +44,7 @@ test('v460 主桥：子代理 sid 的 spawn 参数形如 --turn --session <sid>�
   assert.equal(args[args.indexOf('--session') + 1], 'sess_subagent_abc12');
 });
 
-test('v460 主桥：主会话 sid 保留 --current（既有口径不回归）', () => {
+test('v458 主桥：主会话 sid 保留 --current（既有口径不回归）', () => {
   const h = harness();
   h.fn('sess_main1', h.wc);
   const args = argsOf(h);
@@ -52,13 +52,13 @@ test('v460 主桥：主会话 sid 保留 --current（既有口径不回归）', 
   assert.equal(args[args.indexOf('--session') + 1], 'sess_main1');
 });
 
-test('v460 主桥：sess_dwf-* 工作流 actor 不在子代理前缀内，仍带 --current', () => {
+test('v458 主桥：sess_dwf-* 工作流 actor 不在子代理前缀内，仍带 --current', () => {
   const h = harness();
   h.fn('sess_dwf-xyz', h.wc);
   assert.equal(argsOf(h).includes('--current'), true);
 });
 
-test('v460 主桥：sid 长度门与前缀正则的交界（外层 80 字符总长门先于前缀分支）', () => {
+test('v458 主桥：sid 长度门与前缀正则的交界（外层 80 字符总长门先于前缀分支）', () => {
   // 总长 ≤80 的子代理 sid（后缀 ≤66）正常 spawn 且无 --current
   const ok = harness();
   ok.fn('sess_subagent_' + 'a'.repeat(66), ok.wc);
@@ -70,7 +70,7 @@ test('v460 主桥：sid 长度门与前缀正则的交界（外层 80 字符总�
   assert.equal(long.spawned.length, 0);
 });
 
-test('v460 主桥：cn/forceKmb/noCost 开关在子代理分支同样透传', () => {
+test('v458 主桥：cn/forceKmb/noCost 开关在子代理分支同样透传', () => {
   const h = harness();
   h.fn('sess_subagent_x', h.wc, true, true, null, true);
   const args = argsOf(h);
@@ -80,7 +80,7 @@ test('v460 主桥：cn/forceKmb/noCost 开关在子代理分支同样透传', ()
   assert.equal(args.includes('--current'), false);
 });
 
-test('v460 主桥：子会话查空（库未追上）仍按 empty 原因回推（冷文件降级不破损）', async () => {
+test('v458 主桥：子会话查空（库未追上）仍按 empty 原因回推（冷文件降级不破损）', async () => {
   const h = harness({ code: 0 });
   h.fn('sess_subagent_x', h.wc);
   await new Promise(r => setTimeout(r, 20));

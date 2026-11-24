@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const { sliceOverlay } = require('./helpers/overlay-extract.cjs');
 
-// v460 子代理窗格统计行（specs/subagent-turn-stats-line.md）：伪 owner 观察器让 det 链
+// v458 子代理窗格统计行（specs/subagent-turn-stats-line.md）：伪 owner 观察器让 det 链
 // 认领 sess_subagent_* 窗格，02 分片的两处实例门放行观察器 owner。夹具：源码切片 +
 // 最小 DOM 桩（父链/包含/断连），03 切片从 fiberSideIdOf 起到观察器块尾（含 detOwnerOf
 // 与 fiberSideIdOf 副本——detOwnerOf 的侧聊遍历会调 fiberSideIdOf，桩无 fiber 键返回空串）。
@@ -30,7 +30,7 @@ class El {
   }
 }
 
-/* 03 切片：fiberSideIdOf → detOwnerOf → detSeenKey/detStatsFor → v460 观察器块尾 */
+/* 03 切片：fiberSideIdOf → detOwnerOf → detSeenKey/detStatsFor → v458 观察器块尾 */
 const DET_SLICE = '(function(){\n' +
   sliceOverlay('  function fiberSideIdOf(el) {', '  /* 节点只保存不透明令牌') +
   '\nreturn { detOwnerOf: detOwnerOf, list: zuSubDetPaneList, hasOwner: zuSubDetHasOwner,' +
@@ -84,7 +84,7 @@ function subTree(h, sid, turn) {
   return { root, box };
 }
 
-test('v460 观察器：detOwnerOf 无实例认领时回退发现子代理窗格（按 sid 幂等）', () => {
+test('v458 观察器：detOwnerOf 无实例认领时回退发现子代理窗格（按 sid 幂等）', () => {
   const h = make03ctx({ tryStore: true });
   const t = subTree(h, 'sess_subagent_abc');
   const w = h.api.detOwnerOf(t.box);
@@ -98,7 +98,7 @@ test('v460 观察器：detOwnerOf 无实例认领时回退发现子代理窗格�
   assert.deepEqual(JSON.parse(JSON.stringify(h.api.diag())), { panes: 1, bound: 1 });   // 直绑成功
 });
 
-test('v460 观察器：实例 root 包含 box 时实例优先，观察器回退不触发', () => {
+test('v458 观察器：实例 root 包含 box 时实例优先，观察器回退不触发', () => {
   const h = make03ctx({ tryStore: true });
   const box = new El('section', { 'data-turn-id': 'turn_m' });
   h.instRoot.appendChild(box);
@@ -107,7 +107,7 @@ test('v460 观察器：实例 root 包含 box 时实例优先，观察器回退�
   assert.equal(h.api.list().length, 0);
 });
 
-test('v460 观察器：最近会话根非子代理前缀不越级认领，也不建观察器', () => {
+test('v458 观察器：最近会话根非子代理前缀不越级认领，也不建观察器', () => {
   const h = make03ctx({ tryStore: true });
   const plain = new El('div', { 'data-session-id': 'sess_main2' });
   const box = new El('section', { 'data-turn-id': 'turn_9' });
@@ -121,7 +121,7 @@ test('v460 观察器：最近会话根非子代理前缀不越级认领，也不
   assert.equal(h.api.list().length, 0);
 });
 
-test('v460 绑定：注册表直绑失败走 acquire 租约（借 workspacePath），再失败 2s 重试', () => {
+test('v458 绑定：注册表直绑失败走 acquire 租约（借 workspacePath），再失败 2s 重试', () => {
   const h = make03ctx({});   // 无 tryStore、无 acquire → 双路径都拿不到
   const t = subTree(h, 'sess_subagent_x');
   h.api.detOwnerOf(t.box);
@@ -136,7 +136,7 @@ test('v460 绑定：注册表直绑失败走 acquire 租约（借 workspacePath�
   assert.deepEqual(JSON.parse(JSON.stringify(h.api.diag())), { panes: 1, bound: 0 });
 });
 
-test('v460 绑定：订阅回调推送活跃轮号（productTurnId 优先），isCurrentTurn 只认该轮', () => {
+test('v458 绑定：订阅回调推送活跃轮号（productTurnId 优先），isCurrentTurn 只认该轮', () => {
   const h = make03ctx({ tryStore: true });
   const t = subTree(h, 'sess_subagent_x');
   const w = h.api.detOwnerOf(t.box);
@@ -152,7 +152,7 @@ test('v460 绑定：订阅回调推送活跃轮号（productTurnId 优先），i
   assert.equal(w.isCurrentTurn(''), false);
 });
 
-test('v460 生命周期：订阅快照 sessionId 不符（关闭/换代）→ 整观察器撤除', () => {
+test('v458 生命周期：订阅快照 sessionId 不符（关闭/换代）→ 整观察器撤除', () => {
   const h = make03ctx({ tryStore: true });
   const t = subTree(h, 'sess_subagent_x');
   h.api.detOwnerOf(t.box);
@@ -165,7 +165,7 @@ test('v460 生命周期：订阅快照 sessionId 不符（关闭/换代）→ �
   assert.equal(h.api.list().length, 0);
 });
 
-test('v460 生命周期：窗格根断连 → detRoot 返 null 不认领，tick 巡检撤除并释放租约', () => {
+test('v458 生命周期：窗格根断连 → detRoot 返 null 不认领，tick 巡检撤除并释放租约', () => {
   const h = make03ctx({ tryStore: true });
   const t = subTree(h, 'sess_subagent_x');
   const w = h.api.detOwnerOf(t.box);
@@ -177,7 +177,7 @@ test('v460 生命周期：窗格根断连 → detRoot 返 null 不认领，tick 
   assert.deepEqual(h.storeOffs, ['sess_subagent_x']);
 });
 
-test('v460 生命周期：disposeAll 释放两个在册观察器的全部租约与 tracker', () => {
+test('v458 生命周期：disposeAll 释放两个在册观察器的全部租约与 tracker', () => {
   const h = make03ctx({ tryStore: true });
   const a = subTree(h, 'sess_subagent_a'), b = subTree(h, 'sess_subagent_b');
   h.api.detOwnerOf(a.box);
@@ -190,7 +190,7 @@ test('v460 生命周期：disposeAll 释放两个在册观察器的全部租约�
   assert.equal(h.trackerDisposes.length, 2);
 });
 
-test('v460 存量轮：zuSubDetIsLastTurnBox 只认窗格最后一个轮 tid（嵌套同 tid 均算）', () => {
+test('v458 存量轮：zuSubDetIsLastTurnBox 只认窗格最后一个轮 tid（嵌套同 tid 均算）', () => {
   const h = make03ctx({ tryStore: true });
   const root = new El('div', { 'data-session-id': 'sess_subagent_x' });
   h.body.appendChild(root);
@@ -209,10 +209,10 @@ test('v460 存量轮：zuSubDetIsLastTurnBox 只认窗格最后一个轮 tid（�
   assert.equal(h.api.isLastTurnBox(w, b2sec), false);       // 断连 root 返 false
 });
 
-/* v460 补强源码契约：扫描循环的观察器存量轮旁路（纯富文本轮）关键行——
+/* v458 补强源码契约：扫描循环的观察器存量轮旁路（纯富文本轮）关键行——
  * 行为级依赖完整扫描切片（state/TURN_STATS/zuRichKey/zuDetPlace 等十余依赖），以
  * 锚点断言锁定结构与语义（缓存命中插行 / 仅最后一轮发查询 / 不插占位 / 实例不受影响）。 */
-test('v460 存量轮：扫描循环旁路源码契约（纯富文本轮语义）', () => {
+test('v458 存量轮：扫描循环旁路源码契约（纯富文本轮语义）', () => {
   const src = require('./helpers/overlay-extract.cjs').readOverlaySource();
   const i = src.indexOf('if (!stats && typeof zuSubDetHasOwner === "function" && zuSubDetHasOwner(owner))');
   assert.ok(i > 0, '观察器存量轮旁路缺失');
@@ -272,7 +272,7 @@ function wantFor(h, owner, tid) {
   h.api.wants[owner.getSid()] = { key: h.api.keyOf(owner, tid), tid: tid, owner: owner };
 }
 
-test('v460 门控：flush 对观察器 owner 放行并入队 turn-text 请求（无 03 时不放行）', () => {
+test('v458 门控：flush 对观察器 owner 放行并入队 turn-text 请求（无 03 时不放行）', () => {
   const h = make02ctx({ has03: true });
   const o = subOwnerStub();
   wantFor(h, o, 't2');
@@ -286,7 +286,7 @@ test('v460 门控：flush 对观察器 owner 放行并入队 turn-text 请求（
   assert.ok(h.api.tids['sess_subagent_x']);   // pending 已登记（deliver 门的前提）
 });
 
-test('v460 门控：切片只装载 02（typeof 守卫走原行为）→ noInst 拦截', () => {
+test('v458 门控：切片只装载 02（typeof 守卫走原行为）→ noInst 拦截', () => {
   const h = make02ctx({});
   const o = subOwnerStub();
   wantFor(h, o, 't2');
@@ -296,7 +296,7 @@ test('v460 门控：切片只装载 02（typeof 守卫走原行为）→ noInst 
   assert.equal(h.api.diag.noInst, 1);
 });
 
-test('v460 门控：zuSubDetHasOwner 判否的 owner 照旧 noInst 拦截', () => {
+test('v458 门控：zuSubDetHasOwner 判否的 owner 照旧 noInst 拦截', () => {
   const h = make02ctx({ has03: true });
   const o = subOwnerStub();
   delete o.__sub;   // 桩判据：无 __sub 标记 → 非观察器
@@ -306,7 +306,7 @@ test('v460 门控：zuSubDetHasOwner 判否的 owner 照旧 noInst 拦截', () =
   assert.equal(h.api.diag.noInst, 1);
 });
 
-test('v460 补强：flush 的 isCurrentTurn 门对观察器 owner 短路（存量轮 latestTurn 查询放行）', () => {
+test('v458 补强：flush 的 isCurrentTurn 门对观察器 owner 短路（存量轮 latestTurn 查询放行）', () => {
   const h = make02ctx({ has03: true });
   const o = subOwnerStub();
   o.isCurrentTurn = () => false;   // 冷窗格：快照无 turnHeader，activeTid 恒空
@@ -317,7 +317,7 @@ test('v460 补强：flush 的 isCurrentTurn 门对观察器 owner 短路（存�
   assert.equal(h.api.diag.sent, 1);
 });
 
-test('v460 补强：实例 owner 的 isCurrentTurn 门不回归（观察器短路不外溢）', () => {
+test('v458 补强：实例 owner 的 isCurrentTurn 门不回归（观察器短路不外溢）', () => {
   const o = subOwnerStub();
   const h = make02ctx({ instances: [o] });   // 实例路径无 03 分片
   o.isCurrentTurn = () => false;
@@ -327,7 +327,7 @@ test('v460 补强：实例 owner 的 isCurrentTurn 门不回归（观察器短�
   assert.equal(h.api.diag.notCur, 1);   // 实例 owner 照旧被门拦
 });
 
-test('v460 门控：实例 owner 不受 typeof 守卫影响（既有路径回归保护）', () => {
+test('v458 门控：实例 owner 不受 typeof 守卫影响（既有路径回归保护）', () => {
   const o = subOwnerStub();
   const h = make02ctx({ instances: [o] });   // 无 03 分片：实例路径原本就放行
   wantFor(h, o, 't2');
@@ -337,7 +337,7 @@ test('v460 门控：实例 owner 不受 typeof 守卫影响（既有路径回归
   assert.equal(h.api.diag.noInst, 0);
 });
 
-test('v460 门控：deliver 对观察器 owner 写缓存并立即重扫（ok 桶）', () => {
+test('v458 门控：deliver 对观察器 owner 写缓存并立即重扫（ok 桶）', () => {
   const h = make02ctx({ has03: true });
   const o = subOwnerStub();
   wantFor(h, o, 't2');
@@ -350,7 +350,7 @@ test('v460 门控：deliver 对观察器 owner 写缓存并立即重扫（ok 桶
   assert.equal(h.rescans.length, 1);
 });
 
-test('v460 门控：deliver 在 owner 判否时 stale 拒绝（不写缓存不重扫）', () => {
+test('v458 门控：deliver 在 owner 判否时 stale 拒绝（不写缓存不重扫）', () => {
   const h = make02ctx({ has03: true });
   const o = subOwnerStub();
   wantFor(h, o, 't2');

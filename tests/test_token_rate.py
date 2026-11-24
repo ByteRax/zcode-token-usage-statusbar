@@ -1026,7 +1026,7 @@ class TestTurnLineV376(unittest.TestCase):
 
 
 class SubagentLatestTurnTests(unittest.TestCase):
-    """v460（specs/subagent-turn-stats-line.md）：子代理会话统计行走 latestTurn（无 --current
+    """v458（specs/subagent-turn-stats-line.md）：子代理会话统计行走 latestTurn（无 --current
     守卫）——inject-main 对 sess_subagent_* 去 --current 后的查询形状。scope_for 对无 main_turn
     的会话回退全量行：会话均/累计来自 subagent 行本身，非 0。
 
@@ -1071,7 +1071,7 @@ class SubagentLatestTurnTests(unittest.TestCase):
         self.assertIn("token/s(本轮)", line)
 
     def test_current_guard_still_fails_closed_for_subagent_session(self):
-        # 旧主进程（未带 v460 分支）对子会话仍传 --current：无提问时刻记录 → 空输出（fail-closed 不破损）
+        # 旧主进程（未带 v458 分支）对子会话仍传 --current：无提问时刻记录 → 空输出（fail-closed 不破损）
         r = self.run_rate("--turn", "--current", "--session", "sess_subagent_x", sid="sess_subagent_x")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout, "")

@@ -117,7 +117,8 @@ test('spd3Unpack: 四元组/二元组兼容、mkeys 有无两种身份、畸形�
   const mixed = u.turns[3];
   assert.equal(mixed.models.length, 2);
   assert.deepEqual(host(mixed.models[0]),
-    { key: KEYS.a, name: 'GLM-A', pid: 'prov_a', mid: 'glm-a', o: 600, ms: 2000, n: 1, tn: 0 });
+    { key: KEYS.a, name: 'GLM-A', pid: 'prov_a', mid: 'glm-a', o: 600, ms: 2000, n: 1, tn: 0, tt: null });   // v457：无 tk 的多模型轮 tt 未知
+  assert.equal(host(mixed.models[1]).tt, null);
   assert.equal(mixed.msAvail, true, '四元组帧行级 msAvail=true');
   // 帧级 mkeys 缺席：key = "n\x1f"+name，pid 空、mid=名称（spec §1.3 名称退化）
   ctx.__hn = fixture({ mkeys: false });
@@ -131,7 +132,7 @@ test('spd3Unpack: 四元组/二元组兼容、mkeys 有无两种身份、畸形�
   const ul = vm.runInContext('spd3Unpack(__hl)', ctx);
   assert.equal(ul.turns.length, 2);
   assert.deepEqual(host(ul.turns[0].models[0]),
-    { key: KEYS.a, name: 'GLM-A', pid: 'prov_a', mid: 'glm-a', o: 100, ms: 0, n: 0, tn: 0 });
+    { key: KEYS.a, name: 'GLM-A', pid: 'prov_a', mid: 'glm-a', o: 100, ms: 0, n: 0, tn: 0, tt: 600 });   // v457：无 tk 的单模型轮 tt=轮级 i+o
   assert.equal(ul.turns[0].ms, 1000, '行级窗口不受 msl 代际影响');
   assert.equal(ul.turns[0].msAvail, false);
   // 畸形：t 缺失/非法 → 整帧 fail-closed（minor3：t 是 delta 累加基准，跳行续跑会让
@@ -877,4 +878,162 @@ test('v389 §13.4 axisA/axisB: 未筛选池时间轴在场——全池 10 天/�
     filt: { mode: 'sel', keys: [] } });
   assert.equal(anEmpty.axisA, firstB, '空筛选 axisA 仍=全池首日');
   assert.equal(anEmpty.axisB, lastT, '空筛选 axisB 仍=全池末日');
+});
+
+// ---------- v457 §25 Token 总消耗（tok / tt）数据层 ----------
+// tok=行/桶的 Token 总消耗（输入+输出），未知为 null（渲染端不出 token 行，绝不估数）；
+// tt=模型分量在本行内的 token，是「只选部分模型」时仍能精确显示的依据。
+function tokFrame(turns) {
+  const t0 = new Date(2026, 10, 5, 9).getTime();
+  return { sid: 's', source: 'local', truncated: 0, sids: ['s1'], snames: ['S'], pids: [['p', 'P']],
+    mnames: ['GLM-A', 'Claude-B', 'Gemini-C'], mkeys: [KEYS.a, KEYS.b, KEYS.c],
+    turns: turns.map((r, i) => Object.assign({ s: 0, t: i ? 1000 : t0, b: i ? t0 : t0 - 60000 }, r)) };
+}
+const SEL = k => ({ range: 'all', period: 'all', sid: '', filt: { mode: 'sel', keys: [k] } });
+
+test('v457 tok/tt 解包（轮表）: tk 与 msl 按原始下标对齐、无 tk 单模型轮取 i+o、多模型轮未知、非法值未知', () => {
+  const ctx = makeCtx();
+  ctx.__h = tokFrame([
+    { out: 900, ms: 3000, i: 7000, o: 900, n: 2, msl: [[0, 600, 2000, 1], [1, 300, 1000, 1]], tk: [5000, 2900] },
+    { out: 400, ms: 2000, i: 3000, o: 400, n: 1, msl: [[0, 400, 2000, 1]] },                        // 无 tk 单模型轮
+    { out: 700, ms: 7000, i: 4000, o: 700, n: 2, msl: [[0, 500, 5000, 1], [1, 200, 2000, 1]] },     // 无 tk 多模型轮
+    { out: 300, ms: 1000, i: 1000, o: 300, n: 2, msl: [[0, 200, 1000, 1], [2, 100, 1000, 1]], tk: ['x', -1] },   // 非法 tk 值（非数字/负数）
+    { out: 300, ms: 3000, i: 2000, o: 300, n: 1, msl: [[0, 0, 0, 0], [2, 300, 3000, 1]], tk: [7, 2300] },  // 无效条目占号
+    { out: 200, ms: 1000, i: 1000, n: 1, msl: [[0, 200, 1000, 1]] },                                  // 畸形帧：i 有、o 缺席
+    { out: 300, ms: 2000, o: 300, n: 1, msl: [[0, 300, 2000, 1]] },                                  // 畸形帧：o 有、i 缺席
+    { out: 250, ms: 1500, i: 'x', o: 250, n: 1, msl: [[0, 250, 1500, 1]] },                          // 畸形帧：i 在场但非法
+    { out: 260, ms: 1600, i: null, o: 260, n: 1, msl: [[0, 260, 1600, 1]] },                         // 畸形帧：i 为 null（isFinite(null) 为真，不得放行）
+    { out: 270, ms: 1700, i: Infinity, o: 270, n: 1, msl: [[0, 270, 1700, 1]] },                     // 畸形帧：i 为 Infinity
+  ]);
+  const T = vm.runInContext('spd3Unpack(__h)', ctx).turns;
+  assert.deepEqual(host(T.map(r => r.tok)), [7900, 3400, 4700, 1300, 2300, null, null, null, null, null],
+    '轮表行 tok=i+o（行级合计，与有无 tk 无关）；i/o 残缺或非法未知');
+  assert.deepEqual(host(T[0].models.map(m => m.tt)), [5000, 2900], 'tk 与 msl 逐条对齐');
+  assert.deepEqual(host(T[1].models.map(m => m.tt)), [3400], '无 tk 的单模型轮：tt=轮级 i+o（生产端契约）');
+  assert.deepEqual(host(T[2].models.map(m => m.tt)), [null, null], '无 tk 的多模型轮：各模型 tt 未知');
+  assert.deepEqual(host(T[3].models.map(m => m.tt)), [null, null], '非法 tk 值（非数字/负数）→ 未知（绝不当 0，也不回退 i+o）');
+  assert.deepEqual(host(T[4].models.map(m => m.tt)), [2300], '无效 msl 条目跳过但占号：tk[1] 归到 Gemini-C，tk[0] 不错位');
+  assert.deepEqual(host(T[5].models.map(m => m.tt)), [null], 'i/o 残缺（o 缺席）：不把 i 当合计，也不由它推导单模型 tt');
+  assert.deepEqual(host(T[6].models.map(m => m.tt)), [null], 'i/o 残缺（i 缺席）：不把 o 当合计，也不由它推导单模型 tt');
+  assert.deepEqual(host(T[7].models.map(m => m.tt)), [null], 'i 在场但非法（数字串）：同缺席，tok 与 tt 都未知');
+  assert.deepEqual(host(T[8].models.map(m => m.tt)), [null], 'i 为 null：不得被 isFinite(null) 放行');
+  assert.deepEqual(host(T[9].models.map(m => m.tt)), [null], 'i 为 Infinity：不得放行');
+  assert.deepEqual(host([[T[5].i, T[5].o], [T[6].i, T[6].o], [T[7].i, T[7].o], [T[8].i, T[8].o], [T[9].i, T[9].o]]),
+    [[1000, 0], [0, 300], [0, 250], [0, 260], [0, 270]], '行上的 i/o 字段沿用既有口径（缺席或非法记 0），不受 tok 严格判定影响');
+});
+
+test('v457 tok/tt 解包（speed_days）: 合计恒为 tok、tk 只含合计的单模型日取合计、多模型日带段按序号、只含合计的多模型日未知、旧帧未知', () => {
+  const ctx = makeCtx();
+  ctx.__sd = { v: 1, source: 'local', start: new Date(2026, 7, 1).getTime(),
+    mnames: ['GLM-A', 'Claude-B'], mkeys: [KEYS.a, KEYS.b],
+    days: [
+      [1000, 10000, 3, 2, 0, [[0, 600, 7000, 2, 1], [1, 400, 3000, 1, 1]], [9000, 1400, 6000, 4400]],  // 多模型日带每模型段（窗口内）
+      [0, 0, 0, 0, 0, 0],                                                                              // 空日
+      [500, 5000, 1, 1, 0, [[0, 500, 5000, 1, 1]], [3000, 500]],                                       // 单模型日只含合计
+      [700, 7000, 2, 1, 0, [[0, 300, 3000, 1, 1], [1, 400, 4000, 1, 1]], [8000, 700]],                // 多模型日只含合计（窗口外）
+      [800, 8000, 1, 1, 0, [[1, 800, 8000, 1, 1]], [5000, 800, 4800]],                                 // 单入列模型日带段（有未入列 token）
+      [600, 6000, 1, 1, 0, [[0, 600, 6000, 1, 1]], '3400'],                                             // 畸形帧：tk 不是数组
+      [650, 6500, 1, 1, 0, [[0, 650, 6500, 1, 1]], ['x', 800, 500]],                                    // 5 畸形帧：输入合计非法
+      [660, 6600, 1, 1, 0, [[0, 660, 6600, 1, 1]], [3000, 'x', 600]],                                   // 6 畸形帧：输出合计非法
+      [670, 6700, 1, 1, 0, [[0, 670, 6700, 1, 1]], ['x', 700]],                                         // 7 只含合计且输入非法
+      [675, 6750, 1, 1, 0, [[0, 675, 6750, 1, 1]], [3000, 'x']],                                        // 8 只含合计且输出非法
+      [680, 6800, 2, 1, 0, [[0, 400, 4000, 1, 1], [1, 280, 2800, 1, 1]], [9000, 1400, 'x', 4400]],    // 9 每模型段首条非法
+      [690, 6900, 2, 2, 0, [[0, 0, 0, 0], [1, 690, 6900, 1, 1]], [9000, 1400, 6000, 4400]],           // 10 无效 msl 条目跳过但占号
+      [695, 6950, 1, 1, 0, [[0, 695, 6950, 1, 1]], [-5, 800, 600]],                                   // 11 合计段：负数
+      [681, 6810, 2, 1, 0, [[0, 400, 4000, 1, 1], [1, 281, 2810, 1, 1]], [9000, 1400, -1, 4400]],    // 12 每模型段：负数
+      [682, 6820, 2, 1, 0, [[0, 400, 4000, 1, 1], [1, 282, 2820, 1, 1]], [9000, 1400, '600', 4400]],  // 13 每模型段：数字串
+      [683, 6830, 1, 1, 0, [[0, 683, 6830, 1, 1]], ['9000', 1400, 600]],                              // 14 合计段：数字串
+      [684, 6840, 1, 1, 0, [[0, 684, 6840, 1, 1]], [Infinity, 1400, 600]],                             // 15 合计段：Infinity
+      [900, 9000, 1, 1, 0, [[0, 900, 9000, 1, 1]]],                                                     // 16 旧帧：6 位无 tk
+    ] };
+  const R = vm.runInContext('spd3UnpackDays(__sd)', ctx).rows;
+  assert.equal(R.length, 17, '空日不产行');
+  const ZERO = [0, 0], TOT = [9000, 1400];
+  assert.deepEqual(host(R.map(r => r.tok)), [10400, 3500, 8700, 5800, null, null, null, null, null, 10400, 10400, null, 10400, 10400, null, null, null],
+    '日行 tok=tin+tout；旧帧与畸形帧（输入或输出合计非法：缺席以外的负数、数字串、Infinity 同样算非法）未知；每模型段非法不影响行级合计');
+  assert.deepEqual(host(R.map(r => [r.i, r.o])), [TOT, [3000, 500], [8000, 700], [5000, 800], ZERO, ZERO, ZERO, ZERO, ZERO, TOT, TOT, ZERO, TOT, TOT, ZERO, ZERO, ZERO],
+    '日行 i/o 由 tk 补齐；旧帧与合计未知的行保持 0');
+  assert.deepEqual(host(R.map(r => r.models.map(m => m.tt))), [
+    [6000, 4400],   // 带每模型段：按 msl 条目序号对齐
+    [3500],         // tk 只含合计 + 恰一个入列模型 → tt=合计
+    [null, null],   // 多模型日的 tk 只含合计 → 各模型未知（不按比例摊）
+    [4800],         // 单入列模型日带段（有未入列 token）→ 取段，不取合计 5800
+    [null],         // tk 不是数组 → 各模型 tt 未知
+    [500],          // 输入合计非法：每模型段照常读，但行级 tok 未知
+    [600],          // 输出合计非法：同上
+    [null],         // 只含合计且输入非法 → 不由合计推导单模型 tt
+    [null],         // 只含合计且输出非法 → 同上
+    [null, 4400],   // 每模型段首条非法 → 该模型未知，其余照常
+    [4400],         // 无效 msl 条目跳过但占号：tk[3] 归到第二条
+    [600],          // 合计段负数 → tok 未知；每模型段照常读
+    [null, 4400],   // 每模型段负数 → 该模型未知
+    [null, 4400],   // 每模型段数字串 → 该模型未知（不隐式转数）
+    [600],          // 合计段数字串 → tok 未知；每模型段照常读
+    [600],          // 合计段 Infinity → tok 未知；每模型段照常读
+    [null],         // 旧帧：无 tk → 未知
+  ], '日行各模型 tt');
+});
+
+test('v457 tok 聚合与筛选重算: 未筛选=Σ行 tok；只选部分模型=所选 tt 之和、未知即 null；全选沿用行级合计', () => {
+  const ctx = makeCtx();
+  ctx.__h = tokFrame([
+    { out: 900, ms: 3000, i: 7000, o: 900, n: 2, msl: [[0, 600, 2000, 1], [1, 300, 1000, 1]], tk: [5000, 2900] },
+    { out: 400, ms: 2000, i: 3000, o: 400, n: 1, msl: [[0, 400, 2000, 1]] },                        // 仅 A，无 tk
+    { out: 600, ms: 6000, i: 2000, o: 600, n: 2, msl: [[0, 300, 3000, 1], [1, 300, 3000, 1]] },     // A+B 无 tk：tt 未知
+  ]);
+  // spd3Aggregate：全已知求和；掺入未知行即 null
+  const rows = vm.runInContext('spd3Unpack(__h)', ctx).turns;
+  ctx.__r2 = rows.slice(0, 2); ctx.__r3 = rows; ctx.__r0 = [];
+  assert.equal(vm.runInContext('spd3Aggregate(__r2, false).tok', ctx), 11300, 'Σ行 tok');
+  assert.equal(vm.runInContext('spd3Aggregate(__r3, false).tok', ctx), 13900,
+    '行级 tok 已知的行照常求和（tt 未知不影响未筛选合计）');
+  assert.equal(vm.runInContext('spd3Aggregate(__r0, false)', ctx), null, '空桶=null（既有行为）');
+  ctx.__old = [{ out: 1, ms: 1000, i: 0, o: 0, n: 1, models: [], tok: null }];
+  assert.equal(vm.runInContext('spd3Aggregate(__old, false).tok', ctx), null, '任一行未知 → 整桶 null');
+
+  const anAll = analyze(ctx, ctx.__h, null, { range: 'all', period: 'all', sid: '' });
+  assert.equal(host(anAll.overall).tok, 13900, '未筛选 overall.tok');
+  assert.equal(host(anAll.items[0]).tok, 13900, 'all 日桶 items[].tok');
+  const anMo = analyze(ctx, ctx.__h, null, { range: 'all', period: 'month', sid: '' });
+  assert.equal(host(anMo.daysGrid[4].agg).tok, 13900, '本月日历格 daysGrid[].agg.tok');
+
+  const anB = analyze(ctx, ctx.__h, null, SEL(KEYS.b));
+  assert.equal(host(anB.overall).tok, null, '只看 B：第 3 轮 B 的 tt 未知 → null（绝不拿 i+o 或占比估）');
+  const anA = analyze(ctx, ctx.__h, null, SEL(KEYS.a));
+  assert.equal(host(anA.overall).tok, null, '只看 A：第 3 轮是部分选中（A 的 tt 未知）→ null');
+  // 去掉未知轮后：只看 B=2900（部分选中重算），只看 A=5000+3400（第 2 轮全选沿用行级合计）
+  ctx.__h2 = tokFrame([
+    { out: 900, ms: 3000, i: 7000, o: 900, n: 2, msl: [[0, 600, 2000, 1], [1, 300, 1000, 1]], tk: [5000, 2900] },
+    { out: 400, ms: 2000, i: 3000, o: 400, n: 1, msl: [[0, 400, 2000, 1]] },
+  ]);
+  const anB2 = analyze(ctx, ctx.__h2, null, SEL(KEYS.b));
+  assert.equal(host(anB2.overall).tok, 2900, '部分选中：tok=所选模型 tt 之和');
+  assert.equal(host(anB2.overall).i + host(anB2.overall).o, 7900, 'i/o 仍是整行口径（≠tok → 悬停卡不拆分）');
+  assert.equal(host(anB2.items[0]).tok, 2900, 'all 日桶同步重算');
+  const anA2 = analyze(ctx, ctx.__h2, null, SEL(KEYS.a));
+  assert.equal(host(anA2.overall).tok, 8400, '含全选轮：该轮沿用行级合计 3400');
+  // 三模型轮只选其中两个：全已知=所选 tt 之和；任一所选未知即 null，不论未知的是前一个还是后一个
+  const KEY_C = 'n\x1fGemini-C';   // tokFrame 的 mkeys[2] 缺席 → Gemini-C 按名称键识别
+  const selBC = { range: 'all', period: 'all', sid: '', filt: { mode: 'sel', keys: [KEYS.b, KEY_C] } };
+  const three = tk => tokFrame([{ out: 1200, ms: 6000, i: 8000, o: 1200, n: 3,
+    msl: [[0, 600, 2000, 1], [1, 300, 1000, 1], [2, 300, 3000, 1]], tk }]);
+  ctx.__h3 = three([5000, 2900, 700]);
+  assert.equal(host(analyze(ctx, ctx.__h3, null, selBC).overall).tok, 3600, '选 B+C：tok=2900+700（不是只加首个所选模型）');
+  assert.equal(host(analyze(ctx, ctx.__h3, null, Object.assign({}, selBC, { filt: { mode: 'sel', keys: [KEYS.a, KEY_C] } })).overall).tok,
+    5700, '选 A+C：5000+700');
+  ctx.__h4 = three([5000, 'x', 700]);
+  assert.equal(host(analyze(ctx, ctx.__h4, null, selBC).overall).tok, null, '选 B+C，前一个（B）tt 未知 → null');
+  ctx.__h5 = three([5000, 2900, 'x']);
+  assert.equal(host(analyze(ctx, ctx.__h5, null, selBC).overall).tok, null, '选 B+C，后一个（C）tt 未知 → null（未知判定不能只看首个）');
+  // 二元组帧（无模型级窗口）：只含 B 的轮是全选 → 沿用行级 i+o
+  const legacy = fixtureLegacy(2);
+  const anL = analyze(ctx, legacy, null, { range: 'session', period: 'all', sid: 'sess_main',
+    filt: { mode: 'sel', keys: [KEYS.b] } });
+  assert.equal(host(anL.overall).tok, 4400, '二元组帧的全选轮沿用行级 i+o');
+  // 二元组多模型轮被部分选中 → 降级分支（models 清空）→ tok=null
+  ctx.__mix = tokFrame([{ out: 600, ms: 6000, i: 5000, o: 600, n: 2, msl: [[0, 300], [1, 300]] }]);
+  const anMix = analyze(ctx, ctx.__mix, null, { range: 'session', period: 'all', sid: 's1',
+    filt: { mode: 'sel', keys: [KEYS.b] } });
+  assert.equal(host(anMix.overall).tok, null, '降级分支（无模型级窗口）部分选中 → tok=null');
+  assert.equal(host(anMix.overall).v, 100, '降级分支既有速度行为不变（整轮 600t/6s，不按所选模型缩放）');
 });
