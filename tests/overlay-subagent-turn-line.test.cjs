@@ -114,17 +114,21 @@ function make03ctx(opts) {
       },
       subscribeStore: (store, tracker, cb) => {
         callbacks.push(cb);
-        if (opts.syncCbState) cb(opts.syncCbState);   // 真实 subscribeStore 会同步先跑一次回调
+        if (opts.subThrows) throw new Error("host store subscribe failed");
+        if (opts.syncCbState !== undefined) cb(opts.syncCbState);   // 真实 subscribeStore 会同步先跑一次回调
+        if (opts.subNull) return null;   // 真实 subscribeStore 在 store 缺 subscribe / 退订不是函数时返回 null
         return () => subOffs.push(store);
       },
     },
     zuTryBindStore: (sid, want) => {
       tryCalls.push({ sid: sid, want: want });
+      if (opts.tryThrows) throw new Error("registry diag failed");
       if (!opts.tryStore) return null;
       return { off: () => storeOffs.push(sid) };
     },
     zuAcquireSubStore: (sid, scope) => {
       acquired.push({ sid: sid, hint: scope });
+      if (opts.acquireThrows) throw new Error("bridge acquire failed");
       return opts.acquireStore ? { off: () => storeOffs.push(sid) } : null;
     },
     console,
@@ -197,6 +201,7 @@ test('v458 归属：远端或带身份的窗格不认领——不借本地实例
     ['远端会话 id', { 'data-zusage-remote-session-id': 'ssh-host' }],
     ['工作区身份', { 'data-zusage-workspace-identity': 'remote:ssh:host' }],
     ['桥属性残缺（路径空）', { 'data-zusage-workspace-path': '' }],
+    ['桥属性残缺（缺路径属性）', { 'data-zusage-workspace-path': undefined }],
     ['桥属性残缺（缺远端属性）', { 'data-zusage-remote-session-id': undefined }],
     ['路径带控制字符', { 'data-zusage-workspace-path': '/ws/\nalpha' }],
   ];
@@ -212,21 +217,35 @@ test('v458 归属：远端或带身份的窗格不认领——不借本地实例
   }
 });
 
-test('v458 归属：桥缺席时的退路——本窗口每个实例都是已验证的本地 scope 才认领', () => {
-  const local = () => ({ getScope: () => ({ sid: 'sess_main', identity: '', workspacePath: WS_PATH, remoteSessionId: '' }) });
-  const remote = () => ({ getScope: () => ({ sid: 'sess_main', identity: 'remote:ssh:host', workspacePath: '/r', remoteSessionId: 'host' }) });
-  const unknown = () => ({ getScope: () => null });
-  // 全本地：认领，scope 用实例的 workspacePath
-  let h = make03ctx({ tryStore: true, instances: [local(), local()] });
-  let w = h.api.detOwnerOf(subTree(h, SUB_SID, 'msg_t1', null).box);
+test('v458 归属：桥缺席时的退路——本窗口每个实例都是已验证的本地 scope、且同属一个工作区才认领', () => {
+  const inst = scope => ({ getScope: () => scope });
+  const LOCAL = { sid: 'sess_main', identity: '', workspacePath: WS_PATH, remoteSessionId: '' };
+  const local = () => inst(LOCAL);
+  const notClaimed = (name, insts) => {
+    const h = make03ctx({ tryStore: true, instances: insts });
+    assert.equal(h.api.detOwnerOf(subTree(h, SUB_SID, 'msg_t1', null).box), null, name);
+    assert.equal(h.api.list().length, 0, name);
+    assert.equal(h.tryCalls.length, 0, name + '：不绑 store');
+    assert.equal(h.acquired.length, 0, name + '：不取租约');
+  };
+  // 全本地且同一工作区：认领，scope 用实例的 workspacePath（本地键精确直绑）
+  const ok = make03ctx({ tryStore: true, instances: [local(), local()] });
+  const w = ok.api.detOwnerOf(subTree(ok, SUB_SID, 'msg_t1', null).box);
   assert.equal(w && w.pid, 'subagent-pane:' + SUB_SID);
   assert.deepEqual(plain(w.getScope()), { sid: SUB_SID, identity: '', workspacePath: WS_PATH, remoteSessionId: '' });
-  // 同窗口有远端实例 / 有 scope 不明的实例 / 没有任何实例：都不认领
-  for (const insts of [[local(), remote()], [local(), unknown()], []]) {
-    h = make03ctx({ tryStore: true, instances: insts });
-    assert.equal(h.api.detOwnerOf(subTree(h, SUB_SID, 'msg_t1', null).box), null, insts.length + ' 个实例');
-    assert.equal(h.api.list().length, 0);
+  assert.deepEqual(plain(ok.tryCalls), [{ sid: SUB_SID, want: { workspacePath: WS_PATH } }]);
+  // 退路门的每个条件单独成立（其余条件都满足，含「同一个工作区」）都必须不认领：远端隔离门不靠别的条件搭便车
+  notClaimed('远端实例（只带 remoteSessionId）', [local(), inst(Object.assign({}, LOCAL, { remoteSessionId: 'host' }))]);
+  notClaimed('远端实例（只带工作区身份）', [local(), inst(Object.assign({}, LOCAL, { identity: 'remote:ssh:host' }))]);
+  notClaimed('实例 scope 没有工作区路径', [local(), inst(Object.assign({}, LOCAL, { workspacePath: '' }))]);
+  notClaimed('实例 scope 为 null', [local(), inst(null)]);
+  notClaimed('实例没有 getScope', [local(), {}]);
+  notClaimed('实例分属多个本地工作区', [local(), inst(Object.assign({}, LOCAL, { workspacePath: '/ws/beta' }))]);
+  // 实例给的工作区路径过不了桥在位分支同款校验（类型 / 空白 / 控制字符）：两个实例给同一个坏值也不认领
+  for (const [name, badPath] of [['数字', 42], ['纯空白', '   '], ['带控制字符', '/ws/\nalpha'], ['null', null]]) {
+    notClaimed('实例工作区路径' + name, [inst(Object.assign({}, LOCAL, { workspacePath: badPath })), inst(Object.assign({}, LOCAL, { workspacePath: badPath }))]);
   }
+  notClaimed('没有任何实例', []);
 });
 
 test('v458 绑定：注册表直绑失败走 acquire 租约（窗格自身 scope），再失败 2s 重试', () => {
@@ -243,12 +262,19 @@ test('v458 绑定：注册表直绑失败走 acquire 租约（窗格自身 scope
   assert.deepEqual(plain(h.api.diag()), { panes: 1, bound: 0, retrying: 1 });
 });
 
-test('v458 绑定：注册表直绑成功后不再取租约', () => {
-  const h = make03ctx({ tryStore: true });
-  subTree(h, SUB_SID);
+test('v458 绑定：注册表直绑成功后不再取租约（两条路径都拿得到时只走直绑）', () => {
+  const h = make03ctx({ tryStore: true, acquireStore: true });
+  const w = h.api.detOwnerOf(subTree(h, SUB_SID).box);
+  assert.deepEqual(plain(h.tryCalls), [{ sid: SUB_SID, want: { workspacePath: WS_PATH } }]);
+  assert.equal(h.acquired.length, 0, '直绑成功就不取租约');
+  assert.deepEqual(plain(h.api.diag()), { panes: 1, bound: 1, retrying: 0 });
+  assert.equal(w.store !== null, true, '观察器持有 store');
+  assert.equal(w.tracker.disposed, false);
+  assert.equal(h.storeOffs.length, 0);
+  h.ctx.Date.now = () => 9000;
   h.api.tick();
-  assert.equal(h.api.list().length, 0, '没有 box 被扫描到就不建观察器（发现只走 detOwnerOf）');
-  assert.equal(h.acquired.length, 0);
+  assert.equal(h.acquired.length, 0, '已绑定的观察器巡检时不再取租约');
+  assert.equal(h.storeOffs.length, 0, '已绑定的观察器巡检时不放租约');
 });
 
 test('v458 绑定：订阅回调推送活跃轮号（productTurnId 优先），isCurrentTurn 只认该轮', () => {
@@ -280,25 +306,117 @@ test('v458 生命周期：订阅快照 sessionId 不符（关闭/换代）→ �
   assert.equal(h.api.list().length, 0);
 });
 
-test('v458 生命周期：重绑路径下订阅的同步回调若撤除了观察器，刚拿到的订阅与租约一并放掉', () => {
-  // 真实 subscribeStore 会同步先跑一次回调。重绑时观察器已登记，回调若判「会话不符」会把它出册——
-  // 之后 subscribeStore 的返回值与租约不能再挂到这个已出册的观察器上（否则永不释放）
-  const opts = { tryStore: false };
+const OTHER_STATE = { snapshot: { sessionId: 'sess_other', rows: { window: [] } } };
+const OWN_STATE = { snapshot: { sessionId: SUB_SID, rows: { window: [] } } };
+
+test('v458 生命周期：订阅的同步首跑身份不符 = 绑定失败——订阅、租约、tracker 当场放掉，观察器留在册 2s 后重试', () => {
+  // 真实 subscribeStore 会同步先跑一次回调。拿到手的 store 若推的是别的会话的快照（注册表键串了 / 换代残留），
+  // 不能把它绑到观察器上（首绑时观察器还没入册，旧实现会照常入册并记成「已绑定」）
+  const opts = { tryStore: true, syncCbState: OTHER_STATE };
   const h = make03ctx(opts);
-  const t = subTree(h, SUB_SID);
-  h.api.detOwnerOf(t.box);   // 首次绑定失败：观察器在册、未绑定
+  const w = h.api.detOwnerOf(subTree(h, SUB_SID).box);            // 创建路径
+  assert.equal(w.store, null, '别的会话的 store 不入册');
   assert.deepEqual(plain(h.api.diag()), { panes: 1, bound: 0, retrying: 1 });
-  opts.tryStore = true;      // 到点重试时注册表里有了 store
-  opts.syncCbState = { snapshot: { sessionId: 'sess_other', rows: { window: [] } } };
-  h.ctx.Date.now = () => 2500;
-  h.api.tick();              // 重绑：同步回调把观察器出册
-  assert.equal(h.api.list().length, 0);
-  assert.deepEqual(h.storeOffs, [SUB_SID], '刚拿到的租约放掉，不挂在已出册的观察器上');
+  assert.deepEqual(h.storeOffs, [SUB_SID], '租约放掉');
   assert.equal(h.subOffs.length, 1, '订阅退订');
-  // 对照：创建路径上同步回调撤除时观察器尚未登记（空操作），随后照常登记并绑定
-  const ok = make03ctx({ tryStore: true, syncCbState: { snapshot: { sessionId: 'sess_other', rows: { window: [] } } } });
-  ok.api.detOwnerOf(subTree(ok, SUB_SID).box);
-  assert.deepEqual(plain(ok.api.diag()), { panes: 1, bound: 1, retrying: 0 });
+  assert.equal(h.trackerDisposes.length, 1, 'tracker 释放');
+  h.api.tick();
+  assert.equal(h.callbacks.length, 1, '未到重试点不重试');
+  // 重绑路径：到点重试又拿到别的会话的 store → 同样当场放掉，继续等
+  h.ctx.Date.now = () => 2500;
+  h.api.tick();
+  assert.deepEqual(plain(h.api.diag()), { panes: 1, bound: 0, retrying: 1 });
+  assert.deepEqual(h.storeOffs, [SUB_SID, SUB_SID]);
+  assert.equal(h.subOffs.length, 2);
+  assert.equal(h.trackerDisposes.length, 2);
+  h.api.tick();
+  assert.equal(h.callbacks.length, 2, '一次巡检只重试一次');
+  // 重试拿到本会话的 store → 绑定成功，此后巡检不再动它
+  opts.syncCbState = OWN_STATE;
+  h.ctx.Date.now = () => 5000;
+  h.api.tick();
+  assert.deepEqual(plain(h.api.diag()), { panes: 1, bound: 1, retrying: 0 });
+  assert.equal(h.callbacks.length, 3);
+  assert.equal(h.storeOffs.length, 2, '成功绑定后租约留在观察器上');
+});
+
+test('v458 生命周期：回调收到空快照（null / 无 snapshot）不抛——未入册时按绑定失败，已入册时撤除', () => {
+  for (const empty of [null, {}, { snapshot: null }, { snapshot: {} }]) {
+    // 首跑就空：绑定失败
+    const h = make03ctx({ tryStore: true, syncCbState: empty });
+    const w = h.api.detOwnerOf(subTree(h, SUB_SID).box);
+    assert.equal(w.store, null, '首跑空快照：' + JSON.stringify(empty) + ' → 不入册');
+    assert.deepEqual(plain(h.api.diag()), { panes: 1, bound: 0, retrying: 1 });
+    assert.deepEqual(h.storeOffs, [SUB_SID]);
+    assert.equal(h.subOffs.length, 1);
+    assert.equal(h.trackerDisposes.length, 1);
+    // 入册之后才空：按关闭/换代处理，整观察器撤除
+    const h2 = make03ctx({ tryStore: true });
+    h2.api.detOwnerOf(subTree(h2, SUB_SID).box);
+    assert.doesNotThrow(() => h2.callbacks[0](empty));
+    assert.equal(h2.api.list().length, 0, '入册后空快照：' + JSON.stringify(empty) + ' → 撤除');
+    assert.deepEqual(h2.storeOffs, [SUB_SID]);
+    assert.equal(h2.subOffs.length, 1);
+    assert.equal(h2.trackerDisposes.length, 1);
+  }
+});
+
+test('v458 绑定：拿不到退订函数（subscribeStore 返回 null）→ 租约放掉、tracker 释放、2s 重试', () => {
+  const h = make03ctx({ tryStore: true, subNull: true });
+  h.api.detOwnerOf(subTree(h, SUB_SID).box);
+  assert.deepEqual(plain(h.api.diag()), { panes: 1, bound: 0, retrying: 1 });
+  assert.deepEqual(h.storeOffs, [SUB_SID], '没有退订函数时租约仍要放掉');
+  assert.equal(h.trackerDisposes.length, 1, '没有退订函数替它释放，这里兜底');
+  h.api.tick();
+  assert.equal(h.callbacks.length, 1, '未到重试点不重试（不是每 500ms 一次）');
+  h.ctx.Date.now = () => 2500;
+  h.api.tick();
+  assert.equal(h.callbacks.length, 2, '到点重试');
+});
+
+test('v458 绑定：订阅时抛异常 / 桥 acquire 抛异常 / 注册表查询抛异常——绑定过程不抛，已拿到的当场放掉，2s 后重试', () => {
+  // 绑定跑在 detOwnerOf 的无归属回退上（每拍扫描）：异常冒出去会打断主会话的扫描
+  const h = make03ctx({ tryStore: true, subThrows: true });
+  let w = null;
+  assert.doesNotThrow(() => { w = h.api.detOwnerOf(subTree(h, SUB_SID).box); });
+  assert.deepEqual(plain(h.api.diag()), { panes: 1, bound: 0, retrying: 1 });
+  assert.deepEqual(h.storeOffs, [SUB_SID], '订阅抛异常：租约放掉');
+  assert.equal(h.trackerDisposes.length, 1, '订阅抛异常：tracker 释放');
+  assert.equal(w.store, null, '不带着没订上的 store 入册');
+  h.api.tick();
+  assert.equal(h.callbacks.length, 1, '未到重试点不重试');
+  h.ctx.Date.now = () => 2500;
+  assert.doesNotThrow(() => h.api.tick());
+  assert.equal(h.callbacks.length, 2);
+  assert.deepEqual(h.storeOffs, [SUB_SID, SUB_SID]);
+  // 桥 acquire 抛异常（注册表里没有这个 store）
+  const a = make03ctx({ acquireThrows: true });
+  assert.doesNotThrow(() => a.api.detOwnerOf(subTree(a, SUB_SID).box));
+  assert.deepEqual(plain(a.api.diag()), { panes: 1, bound: 0, retrying: 1 });
+  assert.equal(a.callbacks.length, 0, '拿不到 store 就不订阅');
+  a.api.tick();
+  assert.equal(a.acquired.length, 1, '未到重试点不重试');
+  a.ctx.Date.now = () => 2500;
+  assert.doesNotThrow(() => a.api.tick());
+  assert.equal(a.acquired.length, 2, '到点重试');
+  // 注册表查询抛异常：不继续往下取租约
+  const t = make03ctx({ tryThrows: true, acquireStore: true });
+  assert.doesNotThrow(() => t.api.detOwnerOf(subTree(t, SUB_SID).box));
+  assert.equal(t.acquired.length, 0, '注册表查询抛异常后不继续取租约');
+  assert.deepEqual(plain(t.api.diag()), { panes: 1, bound: 0, retrying: 1 });
+  t.ctx.Date.now = () => 2500;
+  assert.doesNotThrow(() => t.api.tick());
+  assert.equal(t.tryCalls.length, 2, '到点重试');
+});
+
+test('v458 已知限制：同一子代理会话两个窗格——观察器只跟先发现的根，另一个根不认领', () => {
+  const h = make03ctx({ tryStore: true });
+  const a = subTree(h, SUB_SID), b = subTree(h, SUB_SID);
+  const w = h.api.detOwnerOf(a.box);
+  assert.equal(w.pid, 'subagent-pane:' + SUB_SID);
+  assert.equal(h.api.detOwnerOf(b.box), null);
+  assert.equal(h.api.detOwnerOf(a.box), w);
+  assert.equal(h.api.list().length, 1);
 });
 
 test('v458 生命周期：窗格根断连 → detRoot 返 null 不认领，tick 巡检撤除并释放租约', () => {
@@ -379,7 +497,7 @@ function makeChainctx(opts) {
     zuActiveTurnId: () => '',
     TURN_STATS: {
       createTracker: () => ({ get: tid => (opts.stats && opts.stats[tid]) || null, dispose() {} }),
-      subscribeStore: () => () => {},
+      subscribeStore: () => { if (opts.subThrows) throw new Error('host store subscribe failed'); return () => {}; },
     },
     zuHasMeaningfulOutput: s => !!(s && s.outputTokens),
     zuFinalText: s => 'final:' + s.text,
@@ -486,6 +604,22 @@ test('v458 接线（行为）：换代清理 cleanupDeterministic 释放在册�
   assert.deepEqual(plain(h.api.diagSub()), { panes: 0, bound: 0, retrying: 0 });
   assert.equal(h.storeOffs.length, 2);
   assert.equal(h.cleared(), 1, '扫描定时器一并清掉');
+});
+
+test('v458 接线（行为）：观察器绑定抛异常不打断扫描与 sharedTick——同拍的窗格照常发现，节拍照跑', () => {
+  // 绑定挂在 detOwnerOf 的无归属回退上（每拍扫描）；异常冒出去会让文档序在后的行整拍不再处理
+  const h = makeChainctx({ tryStore: true, subThrows: true });
+  const a = pane(h, ['msg_t2'], SUB_SID);
+  pane(h, ['msg_t2'], 'sess_subagent_b');
+  assert.doesNotThrow(() => h.api.scan());
+  assert.deepEqual(plain(h.api.diagSub()), { panes: 2, bound: 0, retrying: 2 });
+  assert.equal(h.api.reqs().length, 2, '两个窗格的存量最后一轮照常发请求（数字按轮号取，不依赖订阅）');
+  assert.deepEqual(plain(h.api.reqs().map(r => r.turnRef)), ['msg_t2', 'msg_t2']);
+  h.api.deliver(SUB_SID, '⚡ 富文本 A', h.api.reqs()[0].unitEpoch, null);
+  assert.equal(linesOf(a.boxes[0]).length, 1, '没绑上 store 的观察器照样出行');
+  assert.doesNotThrow(() => h.intervals[0]());
+  h.clock.t = 3100;
+  assert.doesNotThrow(() => h.intervals[0]());   // 到重试点再试一次，仍不抛
 });
 
 test('v458 接线（行为）：sharedTick 里巡检观察器——根断连即撤除并释放租约，未绑定的到点重试', () => {

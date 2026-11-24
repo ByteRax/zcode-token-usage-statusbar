@@ -126,7 +126,7 @@
    * 子代理窗格（sess_subagent_* 只读分栏）没有 overlay 实例，det 链的实例归属/请求门/
    * 投递门三处都进不去。观察器以 sid 为键实现 owner 接口（getSid/getScope/detRoot/
    * statsFor/isCurrentTurn/bridgeInfo），detOwnerOf 与实例同规则认领——扫描、占位行、
-   * 富文本回推、诊断整套既有机制零改动复用。身份取窗格自身（zuSubDetPaneScope）：远端或
+   * 富文本回推整套既有机制复用（诊断只加一个 sub 段）。身份取窗格自身（zuSubDetPaneScope）：远端或
    * 带身份的窗格一律不认领，不借本地实例的身份去查本地库（issue #40 的 fail-closed 同款）。
    * store 走子代理速率槽位同款双路径（注册表按本地键精确直绑 → 桥 v2 acquire 租约，
    * refcount、dispose 时 off 释放）。发现搭 detOwnerOf 的无归属回退便车（零新增文档级
@@ -151,7 +151,7 @@
     for (var sid in zuSubDetPanes) { n++; if (zuSubDetPanes[sid].store) bound++; }
     return { panes: n, bound: bound, retrying: n - bound };
   }
-  function zuSubDetPaneScope(root, sid) {   // 窗格自身的本地 scope；远端 / 带身份 / 无法确认本地 → null（不认领）
+  function zuSubDetPaneScope(root) {   // 窗格自身的本地 scope；远端 / 带身份 / 无法确认本地 → null（不认领）
     if (root.getAttribute("data-zusage-scope-version") === "1") {
       /* 桥写在会话根上的 scope 属性（与 readPaneScope 同一来源、同一套校验）。paneId 不核对：
        * 观察器没有宿主 pane 身份，根节点本身就是窗格，这些属性与 data-session-id 同节点同写。 */
@@ -161,31 +161,47 @@
       return { workspacePath: path };
     }
     /* 桥缺席（表外宿主 / 补装失败）时的退路：仅当本窗口每一个实例的 scope 都是已验证的本地
-     * scope 才认领——同窗口只要有远端分栏，或任何一个实例的 scope 不明，就不认领。 */
+     * scope 才认领——同窗口只要有远端分栏，或任何一个实例的 scope 不明，就不认领；实例分布在
+     * 多个本地工作区时分不清窗格属于哪一个，同样不认领。 */
     if (!instances.length) return null;
     var local = null;
     for (var i = 0; i < instances.length; i++) {
       var inst = instances[i], sc = inst.getScope ? inst.getScope() : null;
-      if (!sc || !sc.workspacePath || sc.identity || sc.remoteSessionId) return null;
-      local = sc;
+      var path = sc ? sc.workspacePath : null;
+      if (!sc || sc.identity || sc.remoteSessionId ||
+          typeof path !== "string" || !path.trim() || /[\x00-\x1f\x7f]/.test(path)) return null;
+      if (local === null) local = path; else if (local !== path) return null;
     }
-    return { workspacePath: local.workspacePath };
+    return { workspacePath: local };
   }
   function zuSubDetBind(w) {   // 注册表按本地键精确直绑 → 桥 v2 acquire 租约；失败 2s 重试（同 subSlotReset 纪律）
-    var store = zuTryBindStore(w.getSid(), w.scope) || zuAcquireSubStore(w.getSid(), w.scope);
-    if (!store) { w.retryAt = Date.now() + 2000; return; }
-    var tracker = TURN_STATS.createTracker();
-    var off = TURN_STATS.subscribeStore(store, tracker, function (st) {
-      if (w.dead) return;
-      var snap = st && st.snapshot;
-      if (!snap || snap.sessionId !== w.getSid()) { zuSubDetPaneDispose(w.getSid()); return; }   // 关闭/换代：整观察器撤除待重发现
-      w.activeTid = zuActiveTurnId(snap);
-    });
-    /* subscribeStore 会同步先跑一次回调：已登记的观察器（重绑路径）若在那一拍被撤除，这里必须
-     * 把刚拿到的订阅与租约一并放掉，不能把它们挂到一个已出册的观察器上（租约泄漏）。 */
-    if (!off || w.dead) {
+    /* 永不抛：它跑在扫描（detOwnerOf 的无归属回退）与 sharedTick 两条周期路径上，抛了会打断主会话的
+     * 扫描。任何一步失败——拿不到 store、订阅时抛异常、拿不到退订函数、订阅的同步首跑身份不符——都把
+     * 已经拿到的订阅、租约与 tracker 当场放掉再重试，不挂在观察器上（租约泄漏；真实 subscribeStore
+     * 的退订函数自己会 dispose tracker，拿不到退订函数时由这里兜底）。 */
+    var store = null, tracker = null, off = null, fail = false;
+    try {
+      store = zuTryBindStore(w.getSid(), w.scope) || zuAcquireSubStore(w.getSid(), w.scope);
+      if (!store) { w.retryAt = Date.now() + 2000; return; }
+      tracker = TURN_STATS.createTracker();
+      off = TURN_STATS.subscribeStore(store, tracker, function (st) {
+        if (w.dead) return;
+        var snap = st && st.snapshot;
+        if (!snap || snap.sessionId !== w.getSid()) {
+          if (!w.store) { fail = true; return; }   // 订阅的同步首跑就身份不符（观察器尚未入册）：按绑定失败处理，不带着别的会话的 store 入册
+          zuSubDetPaneDispose(w.getSid());          // 绑定之后收到别的会话的快照：关闭/换代，整观察器撤除待重发现
+          return;
+        }
+        w.activeTid = zuActiveTurnId(snap);
+      });
+      /* subscribeStore 会同步先跑一次回调：首跑身份不符时回调已把 fail 置位。 */
+      if (!off || w.dead) fail = true;
+    } catch (e) { fail = true; }
+    if (fail) {
       try { if (off) off(); } catch (e) { }
-      try { if (store.off) store.off(); } catch (e) { }
+      try { if (store && store.off) store.off(); } catch (e) { }
+      try { if (tracker) tracker.dispose(); } catch (e) { }
+      w.retryAt = Date.now() + 2000;
       return;
     }
     w.store = store; w.tracker = tracker; w.off = off;
@@ -224,7 +240,7 @@
         var sid = p.getAttribute("data-session-id") || "";
         if (/^sess_subagent_[A-Za-z0-9_-]{1,72}$/.test(sid)) {
           if (!zuSubDetPanes[sid]) {
-            var scope = zuSubDetPaneScope(p, sid);
+            var scope = zuSubDetPaneScope(p);
             if (scope) zuSubDetPanes[sid] = zuSubDetPaneCreate(sid, p, scope);
           }
           return zuSubDetPanes[sid] || null;

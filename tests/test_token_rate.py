@@ -1034,6 +1034,13 @@ class _RateCliMixin:
         return subprocess.run([sys.executable, str(RATE), *args],
                               capture_output=True, text=True, env=env, timeout=30)
 
+    def write_prompt_state(self, sid, ts):
+        """给会话记一个提问时刻（prompt-submit hook 写的同款状态形状）：让 --current 越过
+        missingPromptState 门，后续的身份门才轮得到被测。"""
+        Path(self.tmp.name, "state.json").write_text(json.dumps(
+            {"sessionId": sid, "ts": int(time.time() * 1000), "source": "prompt-submit", "prompts": {sid: ts}}),
+            encoding="utf-8")
+
     def _cleanup(self):
         for attempt in range(5):
             try:
@@ -1116,10 +1123,48 @@ class SubagentLatestTurnTests(_RateCliMixin, unittest.TestCase):
             row("m2", "sess_main", "turn_m2", "session_title", t0 + 1000, t0 + 2000, 1000, t0 + 3000, 200, 500, 0),
         ])
         self.db = db
-        r = self.run_rate("--turn", "--session", "sess_main", sid="sess_main")
+        r = self.run_rate("--turn", "--session", "sess_main", "--json", sid="sess_main")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("125 token/s(本轮)", r.stdout)
-        self.assertNotIn("250 token/s(本轮)", r.stdout)   # 非 main_turn 行没被选成最新一轮
+        self.assertEqual(json.loads(r.stdout)["turnId"], "turn_m1")   # 非 main_turn 行没被选成最新一轮
+
+    def test_current_path_keeps_main_turn_filter_for_sessions_without_main_rows(self):
+        # 回退只在「不带提问时刻」的查询上生效：--current（prompt_ts 非空）的选轮与改动前一致，
+        # 没有 main_turn 行的会话即使带着提问状态记录也是空输出（真实子会话不会有提问状态，这里人为构造）
+        self.write_prompt_state("sess_subagent_x", self.t0 - 1000)   # 两轮都在提问时刻之后
+        r = self.run_rate("--turn", "--current", "--session", "sess_subagent_x")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "")
+        data = json.loads(self.run_rate("--turn", "--current", "--session", "sess_subagent_x", "--json").stdout)
+        self.assertIsNone(data["turn"])
+        self.assertTrue(data["noCurrentTurnData"])
+        # 对照：同一提问状态下不带 --current，回退照常生效
+        self.assertIn("166.7 token/s(本轮)", self.run_rate("--turn", "--session", "sess_subagent_x").stdout)
+
+    def test_latest_turn_fallback_treats_null_query_source_as_non_compact(self):
+        # 回退只排除压缩请求：query_source 为空的行照常参与（SQL 的 != 对 NULL 求值为假，必须显式放行）
+        db = str(Path(self.tmp.name) / "nullable.sqlite")
+        con = sqlite3.connect(db)
+        con.executescript(SCHEMA.replace("query_source text not null", "query_source text"))
+        con.executemany("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [
+            row("s2", "sess_subagent_x", "turn_s2", "subagent", self.t0 + 1000, self.t0 + 2000, 1000, self.t0 + 5000, 200, 500, 0),
+            row("n1", "sess_subagent_x", "turn_null", None, self.t0 + 20000, self.t0 + 21000, 1000, self.t0 + 24000, 100, 600, 0),
+        ])
+        con.commit()
+        con.close()
+        self.db = db
+        r = self.run_rate("--turn", "--session", "sess_subagent_x", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        data = json.loads(r.stdout)
+        self.assertEqual(data["turnId"], "turn_null")   # 最新一轮就是 query_source 为空的那一轮
+        self.assertAlmostEqual(data["turn"]["tokPerSec"], 200.0, places=1)   # 600 / 3.0s
+
+    def test_probe_is_scoped_to_the_queried_session(self):
+        # 「有没有 main_turn 行」只看被查询的会话：库里另有带 main_turn 行的主会话时，子会话照样回退
+        self._add_rows([row("m1", "sess_main", "turn_m1", "main_turn", self.t0 - 10000, self.t0 - 8000, 2000,
+                            self.t0, 100, 1000, 0)])
+        r = self.run_rate("--turn", "--session", "sess_subagent_x")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("166.7 token/s(本轮)", r.stdout)
 
     def test_probe_failure_keeps_main_turn_filter(self):
         # 「有没有 main_turn 行」的探测抛错时保持 main_turn 过滤：宁可查不到也不放宽（fail-closed）
@@ -1231,11 +1276,22 @@ class SubagentTurnRefTests(_RateCliMixin, unittest.TestCase):
         con.commit()
         con.close()
 
-    def test_turn_ended_by_cancellation_still_outputs(self):
-        self.end_turn("turn_s2", "cancelled")
-        r = self.run_rate("--turn", "--turn-ref", "msg_b", "--session", self.SUB)
+    def test_turn_ended_by_cancellation_or_error_still_outputs(self):
+        # 「轮已结束」= turn_usage 有终态行：取消、出错的轮同样照常出数（不是只有 completed 才算）
+        for status in ("cancelled", "error"):
+            self.end_turn("turn_s2", status)
+            r = self.run_rate("--turn", "--turn-ref", "msg_b", "--session", self.SUB)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("166.7 token/s(本轮)", r.stdout, status)
+
+    def test_turn_usage_row_with_non_terminal_status_is_not_ended(self):
+        # 宿主若改成轮开始就写行：status 不是终态的行同样判「未结束」，不出半截统计
+        self.end_turn("turn_s2", "running")
+        r = self.run_rate("--turn", "--turn-ref", "msg_b", "--session", self.SUB, "--json")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("166.7 token/s(本轮)", r.stdout)
+        data = json.loads(r.stdout)
+        self.assertIsNone(data["turn"])
+        self.assertTrue(data.get("turnPending"))
 
     def test_unknown_ref_never_falls_back_to_latest_turn(self):
         r = self.run_rate("--turn", "--turn-ref", "msg_zzz", "--session", self.SUB, "--json")
@@ -1243,9 +1299,36 @@ class SubagentTurnRefTests(_RateCliMixin, unittest.TestCase):
         self.assertIsNone(data["turn"])
         self.assertFalse(data.get("turnPending"))
 
+    def test_ref_helpers_are_scoped_to_the_queried_session(self):
+        # 两个 helper 都按（会话, 轮号）/（会话, turn_id）限定——直接调函数断言，不靠「输出为空」归因
+        sys.path.insert(0, str(PLUGIN))
+        import token_rate
+        con = sqlite3.connect(self.db)
+        try:
+            self.assertEqual(token_rate.turn_id_for_ref(con, self.SUB, "msg_a"), "turn_s1")
+            self.assertIsNone(token_rate.turn_id_for_ref(con, "sess_subagent_other", "msg_a"))
+            self.assertTrue(token_rate.turn_ended(con, self.SUB, "turn_s1"))
+            self.assertFalse(token_rate.turn_ended(con, "sess_subagent_other", "turn_s1"))
+        finally:
+            con.close()
+
     def test_ref_on_other_session_is_not_found(self):
         # 同一个页面轮号出现在别的会话里：只按（会话, 轮号）定位，不跨会话借用
         r = self.run_rate("--turn", "--turn-ref", "msg_a", "--session", "sess_subagent_other")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "")
+
+    def test_ref_over_upper_bound_is_rejected_before_the_lookup(self):
+        # 库里真有一行轮号长 81 且已结束：长度上限仍要在查库之前拒绝（「格式放行后查不到」也是空输出，分不出来）
+        long_ref = "a" * 81
+        con = sqlite3.connect(self.db)
+        con.execute("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ref_row("s10", self.SUB, "turn_s10", "subagent", self.t0 + 50000, self.t0 + 51000, 1000,
+                            self.t0 + 52000, 100, 700, 0, long_ref))
+        con.execute("insert into turn_usage values (?,?,?,?)", (self.SUB, "turn_s10", "completed", self.t0 + 52000))
+        con.commit()
+        con.close()
+        r = self.run_rate("--turn", "--turn-ref", long_ref, "--session", self.SUB)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout, "")
 
@@ -1262,10 +1345,15 @@ class SubagentTurnRefTests(_RateCliMixin, unittest.TestCase):
         self.assertEqual(r.stdout, "")                       # 一个轮号对上两轮：不猜
 
     def test_ref_conflicting_with_other_identity_fails_closed(self):
+        # --current 这一支要真的被走到：先给子会话记上提问时刻，否则它更早被 missingPromptState 门拦下
+        self.write_prompt_state(self.SUB, self.t0 - 1000)
         for extra in (["--current"], ["--turn-id", "turn_s1"]):
             r = self.run_rate("--turn", "--turn-ref", "msg_a", *extra, "--session", self.SUB)
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(r.stdout, "", " ".join(extra))
+        # 对照：同一提问状态下去掉冲突项，--turn-ref 照常出数（证明确实是冲突门拦的）
+        self.assertIn("125 token/s(本轮)",
+                      self.run_rate("--turn", "--turn-ref", "msg_a", "--session", self.SUB).stdout)
 
     def test_invalid_ref_format_fails_closed(self):
         # 库里故意放一行轮号带空白的用量（并通过已结束门）：格式校验必须在查库之前拒绝它
@@ -1283,15 +1371,39 @@ class SubagentTurnRefTests(_RateCliMixin, unittest.TestCase):
 
     def test_missing_parent_column_or_turn_usage_table_fails_closed(self):
         rows = self.rows
+
+        def stdout_of(query):
+            r = self.run_rate("--turn", "--turn-ref", "msg_a", "--session", self.SUB)
+            self.assertEqual(r.returncode, 0, query + ": " + r.stderr)   # 缺列/缺表由 helper 兜住，不抛 traceback
+            self.assertEqual(r.stderr, "", query)                       # 主桥据此记成 empty 而不是 pyerr
+            return r.stdout
+
         # 库没有 parent_user_message_id 列：定位不到轮
         self.make(rows, [("turn_s1", "completed", self.t0)], with_column=False)
-        self.assertEqual(self.run_rate("--turn", "--turn-ref", "msg_a", "--session", self.SUB).stdout, "")
+        self.assertEqual(stdout_of("缺列"), "")
         # 库没有 turn_usage 表：无法证明轮已结束
         self.make(rows, [], with_turn_usage=False)
-        self.assertEqual(self.run_rate("--turn", "--turn-ref", "msg_a", "--session", self.SUB).stdout, "")
+        self.assertEqual(stdout_of("缺表"), "")
         # 两个都齐备才出行
         self.make(rows, [("turn_s1", "completed", self.t0)])
-        self.assertIn("125 token/s(本轮)", self.run_rate("--turn", "--turn-ref", "msg_a", "--session", self.SUB).stdout)
+        self.assertIn("125 token/s(本轮)", stdout_of("齐备"))
+
+    def test_missing_database_fails_closed(self):
+        # 库文件不存在（open_db 返回 None）：--turn-ref 不抛异常、空输出
+        self.db = str(Path(self.tmp.name) / "absent.sqlite")
+        r = self.run_rate("--turn", "--turn-ref", "msg_a", "--session", self.SUB)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "")
+
+    def test_ref_flag_without_value_fails_closed(self):
+        # --turn-ref 是最后一个参数（后面没有值）：按非法轮号处理，不落到「最新一轮」
+        args = ("--turn", "--session", self.SUB, "--turn-ref")
+        r = self.run_rate(*args)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "")
+        data = json.loads(self.run_rate(*args, "--json").stdout)
+        self.assertIsNone(data["turnId"])
+        self.assertIsNone(data["turn"])
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

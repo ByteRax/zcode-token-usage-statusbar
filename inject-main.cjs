@@ -2278,12 +2278,12 @@ function queryTurnText(sid, wc, plainUnits, forceKmb, unitEpoch, noCost, turnRef
        缺省（含旧渲染端不带 cost 字段）保持产品默认开启，统计行带费用段。
        v458（specs/subagent-turn-stats-line.md）：子代理窗格按页面轮号精确定位。prompt-submit
        hook 只给用户提问记提问时刻，子会话带 --current 必然空输出；而按会话取「最新一轮」
-       又会把别的轮的富文本挂到窗格里这一轮下面（该轮还在进行、被中止或库还没追上时，最新
-       一轮是上一轮），进行中的轮还会取到半截统计。所以子代理 sid 且渲染端传来 turnRef
+       又会把别的轮的富文本挂到窗格里这一轮下面（该轮还在进行或库还没追上时，最新一轮
+       是上一轮），进行中的轮还会取到半截统计。所以子代理 sid 且渲染端传来 turnRef
        （窗格里这一轮的 data-turn-id，即用量行上的 parent_user_message_id）时改走 --turn-ref：
-       token_rate 只认该会话内该轮号对应的唯一一轮，且该轮已结束才出数，否则空输出、渲染端
-       按既有节奏重试。没有 turnRef 的子代理 sid（旧渲染端不发子代理请求）与 sess_dwf-*
-       等其余 sid 一律维持 --current 口径。 */
+       token_rate 只认该会话内该轮号对应的唯一一轮，且该轮已结束（turn_usage 有行：完成、
+       取消或出错都算结束）才出数，否则空输出、渲染端按既有节奏重试。没有 turnRef 的子代理
+       sid（旧渲染端不发子代理请求）与 sess_dwf-* 等其余 sid 一律维持 --current 口径。 */
     const subAgentTurn = /^sess_subagent_[A-Za-z0-9_-]{1,72}$/.test(sid);
     const ref = subAgentTurn && typeof turnRef === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(turnRef) ? turnRef : "";
     py = spawn(readCfgCached().python_path,

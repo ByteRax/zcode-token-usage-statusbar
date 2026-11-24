@@ -371,18 +371,20 @@ def latest_turn_id(db, sid, prompt_ts=None):
     sql = ("select turn_id from model_usage where session_id=? and query_source='main_turn'"
            " and turn_id is not null and turn_id != '' group by turn_id")
     args = [sid]
-    # v458：无 main_turn 的会话（子代理窗格 sess_subagent_*）回退该会话除压缩请求外的全部行——
-    # 方向同 scope_for 的全量回退，但压缩请求不参与选轮（宿主给压缩行的 turn_id 独立时会被
-    # 当成最新一轮）。探测失败时保持 main_turn 过滤：宁可查不到也不放宽（fail-closed）。
-    # prompt_ts 过滤只在显式传入（--current 路径）时叠加。
+    # v458：无 main_turn 的会话（子代理窗格 sess_subagent_*）在不带提问时刻（非 --current 路径）
+    # 时回退该会话除压缩请求外的全部行——方向同 scope_for 的全量回退，但压缩请求不参与选轮
+    # （宿主给压缩行的 turn_id 独立时会被当成最新一轮；query_source 为空的行照常参与）。
+    # --current 路径（prompt_ts 非空）与探测失败时都保持 main_turn 过滤：与改动前逐字节一致，
+    # 宁可查不到也不放宽（fail-closed）。
     try:
         has_main = db.execute(
             "select 1 from model_usage where session_id=? and query_source='main_turn' limit 1",
             args).fetchone()
     except sqlite3.OperationalError:
         has_main = True
-    if not has_main:
-        sql = sql.replace(" and query_source='main_turn'", " and query_source!='compact'")
+    if not has_main and prompt_ts is None:
+        sql = sql.replace(" and query_source='main_turn'",
+                          " and (query_source is null or query_source!='compact')")
     if prompt_ts is not None:
         # 时间仅是旧宿主的有限兼容过滤，不证明身份；不允许向前借用旧轮。
         sql += " having min(started_at) >= ?"
@@ -416,9 +418,12 @@ def turn_id_for_ref(db, sid, ref):
 def turn_ended(db, sid, turn_id):
     """turn_usage 的行在轮结束时才写：进行中的轮没有行，已结束的轮有行且 status 只有
     completed / cancelled / error（真库实测：正在跑的轮无行，子代理会话 1493 轮里 1492 轮有行）。
-    查不到行或表缺席都按「未结束」处理——调用方不出数，绝不把进行中的半截统计当成结果。"""
+    状态也一并核对：宿主若改成轮开始就写行（status 为进行中一类），这里同样判「未结束」。
+    查不到行、状态不在终态集合里或表缺席都按「未结束」处理——调用方不出数，不把进行中的
+    半截统计当成结果。"""
     try:
-        return db.execute("select 1 from turn_usage where session_id=? and turn_id=? limit 1",
+        return db.execute("select 1 from turn_usage where session_id=? and turn_id=?"
+                          " and status in ('completed','cancelled','error') limit 1",
                           [sid, turn_id]).fetchone() is not None
     except sqlite3.OperationalError:
         return False
@@ -459,10 +464,11 @@ def query_turn(session_id=None, current=False, turn_id=None, turn_ref=None):
                     "noCurrentTurnData": True, "currentTurnUnavailableReason": "missingPromptState", "session": session}
         turn_pending = False
         if turn_ref is not None:
-            # v458 子代理窗格统计行：按页面轮号精确定位这一轮。按会话取「最新一轮」会把别的轮
-            # 的富文本挂到窗格里这一轮下面（该轮还在进行、被中止、库还没追上时最新一轮是上一轮），
-            # 进行中的轮还会取出半截统计。只认该会话内该轮号对应的唯一一轮，且轮已结束才出数；
-            # 与 --current / --turn-id 同给时按 fail-closed 处理（不替调用方决定按哪个身份）。
+            # v458 子代理窗格统计行：按页面轮号精确定位这一轮。按会话取「最新一轮」分不清窗格里
+            # 这一行属于哪一轮：该轮还在进行或库还没追上时「最新一轮」是上一轮，上一轮的富文本会
+            # 被挂到这一轮下面；进行中的轮还会取出半截统计。只认该会话内该轮号对应的唯一一轮，且轮
+            # 已结束才出数（turn_ended：完成、取消或出错都算结束）；与 --current / --turn-id 同给时
+            # 按 fail-closed 处理（不替调用方决定按哪个身份）。
             if current or turn_id or db is None or not TURN_REF_RE.match(turn_ref):
                 return {"sessionId": sid, "turnId": None, "turn": None, "session": session}
             identity_source = "parentTurnRef"
@@ -744,8 +750,11 @@ def main(argv):
     sid = (_value_arg(argv, "--session") or os.environ.get("ZCODE_SESSION_ID")
            or os.environ.get("CLAUDE_SESSION_ID") or None)
     if "--turn" in argv:
+        turn_ref = _value_arg(argv, "--turn-ref")
+        if "--turn-ref" in argv and turn_ref is None:
+            turn_ref = ""   # --turn-ref 后面没有值：按非法轮号处理（fail-closed），不落到「最新一轮」
         r = query_turn(sid, current="--current" in argv, turn_id=_value_arg(argv, "--turn-id"),
-                       turn_ref=_value_arg(argv, "--turn-ref"))
+                       turn_ref=turn_ref)
         if json_out:
             print(json.dumps(r, ensure_ascii=False))
         elif r.get("turn"):
