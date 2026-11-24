@@ -325,8 +325,9 @@
      * → v447 OpenCode Go 额度撤回按模型换算（issue #453，撤回 v385）：官方文档（opencode.ai/docs/go「Usage limits」）明示 Go 的付费模型共用一个额度、各模型「月度额度」只是整月单用该模型时的标价用量覆盖、请求按模型折算计入同一池，/console/api/go/status 的 meters（Go 档 12/30/60 美元）即该池本身而非「基线」。v385（issue #382）把模型月度额度当成独立池放大窗口总额并重算 percent，实报 Go 档总额被显示成 20/50/100（当前模型 deepseek-v4.1-flash），月窗真实已用 24.20/60=40.33% 被显示成 24.2%，月度额度 15 美元的模型窗口总额缩到 1/4、已用比例放大 4 倍（已用约 30% 钳成 100%）。本批：删除 11 分片 quotaOpencodeModelView 与 28 款模型快照表，quotaChipMode 与 chip.__zuQ 回到源数据原值（窗口 total、used、remaining、percent 不换算）；01 分片 tooltip 页脚去掉 modelBasis 模型口径分支、恢复「套餐池为账号级」固定页脚；额度链、协议、调度器零改动（模型不入键、不触发重查不变）。回归 tests/overlay-quota-opencode-model.test.cjs 重写为「原样展示」契约；参考实现 magpie planquota 同样只读官方 usage 端点的窗口百分比。
      * → v448 压缩标注变化行去前缀（用户规格「去除上下文变化：这个开头」）：11 分片 compSuffixHtml 的 L2 去「上下文变化：」/en「Context: 」开头——宿主压缩分隔线本身已表达压缩语义，数值行直接以水位变化起句，「减少/压缩消耗/耗时/由 X 执行」措辞不变；compaction-rows 用例断言同步。
      * → v450 设置行非 checkbox 控件右对齐（用户截图实报「悬停显示延迟」下拉停在标题左侧；v448/v449 已被并行批次占用，按合入顺序顺延）：设置行是 flex 布局，全局 order:2 只覆盖 checkbox——.zu-tip-hover-ms 下拉与 .zu-rst-cdh 倒计时阈值输入框没有 order 规则，停在 DOM 原位（标题文字左侧）；补各自 order:2 靠右（对齐 .zu-ctxov 与 v436 .zu-ac-pair 先例），下拉样式对齐 .zu-ac-mode（appearance:none + 自绘箭头 + 同款边框圆角字号），不依赖宿主原生 select 外观，两处下拉观感一致；overlay-settings 结构锁两条防规则再被删。
+     * → v460 子代理窗格统计行（用户规格，specs/subagent-turn-stats-line.md；v447 已被 OpenCode Go 批次占用顺延）：sess_subagent_* 只读分栏的回答末尾也追加与主会话同款确定性统计行——03 分片伪 owner 观察器（sid 键：detRoot/getScope/statsFor/isCurrentTurn）接入 detOwnerOf 无归属回退，扫描/占位/富文本/诊断整套既有机制零改动复用；store 走注册表直绑或桥 v2 acquire 租约（远端自拒不出行），生命周期搭 sharedTick/detOwnerOf 便车（零新增定时器/文档查询），活跃轮号订阅回调推送缓存（不读 store）；02 分片 noInst/stale 两门 typeof 守卫放行观察器 owner；主桥对子代理 sid 去 --current 走 latestTurn（hook 无提问时刻记录，--current 必然空输出），latest_turn_id 对无 main_turn 行的会话补全量回退（token_rate 根与插件副本同源；scope_for 全量回退使会话均开箱即用）；inject-main 冷文件需完全重启生效。
      */
-    var VERSION = "v450";
+    var VERSION = "v460";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */

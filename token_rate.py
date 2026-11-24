@@ -367,6 +367,16 @@ def latest_turn_id(db, sid, prompt_ts=None):
     sql = ("select turn_id from model_usage where session_id=? and query_source='main_turn'"
            " and turn_id is not null and turn_id != '' group by turn_id")
     args = [sid]
+    # v460：无 main_turn 的会话（子代理窗格 sess_subagent_*）回退该会话全部行——
+    # 与 scope_for 同一语义；prompt_ts 过滤只在显式传入（--current 路径）时叠加。
+    try:
+        has_main = db.execute(
+            "select 1 from model_usage where session_id=? and query_source='main_turn' limit 1",
+            args).fetchone()
+    except sqlite3.OperationalError:
+        has_main = None
+    if not has_main:
+        sql = sql.replace(" and query_source='main_turn'", "")
     if prompt_ts is not None:
         # 时间仅是旧宿主的有限兼容过滤，不证明身份；不允许向前借用旧轮。
         sql += " having min(started_at) >= ?"
