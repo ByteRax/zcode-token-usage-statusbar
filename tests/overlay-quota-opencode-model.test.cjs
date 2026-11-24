@@ -343,9 +343,9 @@ test('English UI shows the same as-is numbers in the window rows and the account
   /* aria-label 单独锁定：完整档 aria 走 fullAria，与可见分段不是同一段代码 */
   assert.equal(m.chip.getAttribute('aria-label'), 'Plan used 5h 1%, 7d 7%, 1mo 40%');
   const html = m.tip();
-  assert.match(html, /5-hour window<\/b><span>used 1\.3% · \$0\.16 \/ \$12\.00 · remaining \$11\.84/);
-  assert.match(html, /This week<\/b><span>used 6\.7% · \$2\.00 \/ \$30\.00 · remaining \$28\.00/);
-  assert.match(html, /Monthly<\/b><span>used 40\.3% · \$24\.20 \/ \$60\.00 · remaining \$35\.80/);
+  assert.match(html, /5-hour window<\/b><span>used 1\.3% · \$0\.16 \/ \$12\.00 · remaining \$11\.84<\/span>/);
+  assert.match(html, /This week<\/b><span>used 6\.7% · \$2\.00 \/ \$30\.00 · remaining \$28\.00<\/span>/);
+  assert.match(html, /Monthly<\/b><span>used 40\.3% · \$24\.20 \/ \$60\.00 · remaining \$35\.80<\/span>/);
   assert.match(html, /The pool is account-level/);
   assert.doesNotMatch(html, /Window totals are scaled/);
 });
@@ -356,7 +356,7 @@ test('English UI in the remaining view shows the same as-is numbers', () => {
   assert.equal(segsOf(m.chip), '99,93,60');
   assert.equal(m.chip.getAttribute('aria-label'), 'Plan remaining 5h 99%, 7d 93%, 1mo 60%');
   const html = m.tip();
-  assert.match(html, /5-hour window<\/b><span>remaining 98\.7% · \$11\.84 \/ \$12\.00 · used \$0\.16/);
-  assert.match(html, /This week<\/b><span>remaining 93\.3% · \$28\.00 \/ \$30\.00 · used \$2\.00/);
-  assert.match(html, /Monthly<\/b><span>remaining 59\.7% · \$35\.80 \/ \$60\.00 · used \$24\.20/);
+  assert.match(html, /5-hour window<\/b><span>remaining 98\.7% · \$11\.84 \/ \$12\.00 · used \$0\.16<\/span>/);
+  assert.match(html, /This week<\/b><span>remaining 93\.3% · \$28\.00 \/ \$30\.00 · used \$2\.00<\/span>/);
+  assert.match(html, /Monthly<\/b><span>remaining 59\.7% · \$35\.80 \/ \$60\.00 · used \$24\.20<\/span>/);
 });
