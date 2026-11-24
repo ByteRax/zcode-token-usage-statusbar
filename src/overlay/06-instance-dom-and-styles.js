@@ -324,8 +324,9 @@
      * → v446 速度格稳定占位（用户 /goal 规格，specs/speed-chip-stable-slot.md）：条面速度格四档宽 12.6/10.9/7.2/2.75em 复用既有窄宽类与折叠段属性（零新增测量），外宽只随布局档位变、不随状态文字变；药丸两档 zu-speed-mid/tight 由 track 按卡片可用宽度升降；精简 chip 三档（12.4/9.7/6.6em）由 zuTsbTierSync 按宿主工具行真实空位选档（挂载当拍到位、宿主压缩让一档一次一档、降档后 2s 静默期防拉锯）；折叠富余判据改读 zuBarContentWidth()（旧 scrollWidth 判据从未成立）；全称两来源（aria-label 展示视图、data-zu-full 真实视图）；新增 overlay-speed-slot 43 例/探针判定 15 例/真实浏览器数据链用例，变异合计 62。
      * → v447 OpenCode Go 额度撤回按模型换算（issue #453，撤回 v385）：官方文档（opencode.ai/docs/go「Usage limits」）明示 Go 的付费模型共用一个额度、各模型「月度额度」只是整月单用该模型时的标价用量覆盖、请求按模型折算计入同一池，/console/api/go/status 的 meters（Go 档 12/30/60 美元）即该池本身而非「基线」。v385（issue #382）把模型月度额度当成独立池放大窗口总额并重算 percent，实报 Go 档总额被显示成 20/50/100（当前模型 deepseek-v4.1-flash），月窗真实已用 24.20/60=40.33% 被显示成 24.2%，月度额度 15 美元的模型窗口总额缩到 1/4、已用比例放大 4 倍（已用约 30% 钳成 100%）。本批：删除 11 分片 quotaOpencodeModelView 与 28 款模型快照表，quotaChipMode 与 chip.__zuQ 回到源数据原值（窗口 total、used、remaining、percent 不换算）；01 分片 tooltip 页脚去掉 modelBasis 模型口径分支、恢复「套餐池为账号级」固定页脚；额度链、协议、调度器零改动（模型不入键、不触发重查不变）。回归 tests/overlay-quota-opencode-model.test.cjs 重写为「原样展示」契约；参考实现 magpie planquota 同样只读官方 usage 端点的窗口百分比。
      * → v448 压缩标注变化行去前缀（用户规格「去除上下文变化：这个开头」）：11 分片 compSuffixHtml 的 L2 去「上下文变化：」/en「Context: 」开头——宿主压缩分隔线本身已表达压缩语义，数值行直接以水位变化起句，「减少/压缩消耗/耗时/由 X 执行」措辞不变；compaction-rows 用例断言同步。
+     * → v450 设置行非 checkbox 控件右对齐（用户截图实报「悬停显示延迟」下拉停在标题左侧；v448/v449 已被并行批次占用，按合入顺序顺延）：设置行是 flex 布局，全局 order:2 只覆盖 checkbox——.zu-tip-hover-ms 下拉与 .zu-rst-cdh 倒计时阈值输入框没有 order 规则，停在 DOM 原位（标题文字左侧）；补各自 order:2 靠右（对齐 .zu-ctxov 与 v436 .zu-ac-pair 先例），下拉样式对齐 .zu-ac-mode（appearance:none + 自绘箭头 + 同款边框圆角字号），不依赖宿主原生 select 外观，两处下拉观感一致；overlay-settings 结构锁两条防规则再被删。
      */
-    var VERSION = "v448";
+    var VERSION = "v450";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -1264,6 +1265,10 @@
       ".zu-settings input:focus-visible,.zu-settings button:focus-visible{outline:2px solid var(--color-input-border-focused,var(--color-brand,#57c7ff))!important;outline-offset:2px}" +
       ".zu-settings input:disabled{opacity:.4;cursor:default}" +
       ".zu-settings .zu-ctxov{order:2;box-sizing:border-box;width:120px;min-width:0;padding:5px 7px}" +
+      /* 悬停延迟下拉/倒计时阈值输入框同样靠右：全局 order:2 只覆盖 checkbox，非 checkbox 控件须各自声明；
+         下拉样式对齐 .zu-ac-mode（appearance:none + 自绘箭头），不依赖宿主原生 select 外观 */
+      ".zu-settings .zu-tip-hover-ms{order:2;flex:0 0 auto;margin-top:4px;box-sizing:border-box;padding:4px 26px 4px 10px;background:var(--color-input,transparent) url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239aa3b2' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E\") no-repeat right 10px center;border:1px solid var(--color-border,#666);border-radius:6px;color:var(--color-foreground,inherit);font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px);cursor:pointer;appearance:none;-webkit-appearance:none}.zu-settings .zu-tip-hover-ms:focus{outline:none;border-color:var(--color-primary,var(--color-brand,#888))}" +
+      ".zu-settings .zu-rst-cdh{order:2;box-sizing:border-box;width:120px;min-width:0;padding:5px 7px}" +
       /* v436：pair 贴行右缘——对抗 label>span{flex:1}（pair 是 span 会被拉伸占满整行，控件组停在中部） */
       ".zu-settings .zu-ac-pair{order:2;display:flex;align-items:center;gap:6px;min-width:0;flex:0 0 auto;margin-left:auto}" +
       ".zu-settings .zu-ac-mode{box-sizing:border-box;flex:0 0 auto;padding:4px 26px 4px 10px;background:var(--color-input,transparent) url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239aa3b2' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E\") no-repeat right 10px center;border:1px solid var(--color-border,#666);border-radius:6px;color:var(--color-foreground,inherit);font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px);cursor:pointer;appearance:none;-webkit-appearance:none}.zu-settings .zu-ac-mode:focus{outline:none;border-color:var(--color-primary,var(--color-brand,#888))}" +
