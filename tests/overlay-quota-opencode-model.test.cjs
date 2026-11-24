@@ -323,6 +323,8 @@ test('English UI shows the same as-is numbers in the window rows and the account
   const h = harness({ prefs: { 'zusage3.lang': 'en' } });
   const m = mount(h, Object.assign({ quota: ocQuota(OC_453) }, OC));
   assert.equal(segsOf(m.chip), '1,7,40');
+  /* aria-label 单独锁定：完整档 aria 走 fullAria，与可见分段不是同一段代码 */
+  assert.equal(m.chip.getAttribute('aria-label'), 'Plan used 5h 1%, 7d 7%, 1mo 40%');
   const html = m.tip();
   assert.match(html, /Monthly<\/b><span>used 40\.3% · \$24\.20 \/ \$60\.00 · remaining \$35\.80/);
   assert.match(html, /The pool is account-level/);
