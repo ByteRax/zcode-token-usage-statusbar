@@ -1843,7 +1843,8 @@
           "正在因超多工具不知所措…",
           "正在把多体问题算成三体(然后开摆)…",
           "正在陪跑一个永不验收的项目…",
-          "正在优雅地睡过整个 CI…"
+          "正在优雅地睡过整个 CI…",
+          {"text":"正在以 {tps} tok/s 搬砖，工期另算…","weight":3}
         ]
       },
       en: {
@@ -1932,7 +1933,8 @@
           "Being overwhelmed by the tool overload…",
           "Walking through the U+ codepoint table…",
           "Performing annual maintenance on the Solar System…",
-          "Sleeping through the whole CI with grace…"
+          "Sleeping through the whole CI with grace…",
+          {"text":"Hauling bricks at {tps} tok/s…","weight":3}
         ]
       }
     },
@@ -2086,7 +2088,9 @@
           "正在数星星(数到一半忘了)…",
           "正在为宇宙计算更精确的 π…",
           "正在和 42 讨论生命的意义…",
-          "正在备份地球(进度 0.0001%)…"
+          "正在备份地球(进度 0.0001%)…",
+          {"text":"正在以 {tps} tok/s 对抗熵增…","weight":3},
+          {"text":"正在维持 {tps} tok/s 的对撞功率…","weight":3}
         ]
       },
       en: {
@@ -2116,7 +2120,9 @@
           "Computing the universe's birthday…",
           "Counting stars (lost count halfway)…",
           "Discussing the meaning of life with 42…",
-          "Backing up Earth (0.0001% done)…"
+          "Backing up Earth (0.0001% done)…",
+          {"text":"Holding {tps} tok/s against entropy…","weight":3},
+          {"text":"Keeping the collider at {tps} tok/s…","weight":3}
         ]
       }
     },
@@ -2166,13 +2172,16 @@
           "正在摸鱼但装作在推理…",
           "正在偷懒且理直气壮…",
           "哦鲸鲸…",
-          "正在变成鲸鱼娘中…"
+          "正在变成鲸鱼娘中…",
+          {"text":"正在以 {tps} tok/s 巡航摸鱼…","weight":3}
         ],
         long: [
           "正在用鲸尾扇风…",
           "正在摇尾巴等你发现…",
           "正在摸到忘记在摸什么…",
-          "正在等原神更新完…"
+          "正在等原神更新完…",
+          {"text":"正在用 {tps} tok/s 的鲸尾扇风…","weight":3},
+          {"text":"正在长途摸鱼，时速 {tps} tok/s…","weight":3}
         ]
       },
       en: {
@@ -2204,7 +2213,8 @@
           "Getting distracted by raccoons…",
           "Writing a mini-game after finishing your task…",
           "Hot-reloading itself to death…",
-          "Being lazy with a straight face…"
+          "Being lazy with a straight face…",
+          {"text":"Cruising at {tps} tok/s on company time…","weight":3}
         ],
         long: [
           "Executing sleep…",
@@ -2213,7 +2223,9 @@
           "Fanning itself with its whale tail…",
           "Wagging its tail until you notice…",
           "Slacking so hard it forgot the task…",
-          "Waiting for the Genshin update to finish…"
+          "Waiting for the Genshin update to finish…",
+          {"text":"Long-haul slacking at {tps} tok/s…","weight":3},
+          {"text":"Fanning {tps} tok/s with its whale tail…","weight":3}
         ]
       }
     },

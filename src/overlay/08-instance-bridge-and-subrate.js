@@ -759,47 +759,75 @@
       stats = synthesizeBackgroundStats(stats);   // v336：主会话无实时轮而后台槽位在跑——合成子代理运行态（速度格不再静态）
       renderSubAgentRows();   // v176：Agent 行内速率 chip 对账（槽位估算/快照真实值两态）
       var wasLive = liveKindCur === "live";
-      var view = stats ? zuBarSpeedView(stats, h && h.charsPerToken, subRate.sum,
+      /* rview=真实视图（tooltip、失鲜标记只读它）；view=展示视图（展示协调器按防抖/节流给出的
+       * 快照，只供格面，specs/speed-chip-stable-slot.md） */
+      var rview = stats ? zuBarSpeedView(stats, h && h.charsPerToken, subRate.sum,
         /* 本 pane 会话行（render 缓存），不取 payload 顶层 session——那是全局最近活跃
          * 会话，多窗/分栏下会把别的会话的会话均串进本格（v181 补修）。 */
         (lastView && lastView.session && typeof lastView.session.avg_tps === "number" &&
          isFinite(lastView.session.avg_tps) && lastView.session.avg_tps > 0) ? lastView.session.avg_tps : 0) : null;
       liveStatsCur = stats;
       if (state.theme === "compact") {
+        if (!rview && typeof zuSpDispPick === "function") zuSpDispPick(null, Date.now());   // 无实时视图即清展示缓存（精简 chip 的实时态在 tpsChipView 内裁决）
         syncTpsChip();   // v146：精简模式速率走工具行 chip（10Hz 心跳原地跟随，条面不重建）
         if (typeof syncSysmonChip === "function") syncSysmonChip();   // v356：系统状态 chip 同链（短路 return 到不了公共尾部）
         if (typeof sysmonWantRecalc === "function") sysmonWantRecalc();   // v356：chip 挂载即订阅采样
         return;
       }
+      var view = typeof zuSpDispPick === "function" ? zuSpDispPick(rview, Date.now()) : rview;
       // 用 view（而非 stats）判定快速路径：stats 非空但 view 为 null（历史存量，见
       // zuBarSpeedView）时结构要切回降级拼法，必须走下面的整条重渲染，不能原地改字。
-      // 阶段（思考↔工具↔正文）切换会更换 chip 的图标（动效脑/闪电），同样只能整条
-      // 重渲染——原地改字换不了图标。
       var phase = view && view.phase ? view.phase : "";
-      if (view && wasLive && phase === livePhaseCur) {
+      if (view && wasLive) {
         liveTextCur = view.text;
         if (!liveEl) { render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 }); return; }
-        /* v326：原地更新同样写「数字+dim」两 item 结构（gap:5px 需两 item；textContent
-         * 会把结构转义成纯文本）。innerHTML 小串无压力，相位切换仍走整条重渲染。 */
-        var faceHtml = zuLiveFaceHtml(view.text);
-        if (liveEl.innerHTML !== faceHtml) liveEl.innerHTML = faceHtml;
+        var liveCell = liveEl.closest ? liveEl.closest(".it") : null;
+        if (phase !== livePhaseCur) {
+          /* 相位切换（思考↔工具↔正文↔完成）：只重写本格（图标 + 面同拍换），格元素、焦点、
+           * tooltip 锚点与折叠属性原地保留——此前每次相位切换都整条 render（重建 .zu-main、
+           * 重启呼吸灯/红点动画并触发窄宽探针重测）。找不到格元素（VM 字符串回放夹具）
+           * 时回退整条渲染。 */
+          if (!liveCell) { render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 }); return; }
+          liveCell.innerHTML = zuSpeedIconHtml(phase) +
+            '<span class="zu-live ' + view.cls + (view.word ? " zu-shimmer" : "") + '">' + zuSpeedFaceHtml(view) + "</span>";
+          liveEl = liveCell.querySelector(".zu-live");
+          livePhaseCur = phase;
+          liveEl.__zuSpLabel = null;
+        } else {
+        /* v326 机制延续：原地更新写「数值 + dim 单位」零空格 item 结构（textContent 会把结构
+         * 转义成纯文本）。innerHTML 小串无压力；内容未变不写。 */
+        var faceHtml = zuSpeedFaceHtml(view);
+        if (liveEl.innerHTML !== faceHtml) {
+          var prevLabel = liveEl.__zuSpLabel;
+          liveEl.innerHTML = faceHtml;
+          if (liveEl.querySelector) {
+            var labEl = liveEl.querySelector(".zu-sp-label");
+            var labelNow = labEl ? labEl.textContent : "";
+            /* 纯内容切换的短透明度过渡：只在标签文字变化时播（数值走字不播），Element.animate 缺位静默跳过 */
+            if (labEl && prevLabel != null && labelNow !== prevLabel && typeof labEl.animate === "function")
+              labEl.animate([{ opacity: 0.45 }, { opacity: 1 }], 120);
+            liveEl.__zuSpLabel = labelNow;
+          }
+        }
+        }
         liveIconCur = phase === "thinking" ? "think" : phase === "tool" ? "tool" : phase ? "generate" : "bolt";
+        zuSpeedCellSync(liveCell, view.text, rview && rview.text);
         var cls = "zu-live " + view.cls + (view.word ? " zu-shimmer" : "");
         if (liveEl.className !== cls) liveEl.className = cls;
         /* v97：子代理速率是渲染端实时状态（不在泵快照里），tooltip 里的逐子代理
          * 行随原地改字一起刷新——内容签名没变时 drawTip 幂等只调位置，不闪烁。
          * 性能治理（specs/perf-lag-reduction.md §4）：未悬停本格时不再每拍白建整张 V2 速度卡
          * （心跳 10Hz + store 通知，6000 轮历史时 ~5ms/次）——只记最新 view 并标失鲜，
-         * drawTip 打开瞬间经 liveTipRefresh 补建，兜底每 1s 保鲜一次；悬停本格仍每拍构建。 */
-        var liveCell = liveEl.closest ? liveEl.closest(".it") : null;
+         * drawTip 打开瞬间经 liveTipRefresh 补建，兜底每 1s 保鲜一次；悬停本格仍每拍构建。
+         * tooltip 一律读真实视图 rview（不受格面防抖/节流影响）。 */
         var hoverLive = !!liveCell && typeof tipFor !== "undefined" && tipFor === liveCell;
         if (liveCell && !hoverLive && Date.now() - liveTipBuiltAt < 1000) {
-          liveCell.__zuTipView = view;
+          liveCell.__zuTipView = rview;
           liveCell.__zuTipStale = true;
           return;
         }
         liveTipBuiltAt = Date.now();
-        var tip1 = buildLiveTip(view);
+        var tip1 = buildLiveTip(rview);
         if (liveCell) liveCell.__zuTipStale = false;
         if (liveCell && liveCell.__tip !== tip1) {
           /* v224 修复：__tip 宿主与 drawTip 读取都在 .it 格元素上（render 挂 tips[i]、
@@ -839,6 +867,49 @@
       idleRenderAt = Date.now();
       render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 });
     }
+    /* ---------- 展示协调器（specs/speed-chip-stable-slot.md）：真实视图 → 展示视图 ----------
+     * 无定时器：每次 updateLive / html() 到达时按时间戳裁决，实例闭包状态随实例销毁，按
+     * 「会话 sid + 轮 id」隔离。硬边界立即上屏（身份变化、数据源切换、最终态 avg/real 进出）；
+     * 运行态之间的切换需候选连续保持 debounce 毫秒，且 thinking/estimate 这类非关键中间态至少
+     * 展示 minShow 毫秒——工具类状态不被挽留（工具结束不会 lingering「执行中」超过一个防抖窗）。
+     * 颜色稳定：灰（工具/思考/无速率子代理）↔ 档位色互换后至少 color 毫秒不再变色，同色切换不受
+     * 约束，硬边界优先。同态下估算/子代理数值与档位色取同一真实快照、≥num 毫秒换一次（num ≥ color，
+     * 档位色随数值换时天然满足稳定期）；子代理数量变化即时。计时节流：同态内耗时文本每 time 毫秒
+     * 才换一次（首拍即取当前真实耗时；无值→有值立即）——只管同一状态内的文本刷新，状态进出
+     * （工具结束、报错、桥断开）不受它约束，且耗时始终取真实时间戳差不重新起算。
+     * 态键含同态内的「面」身份（工具名/工具组类别/技能名）：同类工具直接换手也要过防抖。
+     * 只影响格面：tooltip、统计与历史一律读真实视图。阈值在 02 分片 ZU_SPEED_DISP_MS。 */
+    var spdDisp = null;
+    function zuSpDispPick(view, now) {
+      if (!view) { spdDisp = null; return null; }
+      var T = typeof ZU_SPEED_DISP_MS !== "undefined" ? ZU_SPEED_DISP_MS : { debounce: 0, minShow: 0, num: 0 };
+      var bh = typeof bridge !== "undefined" && bridge ? bridge : null;
+      var ident = String((bh && bh.handle && bh.handle.sid) || "") + "|" + String((bh && bh.turnId) || "");
+      var key = view.kind + "|" + (view.phase || "") + "|" + String(view.toolName || view.groupKind || view.nameText || "");
+      var d = spdDisp, shown = d && d.view;
+      var final = view.kind === "avg" || view.kind === "real";
+      var timed = view.kind === "tool" || view.kind === "toolgroup" || view.kind === "skill" || view.kind === "thinking";
+      if (shown && key === d.key && ident === d.ident && !final) {
+        var throttled = view.kind === "estimate" || view.kind === "subagent";
+        d.candKey = key;   // 真实状态回到已展示态：候选作废（A→B→A 抖动时 B 不得累积防抖时长）
+        if (throttled && now - d.numAt < T.num && !(shown.kind === "subagent" && shown.activeCount !== view.activeCount)) return shown;
+        if (throttled) d.numAt = now;
+        if (timed && typeof shown.elapsedMs === "number" && now - d.timeAt < T.time) return shown;
+        if (timed) d.timeAt = now;
+        d.view = view;
+        return view;
+      }
+      if (shown && ident === d.ident && !final && shown.kind !== "avg" && shown.kind !== "real") {
+        if (d.candKey !== key) { d.candKey = key; d.candAt = now; }
+        if (shown.cls !== view.cls && now - d.colorAt < T.color) return shown;   // 变色且当前颜色不足 color 毫秒：保持
+        if (now - d.candAt < T.debounce ||
+            ((shown.kind === "thinking" || shown.kind === "estimate") && now - d.at < T.minShow)) return shown;
+      }
+      /* colorAt=当前颜色开始显示的时刻：与上一展示同色（含硬边界切换）则沿用，否则从现在起算 */
+      spdDisp = { ident: ident, key: key, view: view, at: now, candKey: key, candAt: now, numAt: now, timeAt: now,
+        colorAt: shown && shown.cls === view.cls ? d.colorAt : now };
+      return view;
+    }
     var liveTipBuiltAt = -Infinity, idleRenderData = null, idleRenderAt = -Infinity;   // 实例级节流状态（updateLive 切片内声明，VM 夹具同源；初值 -Infinity：首拍恒构建/渲染，不依赖时钟绝对值）
     /* v90：心跳 0.5s→0.1s——0.5s 秒数走字仍有可感卡顿；render 有 lastHtml 幂等守卫，
      * 内容未变时仅字符串构建+比较、不写 DOM，10Hz 空转无性能顾虑。扫描 tick 保持 0.5s。 */
@@ -850,6 +921,7 @@
 
     var mobileViewKey = "";
     function render(d) {
+      trackDirty = true;   // v444（规则 19）：条面重建后下一帧重判几何（宽度/溢出可能已变），不等 100ms 兜底
       /* v262：只有真实快照帧才更新共享数据。空对象兜底渲染（实例 spawn 首渲染/桥空窗的
        * `render(state.data || {session:{},...})`）若覆盖 state.data，会把统一轮表连同整帧
        * 抹掉——下一次 hover 的整条渲染读不到 speed_history，走 fb-html 旧版整卡（v261
@@ -1145,7 +1217,7 @@
        * 不可达（v416 修正）。positionTip 本就持有测量时机，零新增监听；仅变化才写
        * DOM；量不到宽（隐藏态/夹具桩）保持现值。 */
       if (tip.querySelector && tip.style && tip.style.display === "block") {
-        var statRoot = tip.querySelector(".zu-stat-tip[data-zu-w]");   // v412.1：带 data-zu-w 才是统计卡（V1 速度卡根不带）
+        var statRoot = tip.querySelector(".zu-stat-tip[data-zu-w]");   // v412.1：带 data-zu-w 才入响应式范围（V1 速度卡根不带；tools 卡也带 450，同样写 data-zu-mode 但无 CSS 消费，无害）
         if (statRoot && statRoot.getBoundingClientRect && statRoot.getAttribute && statRoot.setAttribute) {
           var mw = statRoot.getBoundingClientRect().width;
           if (mw > 0) {

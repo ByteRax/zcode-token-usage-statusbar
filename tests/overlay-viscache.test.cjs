@@ -273,3 +273,14 @@ test('own mp-ov overlay covering the composer center does not read as occluded',
   assert.equal(sandbox.reallyVisible(el, true), true, 'ownOK path exempts the mp-ov overlay');
   assert.equal(sandbox.coverOK(el), true, 'coverOK path exempts the mp-ov overlay too');
 });
+
+test('v445: the document-level update-notes gear card is an own overlay (it can fully cover a narrow composer)', () => {
+  const { sandbox } = boot();
+  const el = makeEl(sandbox, { left: 10, top: 400, width: 500, height: 50, right: 510, bottom: 450 });
+  /* 卡是 body 直挂的文档级单例（不带 .zusage-tip-root），只能靠自己的类名进豁免选择器 */
+  sandbox.hitEl = { getBoundingClientRect: () => ({ left: 0, top: 0, right: 1200, bottom: 800 }),
+    contains: () => false, closest: sel => String(sel).indexOf('.zusage-upd-note-tip') >= 0 ? {} : null,
+    computed: { backgroundColor: 'rgb(20, 20, 20)' } };
+  assert.equal(sandbox.reallyVisible(el, true), true, 'ownOK path exempts the update-notes card');
+  assert.equal(sandbox.coverOK(el), true, 'coverOK path exempts the update-notes card too');
+});

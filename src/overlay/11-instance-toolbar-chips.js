@@ -215,10 +215,14 @@
                   isFinite(lastView.session.avg_tps) && lastView.session.avg_tps > 0) ? lastView.session.avg_tps : 0;
       var sv = liveStatsCur ? zuBarSpeedView(liveStatsCur, bridge.handle && bridge.handle.charsPerToken, subRate.sum, cAvg) : null;
       if (sv) {
-        liveKindCur = "live";
-        livePhaseCur = sv.phase || "";
-        return { kind: "live", sv: sv };
-      }
+        /* 格面用展示视图（展示协调器防抖/节流后的快照，与条面同款）；tooltip 仍读真实视图 sv */
+        var dsv = typeof zuSpDispPick === "function" ? zuSpDispPick(sv, Date.now()) : sv;
+        if (dsv) {
+          liveKindCur = "live";
+          livePhaseCur = sv.phase || "";
+          return { kind: "live", sv: sv, face: dsv };
+        }
+      } else if (typeof zuSpDispPick === "function") zuSpDispPick(null, Date.now());   // 无实时视图即清展示缓存
       var dbTps = lastView && lastView.last ? lastView.last.tps : 0;
       if ((cAvg || dbTps) && isFinite(cAvg || dbTps) && (cAvg || dbTps) > 0) {
         liveKindCur = "fallback";
@@ -371,6 +375,50 @@
         if (chip.__zuOpen) chip.__zuOpen();
       });
     }
+    /* 精简速率 chip 的布局档位（specs/speed-chip-stable-slot.md）：外宽只随档位变、不随状态文字变；档位只由宿主
+     * 工具行的真实空间决定，与本 chip 自身宽度无关——空位 = 前导区可用宽度（宿主 flex:1 的
+     * [data-composer-leading-actions]）− 同区其它内容（宿主按钮 + 本插件其它 chip）。宿主放不下时会逐级压缩
+     * 它自己的按钮（useComposerToolbarFit），所以本 chip 先让位：放不下就在同一次判定里降到装得下的那一档
+     * （空位与自身宽度无关，同拍算到底安全；挂载当拍即到位），宿主已在压缩则再让一档、一次只让一档；升档只在
+     * 距上一次降档或见到宿主压缩 ≥2s、且空位 ≥ 上一档宽度 + FOLD_HYS 时发生。因宿主压缩而降档后，宿主若因此展开，空位必然
+     * 小于刚让出的那一档，升档条件不成立——两侧不会互相拉锯。同区的 Git/系统状态 chip 按对称公式各自升降
+     * （gitMeasureAvail），同一拍双双升档撑破一行时，本 chip 的 2s 静默期保证下一轮只有一边先升、另一边
+     * 发现空间不够而停住。挂载当拍即量（chip 插入后、宿主 ResizeObserver 之前），空间不够时 chip 已先降档，
+     * 宿主不必压缩。找不到宿主前导区（其它宿主/旧布局）或前导区尚无尺寸（窗口最小化、后台分栏）时不分档、
+     * 不改动。zuTsbTierNext 是纯函数（回归在 tests/overlay-speed-slot.test.cjs）；测量与写类名在 zuTsbTierSync，
+     * 至多每 250ms 量一次（窗口拖窄时两档让位在半秒内完成，宿主按钮的压缩只闪一下；心跳 10Hz 进来只做时间戳比较）。 */
+    var ZU_TSB_TIERS = [12.4, 9.7, 6.6];   // em：宽裕（标签+数值+单位）/ 中等（去单位）/ 紧张（仅数值），与 06 分片样式同源
+    var ZU_TSB_TIER_MS = { measure: 250, dwell: 2000 };   // 测量至多 4Hz（条内窄宽状态机是逐帧 60Hz）；降档后 2s 静默期
+    var tsbTier = 0, tsbTierAt = 0, tsbTightAt = 0;
+    function zuTsbTierNext(cur, tight, room, emPx, hys, mayRise) {
+      while (cur < ZU_TSB_TIERS.length - 1 && room < ZU_TSB_TIERS[cur] * emPx) cur++;   // 放不下：同一次判定直接降到装得下的那一档（空位与自身宽度无关，所以算到底是安全的；挂载当拍就到位，宿主不必先压缩）
+      if (cur < ZU_TSB_TIERS.length - 1 && tight) return cur + 1;                       // 宿主已在压缩：让一档，一次只让一档（防拉锯证明依赖这一点）
+      if (cur > 0 && mayRise && room >= ZU_TSB_TIERS[cur - 1] * emPx + hys) return cur - 1;   // 升档：一次一档，带迟滞与静默期
+      return cur;
+    }
+    function zuTsbTierSync(chip) {
+      var lead = chip.closest("[data-composer-leading-actions]"), content = chip.closest("[data-composer-leading-content]");
+      var now = Date.now();
+      if (!lead || !content || !lead.parentElement) {   // 无宿主前导区：不分档
+        if (tsbTier) { tsbTier = 0; chip.classList.remove("zu-speed-mid", "zu-speed-tight"); }
+        return;
+      }
+      if (now - tsbTierAt < ZU_TSB_TIER_MS.measure) return;
+      var leadW = lead.getBoundingClientRect().width;
+      if (!(leadW > 0)) return;   // 尚无尺寸：不判定（否则空位算成 0 会误降到最窄档）
+      tsbTierAt = now;
+      var root = lead.parentElement;
+      var room = leadW - (content.getBoundingClientRect().width - chip.getBoundingClientRect().width);
+      var tight = !!(root.querySelector("[data-composer-compact]") || root.dataset.composerProviderCompact || root.dataset.composerModelIcon);
+      if (tight) tsbTightAt = now;
+      var next = zuTsbTierNext(tsbTier, tight, room, parseFloat(getComputedStyle(chip).fontSize) || 13, FOLD_HYS,
+        now - tsbTightAt >= ZU_TSB_TIER_MS.dwell);
+      if (next === tsbTier) return;
+      if (next > tsbTier) tsbTightAt = now;   // 刚让过位：静默期内不回升
+      tsbTier = next;
+      chip.classList.toggle("zu-speed-mid", next === 1);
+      chip.classList.toggle("zu-speed-tight", next === 2);
+    }
     function syncTpsChip() {
       if (state.theme !== "compact") { restoreTpsChip(); return; }   // v146：速率 chip 是精简模式专属载体
       if (inactive()) { restoreTpsChip(); return; }
@@ -419,21 +467,27 @@
          * __zuOpen 缺失一并补齐，否则热更采纳的 chip 悬停/键盘/设置入口全部失效。 */
         if (!chip.__zuWired) wireTpsChip(chip);
         tpsChipCache = chip;
+        tsbTier = 0; tsbTierAt = 0;   // 新挂或换宿主：档位从头量（本拍末尾即量，见 zuTsbTierSync）
+        chip.classList.remove("zu-speed-mid", "zu-speed-tight");
       }
       var misplaced;
       /* 用 nextElementSibling 判位（nextSibling 会被文本节点打乱，造成每拍重插） */
       if (insBefore) misplaced = chip.nextElementSibling !== insBefore;
       else misplaced = (afterNode ? afterNode.nextElementSibling !== chip : host.lastElementChild !== chip);   // 锚位语义同 git 兜回（下一元素已是自己=就位，不得自插）
       if (misplaced) host.insertBefore(chip, insBefore ? insBefore : (afterNode ? afterNode.nextElementSibling : null));
-      var txt = v.kind === "live" ? v.sv.text
-        : (v.dbTps ? v.dbTps + " t/s" : "");   /* v298（用户拍板）：chip=最后一轮真实速度（去「均」前缀与会话均） */
-      var cls = "zu-live " + (v.kind === "live" ? v.sv.cls + (v.sv.word ? " zu-shimmer" : "") : v.band.cls);
-      var sig = v.kind + "|" + cls + "|" + txt;
+      /* v298（用户拍板）：chip=最后一轮真实速度（去「均」前缀与会话均）。格面走展示模型
+       * （标签+数值+单位，specs/speed-chip-stable-slot.md）：实时态的数值与档位色取同一展示快照；
+       * 回退态档位色按面上数字（最后一轮）分档——v.band 是会话均的档，只供 tooltip 左卡。 */
+      var fv = v.kind === "live" ? (v.face || v.sv) : { kind: "real", db: true, speedValue: v.dbTps > 0 ? v.dbTps : null };
+      var txt = v.kind === "live" ? v.sv.text : (v.dbTps ? v.dbTps + " t/s" : "");
+      var fbBand = v.dbTps > 0 ? tpsBand(v.dbTps) : null;
+      var cls = "zu-live " + (v.kind === "live" ? fv.cls + (fv.word ? " zu-shimmer" : "") : (fbBand ? fbBand.cls : "dim"));
+      var face = zuSpeedFaceHtml(fv);
+      var sig = v.kind + "|" + cls + "|" + face;
       if (chip.__zuSig !== sig) {   // 幂等：内容没变不重建，悬停/焦点态不被打断
         chip.__zuSig = sig;
-        /* v326：两 item 结构（数字+dim），与条内速度格同一 gap:5px 机制（.zu-live 规则全局作用域，
-         * compact chip 同吃 inline-flex——单文本时 gap 无 item 可分，间距退回裸空格 ~3.7px） */
-        chip.innerHTML = '<span class="' + cls + '">' + zuLiveFaceHtml(txt) + "</span>";
+        /* 标签/数值/单位三 item 与条内速度格同构（间距由 gap 提供，v326 机制延续） */
+        chip.innerHTML = '<span class="' + cls + '">' + face + "</span>";
         chip.setAttribute("aria-label", L("生成速度 ", "Generation speed ") + txt);
       }
       var prevT = chip.__zuT;
@@ -458,6 +512,7 @@
       syncCtxLite(chip, lite);
       chip.classList.toggle("zu-light", lite);   // 速率档色的浅色组按 .zu-light 祖先匹配（条隐藏后祖先缺失，类挂 chip 自身补链）
       if (tpsTipFor === chip) showTpsTip(chip);   // 悬停中随心跳/推送刷新：签名不变不重建
+      zuTsbTierSync(chip);
     }
     function restoreTpsChip() {
       if (!tpsChipCache) return;
@@ -1151,9 +1206,8 @@
       }
     }
     function restoreEnhanceBtn(alsoCancel) {
-      /* alsoCancel=true 仅 dispose/热更路径：实例销毁后回执无处落地，在途请求中断止损，
-       * 并置 settled 丢弃迟到回包。临时摘除（无锚/开关关）不传：请求照常完成，回包经
-       * finish 身份门 + sid/草稿守卫裁决回填（spec 承诺的「冲突保护兜底」），不清身份键。 */
+      /* 关闭功能或销毁实例时取消在途请求并丢弃迟到回包。暂时没有锚点时只摘 DOM，
+       * 仍由 finish 的会话与草稿校验决定是否回填。 */
       if (alsoCancel && enhanceInFlightId && !enhanceSettled) {
         pluginRequest("prompt-enhance-cancel", { requestId: enhanceInFlightId });
       }
@@ -1906,7 +1960,7 @@
       var op = [];
       if (r.out > 0) op.push(L("压缩消耗 " + cmpNum(r.out) + " Token", "Compaction cost " + cmpNum(r.out) + " tokens"));   // v434：措辞（用户规格）——out 是压缩请求自身的消耗，旧词「摘要」易误读为摘要正文长度
       if (r.dur > 0) op.push(L("耗时 " + cmpDur(r.dur), "Took " + cmpDur(r.dur)));
-      if (r.alt) op.push(L("由 " + esc(r.alt) + " 执行", "by " + esc(r.alt)));   // v433：model_id 来自 DB（自定义名可含 HTML），与其余转义链同规
+      if (r.alt) op.push(L("由 " + gitEsc(r.alt) + " 执行", "by " + gitEsc(r.alt)));   // v433：model_id 来自 DB（自定义名可含 HTML），与其余转义链同规；走外层 IIFE 的 gitEsc——本工厂作用域没有 esc（v445：此前裸引 esc 抛 ReferenceError，自带 alt 的记录起标注全缺）
       if (op.length) lines.push(op.join(" · "));
       return lines.join("<br>");
     }
@@ -1951,7 +2005,7 @@
           var span = document.createElement("span");
           span.setAttribute("data-zusage-cmp", "1");
           span.__zuSig = html;
-          span.innerHTML = html;   // 内容全部由数字/日期拼出，无用户可控文本
+          span.innerHTML = html;   // 日期/数值由格式化函数拼出；唯一的 DB 文本是执行模型名 alt，已在 compSuffixHtml 过 gitEsc
           span.style.cssText = "flex:0 0 100%;font-size:12px;opacity:.78;text-align:center;line-height:1.5;white-space:nowrap;";
           pill.style.flexWrap = "wrap";   // 行向 pill 放行换行：标注块落到 label 下（先设再挂避免闪帧）
           pill.appendChild(span);

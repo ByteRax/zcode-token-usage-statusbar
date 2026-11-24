@@ -2118,6 +2118,10 @@ function handleQuotaSourceRequest(req, wc) {
       const value = req.value == null ? "" : String(req.value).slice(0, 4096);
       writeQuotaSecrets((sec) => {
         sec[id] = Object.assign({}, sec[id] || {});
+        /* 千问 token 手填/清空时，把设备码登录写入的 tokenExpiresAt 与 account 一并清掉：
+         * 残留的到期时间会让之后手填的有效 token 被判「登录态已过」→ 未配置（面板也写不到
+         * 这两个字段，用户无法自救）；「清空」即退出登录，邮箱不该留下。 */
+        if (id === "qianwen" && field === "token") { delete sec[id].tokenExpiresAt; delete sec[id].account; }
         const isCred = field === "apiKey" || field === "cookie" || field === "token" || field === "secretAccessKey";
         if (value === "" && (isCred || field === "modelPatterns")) { delete sec[id][field]; return; }
         if (field === "planCredits") { if (value === "") delete sec[id][field]; else sec[id][field] = Number(value) || 0; }
@@ -2141,7 +2145,9 @@ function handleQianwenSigninRequest(req, wc) {
   const respond = (result) => deliverPluginRequest(wc, req.requestId, result);
   const client = quotaClient;
   if (!client || typeof client.qianwenSignInStart !== "function") { respond({ ok: false, error: "restart required" }); return; }
-  if (req.action !== "quota-qianwen-signin-state" && !quotaEnabled()) { respond({ ok: false, error: "quota disabled" }); return; }
+  /* 总开关关闭时只挡发起：state 是纯本地读，关开关那一刻设置页的轮询还要靠它收到 idle（显示
+   * 「登录已取消」）才能收尾；cancel 同为纯本地操作一并放行（当前渲染端没有取消入口，保留给 IPC 对称） */
+  if (req.action === "quota-qianwen-signin" && !quotaEnabled()) { respond({ ok: false, error: "quota disabled" }); return; }
   try {
     if (req.action === "quota-qianwen-signin") {
       client.qianwenSignInStart().then((r) => respond(r), (e) => respond({ ok: false, error: String((e && e.message) || e).slice(0, 120) }));
@@ -2164,6 +2170,11 @@ async function setQuotaEnabled(enabled, wc, requestId) {
     await updateConfig(HERE, { quota_enabled: enabled }, readCfgCached().python_path || (process.platform === "win32" ? "python" : "python3"));
     cfgCache = null;
     broadcastPluginState();
+    /* 关额度即中止在途的千问设备码登录：否则轮询会继续打到 t.qianwenai.com 直到 deadline，
+     * 完成后仍把 token 写进 quota-secrets.json（用户刚关掉的功能不该再联网落凭据） */
+    if (!enabled && quotaClient && typeof quotaClient.qianwenSignInCancel === "function") {
+      try { quotaClient.qianwenSignInCancel(); } catch (e) { LOG("qianwen sign-in cancel failed:", e && e.message); }
+    }
     if (enabled && quotaClient) syncQuotaProviders();
     deliverPluginRequest(wc, requestId, { ok: true });
   } catch (e) {
@@ -2406,7 +2417,9 @@ function parseGitPorcelain(text, collectFiles, numstatMap) {
  * 二进制 "-\t-\tpath\0" 计 0 且不入映射；rename 为三段 NUL："ins\tdel\t\0" + "<旧名>\0" +
  * "<新名>\0"——第三个 TAB 字段为空即信号，旧名在前、取后段新名为键。 */
 function parseNumstat(text) {
-  const out = { ins: 0, del: 0, map: {} };
+  /* map 用无原型对象：路径可以是 "__proto__"/"constructor" 这类名字——普通对象上前者会
+   * 改掉原型、后者查表命中函数，文件行就拿到幻影计数或丢计数（复盘 MINOR）。 */
+  const out = { ins: 0, del: 0, map: Object.create(null) };
   const toks = String(text || "").split("\0");
   for (let i = 0; i < toks.length; i++) {
     const t = toks[i].split("\t");
@@ -2423,7 +2436,7 @@ function parseNumstat(text) {
   return out;
 }
 function mergeNumstat(a, b) {
-  const map = {};
+  const map = Object.create(null);   // 同 parseNumstat：路径名可能是 __proto__
   for (const k in a.map) map[k] = a.map[k];
   for (const k in b.map) {
     const v = map[k];
@@ -2458,10 +2471,10 @@ function gitFailure(r) {   // null = 成功；否则渲染端可识别的 reason
  * NUL 分段的干净字段（porcelain rename=新名段+旧名段；numstat rename=ins\tdel\t\0旧名\0新名\0），
  * 与 quotepath 无关地逐条对上。 */
 async function gitSingleStatus(cwd) {
-  /* core.quotepath=false：v411 起本管线的文件路径直接进 tooltip 展示，默认 quotepath
-   * 会把非 ASCII 文件名转成八进制转义串（中文文件名整行不可读）；仅单仓管线开（多仓
-   * 聚合只计数不收路径）。渲染端 gitEsc 只做 HTML 转义，不做 unquotepath。status 与
-   * numstat 两条命令都要带——路径按同一套原始 UTF-8 产出才能逐条对上。 */
+  /* core.quotepath=false：v411 起本管线的文件路径直接进 tooltip 展示。v433 改 -z 之后路径
+   * 已不经 quotepath 转义（带与不带该参数输出逐字节相同，中文文件名两态都是原始 UTF-8），
+   * 这里保留是无害冗余——status 与 numstat 两条命令同带，argv 形状有多处测试锁定。渲染端
+   * gitEsc 只做 HTML 转义，不做 unquotepath。 */
   const st = await gitExec(cwd, ["-c", "core.quotepath=false", "status", "--porcelain", "--branch", "-z"]);
   const bad = gitFailure(st);
   if (bad) {
@@ -2619,10 +2632,6 @@ async function gitTick(fromRefresh, requestId, requestWc, requestPath) {
     for (const p of all) gitWantPaths.add(p);
     syncGitWatchers(all);   // v420：监听面随路径并集增删（新路径建档、消失路径关闭）
     const results = new Map();
-    const refreshPaths = new Set();
-    if (requestPath && requestWc && wants.some(([wc]) => wc === requestWc)) refreshPaths.add(requestPath);
-    for (const [, , path] of gitRefreshWaiters) if (path) refreshPaths.add(path);
-    if (!fromRefresh) for (const p of all) refreshPaths.add(p);
     await Promise.all([...all].map(async (p) => {   // 同一仓库多窗口/多 pane 只查一次，结果分发
       const st = await queryGitStatus(p);
       results.set(p, st);

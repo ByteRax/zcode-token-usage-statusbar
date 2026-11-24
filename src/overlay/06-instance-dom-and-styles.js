@@ -318,9 +318,13 @@
      * → v438 Token 数低于下限失焦自动钳 100k（用户规格）：sendAutoCompactConfig 非法分支分叉——tokens 模式输入纯数字/kM 后缀（如 65、65k、0.05m）低于 100k 时回显规整 100k 并按 thresholdTokens=100000 提交（替代红字提示），非数字（abc 等）与 percent 模式非法仍提示不提交；钳制值与主进程 writeConfig/引擎 hook 下限同源。收口审查批：用例桩去同步回执（回执回调 syncAutoCompactInputs 回写真值会掩盖钳制即时回显，回显断言原未锁到新行为）、状态行 tokens 提示与 README 三语/user-guide 补钳制说明。
      * → v439 增强链 OAuth-only 死路修复（issue #440，外部详报；路径1 网关 500 与路径5 kindMap 缺 server/auth/timeout 已随 v1.5.22 的 GLr 批落地，本批收余下三路）：①model-puller 规则路径同型放行宿主「Coding Plan API-Key」登录的 access.type=zhipu-coding-plan-api-key（宿主 schema 与 api-key 同枚举、合并同分支处理；zhipu-account 运行时换发型仍拒）；②规则查不到或已禁用时按 v2/config.json provider.<id> 自定义供应商条目兜底（宿主设置页供应商只落该文件不进 provider_config 规则；kind→api.type 镜像宿主 j8c 映射：anthropic→anthropic-messages、openai→openai-responses、openai-compatible/未知/缺省→openai-chat-completions；fail-closed：enabled:false/enc: 密文/缺 baseURL/builtin: 与 account: 命名空间不可用；同 id 规则可用时规则优先、禁用则条目兜底，enhanceText/resolveEnhanceHost/listEnhanceHosts 三口同门）；③增强按钮点击入口 custom 模式 win32 平台锁文案如实化（原「请完全重启 ZCode」方向误导——v357 平台门不因重启解除，按 platformLimited 提示「当前平台暂不支持自定义增强供应商」，与设置页 EP 分区同口径）。
      * → v440 悬停门槛（issue #445，用户评论拍板；本提交整批收敛为单一代际）：条面统计格与子代理 preview、工具行 Git/速率（精简 .zu-tsb）/重置卡/套餐额度/增强记录/系统状态六枚 chip、流内子代理速率·工作流卡·状态面板行委托（subTipDocOver）统一悬停门槛——停留 zusage3.tipHoverMs（默认 500ms；⚙ 通用「悬停显示延迟」下拉 100/500/1000/1500/2000，0=恢复划过即显仅手改 LS）才弹出，快速划过不再误触发。条面链（08 分片 tipHoverSchedule/Fire/Cancel）：mousemove 命中换格排程，到点按 lastPt 坐标 elementFromPoint 重命中复核（150ms 节流间隙防「已扫过仍弹」，fail-closed），漂移改靶重排；取消路径含 panel/left-bar、真边界跃迁（tipLeaveAt 的 v99 伪边界 :hover 过滤前置后撤销——排程在途时 tipFor 尚 null，伪 leave 不撤否则流式重排永久打断 dwell、tipBoundaryHide blur/edge 撤先于 1.2s 硬保活窗）、focusin（键盘优先）、改档（含 chip 单槽）、dispose。chip 链（01 分片模块级单槽 zuChipHoverArm/Disarm）：key=chip 元素本体，同 chip 续期不重置等待、换 chip 自动作废、槽身份自校验防过期回调、isConnected 守卫防销毁后重挂；focus/blur 键盘路径保持即时；fxTip/档位说明（tooltip 内 ？ 小目标）与齿轮更新日志卡（红点门控）有意不进门；回答末尾统计行无悬停浮层。收口审查（两轮 6 路并行 review + 私有克隆变异）：修复「待开门窗口内真离开文档不撤排程→指针离窗照弹且无路径收起」MAJOR（tipLeaveAt 重排+tipBoundaryHide/focusin 补撤）与 fire px<0、流内委托撤排程两个变异存活缺口（补行为级断言），全源 harness 种子 tipHoverMs=0 直通既有 chip 测试零感知；与 v247 已移除的 1000ms 停留链无代码关联（tipHover 加星号与 zuChipHover 加星号两族符号不同，v247 符号反锁仍生效）。
-     * → v442 OpenCode Go 额度撤回按模型换算（issue #453，撤回 v385）：官方文档（opencode.ai/docs/go「Usage limits」）明示 Go 的付费模型共用一个额度、各模型「月度额度」只是整月单用该模型时的标价用量覆盖、请求按模型折算计入同一池，/console/api/go/status 的 meters（Go 档 12/30/60 美元）即该池本身而非「基线」。v385（issue #382）把模型月度额度当成独立池放大窗口总额并重算 percent，实报 Go 档总额被显示成 20/50/100（当前模型 deepseek-v4.1-flash），月窗真实已用 24.20/60=40.33% 被显示成 24.2%，月度额度 15 美元的模型反向放大 4 倍（已用约 30% 钳成 100%）。本批：删除 11 分片 quotaOpencodeModelView 与 28 款模型快照表，quotaChipMode 与 chip.__zuQ 回到源数据原值（窗口 total、used、remaining、percent 不换算）；01 分片 tooltip 页脚去掉 modelBasis 模型口径分支、恢复「套餐池为账号级」固定页脚；额度链、协议、调度器零改动（模型不入键、不触发重查不变）。回归 tests/overlay-quota-opencode-model.test.cjs 重写为「原样展示」契约；参考实现 magpie planquota 同样只读官方 usage 端点的窗口百分比。
+     * → v443 轮播实时速度段（用户规格，specs/status-rotator-work-duration.md）：loading 行可追加「X t/s」实时速度（⚙ appendLiveSpeed 默认开）——逐窗格绑定（行祖先 [data-session-id] expando 缓存），子代理行取 subRate 槽位实时估算（3s 新鲜度，12 分片新增 subRateSlots() 只读引用导出），主会话行取字符流估算；无会话均值回退（静态 avg 曾让全部行恒显同值，用户实报「一直是 76」已撤），测不到实时速率整段缺席；档位色与速度格同源（tpsBand 内层挂类，全局规则零新增 CSS，浅色 .zu-light 加深组，Ultra 连带 ✦）；写纪律每行至多 1 写/秒 row expando 记账、零新增定时器/监听/文档查询；词包补 12 条 {tps} 短语（long 相为主，math-physics/slacking/coding 三包中英双语 weight 3）。
+     * → v444 卡片内嵌形态 track 空闲门（issue #452，specs/perf-lag-reduction.md 规则 19；本批原立账 v441，与 v441/v442/v443 各批撞号，按合入顺序顺延 v444；报告者 Windows 11 打字与滚动「不跟手」，剥离注入后消失）：本机 CDP 取证定因——track 逐帧读几何，宿主每帧改 DOM 时把本帧的样式重算与布局强制进回调（1.3ms/帧、占主线程 7.8%，其中 87% 是嵌套的强制样式重算与布局；页内 A/B 暂停循环后整页样式重算总时间约减半、主线程任务时间约减 9%），是渲染端主因；100ms 心跳、两个 500ms 扫描（answer_rate_line 关闭时跳过重选择器全文档扫描）与每帧推送量级很小。修复：补挂对账仍每帧（纯 DOM 引用读取）；几何段在 cardMode 下按门执行——脏标（render 重建条面、applyBarTheme 切档、dedupBars 解除让位抑制）、cardMode 翻转、视口变化立即读，设置面板/子代理浮层/⋯ 菜单打开或视口保持期（400ms）内逐帧，否则 100ms 兜底对账（时钟回拨的负差视为到期）；条面 main 横向滚动只置脏标（渐隐提示下一帧跟随）；药丸与 below-card 悬浮形态不设门；mount 诊断追加 trackFrames/trackPasses；时钟回拨视为到期并作废保持期截止时刻。只动热文件。验证边界：取证与 A/B 都在本机默认主题上做（A/B 是暂停循环的近似，修复后未在真实宿主复测），报告者环境的绝对占比未测；报告者若用药丸或悬浮形态，本版预期无改善，需其确认主题并提供火焰图。
+     * → v445 近 5 天提交复盘收口（两轮共 13 路并行审查 + 私有克隆变异复核；inject-main.cjs 为冷文件需完全退出重启，其余随热重载/热换生效）：①压缩标注执行模型名裸引不存在的 esc 抛 ReferenceError 被吞（自带 alt 的记录从该段起整块缺失），改走外层 gitEsc，并去掉测试里掩盖它的同名桩；②速度 Tooltip 降级帧（旧二元组 msl）：today/week 日行不再出假空态；叠加模型筛选时左卡如实显示整轮值主数字与真实轮数（不出空态、不伪造 0 轮）；请求数未知时占比列与筛选弹层计数显「—」、分布条不画（不再以 0 宽段配「<0.1%」）；③待替换包转存半程失败回滚：_publish_pending 任何异常（含硬中断）按盘面状态撤回新包并还原旧 journal（此前残留 journal 让手机补丁链永久 deferred 且提示「会自动完成」；rename 后已有旧 pending 的保留 journal，下次发布认领重发），SIGKILL 留下的无包空壳超龄回收；④千问额度链：授权地址只收 https 的 *.qianwenai.com、交出解析归一后的 href（拒 userinfo），slow_down 加长后沿用并封顶 30s（此前只翻一拍，服务端要求高于上限时会一直 slow_down 到超时），终态一律清地址，http_error 沿用当前间隔；手改或清空 token 一并作废设备登录留下的到期与账号，关额度即取消在途登录（state/cancel 仍应答），设置页登录轮询改代际号不再绑按钮节点、取消后提示「登录已取消」；取消后迟到回包不落盘、kill 定时器必清、负值窗口与 errorMsg 不进错误链是既有行为，本批补测锁定；⑤StepFun 选首个 remaining 可解析的桶、毫秒值须 ≥1e11、到期只认毫秒，Ollama until 同款；⑥拉模型与探测补 enc: 密文闸（不外发）与 redirect:error，zcode.z.ai 路由拉模型补 X-Device-Mid（缺头恒 400；设备号只发官方路由主机），带凭据的 fetch 结构锁钉死重定向策略；增强宿主公告、设置页手填 key 的拉模型与额度链读 provider_config 三处同闸（先裁空白再判密文）；⑦热更换代把旧代的「取消在途增强」带回新队列（不再被整表重置丢弃）；⑧git numstat 的路径计数表与 porcelain 的路径集合改无原型对象（__proto__、constructor 这类文件名是普通键，不再丢计数或拿到幻影计数）；⑨受管 worktree 根此前只认 ZCODE_DATA_BASE_DIR env（否则 HOME）：按 setting.json dataBaseDir 迁移数据目录后新建的 worktree 全不认，改为数据根在前、HOME 根兜底的候选表（迁移前后建的和没迁的都认）；⑩更新日志标题行的正则三次方回溯（4000 空格约 10 秒、65532 空格按外推约 70 分钟）改线性解析；⑪全部项目「项目明细」行补费用副行（narrow/tiny 收起费用列时数据不再消失）；⑫系统状态订阅 api.sysmonInterested 裸调 getScope 必抛被吞、项目路径恒空，改 api.getScope；⑬齿轮更新日志卡补进自有浮层豁免（窄分栏不再收条与复显循环）；⑭重启标记读失败不再当空标记删除、publishedAt 非法数值不销账，标记读不到时写入侧抛错不改写（按空合并会覆盖盘上旧通知）；⑮引擎补丁插入体改函数式替换（$ 序列不再被当替换模式展开）；⑯自动压缩切模式后状态行即时重查；补测：增强链主进程守卫（草稿上限、设置文件 0600 门、换目标不复用 Key、宿主来源地址校验）、桥短锁指纹重验与歧义守卫、engine patched_inconsistent 两道守卫、更新日志 6 个转义出口、悬停面板守卫夹具纠偏，两条真机桥用例加「宿主版本不等于登记最新版则跳过」。
+     * → v446 速度格稳定占位（用户 /goal 规格，specs/speed-chip-stable-slot.md）：条面速度格四档宽 12.6/10.9/7.2/2.75em 复用既有窄宽类与折叠段属性（零新增测量），外宽只随布局档位变、不随状态文字变；药丸两档 zu-speed-mid/tight 由 track 按卡片可用宽度升降；精简 chip 三档（12.4/9.7/6.6em）由 zuTsbTierSync 按宿主工具行真实空位选档（挂载当拍到位、宿主压缩让一档一次一档、降档后 2s 静默期防拉锯）；折叠富余判据改读 zuBarContentWidth()（旧 scrollWidth 判据从未成立）；全称两来源（aria-label 展示视图、data-zu-full 真实视图）；新增 overlay-speed-slot 43 例/探针判定 15 例/真实浏览器数据链用例，变异合计 62。
+     * → v447 OpenCode Go 额度撤回按模型换算（issue #453，撤回 v385）：官方文档（opencode.ai/docs/go「Usage limits」）明示 Go 的付费模型共用一个额度、各模型「月度额度」只是整月单用该模型时的标价用量覆盖、请求按模型折算计入同一池，/console/api/go/status 的 meters（Go 档 12/30/60 美元）即该池本身而非「基线」。v385（issue #382）把模型月度额度当成独立池放大窗口总额并重算 percent，实报 Go 档总额被显示成 20/50/100（当前模型 deepseek-v4.1-flash），月窗真实已用 24.20/60=40.33% 被显示成 24.2%，月度额度 15 美元的模型反向放大 4 倍（已用约 30% 钳成 100%）。本批：删除 11 分片 quotaOpencodeModelView 与 28 款模型快照表，quotaChipMode 与 chip.__zuQ 回到源数据原值（窗口 total、used、remaining、percent 不换算）；01 分片 tooltip 页脚去掉 modelBasis 模型口径分支、恢复「套餐池为账号级」固定页脚；额度链、协议、调度器零改动（模型不入键、不触发重查不变）。回归 tests/overlay-quota-opencode-model.test.cjs 重写为「原样展示」契约；参考实现 magpie planquota 同样只读官方 usage 端点的窗口百分比。
      */
-    var VERSION = "v442";
+    var VERSION = "v447";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -563,6 +567,38 @@
        * item 不受影响）。豁免后内部回块级流，空格恢复渲染，v319 的 word-spacing:4px 真正生效，
        * 间隔=动态态的 ~7.7px。.zu-live 作为 .it 的 flex item 会被块化，外部布局零变化。 */
       ".zusage-root .it{line-height:1.3}.zusage-root .it>span:not(.eb):not(.zu-live){display:inline-flex;align-items:center;min-height:1.3em}" +
+      /* 速度格稳定占位（specs/speed-chip-stable-slot.md）：外宽只随布局档位变、不随状态文字变。
+       * 档位=既有窄宽类与折叠段属性（零新增测量）：宽裕 12.6em（14px 基准 176px）；zu-tight 10.9em（12px
+       * 基准 131px）；zu-narrow 7.2em
+       *（去标签与单位，图标+数值——按最长无标签面「图标+23:59:59」标定：格字号 12px 时速度格 86.4px、
+       * 内容自然宽 78.3px；旧值 6.4em 对该面越界 1.5px，被 scrollWidth 取整掩盖）；data-zu-speed-min
+       * （折叠段内轮到速度格）仅图标。em 随格字号缩放，界面字号 11/14/20px 宿主实测余量 6~21px（2026-11-23）。
+       * 面结构=标签（吃剩余空间、省略）+数值（不收缩、右对齐）+单位；数字与单位仍是零空格两 item、
+       * 间距由 gap 提供（v326 机制）。overflow:hidden 兜底裁切，任何情况下不推邻格。流光沿用包装层
+       * .zu-live.zu-shimmer 既有规则（flex 子项与标签 overflow 下宿主实测可正常渲染）。精简 chip
+       * .zu-tsb 同样不随状态文字变：它挂在宿主工具行、没有窄宽状态机，三档由 11 分片 zuTsbTierSync
+       * 按宿主工具行的真实空位选（规则与标定见 .zu-tsb 规则处的注释）。 */
+      ".zusage-root .zu-main>.it.zu-speed{box-sizing:border-box;width:12.6em;overflow:hidden}" +
+      ".zusage-root.zu-tight .zu-main>.it.zu-speed{width:10.9em}" +
+      ".zusage-root.zu-narrow .zu-main>.it.zu-speed{width:7.2em}" +
+      /* 药丸无窄宽状态机：速度格档位类由 track 按卡片可用宽度升降（zuPillSpeedTierSync）——中等去分隔符；
+       * 中等/紧张档与默认条窄档同款同宽（药丸条上没有 zu-tight 类，缩字号公式与内边距在档位规则里自带：
+       * 14px 字号下要塞进中等档宽度，两字标签会被挤成省略号） */
+      ".zusage-root.zu-pill.zu-speed-mid .zu-main>.it.zu-speed{width:10.9em;padding-left:4px;padding-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}" +
+      ".zusage-root.zu-pill.zu-speed-mid .it.zu-speed>.zu-live>.zu-sp-label:not(:empty)::after{content:none}" +
+      ".zusage-root.zu-pill.zu-speed-tight .zu-main>.it.zu-speed{width:7.2em;padding-left:4px;padding-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}" +
+      ".zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-label,.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-unit{display:none}" +
+      ".zusage-root .zu-main>.it.zu-speed[data-zu-speed-min='1']{width:2.75em}" +
+      ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live{display:flex;flex:1 1 auto;min-width:0;align-items:baseline}" +
+      ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}" +
+      ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-val{flex:0 0 auto;white-space:nowrap;text-align:right}" +
+      ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-unit{flex:0 0 auto}" +
+      ".zusage-root .it.zu-speed>.zu-live>.zu-sp-label:not(:empty)::after{content:' · ';padding:0 4px}" +
+      ".zusage-root.zu-tight .it.zu-speed>.zu-live>.zu-sp-label:not(:empty)::after{content:none}" +
+      ".zusage-root.zu-narrow .it.zu-speed>.zu-live>.zu-sp-label,.zusage-root.zu-narrow .it.zu-speed>.zu-live>.zu-sp-unit{display:none}" +
+      /* 最窄档标签隐藏后没有「吃剩余空间」的弹簧把数值推到右边——显式靠右，与宽裕/中等档的数值右缘一致（位数变化不动右缘） */
+      ".zusage-root.zu-narrow .it.zu-speed>.zu-live,.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live{justify-content:flex-end}" +
+      ".zusage-root .zu-main>.it.zu-speed[data-zu-speed-min='1']>.zu-live{display:none}" +
       ".zusage-root .eb .ico{width:12px;height:12px;transform:none}" +
       ".zusage-root .zu-think{color:var(--color-brand,#8171e8);opacity:1}" +
       /* 工具错误数徽标 */
@@ -753,7 +789,19 @@
        * 速率色档复用全局 .ok/.warm/.hot 与 TPS 十档类（含 Ultra 渐变 ✦）；浅色组靠 chip
        * 自身的 .zu-light 类补链（条隐藏后 .zu-light 祖先缺失）。 */
       ".zu-tsb{display:inline-flex;align-items:center;gap:5px;height:1.75rem;padding:0 6px;border-radius:.5rem;cursor:pointer;user-select:none;flex:0 0 auto;" +
+      /* 稳定占位（specs/speed-chip-stable-slot.md）：chip 外宽只随布局档位变，标签+数值+单位随状态换而不推 git chip。
+       * 三档类名与药丸档位同名，规则只作用于 .zu-tsb；档位由 11 分片 zuTsbTierSync 按宿主工具行的真实空位选
+       * （chip 先让位，不拿宿主自己的按钮换宽度）。宽裕 12.4em=标签+数值+单位，按最宽的无省略面
+       * 「代理×12 ≈1286.5 t/s」标定（13px 粗体，六种字体栈下自然宽最大 157.8px；旧单一宽 10.5em 对它越界 7.3px）；
+       * 中等 9.7em=去单位（「Think 23:59:59」123.5px）；紧张 6.6em=仅数值靠右（「23:59:59」82.9px）。
+       * chip 无图标，故没有「仅图标」的最窄档。 */
+      "box-sizing:border-box;width:12.4em;" +
       "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--text-ui-base,var(--ui-font-size,14px)) - 1px);font-weight:700;font-variant-numeric:tabular-nums}" +
+      ".zu-tsb.zu-speed-mid{width:9.7em}" +
+      ".zu-tsb.zu-speed-mid>.zu-live>.zu-sp-unit{display:none}" +
+      ".zu-tsb.zu-speed-tight{width:6.6em}" +
+      ".zu-tsb.zu-speed-tight>.zu-live>.zu-sp-label,.zu-tsb.zu-speed-tight>.zu-live>.zu-sp-unit{display:none}" +
+      ".zu-tsb.zu-speed-tight>.zu-live{justify-content:flex-end}" +
       ".zu-tsb:hover,.zu-tsb:focus-visible{background:var(--color-hover,rgba(255,255,255,.08));outline:none}" +
       /* v356 系统状态（issue #338）：格面值/标签继承 .it .v/.dim 基础样式，zu-sys-* 只承载
        * 结构布局与预警色（柔和黄/红只染数值与图标，浅色档双套同源深化）；stale 整段降

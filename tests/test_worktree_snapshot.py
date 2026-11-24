@@ -73,6 +73,63 @@ class WorktreeFactTests(unittest.TestCase):
         self.assertIsNotNone(got)
         self.assertEqual(got["root"], os.path.realpath(str(self.wt_root)))
 
+    def test_data_root_follows_setting_json_like_db_path(self):
+        """v445：数据目录经 setting.json 迁移时受管 worktree 根跟随 dataBaseDir。桌面端只在拉起
+        agent 子进程那一刻才注入 ZCODE_DATA_BASE_DIR，主进程自身环境里没有——本查询链由主进程
+        拉起，此前只读 env，这类用户的根被错判到主目录、迁移后新建的受管 worktree 整个不认。"""
+        home = self.data_root / "home"
+        base = self.data_root / "migrated"
+        (home / ".zcode" / "v2").mkdir(parents=True)
+        (home / ".zcode" / "v2" / "setting.json").write_text(
+            json.dumps({"dataBaseDir": str(base)}), encoding="utf-8")
+        wt = base / ".zcode" / "worktrees" / "d0c5" / "repo"
+        # 主进程环境：没有迁移标记；HOME 指向带 setting.json 的夹具主目录
+        with mock.patch.dict(os.environ, {"ZCODE_DATA_BASE_DIR": "", "HOME": str(home), "USERPROFILE": str(home)}):
+            zusage._WT_FACT_CACHE.clear()
+            self.assertEqual(zusage._managed_worktree_roots()[0],
+                             Path(os.path.realpath(str(base / ".zcode" / "worktrees"))))
+            got = zusage._worktree_fact(str(wt / "packages" / "ui"))
+            self.assertIsNotNone(got, "setting.json 迁移目录下的受管 worktree 被认出")
+            self.assertEqual(got["root"], os.path.realpath(str(wt)))
+            self.assertEqual((got["bucket"], got["name"]), ("d0c5", "repo"))
+        # 与 resolve_db_path 第 3 级共用同序解析：setting.json 优先 → env → 空；损坏按无迁移
+        self.assertEqual(zusage._data_base_dir(env={"ZCODE_DATA_BASE_DIR": "/from-env"}, home=home), str(base),
+                         "setting.json 的 dataBaseDir 优先于 env")
+        (home / ".zcode" / "v2" / "setting.json").write_text("{broken", encoding="utf-8")
+        self.assertEqual(zusage._data_base_dir(env={"ZCODE_DATA_BASE_DIR": "/from-env"}, home=home),
+                         "/from-env", "损坏配置按无迁移处理：回落 env")
+        self.assertEqual(zusage._data_base_dir(env={}, home=home), "")
+        self.assertEqual(zusage._data_base_dir(env={"ZCODE_DATA_BASE_DIR": "relative/x"}, home=home), "",
+                         "env 相对值不采纳（宿主数据根恒为绝对路径）")
+        (home / ".zcode" / "v2" / "setting.json").write_text(
+            json.dumps({"dataBaseDir": "relative/path"}), encoding="utf-8")
+        self.assertEqual(zusage._data_base_dir(env={"ZCODE_DATA_BASE_DIR": "/from-env"}, home=home),
+                         "/from-env", "非绝对值忽略：回落 env")
+
+    def test_worktrees_created_before_migration_stay_recognized(self):
+        """v445 复盘：宿主迁移数据目录只搬 .zcode/v2，迁移前建的受管 worktree 留在主目录下、
+        任务 cwd 创建后固定——数据根之外必须把主目录根也当候选，否则这些会话的 Git chip 退回主仓库。"""
+        home = self.data_root / "home2"
+        base = self.data_root / "migrated2"
+        old_wt = home / ".zcode" / "worktrees" / "d0c5" / "old-repo"
+        old_wt.mkdir(parents=True)
+        (home / ".zcode" / "v2").mkdir(parents=True)
+        (home / ".zcode" / "v2" / "setting.json").write_text(
+            json.dumps({"dataBaseDir": str(base)}), encoding="utf-8")
+        roots = zusage._managed_worktree_roots(env={}, home=home)   # 显式传参：home 不只走 Path.home()
+        self.assertEqual(roots, [Path(os.path.realpath(str(base / ".zcode" / "worktrees"))),
+                                 Path(os.path.realpath(str(home / ".zcode" / "worktrees")))])
+        with mock.patch.dict(os.environ, {"ZCODE_DATA_BASE_DIR": "", "HOME": str(home), "USERPROFILE": str(home)}):
+            zusage._WT_FACT_CACHE.clear()
+            got = zusage._worktree_fact(str(old_wt))
+            self.assertIsNotNone(got, "迁移前建在主目录下的受管 worktree 仍被认出")
+            self.assertEqual(got["root"], os.path.realpath(str(old_wt)))
+            self.assertEqual((got["bucket"], got["name"]), ("d0c5", "old-repo"))
+        # 没有迁移（数据根即主目录）：只有一个候选，不重复
+        (home / ".zcode" / "v2" / "setting.json").unlink()
+        self.assertEqual(zusage._managed_worktree_roots(env={}, home=home),
+                         [Path(os.path.realpath(str(home / ".zcode" / "worktrees")))])
+
     def test_non_managed_paths_rejected(self):
         self.assertIsNone(self.fact(str(self.data_root / "elsewhere" / "repo")))
         self.assertIsNone(self.fact(str(self.data_root / ".zcode" / "worktrees")))          # 受管根本身

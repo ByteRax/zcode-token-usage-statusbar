@@ -512,27 +512,30 @@
         if (grp && grp.kind === "explore") { verb = L("查阅·执行中", "Explore·executing"); grpKind = "explore"; }
         else if (grp && grp.kind === "terminal") { verb = L("终端·执行中", "Terminal·executing"); grpKind = "terminal"; }
         var st = grp && grp.startedAt != null ? grp.startedAt : stats.runningTool.startedAt;
-        var elapsed = "";
+        var elapsed = "", elapsedMs = null;
         if (typeof st === "number" && st > 0 && Date.now() >= st) {
-          elapsed = ((Date.now() - st) / 1000).toFixed(1) + "s";   // v151 去中点 + v153 执行中（用户规格）
+          elapsedMs = Date.now() - st;   // 数值形态供格面紧凑计时（specs/speed-chip-stable-slot.md）
+          elapsed = (elapsedMs / 1000).toFixed(1) + "s";   // v151 去中点 + v153 执行中（用户规格）
           verb += " " + elapsed;
         }
         var base = { cls: "dim", text: verb, phase: "tool", word: true };   // v159：纯状态词带流光（宿主 zcode-loading-label 同款）
         if (grpKind)
-          return Object.assign(base, { kind: "toolgroup",
+          return Object.assign(base, { kind: "toolgroup", groupKind: grpKind,
             statusText: L("工具组执行中", "Tool group running"),
             nameText: grpKind === "explore" ? L("查阅", "Explore") : L("终端", "Terminal"),
-            elapsedText: elapsed,
+            elapsedText: elapsed, elapsedMs: elapsedMs,
             noteText: L("工具组 · 正在执行", "Tool group · executing") });
         if (skName)
           return Object.assign(base, { kind: "skill",
             statusText: L("Skill 执行中", "Executing skill"),
-            nameText: skName, nameFull: skFull, elapsedText: elapsed,
+            nameText: skName, nameFull: skFull, elapsedText: elapsed, elapsedMs: elapsedMs,
             noteText: L("Skill · 正在执行", "Skill · executing") });
         base.kind = "tool";
         base.statusText = L("工具执行中", "Tool running");
         base.nameText = zuToolVerb(stats.runningTool.name);
+        base.toolName = stats.runningTool.name;
         base.elapsedText = elapsed;
+        base.elapsedMs = elapsedMs;
         base.noteText = L("工具 · 正在执行", "Tool · executing");
         return base;
       }
@@ -559,7 +562,7 @@
         return { cls: "dim", text: L("思考中…", "thinking…") + thinkText,
                  phase: "thinking", word: true,
                  kind: "thinking", statusText: L("思考中", "Thinking"),
-                 elapsedText: thinkText,
+                 elapsedText: thinkText, elapsedMs: elapsedMs,
                  noteText: L("生成尚未开始", "Generation not started") };
       }
       var est = stats.characterRate / (charsPerToken || DEFAULT_CHARS_PER_TOKEN);
@@ -610,6 +613,10 @@
              speedValue: stats.tokenRate, speedIsEstimated: false, speedSource: "real",
              noteText: L("本轮实际速度", "Actual speed this turn") };
   }
+  /* 速度格稳定占位（specs/speed-chip-stable-slot.md）：展示协调器阈值集中在此（模块级——08 的协调器
+   * 按名引用，全源测试夹具也按模块级名字置 0 以保持「立即展示」语义）。无定时器：只在既有 100ms 心跳 /
+   * store 通知到达时按时间戳裁决。格面的展示模型（标签 / 数值 / 单位）在 07 分片渲染助手区。 */
+  var ZU_SPEED_DISP_MS = { debounce: 180, minShow: 400, num: 600, color: 400, time: 1000 };
   /* ---------- v254 生成速度 Tooltip 重构：双 Tab / 维度 / 16 柱 / hover 五字段 ----------
    * 数据面 = 快照顶层 speed_history（zusage 真实库有界扫描，单一轮表；短键 + 索引表）。
    * 全部筛选与聚合都在纯函数里完成，不新增 IPC/定时器/DOM 监听：Tab/dim/柱 hover 经
@@ -731,7 +738,7 @@
   /* 只按筛选栏和左卡量尺寸，不读取图表横滚内容，避免随历史桶数量撑宽。 */
   function spdFitTip(tip, reset) {
     if (!tip || !tip.querySelector || !tip.style) return;
-    /* v384：V3 卡（.zu-sv3-root）自带 920×480 基准、--ui-font-size 缩放与内部横滚，
+    /* v384：V3 卡（.zu-sv3-root）自带 920 宽基准（高 450，v393 起）、--ui-font-size 缩放与内部横滚，
      * 这里只做视口兜底——清 V2 遗留 zoom、宽高钳进视口，并维护 __zuSpeedSize 供
      * tpsTip 链的「视口尺寸变化才重适配」判定；旧 .zu-sv-root 量测分支保留防热更
      * 过渡期旧卡在挂。 */

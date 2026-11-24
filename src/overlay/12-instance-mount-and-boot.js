@@ -60,6 +60,13 @@
     var curDisplay = "none", lastPos = [-1, -1], hideSince = 0;
     /* v80：true=条挂在输入卡片内部（group/toolbar 工具行之后）；false=旧 below-card 悬浮兜底 */
     var cardMode = false;
+    /* v444（issue #452，specs/perf-lag-reduction.md 规则 19）：track 空闲门状态。trackAt=上次几何段时刻；
+     * trackCard=上次几何段时的 cardMode（翻转后的首帧必读）；trackDirty=脏标（render 重建条面——切档尾部
+     * 同走 render——与解除让位抑制时置位）；trackVw/trackVh=上一帧视口（无 window 尺寸的环境恒 0，永不误判
+     * 变化）；trackFastUntil=视口变化后的逐帧保持期截止；trackFrames/trackPasses=走到门的帧数/执行几何段的次数。 */
+    var TRACK_IDLE_MS = 100, TRACK_FAST_MS = 400;
+    var trackAt = 0, trackCard = false, trackDirty = true, trackFastUntil = 0, trackFrames = 0, trackPasses = 0;
+    var trackVw = typeof innerWidth === "number" ? innerWidth : 0, trackVh = typeof innerHeight === "number" ? innerHeight : 0;
     /* v408：in-card 的实际宿主（多数是 cardCache；elicitation 面板是其内容列 wrapper，
      * 条不在 cardCache 的直接子层）——帧级补挂与同卡去重按它判宿主 */
     var cardHost = null;
@@ -301,6 +308,8 @@
       }
       shrink = 0;
       bar.classList.remove("zu-narrow", "zu-tight");
+      bar.classList.remove("zu-speed-mid", "zu-speed-tight");   // 药丸速度格档位随主题切换重置
+      pillSpeedTier = 0;
       narrowMeasureKey = ""; narrowWidths = null;
       main.classList.remove("zu-clip", "zu-clip-left");
       render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 });
@@ -474,7 +483,7 @@
         if (!dupSuppress) { dupSuppress = true; hideBar(); }
         return;
       }
-      dupSuppress = false;
+      if (dupSuppress) { dupSuppress = false; trackDirty = true; }   // v444：解除让位抑制后的下一帧复显，不等兜底节奏
     }
     function hideBar() {
       if (curDisplay !== "none") { bar.style.display = "none"; curDisplay = "none"; }
@@ -620,9 +629,42 @@
      * 不伪造 0）。宽/字号(含字族)/优先级签名+foldDirty 门控
      * 重算；每帧另测一次溢出（流式原地改字会变宽，签名探测不到）；恢复带 FOLD_HYS 迟滞带，
      * 阈值附近数字刷新不再整格反复翻转。 */
-    var foldDirty = true, foldWidth = -1, foldFont = "", foldPrioritySig = "", foldedKeys = "";
+    var foldDirty = true, foldWidth = -1, foldMainW = -1, foldFont = "", foldPrioritySig = "", foldedKeys = "";
     var foldTrigger = true;
+    var speedMinOn = false;   // 速度格「极窄」档（data-zu-speed-min，仅图标）是否在用：离开折叠态时的清理判据（specs/speed-chip-stable-slot.md）
     var FOLD_HYS = 24;   // 迟滞带（px）：进入折叠 ov>1；折叠态需 slack≥FOLD_HYS 才尝试回展
+    var ZU_SPEED_FACE_KEY_RE = /(<span class="zu-live[^"]*">)[\s\S]*?<\/span><\/span><\/span>/;   // 窄宽探针测量签名剔除速度格面内容（见 track 内注释）
+    var ZU_SPEED_FULL_ATTRS_RE = / aria-label="[^"]*" data-zu-full="[^"]*"/;   // 同上：剔除速度格全称属性（随状态/计时变化，不影响布局）
+    /* 药丸速度格档位（specs/speed-chip-stable-slot.md）：药丸条按内容定宽、没有窄宽状态机——速度格
+     * 档位随卡片可用宽度升降：条宽触顶（被 max-width 钳住）即降一档（同帧量到不再触顶为止，最多
+     * 两步），升一档所需的宽度增量加 24px 迟滞带装得下才升。档宽差按 em 计：宽裕→中等 3.4em（上界
+     * 3.38em 在界面字号 13px）、中等→紧张 3.8em（上界 3.7em 在 11px）——中等/紧张档缩字号、宽裕档
+     * 不缩，上界不在同一字号处。估计偏小会在「升档后触顶→再降档」
+     * 间振荡，tests/overlay-speed-slot 锁定估计 ≥ 真实档宽差）；字号缓存 5s。只在药丸档 track 帧里
+     * 调用（width 复用该帧已量的条宽，不新增读取）。 */
+    var pillSpeedTier = 0, pillSpeedEmAt = 0, pillSpeedEm = 14;
+    function zuPillSpeedTierSync(width, avail) {
+      var now = Date.now(), w = width;
+      if (now - pillSpeedEmAt > 5000) {
+        pillSpeedEmAt = now;
+        try { pillSpeedEm = parseFloat(getComputedStyle(bar).fontSize) || 14; } catch (e) { }
+      }
+      function pillApply(t) {
+        pillSpeedTier = t;
+        bar.classList.toggle("zu-speed-mid", t === 1);
+        bar.classList.toggle("zu-speed-tight", t === 2);
+      }
+      if (pillSpeedTier < 2 && w >= avail - 0.5) {
+        pillApply(pillSpeedTier + 1);
+        w = bar.getBoundingClientRect().width;
+        if (pillSpeedTier < 2 && w >= avail - 0.5) pillApply(pillSpeedTier + 1);
+      } else {
+        while (pillSpeedTier > 0 && w + (pillSpeedTier === 2 ? 3.8 : 3.4) * pillSpeedEm + 24 <= avail) {
+          pillApply(pillSpeedTier - 1);
+          w = bar.getBoundingClientRect().width;
+        }
+      }
+    }
     function barMorePosition() {
       if (!morePanel.classList.contains("open")) return;
       var a = moreButton.getBoundingClientRect(), h = morePanel.offsetHeight, w = morePanel.offsetWidth;
@@ -638,6 +680,8 @@
       moreButton.setAttribute("aria-expanded", "false");
       if (restoreFocus && moreButton.focus) moreButton.focus();
     }
+    /* 菜单项实时值：速度格面是精简文案（标签+数值），完整状态词在 data-zu-full（specs/speed-chip-stable-slot.md）；
+     * 其余格无该属性回退 textContent。两处同步点内联同一表达式（切片夹具按函数锚点提取，勿抽成外部助手）。 */
     function moreEntriesSync() {
       var list = Array.prototype.filter.call(main.querySelectorAll(":scope > .it"), function (el) {
         return el.dataset.zuFolded === "1";
@@ -659,7 +703,7 @@
         button.appendChild(name);
         var value = document.createElement("span");
         value.className = "zu-more-value";
-        value.textContent = (el.textContent || "").trim();
+        value.textContent = (el.dataset && el.dataset.zuFull) || (el.textContent || "").trim();
         button.appendChild(value);
         button.__zuCell = el;   // 活格引用：点击/刷新按 key 现查活格（菜单打开期间条面会被数据泵重建）
         button.__tip = el.__tip;   // 兜底快照：活格查不到时仍有内容可弹
@@ -684,11 +728,26 @@
         if (el.dataset.zuFolded !== "1") return;
         var value = b.querySelector(".zu-more-value");
         if (value) {
-          var v = (el.textContent || "").trim();
+          var v = (el.dataset && el.dataset.zuFull) || (el.textContent || "").trim();
           if (value.textContent !== v) value.textContent = v;
         }
         if (b.__tip !== el.__tip) b.__tip = el.__tip;
       });
+    }
+    /* 条面内容宽（specs/statusbar-layout.md「真实布局测量」的补充，specs/speed-chip-stable-slot.md 定案）：
+     * .zu-main 用 space-between 摊开子项，scrollWidth 以 clientWidth 为下限——非溢出态恒等于
+     * clientWidth（宿主实测：内容 151px 装进 300px 容器 scrollWidth=300），「富余 ≥FOLD_HYS 才回展」
+     * 的判据因此从未成立：折叠循环每轮多折一格，折叠态的逐帧回展触发器是死分支。这里按可见子项
+     * 宽度和计内容宽（可小于容器）。只在折叠重算与「已折叠且未溢出」的逐帧探测里调用，不进常规
+     * 逐帧路径；折叠格 display:none 宽度为 0，另按 data-zu-folded 跳过。 */
+    function zuBarContentWidth() {
+      var kids = main.children, w = 0, n = 0;
+      for (var i = 0; i < kids.length; i++) {
+        if (kids[i].dataset && kids[i].dataset.zuFolded === "1") continue;
+        var cw = kids[i].getBoundingClientRect().width;
+        if (cw > 0) { w += cw; n++; }
+      }
+      return w + Math.max(0, n - 1);   // .zu-main gap:1px
     }
     function syncBarOverflow() {
       /* 折叠只在 default 且窄宽已到 shrink===2（次要已藏）仍溢出时接管；其余档位清折叠态。
@@ -696,9 +755,10 @@
        * 窄宽块（本函数之前）维护，折叠收敛后的修正走尾部 clipNow toggle。 */
       if (state.theme !== "default" || shrink !== 2) {
         if (moreButton.dataset.zuVisible !== "0") moreButton.dataset.zuVisible = "0";
-        if (foldDirty || foldedKeys) {
+        if (foldDirty || foldedKeys || speedMinOn) {
           main.querySelectorAll("[data-zu-folded]").forEach(function (el) { el.removeAttribute("data-zu-folded"); });
           main.querySelectorAll("[data-zu-endlead]").forEach(function (el) { el.removeAttribute("data-zu-endlead"); });
+          if (speedMinOn) { main.querySelectorAll("[data-zu-speed-min]").forEach(function (el) { delete el.dataset.zuSpeedMin; }); speedMinOn = false; }
           foldedKeys = "";
           foldDirty = false;
         }
@@ -710,21 +770,26 @@
       var width = bar.clientWidth;
       var font = cs.fontSize + "/" + cs.fontFamily;   // 字族切换不改 fontSize 但变项宽，一并进签名
       var prioritySig = JSON.stringify(state.barPriority);
-      if (!foldDirty && width === foldWidth && font === foldFont && prioritySig === foldPrioritySig) {
+      /* 门口同时记 .zu-main 自身宽度：折叠判据的容器是它（条宽不变而 main 可用宽变化时也要重算） */
+      var mainW = main.clientWidth;
+      if (!foldDirty && width === foldWidth && mainW === foldMainW && font === foldFont && prioritySig === foldPrioritySig) {
         /* 内容宽探测（带迟滞的双向触发器）：流式原地改字/宽度跳变不触发重建，签名不变但
          * 折叠需求可能已变。展开态 ov>1 即触发折叠；折叠态 slack≥FOLD_HYS 才触发回展尝试
          * ——单向「当前是否溢出」探针是错的：从「已折叠且刚好装下」直接变宽的状态不经过
          * 溢出态，探针永不翻转，折叠集冻结（pill 夹具实证）。每帧一次 scrollWidth 读，
          * 与 base track 同款成本。 */
-        var ovNow = main.scrollWidth - main.clientWidth;
+        var ovNow = main.scrollWidth - mainW;
+        if (foldedKeys && ovNow <= 1) ovNow = zuBarContentWidth() - mainW;   // 折叠且未溢出：取真实内容宽（富余可为负；scrollWidth 以 clientWidth 为下限量不出）
         var trigger = foldedKeys ? ovNow <= 1 - FOLD_HYS : ovNow > 1;
         if (trigger !== foldTrigger) { foldDirty = true; foldTrigger = trigger; }
         else { barMorePosition(); return; }
       }
-      foldDirty = false; foldWidth = width; foldFont = font; foldPrioritySig = prioritySig;
+      foldDirty = false; foldWidth = width; foldMainW = mainW; foldFont = font; foldPrioritySig = prioritySig;
       var rows = Array.prototype.slice.call(main.querySelectorAll(":scope > .it"));
       var separators = Array.prototype.slice.call(main.querySelectorAll(":scope > .sep"));
       rows.forEach(function (el) { el.dataset.zuFolded = "0"; delete el.dataset.zuEndlead; });   // data-zu-endlead（CSS/清理同名；曾误写驼峰 zuEndLead 生成 data-zu-end-lead 永不匹配）
+      rows.forEach(function (el) { if (el.dataset.zuSpeedMin === "1") delete el.dataset.zuSpeedMin; });   // 速度格极窄档随折叠集每轮从头重算
+      speedMinOn = false;
       separators.forEach(function (el) { el.dataset.zuFolded = "0"; });
       moreButton.dataset.zuVisible = "0";
       function syncSeparators() {
@@ -745,21 +810,32 @@
       var candidates = zuBarFoldOrder(rows.map(function (el) { return el.dataset.zuKey || "system"; }), state.barPriority)
         .map(function (c) { return { el: rows[c.i] }; });
       var fi = 0;
-      if (main.scrollWidth > main.clientWidth + 1) {
+      if (zuBarContentWidth() > main.clientWidth + 1) {
         moreButton.dataset.zuVisible = "1";
-        for (; fi < candidates.length && main.scrollWidth > main.clientWidth + 1; fi++) {
-          candidates[fi].el.dataset.zuFolded = "1";
+        for (; fi < candidates.length && zuBarContentWidth() > main.clientWidth + 1; fi++) {
+          /* 速度格稳定占位（specs/speed-chip-stable-slot.md）：轮到速度格先降「极窄」（仅图标）
+           * 再判溢出——装得下就停在这一步，仍溢出才折叠。固定语义的最后一步保留。 */
+          var foldEl = candidates[fi].el;
+          if (foldEl.dataset.zuKey === "speed" && foldEl.dataset.zuSpeedMin !== "1") {
+            foldEl.dataset.zuSpeedMin = "1"; speedMinOn = true;
+            if (zuBarContentWidth() <= main.clientWidth + 1) break;
+          }
+          foldEl.dataset.zuFolded = "1";
           syncSeparators();
         }
         /* 迟滞恢复：折叠到刚好 fit 后，富余 ≥FOLD_HYS 才回展一格——进入折叠 ov>1、
-         * 退出需 slack≥FOLD_HYS，与旧 v66 收缩迟滞(+12/-120)同构的折叠版等价物。 */
+         * 退出需 slack≥FOLD_HYS，与旧 v66 收缩迟滞(+12/-120)同构的折叠版等价物。
+         * 速度格极窄不在这里回展：降极窄的前提是完整宽溢出，同一轮里「解除后富余够」
+         * 不可达；变宽后的解除靠每轮开头的清空（上方 rows.forEach）从头重算。 */
         while (fi < candidates.length) {
-          candidates[fi].el.dataset.zuFolded = "0";
+          var backEl = candidates[fi].el;
+          backEl.dataset.zuFolded = "0";
           syncSeparators();
-          if (main.scrollWidth <= main.clientWidth + 1 - FOLD_HYS) fi++;
-          else { candidates[fi].el.dataset.zuFolded = "1"; syncSeparators(); break; }
+          if (zuBarContentWidth() <= main.clientWidth + 1 - FOLD_HYS) fi++;
+          else { backEl.dataset.zuFolded = "1"; syncSeparators(); break; }
         }
       }
+      speedMinOn = rows.some(function (el) { return el.dataset.zuSpeedMin === "1"; });
       syncSeparators();
       var hidden = rows.filter(function (el) { return el.dataset.zuFolded === "1"; });
       moreButton.dataset.zuVisible = hidden.length ? "1" : "0";
@@ -781,7 +857,8 @@
       }
       if (!hidden.length) closeMore(false);
       var ovEnd = main.scrollWidth - main.clientWidth;
-      foldTrigger = foldedKeys ? ovEnd <= 1 - FOLD_HYS : ovEnd > 1;
+      /* 触发器基线与逐帧探测同口径：折叠态按内容宽取富余（否则基线恒 false、逐帧恒 true，每帧重算） */
+      foldTrigger = foldedKeys ? zuBarContentWidth() - main.clientWidth <= 1 - FOLD_HYS : ovEnd > 1;
       main.classList.toggle("zu-clip", ovEnd > 1);
       /* 打开的菜单不能每次数字刷新都 innerHTML 重建：会抢走焦点；原地同步数值即可。 */
       if (morePanel.classList.contains("open")) moreEntriesRefresh();
@@ -886,6 +963,29 @@
         } else if (cardCache && (state.theme === "pill" || !paddedCard || paddedCard.style.marginBottom !== CARD_MARGIN)) {
           ensureCardPad();   // 流式期间 React 重置内联边距时立刻补回（仅 below-card 兜底形态）
         }
+        /* v444（issue #452，specs/perf-lag-reduction.md 规则 19）：内嵌形态的条随输入卡片排版，逐帧读
+         * 几何只服务于显隐与溢出对账；宿主每帧改 DOM（流式输出/打字/虚拟列表滚动）时，这些读取会把
+         * 本帧的样式重算与布局强制进本回调（本机实测 1.3ms/帧、占主线程 7.8%，其中约 87% 是嵌套的
+         * 强制样式重算与布局）。
+         * 上方补挂对账仍每帧（纯 DOM 引用读取）；下方几何段在 cardMode 下按门执行：脏标（render 重建
+         * 条面/解除让位抑制）、cardMode 翻转、视口变化立即读；设置面板/子代理浮层/⋯ 菜单打开
+         * 期间或视口保持期内逐帧；否则按 TRACK_IDLE_MS 兜底对账（宿主自发的布局变化没有插件侧事件）。
+         * 药丸与 below-card 悬浮形态（cardMode 为假）不设门——条不随卡片排版，必须逐帧跟随。 */
+        var trackNow = Date.now();
+        /* 时钟回拨：保持期截止时刻只在此前的视口变化时写入，回拨后会落在「未来」，不作废则门被撑开、逐帧执行到
+         * 时钟追上。先于视口判断作废——回拨与视口变化落在同一帧时，本帧的视口变化照常重新武装保持期。 */
+        if (trackNow < trackAt) trackFastUntil = 0;
+        if ((innerWidth || 0) !== trackVw || (innerHeight || 0) !== trackVh) {
+          trackVw = innerWidth || 0; trackVh = innerHeight || 0;
+          trackDirty = true; trackFastUntil = trackNow + TRACK_FAST_MS;
+        }
+        trackFrames++;
+        if (cardMode && trackNow >= trackFastUntil && !panel.classList.contains("open") && !subPopOpen() && !morePanel.classList.contains("open") &&
+            cardMode === trackCard && !trackDirty) {
+          var trackSince = trackNow - trackAt;
+          if (trackSince >= 0 && trackSince < TRACK_IDLE_MS) return;   // 负差=系统时钟回拨，视为到期（与 heavy 降频门同口径）
+        }
+        trackCard = cardMode; trackDirty = false; trackAt = trackNow; trackPasses++;
         var r = composer.getBoundingClientRect();
         var on = r.width > 60 && r.height > 14 && r.bottom > 0 && r.top < innerHeight &&
           !ghostOf(composer) &&          // 设置页等幽灵壳（opacity-0/inert）：视觉已隐藏（v61，v115 TTL 缓存）
@@ -936,6 +1036,7 @@
             if (bar.style.maxWidth !== maxW) bar.style.maxWidth = maxW;
             var width = bar.getBoundingClientRect().width;
             left = Math.max(8, Math.min(Math.round(ar.left + (ar.width - width) / 2), Math.round(innerWidth - width - 8)));
+            zuPillSpeedTierSync(width, available);
           } else {
             /* 宽度锁死卡片（v63 对齐，v66 收缩）：min=max-width = 卡片实测宽。 */
             var minW = Math.max(60, Math.round(ar.width));
@@ -952,11 +1053,16 @@
         if (state.theme === "default" && main.clientWidth > 0 && Date.now() - narrowCheckAt >= 250) {
           narrowCheckAt = Date.now();
           var mainStyle = getComputedStyle(main);
-          var measureKey = main.innerHTML + "|" + mainStyle.font + "|" + mainStyle.letterSpacing + "|" + mainStyle.fontVariantNumeric + "|" + state.barJust + "|" + Math.floor(Date.now() / 10000);
+          /* 速度格稳定占位（specs/speed-chip-stable-slot.md）：速度格外宽固定、其面文字不影响自然宽，
+           * 测量签名把 .zu-live 内容与格上的全称属性（aria-label / data-zu-full，随状态与计时变化）
+           * 剔除——计时/速度走字不再触发整条克隆重测（此前每 250ms 一次）。面结构恒为「.zu-live
+           * 包装层 + 2~3 个无嵌套子 span + 格收尾」，包装层收尾唯一可辨；两属性由 zuSpeedCellAttrs
+           * 以固定相邻顺序产出，仅速度格携带 data-zu-full。 */
+          var measureKey = main.innerHTML.replace(ZU_SPEED_FULL_ATTRS_RE, "").replace(ZU_SPEED_FACE_KEY_RE, "$1</span>") + "|" + mainStyle.font + "|" + mainStyle.letterSpacing + "|" + mainStyle.fontVariantNumeric + "|" + state.barJust + "|" + Math.floor(Date.now() / 10000);
           if (!narrowWidths || measureKey !== narrowMeasureKey) {
             var probe = document.createElement("div");
             probe.className = bar.className;
-            probe.classList.remove("zu-narrow", "zu-tight", "zu-in", "zu-just-end");
+            probe.classList.remove("zu-narrow", "zu-tight", "zu-in", "zu-just-end", "zu-speed-mid", "zu-speed-tight");
             probe.style.cssText = "position:fixed;left:-10000px;top:0;visibility:hidden;pointer-events:none;width:max-content;min-width:0;max-width:none";
             probe.style.fontFamily = mainStyle.fontFamily;
             probe.style.fontSize = mainStyle.fontSize;
@@ -965,6 +1071,9 @@
              * 规则把已折叠格量成 0 宽，shrink 档据此误判「完整宽装得下」→ 反复展/折叠
              * 以约 2Hz 震荡（v352 探针写于折叠机制之前，串联时未教它剥折叠态）。 */
             probeMain.querySelectorAll("[data-zu-folded]").forEach(function (el) { el.removeAttribute("data-zu-folded"); });
+            /* 同理剥速度格极窄档：折叠段内写入的 data-zu-speed-min 若被探针量到，自然宽会随
+             * 档位反转（极窄装得下→离开折叠→恢复全宽→又溢出），与 v357 同款震荡环 */
+            probeMain.querySelectorAll("[data-zu-speed-min]").forEach(function (el) { el.removeAttribute("data-zu-speed-min"); });
             probeMain.classList.remove("zu-clip", "zu-clip-left");
             probeMain.style.cssText = "width:max-content;min-width:max-content;flex:none;overflow:visible";
             /* v356 修复（用户实报「开启系统状态后整条抖动」）：format:"auto" 的系统状态面随
@@ -1035,6 +1144,7 @@
             nativeCtx: nativeCtxVal,
             quota: { providerId: effectiveQuotaProvider(), modelId: quotaModel, sourceId: quotaSourceId,
               selected: !!quotaSelection, status: lastQuota ? lastQuota.status : "unavailable", chip: !!quotaChipCache },
+            trackFrames: trackFrames, trackPasses: trackPasses,   // v444：空闲门是否生效的现场证据（内嵌空闲态执行次数远小于帧数）
             picked: pickedSid,
             exc: excOn ? (excGone ? "on-gone" : "on") : 0,
             href: String(location.href).slice(0, 120),
@@ -1075,6 +1185,10 @@
         if (!inactive()) frame = requestAnimationFrame(track);   // 自调度循环：异常绝不能杀死循环（setInterval 无此问题，rAF 有）
       }
     }
+
+    /* v444：条面横向滚动后的下一帧重判裁剪渐隐（zu-clip/zu-clip-left）——事件只置脏标、不读几何；
+     * 监听挂在条内 main 上，经 listenGlobal 登记，随实例 dispose 摘除。 */
+    listenGlobal(main, "scroll", function () { trackDirty = true; });
 
     heavyTimer = setInterval(heavy, 600);
     heavy();
@@ -1248,6 +1362,10 @@
         return info;
       },
       rotatorStats: function () { return inactive() ? null : { stats: liveStatsCur, model: quotaModel, provider: quotaProvider, session: lastView && lastView.session }; },
+      /* 轮播实时速度段（specs/status-rotator-work-duration.md）：把子代理速率槽位（08 分片
+       * subRate.slots，键=子会话 sid）原引用交给轮播按 loading 行所属窗格逐行取数——
+       * 只读引用零拷贝，槽位值由既有 store 通知链原地更新。 */
+      subRateSlots: function () { return inactive() ? null : subRate.slots; },
       liveEl: function () { return liveEl; },   // 测试缝：实时段节点引用
       liveIconKind: function () { return liveIconCur; },   // 测试缝：当前 chip 图标（think/bolt/空）
       /* v356 系统状态：帧驱动的原地格面刷新 + 订阅意愿上报（格可见/格 tooltip/设置页/精简
@@ -1262,7 +1380,9 @@
           if (tipFor && tipFor.dataset && tipFor.dataset.zuKey === "sysmon" && tip.style.display === "block") r.want = true;
           if (panel.classList.contains("open")) r.want = true;   // 设置页开着：预览需要真实采样
           if (typeof sysmonChipMounted === "function" && sysmonChipMounted()) r.want = true;
-          var sc = getScope();
+          /* v445：getScope 只是本 api 对象的属性、不是作用域里的变量——此前裸调必抛
+           * ReferenceError 被下面的 catch 吞掉，projectPath 恒空，主进程永远定位不到项目卷。 */
+          var sc = api.getScope();
           if (sc && sc.sid && !sc.identity && sc.workspacePath) r.projectPath = sc.workspacePath;
         } catch (e) { }
         return r;

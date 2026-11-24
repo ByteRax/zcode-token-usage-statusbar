@@ -12,13 +12,21 @@ const path = require('node:path');
 const { CANDIDATES, usable, defaultProbe, pickInterpreter, main } = require(path.join(__dirname, '..', 'mcp-launch.cjs'));
 
 const PROBE_OK = { status: 0, stdout: 'Python 3.12.9\n', stderr: '' };
+const PROBE_OLD = { status: 0, stdout: 'Python 3.7.9\n', stderr: '' };
 const STORE_STUB = { status: 49, stdout: '', stderr: 'Python was not found; run without arguments to install from the Microsoft Store...\n' };
 const ENOENT = { error: Object.assign(new Error("spawn python3 ENOENT"), { code: 'ENOENT' }), status: null };
 
-test('usable 只认退出码 0 且输出 Python 3 版本行的探测结果', () => {
+test('usable 只认退出码 0 且输出 Python 3.8+ 版本行的探测结果', () => {
   assert.equal(usable(PROBE_OK), true);
   // Python 2 残留与项目 3.8+ 要求不符，不通过。
   assert.equal(usable({ status: 0, stdout: 'Python 2.7.18\n' }), false);
+  // 低于 3.8 的 python 同样不通过（issue #454）：hooks 回退链靠脚本入口的版本门让位，
+  // MCP 没有这层，必须由探测自己挡住，否则 3.7 会抢在 py -3 之前被选中。
+  assert.equal(usable(PROBE_OLD), false);
+  // 下限本身放行；无补丁号与预发布版本号同样按次版本号判定。
+  assert.equal(usable({ status: 0, stdout: 'Python 3.8\n' }), true);
+  assert.equal(usable({ status: 0, stdout: 'Python 3.8.0\n' }), true);
+  assert.equal(usable({ status: 0, stdout: 'Python 3.14.0a1\n' }), true);
   // Windows Store 桩：PATH 真实文件、存在性检查全过，只有执行能区分。
   assert.equal(usable(STORE_STUB), false);
   assert.equal(usable({ status: 0, stdout: '', stderr: '广告' }), false);
@@ -94,6 +102,22 @@ test('pickInterpreter 跳过缺失的 python3 与 Store 桩 python，落到 py -
 
 test('pickInterpreter 全部候选不可用时返回 undefined', () => {
   assert.equal(pickInterpreter(() => ENOENT), undefined);
+});
+
+test('pickInterpreter 跳过缺失的 python3 与低版本 python，落到 py -3（issue #454）', () => {
+  const probed = [];
+  const picked = pickInterpreter((candidate) => {
+    probed.push(candidate.command);
+    if (candidate.command === 'python3') return ENOENT;
+    if (candidate.command === 'python') return PROBE_OLD;
+    return { status: 0, stdout: 'Python 3.13.5\n', stderr: '' };
+  });
+  assert.deepEqual(picked, { command: 'py', args: ['-3'] });
+  assert.deepEqual(probed, ['python3', 'python', 'py']);
+});
+
+test('pickInterpreter 只剩低版本候选时返回 undefined', () => {
+  assert.equal(pickInterpreter(() => PROBE_OLD), undefined);
 });
 
 function fakeStd() { return new PassThrough(); }

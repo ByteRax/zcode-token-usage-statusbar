@@ -530,6 +530,7 @@ const QIANWEN_UA = "qianwen-cli/1.11.0";
 const QIANWEN_REGION = "cn-beijing";
 const QIANWEN_USAGE_API = "zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage";
 const QIANWEN_CLI_TOKEN_TTL = 20 * 60 * 1000;   // magpie aliTokenTTL 同款
+const QIANWEN_POLL_MAX_MS = 30 * 1000;   // 设备码轮询间隔经 slow_down 逐次翻长后的封顶
 const qianwenCliTokens = new Map();   // access 指纹 → { token, at }（控制台令牌缓存）
 const QIANWEN_WIN_RE = /^per(\d+)(Hour|Day|Week|Month)(Percentage|ResetTime)$/;
 function qianwenUuid() {
@@ -731,7 +732,7 @@ function installQianwenFlow(client, j, o) {
   function finish(state, error) {
     flow.state = state;
     flow.error = error || "";
-    if (state !== "done") flow.url = "";
+    flow.url = "";   // 终态一律清：授权页 URL 带设备码 auth_token，done/failed 后渲染端都不再需要
   }
   function flowCancel() {
     flow.gen += 1;
@@ -756,11 +757,16 @@ function installQianwenFlow(client, j, o) {
     if (gen !== flow.gen) return { ok: false, error: "cancelled" };
     const d = codeRep && codeRep.Data && typeof codeRep.Data === "object" ? codeRep.Data : null;
     const deviceToken = d && typeof d.Token === "string" ? d.Token : "";
-    /* 授权页 URL 域白名单（官方=account.qianwenai.com）：服务端可控串不经白名单不交 openExternal */
+    /* 授权页 URL 域白名单（官方=account.qianwenai.com）：服务端可控串不经白名单不交 openExternal。
+     * 交出去的是 URL 解析归一后的 href——原始串里的首尾空白/控制字符不随 openExternal
+     * 出门；带 userinfo 的「evil.com@account.qianwenai.com」形（地址栏可误导）直接拒。 */
     let url = "";
     if (d && typeof d.VerificationUrl === "string") {
-      try { url = new URL(d.VerificationUrl).hostname.toLowerCase().endsWith(".qianwenai.com") && /^https:$/.test(new URL(d.VerificationUrl).protocol) ? d.VerificationUrl : ""; }
-      catch (e) { url = ""; }
+      try {
+        const u = new URL(d.VerificationUrl);
+        url = u.protocol === "https:" && !u.username && !u.password &&
+          u.hostname.toLowerCase().endsWith(".qianwenai.com") ? u.href : "";
+      } catch (e) { url = ""; }
     }
     if (codeErr && codeErr.body) {   // HTTP ≥3xx：只嗅状态词，正文不进文案
       const word = qianwenStatusWordOf(codeErr.body);
@@ -772,6 +778,7 @@ function installQianwenFlow(client, j, o) {
     }
     const everyMs = Math.min(Math.max((num(d.Interval) > 0 ? num(d.Interval) : 2) * 1000, 100), 2000);
     const deadline = j.now() + Math.min(Math.max((num(d.ExpiresIn) > 0 ? num(d.ExpiresIn) : 300) * 1000, 30 * 1000), 15 * 60 * 1000);
+    let curMs = everyMs;
     flow.state = "pending";
     flow.url = url;
     const poll = async () => {
@@ -792,9 +799,10 @@ function installQianwenFlow(client, j, o) {
         finish("failed", "平台返回未知形态，请重试");
         return;
       }
-      const every = everyMs;   // slow_down 翻倍只作用于下一拍，不回写基准间隔
-      if (parsed.status === "authorization_pending") { armTimer(every, poll); return; }
-      if (parsed.status === "slow_down") { armTimer(every * 2, poll); return; }
+      /* 当前轮询间隔：slow_down 持续加长并沿用（RFC 8628 §3.5——加长后的间隔不回落，
+       * 否则服务端要求的间隔高于客户端上限时会一直 slow_down 到 deadline），封顶 30s */
+      if (parsed.status === "authorization_pending") { armTimer(curMs, poll); return; }
+      if (parsed.status === "slow_down") { curMs = Math.min(curMs * 2, QIANWEN_POLL_MAX_MS); armTimer(curMs, poll); return; }
       if (parsed.status === "complete") {
         if (!parsed.access) { finish("failed", "平台未返回令牌，请重试"); return; }
         const expMs = qianwenExpiryMs(parsed.expires);
@@ -811,7 +819,7 @@ function installQianwenFlow(client, j, o) {
       }
       if (parsed.status === "expired_token") { finish("failed", "登录页已过期，请重新登录"); return; }
       if (parsed.status === "access_denied") { finish("failed", "授权被拒绝"); return; }
-      if (parsed.status === "http_error") { armTimer(every, poll); return; }   // 未知 HTTP 错误：按瞬时重问
+      if (parsed.status === "http_error") { armTimer(curMs, poll); return; }   // 未知 HTTP 错误：按瞬时重问
       finish("failed", "平台返回未知状态，请重试");   // 服务端 Status 串不进错误链（与 usage 错误同口径）
     };
     armTimer(everyMs, poll);

@@ -542,6 +542,20 @@ test('v331 切全部项目：KPI/明细/时间切换、项目明细在模型明�
   // 分隔线与时间范围（全局起止）
   assert.match(bare, /zu-pj-div/);
   assert.match(bare, /zu-stat-time/);
+  // v445：项目行首列副行承载费用——narrow/tiny 收起费用列时数据不丢（此前只有模型行有副行）
+  assert.match(bare, /title="\/w\/proj-a">proj-a<div class="zu-md-sub" title="¥88\.75">¥88\.75<\/div><\/td>/, 'v445：项目行带费用副行');
+  assert.match(bare, /未归属项目<div class="zu-md-sub"/, 'v445：0 费用是有效金额，副行照常');
+});
+
+test('v445: project rows carry the cost sub-row only while the cost switch is on', () => {
+  const h = harness({ costLS: '0' }); setup(h);
+  const p = h.payload({ withCost: true });
+  p.all_projects = allProjectsFixture();
+  h.window.__zusageUpdate(p);
+  const bare = clickTab(h, 'all').replace(/<style>[\s\S]*?<\/style>/g, '');
+  assert.match(bare, /aria-selected="true"[^>]*>全部项目/, '前置：已切到全部项目');
+  assert.doesNotMatch(bare, /zu-c-cost/, '费用列整体不渲染');
+  assert.doesNotMatch(bare, /zu-md-sub" title="¥/, '费用开关关：项目行不产费用副行');
 });
 
 test('v331 切回当前项目：数据与项目名恢复，无项目明细残留', () => {

@@ -714,9 +714,18 @@ function normalizeOllama(body) {
       };
       const period = included.period && typeof included.period === "object" && !Array.isArray(included.period) ? included.period : null;
       /* until 非空但非日期（端点改版回垃圾串）不得冒充月窗：resetOf 对非空字符串透传是
-       * 全仓基线，此处单适配器内敛加 Date.parse 门，解析失败落 plan 窗。 */
+       * 全仓基线，此处单适配器内敛加 Date.parse 门，解析失败落 plan 窗。数字毫秒（及毫秒
+       * 数字串——同 stepfun 的整数字符串写法）不经 Date.parse 直接作 resetsAt：此前只认
+       * 日期串，数字形态会被误落 plan 窗（「套餐」标签、无重置时间）。 */
       const untilRaw = period ? resetOf(period.until) : null;
-      const until = untilRaw && !Number.isNaN(Date.parse(untilRaw)) ? untilRaw : null;
+      let until = null;
+      if (typeof untilRaw === "number") until = untilRaw >= 1e11 ? untilRaw : null;
+      else if (typeof untilRaw === "string") {
+        /* 纯数字串只当毫秒，不走 Date.parse：V8 会把 "12345" 当成公元 12345 年而放行。
+         * 1e11（1973 年）下限挡玩具数值——resetOf 会把任何 <1e12 的数字当秒乘 1000。 */
+        if (/^\d+$/.test(untilRaw)) { const n = Number(untilRaw); until = Number.isFinite(n) && n >= 1e11 ? n : null; }   // 超长数字串是 Infinity：同 stepfun 加有限性闸
+        else if (!Number.isNaN(Date.parse(untilRaw))) until = untilRaw;
+      }
       if (until) { win.resetsAt = until; windows.monthly = win; }
       else windows.plan = win;
     }
@@ -770,6 +779,20 @@ ADAPTERS.push({
  * 缺失时按 (total−remaining)/total 自算兜底。Credit 按订阅月发放、当期剩余到期清零
  * 不结转（1 元 = 1,000,000 Credit，档位见官方 pricing 文档）。 */
 const STEPFUN_USAGE_URL = "https://api.stepfun.com/step_plan/v1/usage";
+/* 毫秒时间戳归一（resets_at_ms / expires_at_ms 同一口径）：数字毫秒直传；全数字字符串转
+ * Number 恢复（官方 total/remaining 用整数字符串防精度，毫秒值可能同款——isFinite 拦超长
+ * 串的 Infinity，低于 1e11 视为非毫秒垃圾串丢弃）；其余字符串仅当 allowDate 时过
+ * Date.parse 门（对齐 ollama 的单适配器内敛门——端点改版回垃圾串不冒充重置时间）。 */
+function stepfunStamp(v, allowDate) {
+  const raw = resetOf(v);
+  if (typeof raw === "number") return raw >= 1e11 ? raw : null;   // 1e11 下限同 ollama：挡玩具数值
+  if (typeof raw !== "string") return null;
+  if (/^\d+$/.test(raw)) {
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 1e11 ? n : null;
+  }
+  return allowDate && !Number.isNaN(Date.parse(raw)) ? raw : null;
+}
 function normalizeStepfun(body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) throw qErr("parse_error", "stepfun non-object body");
   const plan = body.plan, quota = body.quota;
@@ -778,7 +801,12 @@ function normalizeStepfun(body) {
   const buckets = (Array.isArray(quota.credit_buckets) ? quota.credit_buckets : [])
     .filter((b) => b && typeof b === "object" && !Array.isArray(b) && num(b.total) > 0 && num(b.remaining) >= 0);
   if (!buckets.length) return { noPlan: true };   // 无有效额度桶 = 无在订套餐（fail-closed 冻结，不造 0%）
-  const pick = buckets.find((b) => b.type === "subscription") || buckets[0];
+  /* 选桶（规格「无 subscription 桶时取首个有效桶兜底」）：subscription 桶优先；没有时取
+   * 首个 remaining 可解析的桶——加油包桶列表里前几个桶缺 remaining 时不再被它们抢占
+   * （此前 buckets[0] 会选中缺 remaining 的桶，让紧随其后的有效桶也报 parse_error）；
+   * 全都解析不了才落 buckets[0]，走下方 parse_error 按 30 分钟退避自愈。 */
+  const pick = buckets.find((b) => b.type === "subscription")
+    || buckets.find((b) => num(b.remaining) != null) || buckets[0];
   const total = num(pick.total), remaining = num(pick.remaining);
   if (total == null || remaining == null || remaining > total) throw qErr("parse_error", "stepfun bucket shape invalid");
   const usedPct = num(pick.used_percent);
@@ -786,30 +814,18 @@ function normalizeStepfun(body) {
   /* remaining 为 null/undefined/空串的桶不被过滤（JS 里 null >= 0 为 true），落下面
    * remaining == null 的 parse_error 按 30 分钟退避自愈，优于对在订账号误冻结 noPlan；
    * total 为 null/空串（无法产出任何窗口）与负 remaining（透支形状，官方文档未载）在
-   * 过滤条件被剔除 → noPlan。resets_at_ms：数字毫秒直传；全数字字符串转 Number 恢复
-   * （官方 total/remaining 用整数字符串防精度，毫秒值可能同款——低于 1e11 视为非毫秒
-   * 垃圾串丢弃）；其余非空字符串过 Date.parse 门（对齐 ollama 的单适配器内敛门——端点
-   * 改版回垃圾串不冒充重置时间）。 */
-  const resetRaw = resetOf(pick.resets_at_ms);
-  let resetsAt = resetRaw;
-  if (typeof resetRaw === "string") {
-    if (/^\d+$/.test(resetRaw)) {
-      const n = Number(resetRaw);   // 全数字字符串转 Number 恢复；isFinite 拦超长串的 Infinity
-      resetsAt = Number.isFinite(n) && n >= 1e11 ? n : null;
-    } else {
-      resetsAt = Number.isNaN(Date.parse(resetRaw)) ? null : resetRaw;
-    }
-  }
+   * 过滤条件被剔除 → noPlan。 */
+  const resetsAt = stepfunStamp(pick.resets_at_ms, true);
   const out = { label: "StepFun", kind: "plan",
     /* resets_at_ms 是月度 Credit 重置（真重置语义才填 resetsAt）；缺失（实测 Max 快照
      * 不带该字段）不拿订阅到期冒充——到期时间单独落 plan.validEnd。 */
     windows: { monthly: { percent: Math.round(clampPct(pct) * 10) / 10, resetsAt } } };
   const name = typeof plan.name === "string" ? plan.name.slice(0, 40) : "";
   const sub = plan.subscription;
-  const expiresMs = (sub && typeof sub === "object" && !Array.isArray(sub)) ? resetOf(sub.expires_at_ms) : null;
+  const expiresMs = (sub && typeof sub === "object" && !Array.isArray(sub)) ? stepfunStamp(sub.expires_at_ms, false) : null;
   if (name || expiresMs) {
     out.plan = { version: "", productName: name, validStart: "",
-      validEnd: typeof expiresMs === "number" ? zcodeStartStamp(expiresMs).slice(0, 10) : "" };
+      validEnd: expiresMs != null ? zcodeStartStamp(expiresMs).slice(0, 10) : "" };
   }
   return out;
 }

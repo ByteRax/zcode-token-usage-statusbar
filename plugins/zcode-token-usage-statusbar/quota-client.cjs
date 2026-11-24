@@ -773,7 +773,10 @@ function loadProviderCfg(readFile2, cfgPath, builtinCfgPath) {
     const api = Object.assign({}, tpl && tpl.api, cfg.api);
     const access = Object.assign({}, tpl && tpl.access, cfg.access);
     if (!api.baseUrl && tpl && tpl.api) api.baseUrl = tpl.api.baseUrl;
-    byId.set(id, { baseUrl: String(api.baseUrl || "").replace(/\/+$/, ""), apiKey: String(access.apiKey || ""), name: cfg.name || "",
+    /* enc: 形态是宿主加密信封（或误贴的密文），不是可用凭据：按未配置处理、绝不随请求外发
+     * （与 model-puller 规则路径同闸）。宿主 schema 是 z.string() 不 trim，先 trim 再判。 */
+    const rawKey = String(access.apiKey || "").trim();
+    byId.set(id, { baseUrl: String(api.baseUrl || "").replace(/\/+$/, ""), apiKey: rawKey.indexOf("enc:") === 0 ? "" : rawKey, name: cfg.name || "",
       accessType: String(access.type || "") });
   }
   if (stamp !== null) providerCfgCache = { stamp, readFile: readFile2, byId };
@@ -1342,6 +1345,7 @@ const QIANWEN_UA = "qianwen-cli/1.11.0";
 const QIANWEN_REGION = "cn-beijing";
 const QIANWEN_USAGE_API = "zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage";
 const QIANWEN_CLI_TOKEN_TTL = 20 * 60 * 1000;   // magpie aliTokenTTL 同款
+const QIANWEN_POLL_MAX_MS = 30 * 1000;   // 设备码轮询间隔经 slow_down 逐次翻长后的封顶
 const qianwenCliTokens = new Map();   // access 指纹 → { token, at }（控制台令牌缓存）
 const QIANWEN_WIN_RE = /^per(\d+)(Hour|Day|Week|Month)(Percentage|ResetTime)$/;
 function qianwenUuid() {
@@ -1543,7 +1547,7 @@ function installQianwenFlow(client, j, o) {
   function finish(state, error) {
     flow.state = state;
     flow.error = error || "";
-    if (state !== "done") flow.url = "";
+    flow.url = "";   // 终态一律清：授权页 URL 带设备码 auth_token，done/failed 后渲染端都不再需要
   }
   function flowCancel() {
     flow.gen += 1;
@@ -1568,11 +1572,16 @@ function installQianwenFlow(client, j, o) {
     if (gen !== flow.gen) return { ok: false, error: "cancelled" };
     const d = codeRep && codeRep.Data && typeof codeRep.Data === "object" ? codeRep.Data : null;
     const deviceToken = d && typeof d.Token === "string" ? d.Token : "";
-    /* 授权页 URL 域白名单（官方=account.qianwenai.com）：服务端可控串不经白名单不交 openExternal */
+    /* 授权页 URL 域白名单（官方=account.qianwenai.com）：服务端可控串不经白名单不交 openExternal。
+     * 交出去的是 URL 解析归一后的 href——原始串里的首尾空白/控制字符不随 openExternal
+     * 出门；带 userinfo 的「evil.com@account.qianwenai.com」形（地址栏可误导）直接拒。 */
     let url = "";
     if (d && typeof d.VerificationUrl === "string") {
-      try { url = new URL(d.VerificationUrl).hostname.toLowerCase().endsWith(".qianwenai.com") && /^https:$/.test(new URL(d.VerificationUrl).protocol) ? d.VerificationUrl : ""; }
-      catch (e) { url = ""; }
+      try {
+        const u = new URL(d.VerificationUrl);
+        url = u.protocol === "https:" && !u.username && !u.password &&
+          u.hostname.toLowerCase().endsWith(".qianwenai.com") ? u.href : "";
+      } catch (e) { url = ""; }
     }
     if (codeErr && codeErr.body) {   // HTTP ≥3xx：只嗅状态词，正文不进文案
       const word = qianwenStatusWordOf(codeErr.body);
@@ -1584,6 +1593,7 @@ function installQianwenFlow(client, j, o) {
     }
     const everyMs = Math.min(Math.max((num(d.Interval) > 0 ? num(d.Interval) : 2) * 1000, 100), 2000);
     const deadline = j.now() + Math.min(Math.max((num(d.ExpiresIn) > 0 ? num(d.ExpiresIn) : 300) * 1000, 30 * 1000), 15 * 60 * 1000);
+    let curMs = everyMs;
     flow.state = "pending";
     flow.url = url;
     const poll = async () => {
@@ -1604,9 +1614,10 @@ function installQianwenFlow(client, j, o) {
         finish("failed", "平台返回未知形态，请重试");
         return;
       }
-      const every = everyMs;   // slow_down 翻倍只作用于下一拍，不回写基准间隔
-      if (parsed.status === "authorization_pending") { armTimer(every, poll); return; }
-      if (parsed.status === "slow_down") { armTimer(every * 2, poll); return; }
+      /* 当前轮询间隔：slow_down 持续加长并沿用（RFC 8628 §3.5——加长后的间隔不回落，
+       * 否则服务端要求的间隔高于客户端上限时会一直 slow_down 到 deadline），封顶 30s */
+      if (parsed.status === "authorization_pending") { armTimer(curMs, poll); return; }
+      if (parsed.status === "slow_down") { curMs = Math.min(curMs * 2, QIANWEN_POLL_MAX_MS); armTimer(curMs, poll); return; }
       if (parsed.status === "complete") {
         if (!parsed.access) { finish("failed", "平台未返回令牌，请重试"); return; }
         const expMs = qianwenExpiryMs(parsed.expires);
@@ -1623,7 +1634,7 @@ function installQianwenFlow(client, j, o) {
       }
       if (parsed.status === "expired_token") { finish("failed", "登录页已过期，请重新登录"); return; }
       if (parsed.status === "access_denied") { finish("failed", "授权被拒绝"); return; }
-      if (parsed.status === "http_error") { armTimer(every, poll); return; }   // 未知 HTTP 错误：按瞬时重问
+      if (parsed.status === "http_error") { armTimer(curMs, poll); return; }   // 未知 HTTP 错误：按瞬时重问
       finish("failed", "平台返回未知状态，请重试");   // 服务端 Status 串不进错误链（与 usage 错误同口径）
     };
     armTimer(everyMs, poll);
@@ -2347,9 +2358,18 @@ function normalizeOllama(body) {
       };
       const period = included.period && typeof included.period === "object" && !Array.isArray(included.period) ? included.period : null;
       /* until 非空但非日期（端点改版回垃圾串）不得冒充月窗：resetOf 对非空字符串透传是
-       * 全仓基线，此处单适配器内敛加 Date.parse 门，解析失败落 plan 窗。 */
+       * 全仓基线，此处单适配器内敛加 Date.parse 门，解析失败落 plan 窗。数字毫秒（及毫秒
+       * 数字串——同 stepfun 的整数字符串写法）不经 Date.parse 直接作 resetsAt：此前只认
+       * 日期串，数字形态会被误落 plan 窗（「套餐」标签、无重置时间）。 */
       const untilRaw = period ? resetOf(period.until) : null;
-      const until = untilRaw && !Number.isNaN(Date.parse(untilRaw)) ? untilRaw : null;
+      let until = null;
+      if (typeof untilRaw === "number") until = untilRaw >= 1e11 ? untilRaw : null;
+      else if (typeof untilRaw === "string") {
+        /* 纯数字串只当毫秒，不走 Date.parse：V8 会把 "12345" 当成公元 12345 年而放行。
+         * 1e11（1973 年）下限挡玩具数值——resetOf 会把任何 <1e12 的数字当秒乘 1000。 */
+        if (/^\d+$/.test(untilRaw)) { const n = Number(untilRaw); until = Number.isFinite(n) && n >= 1e11 ? n : null; }   // 超长数字串是 Infinity：同 stepfun 加有限性闸
+        else if (!Number.isNaN(Date.parse(untilRaw))) until = untilRaw;
+      }
       if (until) { win.resetsAt = until; windows.monthly = win; }
       else windows.plan = win;
     }
@@ -2403,6 +2423,20 @@ ADAPTERS.push({
  * 缺失时按 (total−remaining)/total 自算兜底。Credit 按订阅月发放、当期剩余到期清零
  * 不结转（1 元 = 1,000,000 Credit，档位见官方 pricing 文档）。 */
 const STEPFUN_USAGE_URL = "https://api.stepfun.com/step_plan/v1/usage";
+/* 毫秒时间戳归一（resets_at_ms / expires_at_ms 同一口径）：数字毫秒直传；全数字字符串转
+ * Number 恢复（官方 total/remaining 用整数字符串防精度，毫秒值可能同款——isFinite 拦超长
+ * 串的 Infinity，低于 1e11 视为非毫秒垃圾串丢弃）；其余字符串仅当 allowDate 时过
+ * Date.parse 门（对齐 ollama 的单适配器内敛门——端点改版回垃圾串不冒充重置时间）。 */
+function stepfunStamp(v, allowDate) {
+  const raw = resetOf(v);
+  if (typeof raw === "number") return raw >= 1e11 ? raw : null;   // 1e11 下限同 ollama：挡玩具数值
+  if (typeof raw !== "string") return null;
+  if (/^\d+$/.test(raw)) {
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 1e11 ? n : null;
+  }
+  return allowDate && !Number.isNaN(Date.parse(raw)) ? raw : null;
+}
 function normalizeStepfun(body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) throw qErr("parse_error", "stepfun non-object body");
   const plan = body.plan, quota = body.quota;
@@ -2411,7 +2445,12 @@ function normalizeStepfun(body) {
   const buckets = (Array.isArray(quota.credit_buckets) ? quota.credit_buckets : [])
     .filter((b) => b && typeof b === "object" && !Array.isArray(b) && num(b.total) > 0 && num(b.remaining) >= 0);
   if (!buckets.length) return { noPlan: true };   // 无有效额度桶 = 无在订套餐（fail-closed 冻结，不造 0%）
-  const pick = buckets.find((b) => b.type === "subscription") || buckets[0];
+  /* 选桶（规格「无 subscription 桶时取首个有效桶兜底」）：subscription 桶优先；没有时取
+   * 首个 remaining 可解析的桶——加油包桶列表里前几个桶缺 remaining 时不再被它们抢占
+   * （此前 buckets[0] 会选中缺 remaining 的桶，让紧随其后的有效桶也报 parse_error）；
+   * 全都解析不了才落 buckets[0]，走下方 parse_error 按 30 分钟退避自愈。 */
+  const pick = buckets.find((b) => b.type === "subscription")
+    || buckets.find((b) => num(b.remaining) != null) || buckets[0];
   const total = num(pick.total), remaining = num(pick.remaining);
   if (total == null || remaining == null || remaining > total) throw qErr("parse_error", "stepfun bucket shape invalid");
   const usedPct = num(pick.used_percent);
@@ -2419,30 +2458,18 @@ function normalizeStepfun(body) {
   /* remaining 为 null/undefined/空串的桶不被过滤（JS 里 null >= 0 为 true），落下面
    * remaining == null 的 parse_error 按 30 分钟退避自愈，优于对在订账号误冻结 noPlan；
    * total 为 null/空串（无法产出任何窗口）与负 remaining（透支形状，官方文档未载）在
-   * 过滤条件被剔除 → noPlan。resets_at_ms：数字毫秒直传；全数字字符串转 Number 恢复
-   * （官方 total/remaining 用整数字符串防精度，毫秒值可能同款——低于 1e11 视为非毫秒
-   * 垃圾串丢弃）；其余非空字符串过 Date.parse 门（对齐 ollama 的单适配器内敛门——端点
-   * 改版回垃圾串不冒充重置时间）。 */
-  const resetRaw = resetOf(pick.resets_at_ms);
-  let resetsAt = resetRaw;
-  if (typeof resetRaw === "string") {
-    if (/^\d+$/.test(resetRaw)) {
-      const n = Number(resetRaw);   // 全数字字符串转 Number 恢复；isFinite 拦超长串的 Infinity
-      resetsAt = Number.isFinite(n) && n >= 1e11 ? n : null;
-    } else {
-      resetsAt = Number.isNaN(Date.parse(resetRaw)) ? null : resetRaw;
-    }
-  }
+   * 过滤条件被剔除 → noPlan。 */
+  const resetsAt = stepfunStamp(pick.resets_at_ms, true);
   const out = { label: "StepFun", kind: "plan",
     /* resets_at_ms 是月度 Credit 重置（真重置语义才填 resetsAt）；缺失（实测 Max 快照
      * 不带该字段）不拿订阅到期冒充——到期时间单独落 plan.validEnd。 */
     windows: { monthly: { percent: Math.round(clampPct(pct) * 10) / 10, resetsAt } } };
   const name = typeof plan.name === "string" ? plan.name.slice(0, 40) : "";
   const sub = plan.subscription;
-  const expiresMs = (sub && typeof sub === "object" && !Array.isArray(sub)) ? resetOf(sub.expires_at_ms) : null;
+  const expiresMs = (sub && typeof sub === "object" && !Array.isArray(sub)) ? stepfunStamp(sub.expires_at_ms, false) : null;
   if (name || expiresMs) {
     out.plan = { version: "", productName: name, validStart: "",
-      validEnd: typeof expiresMs === "number" ? zcodeStartStamp(expiresMs).slice(0, 10) : "" };
+      validEnd: expiresMs != null ? zcodeStartStamp(expiresMs).slice(0, 10) : "" };
   }
   return out;
 }

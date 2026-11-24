@@ -73,14 +73,14 @@ function harness(models, lang = "zh") {
   document.querySelector = s => s.includes("model-provider-add-model-button") ? host : null;
   const timers = new Set(), records = [], snapshots = [];
   const sb = vm.createContext({
-    document, window: {}, themeDark:true, mpModalDispose:null, mpModalThemeSync:null,
+    document, window: { __zusagePluginRequests: [] }, themeDark:true, mpModalDispose:null, mpModalThemeSync:null,
     disposed:false, inactive:() => sb.disposed,
     L:(zh,en) => lang === "en" ? en : zh,
     FATAL:{}, MY_GEN:1,
     setTimeout:(fn, delay) => { const t={fn, delay, unrefCount:0, unref(){this.unrefCount++;}}; timers.add(t); return t; },
     clearTimeout:t => timers.delete(t),
   });
-  const protocol = sliceOverlay("  window.__zusagePluginRequests = [];", "  /* ---------- Git 状态 chip");
+  const protocol = sliceOverlay("  var pluginRequestSeq = 0", "  /* ---------- Git 状态 chip");
   const modal = sliceOverlay("    var mpModal = null, mpHostBtn = null;", "    /* 源列表按推送状态增量重建");
   vm.runInContext(protocol + "\n" + modal + "\nthis.api={open:openMpModal,close:cleanupMpModal,enhance:enhanceModelPuller,get:()=>mpModal};", sb);
   const push = sb.window.__zusagePluginRequests.push;

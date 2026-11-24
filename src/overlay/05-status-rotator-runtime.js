@@ -9,6 +9,9 @@
        * 追加宿主同款「工作中 X 分 X 秒」时长文案；默认开启（显式 false 过的存量配置经布尔守卫
        * 原样保留）。悬停 tooltip（data-tip）独立于此开关恒随轮播。 */
       appendWorkDuration: true,
+      /* 2026-11-23 用户规格（specs/status-rotator-work-duration.md 实时速度段）：phrases 接管
+       * label 时在时长后追加「X t/s」（与 {tps} 占位符同源取值链）；无有效速率整段缺席不伪造 0 */
+      appendLiveSpeed: true,
       intervalMs: 3500,
       typeSpeedMs: 28,
       longAfterMs: 30000,
@@ -81,6 +84,7 @@
       if (typeof raw.enabled === "boolean") base.enabled = raw.enabled;
       if (raw.labelSource === "phrases" || raw.labelSource === "host") base.labelSource = raw.labelSource;
       if (typeof raw.appendWorkDuration === "boolean") base.appendWorkDuration = raw.appendWorkDuration;
+      if (typeof raw.appendLiveSpeed === "boolean") base.appendLiveSpeed = raw.appendLiveSpeed;
       base.intervalMs = Math.round(clampNum(raw.intervalMs, 500, 60000, base.intervalMs));
       base.typeSpeedMs = Math.round(clampNum(raw.typeSpeedMs, 0, 200, base.typeSpeedMs));
       base.longAfterMs = Math.round(clampNum(raw.longAfterMs, 5000, 600000, base.longAfterMs));
@@ -789,7 +793,7 @@
        * 新建 zu-rot-livetip 不复用 zu-rot-tipt，避免 position:relative 与 cap 翻下变体耦合；
        * v349 起类挂行容器 [data-testid="chat-loading"]——脱离宿主 label 的 filter drop-shadow
        * 作用域（filter 不继承但作用整子树，气泡在 label 下会被一起泛红光）） */
-      ".zu-rotator-elapsed{color:var(--color-foreground-subtle,#8791a3);font-size:calc(var(--ui-font-size,14px) - 2px);font-variant-numeric:tabular-nums;white-space:nowrap}" +
+      ".zu-rotator-elapsed,.zu-rotator-speed{color:var(--color-foreground-subtle,#8791a3);font-size:calc(var(--ui-font-size,14px) - 2px);font-variant-numeric:tabular-nums;white-space:nowrap}" +
       ".zu-rot-livetip{position:relative}" +
       /* 系统同款（v348，宿主原生 TooltipContent 视格 rounded-lg border-border bg-tooltip px-3 py-1.5，
        * 原生即无阴影——用户点名去阴影）：-webkit-text-fill-color 必须显式重置——宿主 gradient
@@ -989,7 +993,7 @@
       var clockEl = row.querySelector(".font-mono");
       if (clockEl && clockEl.style && clockEl.style.display === "none") clockEl.style.display = "";
       /* .zu-rotator-elapsed 并入同一选择器串摘除（规则 17 ⑦：不新增遍历） */
-      row.querySelectorAll(".zu-whale-tail-wrap,.zu-rot-spinner-ring,.zu-rot-spinner-bar,.zu-rotator-elapsed").forEach(function (el) { el.remove(); });
+      row.querySelectorAll(".zu-whale-tail-wrap,.zu-rot-spinner-ring,.zu-rot-spinner-bar,.zu-rotator-elapsed,.zu-rotator-speed").forEach(function (el) { el.remove(); });
       row.removeAttribute("data-zusage-rotator-slot");
     } catch (e) { }
   }
@@ -1032,7 +1036,72 @@
     }
   }
 
-  function syncChatMountSurface(active, displayStr, tailPath, elapsedMs) {
+  /* 实时速度段（specs/status-rotator-work-duration.md 实时速度段）：**逐行绑定窗格会话**——
+   * 行祖先 [data-session-id]（子代理窗格=子会话 sid，行身份不随 tick 变化，expando 缓存
+   * 一次）；速率取本行会话的 subRate 槽位实时估算（3s 新鲜度，与速度格「估 X t/s」同源），
+   * 主会话行回退 activeStats 字符流估算；**没有会话均值回退**（静态 avg 曾让全部行恒显
+   * 同值，用户实报），测不到实时速率整段缺席。判位/写纪律同 v347 规则 17：textContent
+   * 带比较前置 + 每行至多 1 次写/秒（row expando 记账），零文档级查询。 */
+  function rowPaneSid(row) {
+    var cached = row.__zuRotSid, anc = row.__zuRotSidEl;
+    if (cached !== undefined && anc && typeof anc.contains === "function" && anc.contains(row)) return cached;
+    var el = row;
+    while (el && !(el.hasAttribute && el.hasAttribute("data-session-id"))) el = el.parentElement;
+    cached = el ? (el.getAttribute("data-session-id") || "") : "";
+    row.__zuRotSid = cached;
+    row.__zuRotSidEl = el || null;   // 祖先复验：宿主节点复用/移挂时 contains 失败即重走，防错归属
+    return cached;
+  }
+  function syncLiveSpeedSurface(row, label, wantAppend, ctx) {
+    ctx = ctx || {};   // 未来 4 参调用兜底：TypeError 会被外层 try 吞成整行循环静默中断
+    var text = "", cls = "";
+    if (wantAppend) {
+      var sid = rowPaneSid(row);
+      var rate = null;
+      if (ctx.subSlots && sid && ctx.subSlots[sid]) {
+        var sl = ctx.subSlots[sid];
+        if (sl.rate != null && Date.now() - sl.at <= 3000) rate = sl.rate;
+      }
+      if (rate == null && (!sid || sid === ctx.mainSid)) rate = ctx.liveTps;   // 主会话行用主会话字符流估算
+      if (typeof rate === "number" && isFinite(rate) && rate > 0) {
+        text = rate.toFixed(1) + L(" t/s", " t/s");
+        /* 档位色与速度格/图例同源（TPS_BANDS 唯一事实源）：档位类是 06 实例样式表的全局
+         * 规则（tip 内同款直接生效），loading 行零新增 CSS；切片沙箱无 tpsBand 时回退中性色。 */
+        var band = typeof tpsBand === "function" ? tpsBand(rate) : null;
+        cls = band ? band.cls : "";
+      }
+    }
+    var after = label.nextElementSibling;
+    var pos = after && after.classList && after.classList.contains("zu-rotator-elapsed") ? after : label;
+    var spd = pos.nextElementSibling;
+    spd = spd && spd.classList && spd.classList.contains("zu-rotator-speed") ? spd : null;
+    if (text) {
+      if (!spd) {
+        spd = document.createElement("span");
+        spd.className = "zu-rotator-speed";
+        pos.insertAdjacentElement("afterend", spd);
+        row.__zuRotSpeed = null;
+      }
+      var light = !document.documentElement.classList.contains("dark");
+      if (light) { if (!spd.classList.contains("zu-light")) spd.classList.add("zu-light"); }
+      else if (spd.classList.contains("zu-light")) spd.classList.remove("zu-light");
+      var inner = spd.firstChild;   // 我们独占该 span 的子节点（创建后仅此一个内层档位 span）
+      var nowMs = Date.now();
+      if (!inner || inner.textContent !== text || inner.className !== cls) {
+        if (!row.__zuRotSpeed || nowMs - row.__zuRotSpeed.at >= 1000) {
+          if (!inner) { inner = document.createElement("span"); spd.appendChild(inner); }
+          inner.className = cls;
+          inner.textContent = text;
+          row.__zuRotSpeed = { at: nowMs };
+        }
+      }
+    } else if (spd) {
+      spd.remove();
+      row.__zuRotSpeed = null;
+    }
+  }
+
+  function syncChatMountSurface(active, displayStr, tailPath, elapsedMs, ctx) {
     var wantChat = rotatorCfg.enabled;
     if (!wantChat || !active) {
       restoreAllChatLoadingRows();
@@ -1095,6 +1164,7 @@
            * filter 作用域）独立于开关①恒随轮播；文案经 workDurationFullText 秒级缓存，
            * 同秒内多行/多拍零重算零写入。 */
           syncWorkDurationSurface(row, label, !!(rotatorCfg.appendWorkDuration && rotatorCfg.labelSource === "phrases"), workDurationFullText(elapsedMs));
+          syncLiveSpeedSurface(row, label, !!(rotatorCfg.appendLiveSpeed && rotatorCfg.labelSource === "phrases"), ctx);
         }
       }
     } catch (e) { }
@@ -1116,20 +1186,38 @@
     var nowMs = Date.now();
     var nowDate = new Date(nowMs);
     var activeStats = null, model = "", provider = "ZCode", sess = null;
+    var slotTables = [];
     for (var i = 0; i < instances.length; i++) {
       var inst = instances[i];
       var st = inst.rotatorStats && inst.rotatorStats();
-      if (st && st.stats && !st.stats.complete) {
+      if (inst.subRateSlots) {
+        try {
+          var slTable = inst.subRateSlots();
+          if (slTable && slotTables.indexOf(slTable) < 0) slotTables.push(slTable);
+        } catch (eSubSlots) { }
+      }
+      if (!activeStats && st && st.stats && !st.stats.complete) {
         activeStats = st.stats;
         model = st.model || model;
         provider = st.provider || provider;
         sess = st.session || sess;
-        break;
       }
-      if (st && !model && st.model) {
+      if (!activeStats && st && !model && st.model) {   // 与原 break 版严格等价：首个活跃实例之后不再回看非活跃实例的 model/session
         model = st.model;
         provider = st.provider || provider;
         sess = st.session || sess;
+      }
+    }
+    var subSlots = null;
+    if (slotTables.length === 1) subSlots = slotTables[0];
+    else if (slotTables.length > 1) {
+      /* 多实例（分屏/辅助对话）各持本 pane 槽位表：合并到临时表供逐行查询——绝不回写各
+       * 实例自身表（subRateTick 会对不在本 pane 运行清单的键 detach，混入他实例键会被误
+       * 解绑）。子会话 sid 全局唯一，浅合并无碰撞；多表并存时每 tick 新建一次。 */
+      subSlots = {};
+      for (var t = 0; t < slotTables.length; t++) {
+        var tab = slotTables[t];
+        for (var sk in tab) if (!(sk in subSlots)) subSlots[sk] = tab[sk];
       }
     }
     var domChatLoading = null;
@@ -1170,6 +1258,11 @@
       model: model || (state.data && state.data.session && state.data.session.model) || "AI",
       provider: provider || "ZCode",
       tps: tps,
+      /* 实时速度段专用：仅实时估算（主会话字符流÷2），不含 avg 回退——静态会话均值
+       * 曾让所有 loading 行恒显同一数值（用户实报「一直是 76」）；子代理行走 subSlots。 */
+      liveTps: (activeStats && typeof activeStats.characterRate === "number" && activeStats.characterRate > 0) ? activeStats.characterRate / 2 : null,
+      mainSid: (sess && sess.sid) || "",
+      subSlots: subSlots,
       runningToolName: runningToolName,
       runningToolVerb: runningToolVerb,
       toolsCount: (sess && sess.tool_calls) || 0,
@@ -1253,7 +1346,7 @@
       }
 
       var tailPath = rotatorCfg.whaleTail ? currentWhaleTailPath(ctx.nowMs, ctx.tps) : "";
-      syncChatMountSurface(ctx.active, rotatorRuntime.displayedText, tailPath, ctx.elapsedMs);
+      syncChatMountSurface(ctx.active, rotatorRuntime.displayedText, tailPath, ctx.elapsedMs, ctx);
     } catch (e) {
       FATAL.rotatorErr = String((e && e.stack) || e);
     }
@@ -1435,6 +1528,7 @@
       '<div class="zu-settings-card">' +
         settingRow('<input type="checkbox" class="zu-rot-enable">', L("启用状态轮播", "Enable status rotator"), L("在模型思考/生成/长耗时期间于消息流 Loading 行轮播趣味状态短语，支持 17 种实时统计占位符（如 {elapsed}、{tps}、{model}）。状态条速度格保持原生外观。", "Rotates witty status phrases in the chat loading row with 17 live placeholders ({elapsed}, {tps}, {model}, etc.). The status bar speed cell keeps its native look.")) +
         settingRow('<input type="checkbox" class="zu-rot-append-duration">', L("追加工作时长", "Append work duration"), L("在轮播文案后追加宿主同款「工作中 X 分 X 秒」实时耗时（与消息流折叠头的原生计时同源同格式，逐秒跳动）；悬停轮播文案也可随时查看。仅「趣味词库轮播」来源生效。", "Appends the native-style working duration (same source and format as the host's turn header timer) after the rotator phrase; also available as a hover tooltip. Applies to the phrase-packs label source.")) +
+        settingRow('<input type="checkbox" class="zu-rot-append-speed">', L("追加实时速度", "Append live speed"), L("在轮播文案后追加「X t/s」实时速度（档位配色与状态栏速度格一致）：子代理行显示该子代理的实时估算（与状态栏「估 X t/s」同源），主会话行显示本会话字符流估算；仅在测得实时速率时显示，不显示会话平均或假 0。仅「趣味词库轮播」来源生效。", "Appends a live \"X t/s\" readout after the rotator phrase, colored with the same speed bands as the status bar: sub-agent panes show their own live estimate (same source as the status bar), the main pane shows its streaming estimate; shown only while a live rate is measured, never a session average or a fake 0. Applies to the phrase-packs label source.")) +
         '<div class="zu-rot-inline-row">' +
           '<span>' + L("文案来源", "Label source") + '</span>' +
           '<select class="zu-rot-select zu-rot-source">' +
@@ -1537,6 +1631,7 @@
 
     setCb(".zu-rot-enable", rotatorCfg.enabled);
     setCb(".zu-rot-append-duration", rotatorCfg.appendWorkDuration);
+    setCb(".zu-rot-append-speed", rotatorCfg.appendLiveSpeed);
     setVal(".zu-rot-source", rotatorCfg.labelSource);
     setVal(".zu-rot-interval", rotatorCfg.intervalMs);
     setVal(".zu-rot-typespeed", rotatorCfg.typeSpeedMs);
@@ -1717,6 +1812,7 @@
     var cl = t.classList;
     if (cl.contains("zu-rot-enable")) { rotatorCfg.enabled = !!t.checked; }
     else if (cl.contains("zu-rot-append-duration")) { rotatorCfg.appendWorkDuration = !!t.checked; }
+    else if (cl.contains("zu-rot-append-speed")) { rotatorCfg.appendLiveSpeed = !!t.checked; }
     else if (cl.contains("zu-rot-source")) { rotatorCfg.labelSource = t.value; }
     else if (cl.contains("zu-rot-interval")) { rotatorCfg.intervalMs = clampNum(t.value, 500, 60000, 3500); }
     else if (cl.contains("zu-rot-typespeed")) { rotatorCfg.typeSpeedMs = clampNum(t.value, 0, 200, 28); }

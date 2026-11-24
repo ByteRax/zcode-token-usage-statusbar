@@ -198,6 +198,49 @@ test("markdown upgrade keeps hostile inputs bounded (bold/strike/pipe floods)", 
   assert.match(out.html, /<th>a<\/th>/);   // 无对齐冒号的朴素分隔行也成表（结构存在）
 });
 
+test("v445: heading line with a long space run renders in linear time (the old lazy heading regex was cubic)", () => {
+  const ctx = makeContext();
+  const t0 = Date.now();
+  const out = ctx.notesHtml("# a" + " ".repeat(4000) + "x", true);
+  const elapsed = Date.now() - t0;
+  assert.ok(elapsed < 1000, "标题行空格串必须即时完成（实测 " + elapsed + "ms）");
+  assert.match(out.html, /zu-notes-h1">a {4000}x</, "仍是标题，正文原样");
+  // 关闭 # 串与尾部空白照常收掉；只有 # 与空格的行不是标题
+  assert.match(ctx.notesHtml("## 标题  ###   \n", true).html, /zu-notes-h2">标题</);
+  assert.doesNotMatch(ctx.notesHtml("# \n#\n", true).html, /zu-notes-h/);
+});
+
+test("v445: a heading that contains U+2028/U+2029 is still a heading (capture class is [\\s\\S]; `.` cannot cross line separators)", () => {
+  const ctx = makeContext();
+  for (const sep of ["\u2028", "\u2029"]) {
+    const html = ctx.notesHtml("# a" + sep + "b\n\n正文", true).html;
+    const expect = new RegExp('zu-notes-h1">a' + (sep === "\u2028" ? "\\u2028" : "\\u2029") + 'b<');
+    assert.match(html, expect, "U+" + sep.charCodeAt(0).toString(16) + " 不得让标题行降级成正文");
+    assert.doesNotMatch(html, /<p>[^<]*#\s*a/, "没有被当成普通段落");
+  }
+  // 正文只有 # 的标题（旧正则的惰性捕获至少留一个字符）：保留原样，不渲染成空标题
+  assert.match(ctx.notesHtml("# #\n", true).html, /zu-notes-h1">#</, "「# #」保留一个 #");
+  assert.match(ctx.notesHtml("## a ###", true).html, /zu-notes-h2">a</, "普通闭合串照常剥掉");
+});
+
+test("v445: every remaining text exit of the restricted markdown escapes HTML (review mutation gaps)", () => {
+  const ctx = makeContext();
+  const payload = '<img src=x onerror=alert(1)>';
+  const cases = {
+    "text between inline marks": "a **b** " + payload + " `c`",
+    "inline code": "`" + payload + "`",
+    "image alt": "![" + payload + "](https://e/x.png)",
+    "rejected link text": "[" + payload + "](javascript:alert(3))",
+    "list item": "- " + payload + "\n  - [ ] " + payload,
+    "heading": "## " + payload,
+  };
+  for (const [where, md] of Object.entries(cases)) {
+    const html = ctx.notesHtml(md, true).html;
+    assert.ok(!html.includes("<img"), where + "：不得产出原始 <img");
+    assert.match(html, /&lt;img/, where + "：载荷以转义文本出现");
+  }
+});
+
 test("collapsed preview keeps attention sections visible and never silently drops content", () => {
   const ctx = makeContext();
   const long = "## 更新内容\n\n" + Array.from({ length: 120 }, (_, i) => "- 变更条目 " + i).join("\n") +
@@ -563,7 +606,7 @@ test("v413 wiring: boot sweep, cleanup chain, tip shell, prefetch hook and gear 
   assert.ok(/function showUpdNoteTip[\s\S]{0,300}cancelUpdNoteHide\(\)/.test(tips), "show 路径未取消在途收起（重入闪烁）");
   assert.ok(tips.includes("Math.max(8, Math.min(Math.round(r.right - tw)"), "tip 左缘 8px 视口钳边缺失");
   const dom = read("06-instance-dom-and-styles.js");
-  assert.ok(dom.includes('var VERSION = "v442"'), "VERSION 未升 v442");
+  assert.ok(dom.includes('var VERSION = "v447"'), "VERSION 未升 v447");
   assert.ok(dom.includes(".zusage-upd-note-tip .zu-un-body"), "tip 作用域样式缺失");
   const notes = read("09-instance-settings-and-notes.js");
   assert.ok(notes.includes('typeof pluginRequest === "function") updNotePrefetch()'), "syncUpdate 预取钩子缺失");

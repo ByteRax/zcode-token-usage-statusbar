@@ -915,3 +915,85 @@ test('contract: custom-mode click gate branches on platformLimited before the re
    * 点击入口专属的英文对句，否则断言会被设置页行误满足（红测阶段实证） */
   assert.match(source, /当前平台暂不支持自定义增强供应商"[\s\S]{0,120}"Custom enhancement providers are not supported on this platform/);
 });
+
+test('v445: hot-reload handoff keeps the previous generation in-flight enhance cancel; other stale requests are dropped', () => {
+  const h = harness();
+  const cancel = { action: 'prompt-enhance-cancel', requestId: 'zusage-7-3' };
+  /* 旧代 dispose 先于本代 boot 运行并把取消推进旧队列；主桥按 tick 取，此刻还没取走 */
+  h.window.__zusagePluginRequests = [{ action: 'quota-providers', panes: {} }, cancel, { action: 'prompt-enhance-cancel' }];
+  h.inject();
+  const q = h.window.__zusagePluginRequests;
+  assert.equal(q.length, 1, '只有取消留下：其余旧请求本代会重发，缺 requestId 的取消主桥本就拒收');
+  assert.equal(q[0], cancel, '取消必须留在队列里等主桥取走');
+  /* 首次注入（没有旧队列）仍是空队列 */
+  const fresh = harness();
+  fresh.inject();
+  assert.equal(fresh.window.__zusagePluginRequests.length, 0);
+});
+
+test('v445: end to end — a re-inject during an in-flight enhance keeps the cancel the old generation pushes while disposing', () => {
+  /* 复盘第 2 轮：上一条用例是手摆旧队列；这条走真实链路——在途增强 → 同一沙箱再注入一次，
+   * 新代 IIFE 开头的 window.__zusageDispose() 让旧代真实 dispose（restoreEnhanceBtn(true) 推取消），
+   * 取消必须活过紧随其后的队列重置。 */
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '帮我写个脚本' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  h.takeRequests();   // 启动期请求清空
+  h.enhOf(ui.wrap).listeners.get('click')[0]();
+  const sent = h.takeRequests().filter(r => /^prompt-enhance/.test(r.action));
+  assert.equal(sent.length, 1, JSON.stringify(sent.map(r => r.action)));
+  assert.match(String(sent[0].requestId), /^zusage-\d+-\d+$/);
+  assert.equal((h.window.__zusagePluginRequests || []).length, 0, '前置：重注入前队列为空——取消只可能来自旧代 dispose');
+  const oldGen = h.window.__zusageGen;
+  h.inject();   // 热重载：新代 IIFE 先跑旧代的 window.__zusageDispose()
+  assert.equal(h.window.__zusageGen, oldGen + 1, '新代际已起');
+  const q = h.window.__zusagePluginRequests;
+  const cancels = (q || []).filter(r => r.action === 'prompt-enhance-cancel');
+  assert.equal(cancels.length, 1, '旧代 dispose 推进来的取消留在队列里等主桥取走：' + JSON.stringify((q || []).map(r => r.action)));
+  assert.equal(cancels[0].requestId, sent[0].requestId, '取消带的正是在途那条请求的 id');
+});
+
+test('v445: main-process enhance guards — draft cap, settings file 0600 door, manual-source key never reused across targets', () => {
+  const { sliceInject } = require('./helpers/overlay-extract.cjs');
+  const os = require('os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zu-enh-guards-'));
+  try {
+    const sandbox = {
+      URL, fs, path, process, HERE: dir,
+      modelPuller: { resolveEnhanceHost: (id) => (id === 'plan-a'
+        ? { providerId: id, baseUrl: 'https://api.z.ai', protocol: 'anthropic-messages', apiKey: 'k-host', deviceMid: 'dev-1' } : null) },
+    };
+    vm.runInNewContext([
+      sliceInject('function enhanceRequestTextOk(v) {', 'const enhanceInFlight = new Map();'),
+      sliceInject('function readEnhanceProvider() {', 'function enhanceProviderView() {'),
+      sliceInject('function validEnhanceUrl(value) {', 'function enhanceTargetRisk(value) {'),
+      sliceInject('function resolveEnhanceDraftProvider(settings, draft, formApiKey) {', 'function resolveEnhanceProvider(d) {'),
+    ].join('\n'), sandbox);
+    // 草稿上限：空白拒、超 20000 拒、恰好 20000 收
+    assert.equal(sandbox.enhanceRequestTextOk('   '), false);
+    assert.equal(sandbox.enhanceRequestTextOk('x'.repeat(20001)), false);
+    assert.equal(sandbox.enhanceRequestTextOk('x'.repeat(20000)), true);
+    // 设置文件 0600 门（POSIX）：组/其它可读即视为不可读，不加载其中的 Key
+    const file = path.join(dir, 'enhance-provider.json');
+    fs.writeFileSync(file, JSON.stringify({ version: 1, revision: 3, mode: 'custom' }), { mode: 0o600 });
+    assert.equal(sandbox.readEnhanceProvider().revision, 3);
+    if (process.platform !== 'win32') {
+      fs.chmodSync(file, 0o644);
+      assert.equal(sandbox.readEnhanceProvider().unreadable, true, '0644 的设置文件不加载');
+    }
+    // 手动来源：目标（baseUrl+protocol）与已保存的完全一致才复用已存 Key；换目标必须重填
+    const settings = { source: 'manual', baseUrl: 'https://relay.example.com/v1', protocol: 'openai-chat-completions', apiKey: 'sk-saved' };
+    const same = sandbox.resolveEnhanceDraftProvider(settings, { source: 'manual', baseUrl: 'https://relay.example.com/v1', protocol: 'openai-chat-completions' }, '');
+    assert.equal(same.apiKey, 'sk-saved');
+    const moved = sandbox.resolveEnhanceDraftProvider(settings, { source: 'manual', baseUrl: 'https://evil.example.com/v1', protocol: 'openai-chat-completions' }, '');
+    assert.equal(moved, null, '换目标且没填表单 Key：不得把已存 Key 发往新地址');
+    assert.equal(sandbox.resolveEnhanceDraftProvider(settings, { source: 'manual', baseUrl: 'https://evil.example.com/v1', protocol: 'openai-chat-completions' }, 'sk-typed').apiKey, 'sk-typed');
+    // 宿主来源：草稿的 baseUrl/protocol 必须与宿主当前公告一致（防把会话 Key 发往别处）
+    assert.equal(sandbox.resolveEnhanceDraftProvider({}, { source: 'host', providerId: 'plan-a', baseUrl: 'https://evil.example.com', protocol: 'anthropic-messages' }, ''), null);
+    assert.equal(sandbox.resolveEnhanceDraftProvider({}, { source: 'host', providerId: 'plan-a', baseUrl: 'https://api.z.ai', protocol: 'anthropic-messages' }, '').apiKey, 'k-host');
+    assert.equal(sandbox.validEnhanceUrl('https://user:pw@example.com/v1'), false, '带 userinfo 的地址不收');
+    assert.equal(sandbox.validEnhanceUrl('https://example.com/v1?x=1'), false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
