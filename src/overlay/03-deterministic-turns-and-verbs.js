@@ -126,12 +126,15 @@
    * 子代理窗格（sess_subagent_* 只读分栏）没有 overlay 实例，det 链的实例归属/请求门/
    * 投递门三处都进不去。观察器以 sid 为键实现 owner 接口（getSid/getScope/detRoot/
    * statsFor/isCurrentTurn/bridgeInfo），detOwnerOf 与实例同规则认领——扫描、占位行、
-   * 富文本回推、诊断整套既有机制零改动复用。store 获取走子代理速率槽位同款双路径
-   * （注册表直绑 → 桥 v2 acquire 租约，refcount、dispose 时 off 释放）；远端子会话
-   * acquire 自拒 → statsFor 恒 null → 不出行（既有 !stats.complete 门），远端不回归。
-   * 发现搭 detOwnerOf 的无归属回退便车（零新增文档级查询），生命周期清理搭 sharedTick
-   * 便车（零新增定时器）；活跃轮号在订阅回调里推送缓存（isCurrentTurn 不读 store——
-   * issue #309 纪律：v2 桥 getState 是 O(window) 深拷贝，禁入周期调用路径）。 */
+   * 富文本回推、诊断整套既有机制零改动复用。身份取窗格自身（zuSubDetPaneScope）：远端或
+   * 带身份的窗格一律不认领，不借本地实例的身份去查本地库（issue #40 的 fail-closed 同款）。
+   * store 走子代理速率槽位同款双路径（注册表按本地键精确直绑 → 桥 v2 acquire 租约，
+   * refcount、dispose 时 off 释放）。发现搭 detOwnerOf 的无归属回退便车（零新增文档级
+   * 查询），生命周期清理搭 sharedTick 便车（零新增定时器）；活跃轮号在订阅回调里推送
+   * 缓存（isCurrentTurn 不读 store——issue #309 纪律：v2 桥 getState 是 O(window) 深拷贝，
+   * 禁入周期调用路径）。富文本请求带页面轮号（02 分片 turnRef → 主桥 --turn-ref）：只认
+   * 窗格里这一轮、且该轮已结束才出数——别的轮、进行中的轮、库还没追上的轮都取不到，
+   * 不会挂错轮，也不会把半截统计缓存成定稿。 */
   var zuSubDetPanes = {};
   function zuSubDetPaneList() {
     var list = [];
@@ -143,36 +146,48 @@
     for (var sid in zuSubDetPanes) if (zuSubDetPanes[sid] === owner) return true;
     return false;
   }
-  function zuSubDetDiag() {
+  function zuSubDetDiag() {   // panes=窗格数，bound=已绑定 store 数，retrying=未绑定（等首帧或 2s 重试租约）
     var bound = 0, n = 0;
     for (var sid in zuSubDetPanes) { n++; if (zuSubDetPanes[sid].store) bound++; }
-    return { panes: n, bound: bound };
+    return { panes: n, bound: bound, retrying: n - bound };
   }
-  function zuSubDetScopeOf() {   // 借任一存活实例的已验证本地 scope（子代理跑在同一工作区）
+  function zuSubDetPaneScope(root, sid) {   // 窗格自身的本地 scope；远端 / 带身份 / 无法确认本地 → null（不认领）
+    if (root.getAttribute("data-zusage-scope-version") === "1") {
+      /* 桥写在会话根上的 scope 属性（与 readPaneScope 同一来源、同一套校验）。paneId 不核对：
+       * 观察器没有宿主 pane 身份，根节点本身就是窗格，这些属性与 data-session-id 同节点同写。 */
+      var path = root.getAttribute("data-zusage-workspace-path"), identity = root.getAttribute("data-zusage-workspace-identity"), remote = root.getAttribute("data-zusage-remote-session-id");
+      if (typeof path !== "string" || !path.trim() || typeof identity !== "string" || typeof remote !== "string" ||
+          /[\x00-\x1f\x7f]/.test(path + identity + remote) || identity.trim() || remote) return null;
+      return { workspacePath: path };
+    }
+    /* 桥缺席（表外宿主 / 补装失败）时的退路：仅当本窗口每一个实例的 scope 都是已验证的本地
+     * scope 才认领——同窗口只要有远端分栏，或任何一个实例的 scope 不明，就不认领。 */
+    if (!instances.length) return null;
+    var local = null;
     for (var i = 0; i < instances.length; i++) {
-      var inst = instances[i];
-      if (!inst.getScope || typeof inst.getScope !== "function") continue;
-      var sc = inst.getScope();
-      if (sc && sc.workspacePath && !sc.identity && !sc.remoteSessionId) return sc;
+      var inst = instances[i], sc = inst.getScope ? inst.getScope() : null;
+      if (!sc || !sc.workspacePath || sc.identity || sc.remoteSessionId) return null;
+      local = sc;
     }
-    return null;
+    return { workspacePath: local.workspacePath };
   }
-  function zuSubDetBind(w) {   // 注册表直绑 → 桥 v2 acquire 租约；失败 2s 重试（同 subSlotReset 纪律）
-    var store = zuTryBindStore(w.getSid());
-    if (!store) {
-      var sc = zuSubDetScopeOf();
-      store = sc ? zuAcquireSubStore(w.getSid(), { workspacePath: sc.workspacePath }) : null;
-    }
+  function zuSubDetBind(w) {   // 注册表按本地键精确直绑 → 桥 v2 acquire 租约；失败 2s 重试（同 subSlotReset 纪律）
+    var store = zuTryBindStore(w.getSid(), w.scope) || zuAcquireSubStore(w.getSid(), w.scope);
     if (!store) { w.retryAt = Date.now() + 2000; return; }
     var tracker = TURN_STATS.createTracker();
-    var h = { dead: false };
     var off = TURN_STATS.subscribeStore(store, tracker, function (st) {
-      if (w.dead || h.dead) return;
+      if (w.dead) return;
       var snap = st && st.snapshot;
       if (!snap || snap.sessionId !== w.getSid()) { zuSubDetPaneDispose(w.getSid()); return; }   // 关闭/换代：整观察器撤除待重发现
       w.activeTid = zuActiveTurnId(snap);
     });
-    if (!off || h.dead) { try { if (off) off(); } catch (e) { } return; }
+    /* subscribeStore 会同步先跑一次回调：已登记的观察器（重绑路径）若在那一拍被撤除，这里必须
+     * 把刚拿到的订阅与租约一并放掉，不能把它们挂到一个已出册的观察器上（租约泄漏）。 */
+    if (!off || w.dead) {
+      try { if (off) off(); } catch (e) { }
+      try { if (store.off) store.off(); } catch (e) { }
+      return;
+    }
     w.store = store; w.tracker = tracker; w.off = off;
   }
   function zuSubDetPaneDispose(sid) {
@@ -209,8 +224,8 @@
         var sid = p.getAttribute("data-session-id") || "";
         if (/^sess_subagent_[A-Za-z0-9_-]{1,72}$/.test(sid)) {
           if (!zuSubDetPanes[sid]) {
-            var sc = zuSubDetScopeOf();
-            if (sc) zuSubDetPanes[sid] = zuSubDetPaneCreate(sid, p, sc);
+            var scope = zuSubDetPaneScope(p, sid);
+            if (scope) zuSubDetPanes[sid] = zuSubDetPaneCreate(sid, p, scope);
           }
           return zuSubDetPanes[sid] || null;
         }
@@ -220,12 +235,12 @@
     }
     return null;
   }
-  function zuSubDetPaneCreate(sid, root, baseScope) {
+  function zuSubDetPaneCreate(sid, root, scope) {
     var w = {
-      pid: "subagent-pane:" + sid, root: root, store: null, tracker: null, off: null,
+      pid: "subagent-pane:" + sid, root: root, scope: scope, store: null, tracker: null, off: null,
       activeTid: "", retryAt: 0, dead: false,
       getSid: function () { return sid; },
-      getScope: function () { return { sid: sid, identity: "", workspacePath: baseScope.workspacePath, remoteSessionId: "" }; },
+      getScope: function () { return { sid: sid, identity: "", workspacePath: scope.workspacePath, remoteSessionId: "" }; },
       detRoot: function () { return root.isConnected ? root : null; },
       statsFor: function (tid) { try { return w.tracker ? w.tracker.get(tid) : null; } catch (e) { return null; } },
       isCurrentTurn: function (tid) { return !!tid && tid === w.activeTid; },   // 活跃轮号由订阅回调推送缓存（不读 store）
@@ -234,7 +249,7 @@
     zuSubDetBind(w);
     return w;
   }
-  function zuSubDetIsLastTurnBox(w, box) {   // 窗格最后一轮判定（纯 DOM 判据，不依赖桥快照）：存量轮走 latestTurn 查询只在最后一轮发——窗格身份=会话身份，latestTurn 无错挂歧义；快照里没有该窗格 turnHeader 时（冷窗格）activeTid 恒空，isCurrentTurn 门不可用，故用 DOM 判据
+  function zuSubDetIsLastTurnBox(w, box) {   // 窗格最后一轮判定（纯 DOM 判据，不依赖桥快照）：存量轮（tracker 无记录）只给窗格最后一轮发查询——没有 tracker 完成态可依的轮，其余与主会话一致不出行；查询本身按页面轮号精确定位这一轮。快照里没有该窗格 turnHeader 时（冷窗格）activeTid 恒空，isCurrentTurn 门不可用，故用 DOM 判据
     var root = w.detRoot();
     if (!root || !box.getAttribute) return false;
     var tid = box.getAttribute("data-turn-id");
@@ -276,6 +291,7 @@
     try {
       if (!state.rateLine || !TURN_STATS) {   // 开关关闭：撤下自己插的行（模型历史行不动）
         document.querySelectorAll("[data-zusage-deterministic]").forEach(function (el) { el.remove(); });
+        zuSubDetDisposeAll();   // v458：子代理窗格观察器的租约与订阅一并释放（扫描停了没人再收它们；开关重开时 detOwnerOf 重新发现）
         return;
       }
       /* 两种选择器可能同时命中同一个 turn（外层 [data-v4-turn-unit] 包着内层
@@ -384,12 +400,14 @@
         if (hasModel) { if (rec) rec.line = "model"; continue; }   // 模型历史统计行在位：不叠双行
         var stats = detStatsFor(box, tid);   // v174：按实例归属取数，不跨实例首命中
         if (rec) { rec.line = "none"; rec.st = zuDiagStats(stats); }
-        /* v458 补强：观察器 owner 的窗格存量轮（观察器绑定前已完成，tracker 无记录）——
-         * tracker 门放行为「纯富文本轮」：缓存命中直接插行；未命中且是窗格最后一轮才发
-         * latestTurn 查询、**不插占位**（deliver 空回执不写缓存 → 旧主桥降级时永不插行，
-         * 与「未观测轮不插行」现状一致，绝不显示误导性的「本轮统计不可用」）。富文本到达
-         * 后重扫经本分支插行，再往后的拍次由上方 v86 keep 分支自维持。主会话实例
-         * （zuSubDetHasOwner 判否）不受影响，走下方既有 tracker 门。 */
+        /* v458：观察器 owner 的窗格存量轮（观察器绑定前已完成，tracker 无记录）——tracker 门放行
+         * 为「纯富文本轮」：缓存命中直接插行；未命中且是窗格最后一轮才发查询、**不插占位**
+         * （deliver 空回执不写缓存 → 该轮没结束、库还没追上或旧主桥降级时永不插行，与「未观测
+         * 轮不插行」现状一致，绝不显示误导性的「本轮统计不可用」）。请求带页面轮号（02 分片
+         * turnRef → 主桥 --turn-ref），取回的就是这一轮自己的富文本，不是「最新一轮」：别的轮
+         * 取不到，进行中的轮要等它结束才有。富文本到达后重扫经本分支插行，再往后的拍次由
+         * 上方 v86 keep 分支自维持。主会话实例（zuSubDetHasOwner 判否）不受影响，走下方既有
+         * tracker 门。 */
         if (!stats && typeof zuSubDetHasOwner === "function" && zuSubDetHasOwner(owner)) {
           if (richTextCache[richKey]) {
             zuDetPlace(box, zuDetBuildLine(ownerToken, tid, richTextCache[richKey]));
@@ -420,7 +438,7 @@
             notCur: richTextDiag.notCur, noInst: richTextDiag.noInst },   // v343/v360 issue #321：回推失败与静默拒绝可观测（spawn/timeout/pyerr 需主进程同版；四类门控拒绝按轮键计一次，sent=0 而占位常驻时先看这里）
           bridge: instances.map(function (inst) { return inst.bridgeInfo ? inst.bridgeInfo() : null; }),
           nullOwner: scanDeterministicLines.nulls,   // v345 issue #327：带行 box 令牌取不到的累计拍数与原因、宽限命中数、撤行/换代数
-          sub: zuSubDetDiag(),   // v458：子代理窗格观察器（窗格数/已绑定数）
+          sub: zuSubDetDiag(),   // v458：子代理窗格观察器（窗格数/已绑定数/等重试数）
           turns: diagTurns.slice(0, 40),
         };
       }

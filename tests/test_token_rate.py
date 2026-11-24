@@ -1025,33 +1025,8 @@ class TestTurnLineV376(unittest.TestCase):
             except OSError: pass
 
 
-class SubagentLatestTurnTests(unittest.TestCase):
-    """v458（specs/subagent-turn-stats-line.md）：子代理会话统计行走 latestTurn（无 --current
-    守卫）——inject-main 对 sess_subagent_* 去 --current 后的查询形状。scope_for 对无 main_turn
-    的会话回退全量行：会话均/累计来自 subagent 行本身，非 0。
-
-    口径（窗口=completed−first_token）：s1 窗口 8.0s 输出 1000 → 125.0；s2 窗口 3.0s 输出
-    500 → 166.7（latestTurn 取 completed_at 最晚的 s2）；会话均 = 1500 / 11.0s = 136.4。"""
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.db = str(Path(self.tmp.name) / "db.sqlite")
-        now = int(time.time() * 1000)
-        t0 = now - 60_000
-        self.t0 = t0
-        rows = [
-            row("s1", "sess_subagent_x", "turn_s1", "subagent", t0 - 10000, t0 - 8000, 2000, t0, 100, 1000, 0),
-            row("s2", "sess_subagent_x", "turn_s2", "subagent", t0 + 1000, t0 + 2000, 1000, t0 + 5000, 200, 500, 0),
-        ]
-        make_db(self.db, rows)
-
-    def tearDown(self):
-        for attempt in range(5):
-            try:
-                self.tmp.cleanup()
-                break
-            except OSError:
-                time.sleep(0.2 * (attempt + 1))
+class _RateCliMixin:
+    """按子会话跑插件副本 token_rate.py（ZCODE_USAGE_DB 隔离库、独立状态文件）。"""
 
     def run_rate(self, *args, sid="sess_subagent_x"):
         env = dict(os.environ, ZCODE_USAGE_DB=self.db, ZCODE_SESSION_ID=sid,
@@ -1059,19 +1034,57 @@ class SubagentLatestTurnTests(unittest.TestCase):
         return subprocess.run([sys.executable, str(RATE), *args],
                               capture_output=True, text=True, env=env, timeout=30)
 
+    def _cleanup(self):
+        for attempt in range(5):
+            try:
+                self.tmp.cleanup()
+                break
+            except OSError:
+                time.sleep(0.2 * (attempt + 1))
+
+
+class SubagentLatestTurnTests(_RateCliMixin, unittest.TestCase):
+    """v458（specs/subagent-turn-stats-line.md）：子代理会话不带 --current 的查询形状（命令行直接
+    查子会话时可用）。latestTurn = started_at 最新的那一轮——它不判轮是否结束，是否可信由调用方
+    保证；渲染端的子代理窗格统计行因此不走这条路径，走 --turn-ref（见 SubagentTurnRefTests）。
+    scope_for 对无 main_turn 的会话回退全量行：会话均/累计来自 subagent 行本身，非 0。
+
+    口径（窗口=completed−first_token）：s1 窗口 8.0s 输出 1000 → 125.0；s2 窗口 3.0s 输出
+    500 → 166.7（latestTurn = started_at 最新的 s2）；会话均 = 1500 / 11.0s = 136.4。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = str(Path(self.tmp.name) / "db.sqlite")
+        now = int(time.time() * 1000)
+        t0 = now - 60_000
+        self.t0 = t0
+        self.rows = [
+            row("s1", "sess_subagent_x", "turn_s1", "subagent", t0 - 10000, t0 - 8000, 2000, t0, 100, 1000, 0),
+            row("s2", "sess_subagent_x", "turn_s2", "subagent", t0 + 1000, t0 + 2000, 1000, t0 + 5000, 200, 500, 0),
+        ]
+        make_db(self.db, self.rows)
+
+    def tearDown(self):
+        self._cleanup()
+
+    def _add_rows(self, rows):
+        con = sqlite3.connect(self.db)
+        con.executemany("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        con.commit()
+        con.close()
+
     def test_latest_turn_line_for_subagent_session(self):
-        # inject-main 子代理分支的实际形状：--turn --session <子会话>（无 --current）
         r = self.run_rate("--turn", "--session", "sess_subagent_x")
         self.assertEqual(r.returncode, 0, r.stderr)
         line = r.stdout.strip()
-        self.assertIn("166.7 token/s(本轮)", line)          # latestTurn = 最新完成的 s2
-        self.assertNotIn("125.0 token/s(本轮)", line)       # 不是更早的 s1
+        self.assertIn("166.7 token/s(本轮)", line)          # latestTurn = started_at 最新的 s2
+        self.assertNotIn("125 token/s(本轮)", line)         # 不是更早的 s1（整数速率不带小数）
         self.assertIn("会话均 136.4 token/s", line)          # scope_for 全量回退：subagent 行进会话均
         self.assertIn("累计 1,500 token", line)
         self.assertIn("token/s(本轮)", line)
 
     def test_current_guard_still_fails_closed_for_subagent_session(self):
-        # 旧主进程（未带 v458 分支）对子会话仍传 --current：无提问时刻记录 → 空输出（fail-closed 不破损）
+        # --current 对子会话：无提问时刻记录 → 空输出（没有 turnRef 的子代理请求走这条，fail-closed）
         r = self.run_rate("--turn", "--current", "--session", "sess_subagent_x", sid="sess_subagent_x")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout, "")
@@ -1085,6 +1098,200 @@ class SubagentLatestTurnTests(unittest.TestCase):
         self.assertAlmostEqual(data["session"]["sessionAvg"], 136.4, places=1)
         self.assertEqual(data["session"]["totalOutput"], 1500)
 
+    def test_latest_turn_fallback_skips_compact_rows(self):
+        # 子会话的回退只排除压缩请求：更晚的 compact 行（宿主可能给它独立的 turn_id）不被选成「最新一轮」
+        self._add_rows([row("c1", "sess_subagent_x", "turn_compact", "compact", self.t0 + 20000, self.t0 + 20001,
+                            1000, self.t0 + 21000, 300, 3000, 0)])
+        r = self.run_rate("--turn", "--session", "sess_subagent_x")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("166.7 token/s(本轮)", r.stdout)
+        self.assertNotIn("3,000", r.stdout.split("会话均")[0])
+
+    def test_latest_turn_keeps_main_turn_rows_for_main_session(self):
+        # 有 main_turn 行的会话不触发回退：更晚的非 main_turn 行（辅助请求带独立 turn_id）不被选成最新一轮
+        t0 = self.t0
+        db = str(Path(self.tmp.name) / "main.sqlite")
+        make_db(db, [
+            row("m1", "sess_main", "turn_m1", "main_turn", t0 - 10000, t0 - 8000, 2000, t0, 100, 1000, 0),
+            row("m2", "sess_main", "turn_m2", "session_title", t0 + 1000, t0 + 2000, 1000, t0 + 3000, 200, 500, 0),
+        ])
+        self.db = db
+        r = self.run_rate("--turn", "--session", "sess_main", sid="sess_main")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("125 token/s(本轮)", r.stdout)
+        self.assertNotIn("250 token/s(本轮)", r.stdout)   # 非 main_turn 行没被选成最新一轮
+
+    def test_probe_failure_keeps_main_turn_filter(self):
+        # 「有没有 main_turn 行」的探测抛错时保持 main_turn 过滤：宁可查不到也不放宽（fail-closed）
+        sys.path.insert(0, str(PLUGIN))
+        import token_rate
+        t0 = self.t0
+        db = str(Path(self.tmp.name) / "main.sqlite")
+        make_db(db, [
+            row("m1", "sess_main", "turn_m1", "main_turn", t0 - 10000, t0 - 8000, 2000, t0, 100, 1000, 0),
+            row("m2", "sess_main", "turn_m2", "session_title", t0 + 1000, t0 + 2000, 1000, t0 + 3000, 200, 500, 0),
+        ])
+
+        class ProbeFails:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, sql, args=()):
+                if "query_source='main_turn' limit 1" in sql:
+                    raise sqlite3.OperationalError("probe failed")
+                return self._inner.execute(sql, args)
+
+        con = sqlite3.connect(db)
+        try:
+            self.assertEqual(token_rate.latest_turn_id(ProbeFails(con), "sess_main"), "turn_m1")
+        finally:
+            con.close()
+
+
+def ref_row(rid, sid, turn, source, started, ft, ttft, completed, inp, out, rea, ref):
+    """基础 row() 再带一列 parent_user_message_id（真库每条用量行都有；基础 SCHEMA 没有这一列）。"""
+    return row(rid, sid, turn, source, started, ft, ttft, completed, inp, out, rea) + (ref,)
+
+
+class SubagentTurnRefTests(_RateCliMixin, unittest.TestCase):
+    """v458 子代理窗格统计行：--turn-ref <页面轮号>。页面 data-turn-id 就是宿主写在用量行上的
+    parent_user_message_id（与 model_usage.turn_id 不是同一套 id）；只认该会话内该轮号对应的唯一
+    一轮，且 turn_usage 已有该轮行（轮结束时才写）才出数——别的轮、进行中的轮、库还没追上的轮
+    一律空输出，绝不回退到「最新一轮」。"""
+
+    SUB = "sess_subagent_x"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = str(Path(self.tmp.name) / "db.sqlite")
+        now = int(time.time() * 1000)
+        t0 = now - 60_000
+        self.t0 = t0
+        self.rows = [
+            ref_row("s1", self.SUB, "turn_s1", "subagent", t0 - 10000, t0 - 8000, 2000, t0, 100, 1000, 0, "msg_a"),
+            ref_row("s2", self.SUB, "turn_s2", "subagent", t0 + 1000, t0 + 2000, 1000, t0 + 5000, 200, 500, 0, "msg_b"),
+        ]
+        # turn_s1 已结束（有 turn_usage 行）；turn_s2 还没有行 = 进行中
+        self.make(self.rows, [("turn_s1", "completed", t0)])
+
+    def tearDown(self):
+        self._cleanup()
+
+    def make(self, rows, turn_rows=(), with_column=True, with_turn_usage=True):
+        if os.path.exists(self.db):
+            os.unlink(self.db)   # 同一用例里换一种库形状重建
+        con = sqlite3.connect(self.db)
+        con.executescript(SCHEMA)
+        if with_column:
+            con.execute("alter table model_usage add column parent_user_message_id text")
+        if with_turn_usage:
+            con.execute("create table turn_usage (session_id text, turn_id text, status text, completed_at integer)")
+            con.executemany("insert into turn_usage values (?,?,?,?)",
+                            [(self.SUB, t, st, ca) for t, st, ca in turn_rows])
+        if with_column:
+            con.executemany("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        else:
+            con.executemany("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            [r[:-1] for r in rows])
+        con.commit()
+        con.close()
+
+    def test_ref_resolves_exactly_that_turn(self):
+        r = self.run_rate("--turn", "--turn-ref", "msg_a", "--session", self.SUB)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("125 token/s(本轮)", r.stdout)          # 就是 msg_a 这一轮……
+        self.assertNotIn("166.7", r.stdout.split("会话均")[0])  # ……不是更新的 turn_s2
+        self.assertIn("会话均 136.4 token/s", r.stdout)        # 会话均/累计仍走 scope_for 全量回退
+        r2 = self.run_rate("--turn", "--turn-ref", "msg_b=older", "--session", self.SUB)
+        self.assertEqual(r2.stdout, "")                       # 轮号是前缀也不行：整串精确匹配
+
+    def test_ref_resolves_latest_turn_too(self):
+        self.end_turn("turn_s2")
+        r = self.run_rate("--turn", "--turn-ref", "msg_b", "--session", self.SUB, "--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        data = json.loads(r.stdout)
+        self.assertEqual(data["turnId"], "turn_s2")
+        self.assertEqual(data["turnIdentitySource"], "parentTurnRef")
+        self.assertTrue(data["currentTurnIdentityVerified"])
+        self.assertAlmostEqual(data["turn"]["tokPerSec"], 166.7, places=1)
+
+    def test_turn_not_ended_yields_nothing(self):
+        # turn_s2 有已入库的请求但 turn_usage 还没有行（轮在进行中）：不出半截统计
+        r = self.run_rate("--turn", "--turn-ref", "msg_b", "--session", self.SUB)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "")
+        j = self.run_rate("--turn", "--turn-ref", "msg_b", "--session", self.SUB, "--json")
+        data = json.loads(j.stdout)
+        self.assertIsNone(data["turn"])
+        self.assertTrue(data.get("turnPending"))
+
+    def end_turn(self, turn_id, status="completed"):
+        con = sqlite3.connect(self.db)
+        con.execute("insert into turn_usage values (?,?,?,?)", (self.SUB, turn_id, status, self.t0 + 9000))
+        con.commit()
+        con.close()
+
+    def test_turn_ended_by_cancellation_still_outputs(self):
+        self.end_turn("turn_s2", "cancelled")
+        r = self.run_rate("--turn", "--turn-ref", "msg_b", "--session", self.SUB)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("166.7 token/s(本轮)", r.stdout)
+
+    def test_unknown_ref_never_falls_back_to_latest_turn(self):
+        r = self.run_rate("--turn", "--turn-ref", "msg_zzz", "--session", self.SUB, "--json")
+        data = json.loads(r.stdout)
+        self.assertIsNone(data["turn"])
+        self.assertFalse(data.get("turnPending"))
+
+    def test_ref_on_other_session_is_not_found(self):
+        # 同一个页面轮号出现在别的会话里：只按（会话, 轮号）定位，不跨会话借用
+        r = self.run_rate("--turn", "--turn-ref", "msg_a", "--session", "sess_subagent_other")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "")
+
+    def test_ambiguous_ref_fails_closed(self):
+        con = sqlite3.connect(self.db)
+        con.execute("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ref_row("s9", self.SUB, "turn_s9", "subagent", self.t0 + 30000, self.t0 + 31000, 1000,
+                            self.t0 + 32000, 100, 900, 0, "msg_a"))
+        con.execute("insert into turn_usage values (?,?,?,?)", (self.SUB, "turn_s9", "completed", self.t0 + 32000))
+        con.commit()
+        con.close()
+        r = self.run_rate("--turn", "--turn-ref", "msg_a", "--session", self.SUB)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "")                       # 一个轮号对上两轮：不猜
+
+    def test_ref_conflicting_with_other_identity_fails_closed(self):
+        for extra in (["--current"], ["--turn-id", "turn_s1"]):
+            r = self.run_rate("--turn", "--turn-ref", "msg_a", *extra, "--session", self.SUB)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(r.stdout, "", " ".join(extra))
+
+    def test_invalid_ref_format_fails_closed(self):
+        # 库里故意放一行轮号带空白的用量（并通过已结束门）：格式校验必须在查库之前拒绝它
+        con = sqlite3.connect(self.db)
+        con.execute("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ref_row("s8", self.SUB, "turn_s8", "subagent", self.t0 + 40000, self.t0 + 41000, 1000,
+                            self.t0 + 42000, 100, 800, 0, "bad ref"))
+        con.execute("insert into turn_usage values (?,?,?,?)", (self.SUB, "turn_s8", "completed", self.t0 + 42000))
+        con.commit()
+        con.close()
+        for bad in ("bad ref", "msg\nx", "a" * 81, ""):
+            r = self.run_rate("--turn", "--turn-ref", bad, "--session", self.SUB)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(r.stdout, "", repr(bad))
+
+    def test_missing_parent_column_or_turn_usage_table_fails_closed(self):
+        rows = self.rows
+        # 库没有 parent_user_message_id 列：定位不到轮
+        self.make(rows, [("turn_s1", "completed", self.t0)], with_column=False)
+        self.assertEqual(self.run_rate("--turn", "--turn-ref", "msg_a", "--session", self.SUB).stdout, "")
+        # 库没有 turn_usage 表：无法证明轮已结束
+        self.make(rows, [], with_turn_usage=False)
+        self.assertEqual(self.run_rate("--turn", "--turn-ref", "msg_a", "--session", self.SUB).stdout, "")
+        # 两个都齐备才出行
+        self.make(rows, [("turn_s1", "completed", self.t0)])
+        self.assertIn("125 token/s(本轮)", self.run_rate("--turn", "--turn-ref", "msg_a", "--session", self.SUB).stdout)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

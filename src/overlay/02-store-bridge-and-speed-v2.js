@@ -964,14 +964,15 @@
       if (richTextCache[w.key]) continue;
       /* v458：子代理窗格观察器 owner 不在 instances 里，zuSubDetHasOwner（03 分片，函数声明
        * 提升可跨片调用）放行；切片测试只装载 02 无 03 时 typeof 守卫走原行为。 */
-      if (instances.indexOf(w.owner) < 0 && !(typeof zuSubDetHasOwner === "function" && zuSubDetHasOwner(w.owner))) { zuBlockOnce(w.owner.pid + "|" + w.tid, "noInst"); continue; }
+      var subOwner = typeof zuSubDetHasOwner === "function" && zuSubDetHasOwner(w.owner);
+      if (instances.indexOf(w.owner) < 0 && !subOwner) { zuBlockOnce(w.owner.pid + "|" + w.tid, "noInst"); continue; }
       /* 只追当前活跃轮：--current 只返回该会话最新一轮，给历史轮发请求会缓存错轮文本
        * （历史轮保持占位，与 v75 起的实际生效行为一致）。v360：该门在 sent++ 之前，
        * 恒 false 时 sent 恒 0 且不留痕（报告者 rt 全 0 的候选落点之一），按轮键计一次。
-       * v458 补强：观察器 owner 短路本门——它的存量轮走 latestTurn（窗格身份=会话身份
-       * 无错挂歧义），「只发窗格最后一轮」的判据在收集端（03 分片 zuSubDetIsLastTurnBox，
-       * 纯 DOM 判据），冷窗格快照无 turnHeader 时 isCurrentTurn 恒 false 不可作门。 */
-      if (!w.owner.isCurrentTurn || !(w.owner.isCurrentTurn(w.tid) || (typeof zuSubDetHasOwner === "function" && zuSubDetHasOwner(w.owner)))) { zuBlockOnce(w.owner.pid + "|" + w.tid, "notCur"); continue; }
+       * v458：观察器 owner 不过本门——它的请求带页面轮号（下方 turnRef），主桥按轮号精确定位
+       * 那一轮，不依赖「最新一轮」；存量轮（tracker 无记录）的 isCurrentTurn 恒 false，
+       * 「只发窗格最后一轮」的限定在收集端（03 分片 zuSubDetIsLastTurnBox，纯 DOM 判据）。 */
+      if (!w.owner.isCurrentTurn || !(w.owner.isCurrentTurn(w.tid) || subOwner)) { zuBlockOnce(w.owner.pid + "|" + w.tid, "notCur"); continue; }
       var pending = richTextRequestTids[sid];
       if (!pending || pending.key !== w.key || pending.unit !== richTextUnitEpoch) {
         pending = { key: w.key, tid: w.tid, owner: w.owner, unit: richTextUnitEpoch, epoch: MY_GEN + ":" + (++richTextRequestEpoch), legacy: !pending && richTextUnitEpoch === 0 };
@@ -979,6 +980,7 @@
       }
       /* cn：万/亿开关当前值；为 0 时主进程给 token_rate.py 加 --no-cn-units */
       var req = { action: "turn-text", sid: sid, cn: cnUnits() ? 1 : 0, forceKmb: !!state.forceKmb, cost: state.cost === 0 ? 0 : 1, unitEpoch: pending.epoch };
+      if (subOwner) req.turnRef = w.tid;   // v458：页面轮号随请求下发，主桥据此走 token_rate --turn-ref（只认这一轮、轮已结束才出数）
       if (window.__zusagePluginRequests) window.__zusagePluginRequests.push(req);
       else window.__zusagePluginRequests = [req];
       capPut(richTextAttempts, w.key, (richTextAttempts[w.key] || 0) + 1, 256);
