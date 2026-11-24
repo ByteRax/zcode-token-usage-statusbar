@@ -299,6 +299,15 @@ test('tooltip "other sources" row lists a non-primary opencode source with its o
   assert.match(m.tip(), /其他源<\/b><span>opencode:opencode-go-chat 2% 3% 7%<\/span>/);
 });
 
+test('tooltip "other sources" row keeps the official percents in the remaining view too', () => {
+  const h = harness({ prefs: { 'zusage3.quotaRemain': '1' } });
+  const m = mount(h, { provider: 'acme-chat', model: OC.model,
+    quota: { active: 'acme:acme-chat', byProvider: { 'acme-chat': 'acme:acme-chat' },
+      sources: { 'acme:acme-chat': OC_SOURCE(OC_METERS), 'opencode:opencode-go-chat': OC_SOURCE(OC_METERS) } } });
+  /* 剩余口径下该行是 100 − 官方已用% 的补数，同样不得按模型换算 */
+  assert.match(m.tip(), /其他源<\/b><span>opencode:opencode-go-chat 98% 97% 93%<\/span>/);
+});
+
 test('wire-provided modelBasis is not a protocol field: never rendered raw nor as a note', () => {
   const h = harness(), m = mount(h, Object.assign({ quota: ocQuota(OC_METERS, { modelBasis: '<i>x</i>' }) }, OC));
   const html = m.tip();
