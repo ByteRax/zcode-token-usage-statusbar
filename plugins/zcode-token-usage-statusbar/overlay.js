@@ -24158,7 +24158,7 @@
      * main_turn（provider_id 已知）+ provider 为内置套餐档；自定义 provider 隐藏，团队档给
      * 不支持提示。数据账号级（快照 quota 字段），同套餐换模型只换 tooltip 高亮不重查。 */
     function quotaBandOf(pct) { return bandOf(QUOTA_BANDS, pct); }
-    /* OpenCode Go 不按模型换算（v442 撤回 v385，issue #453）：/console/api/go/status 的 meters
+    /* OpenCode Go 不按模型换算（v447 撤回 v385，issue #453）：/console/api/go/status 的 meters
      * 是账号共享额度池本身（额度口径金额，请求按各模型月度额度折算计入同一池），窗口的
      * total、used、percent 一律原样展示。官方各模型「月度额度」只是整月单用该模型时的标价
      * 用量覆盖，不是独立池；按它放大总额会把官方已用比例改坏（issue #453：月窗已用 40.33%
