@@ -1193,6 +1193,36 @@ class SubagentLatestTurnTests(_RateCliMixin, unittest.TestCase):
         finally:
             con.close()
 
+    def test_probe_runs_only_when_the_fallback_can_apply(self):
+        # 用不上回退的查询（带提问时刻，或调用方关掉回退）不做「有没有 main_turn 行」的探测：
+        # --current 路径的查询次数与改动前一致
+        sys.path.insert(0, str(PLUGIN))
+        import token_rate
+        seen = []
+
+        class Recorder:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, sql, args=()):
+                seen.append(" ".join(sql.split()))
+                return self._inner.execute(sql, args)
+
+        probes = lambda: [s for s in seen if s.startswith("select 1 from model_usage where")]   # 探测语句的特征
+        con = sqlite3.connect(self.db)
+        try:
+            rec = Recorder(con)
+            self.assertIsNone(token_rate.latest_turn_id(rec, "sess_subagent_x", self.t0 - 1000))   # 带提问时刻：只认 main_turn，不探测
+            self.assertEqual(probes(), [])
+            seen.clear()
+            self.assertIsNone(token_rate.latest_turn_id(rec, "sess_subagent_x", None, allow_fallback=False))
+            self.assertEqual(probes(), [])
+            seen.clear()
+            self.assertEqual(token_rate.latest_turn_id(rec, "sess_subagent_x"), "turn_s2")        # 不带提问时刻：探测后回退
+            self.assertEqual(len(probes()), 1)
+        finally:
+            con.close()
+
 
 def ref_row(rid, sid, turn, source, started, ft, ttft, completed, inp, out, rea, ref):
     """基础 row() 再带一列 parent_user_message_id（真库每条用量行都有；基础 SCHEMA 没有这一列）。"""

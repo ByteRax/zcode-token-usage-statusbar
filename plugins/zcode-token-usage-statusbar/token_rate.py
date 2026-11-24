@@ -377,13 +377,15 @@ def latest_turn_id(db, sid, prompt_ts=None, allow_fallback=True):
     # --current 路径（prompt_ts 非空）的选轮与探测失败时都保持 main_turn 过滤：与改动前一致，
     # 宁可查不到也不放宽（fail-closed）。query_turn 里 --current 空结果的原因分类不带提问时刻，
     # 由调用方显式关掉回退（allow_fallback=False），同样与改动前一致。
-    try:
-        has_main = db.execute(
-            "select 1 from model_usage where session_id=? and query_source='main_turn' limit 1",
-            args).fetchone()
-    except sqlite3.OperationalError:
-        has_main = True
-    if not has_main and prompt_ts is None and allow_fallback:
+    has_main = True   # 用不上回退的查询（带提问时刻，或调用方关掉了回退）不做这次探测，查询次数与改动前一致
+    if prompt_ts is None and allow_fallback:
+        try:
+            has_main = db.execute(
+                "select 1 from model_usage where session_id=? and query_source='main_turn' limit 1",
+                args).fetchone()
+        except sqlite3.OperationalError:
+            has_main = True
+    if not has_main:
         sql = sql.replace(" and query_source='main_turn'",
                           " and (query_source is null or query_source!='compact')")
     if prompt_ts is not None:

@@ -146,7 +146,7 @@
     for (var sid in zuSubDetPanes) if (zuSubDetPanes[sid] === owner) return true;
     return false;
   }
-  function zuSubDetDiag() {   // panes=窗格数，bound=已绑定 store 数，retrying=未绑定（等首帧或 2s 重试租约）
+  function zuSubDetDiag() {   // panes=窗格数，bound=已绑定 store 数，retrying=未绑定（拿不到 store 或绑定失败，等 2s 重试）
     var bound = 0, n = 0;
     for (var sid in zuSubDetPanes) { n++; if (zuSubDetPanes[sid].store) bound++; }
     return { panes: n, bound: bound, retrying: n - bound };
