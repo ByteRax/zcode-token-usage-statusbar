@@ -90,14 +90,14 @@ test('compSuffixHtml renders the zh annotation as three lines with window pct an
   // 整串锁定三行结构（千分位逗号 + 全角括号 + 用户规格水位%前缀）
   assert.equal(html,
     '2026 年 11 月 21 日 23:13:46 · 第 1 次<br>' +
-    '上下文变化：74%(94,787)→32%(40,747) · 减少：54,040 Token（57.01%）<br>' +
+    '74%(94,787)→32%(40,747) · 减少：54,040 Token（57.01%）<br>' +
     '压缩消耗 3,210 Token · 耗时 9 秒');
   // v437：缓存四项行整行去除——快照仍带 cr/cw 也不渲染（rec 特意带 cr=30000/cw=1000）
   assert.ok(!html.includes('未缓存输入') && !html.includes('缓存命中率'));
   // 第 2 次：距上次按宿主同款两段时长
   const r2 = { ts: ts + 5400000, b: 50000, a: 45000, cr: 0, cw: 0, out: 0, dur: 0 };
   const html2 = compSuffixHtml(r2, 1, [rec, r2]);
-  assert.match(html2, /· 第 2 次 · 距上次 1 时 30 分<br>上下文变化：39%\(50,000\)→35%\(45,000\)/);
+  assert.match(html2, /· 第 2 次 · 距上次 1 时 30 分<br>39%\(50,000\)→35%\(45,000\)/);
   // ⑥ 执行模型不同才带 alt（out/dur 缺失时 L4 只剩执行者）
   r2.alt = 'glm-4.5-air';
   assert.match(compSuffixHtml(r2, 1, [rec, r2]), /<br>由 glm-4\.5-air 执行$/);
@@ -109,7 +109,7 @@ test('compSuffixHtml renders the zh annotation as three lines with window pct an
   // 窗口未知：水位段退回纯数字（v427 形态）
   const nowin = run(makeContext({}).ctx);
   assert.match(nowin.compSuffixHtml({ ts, b: 94787, a: 40747, cr: 0, cw: 0, out: 0, dur: 0 }, 0, [{ ts }]),
-    /上下文变化：94,787→40,747 ·/);
+    /<br>94,787→40,747 ·/);
   assert.ok(!nowin.compSuffixHtml({ ts, b: 94787, a: 40747, cr: 0, cw: 0, out: 0, dur: 0 }, 0, [{ ts }]).includes('%(94,787)'));
 });
 
@@ -119,13 +119,13 @@ test('compSuffixHtml degrades honestly and renders English under lang=en', () =>
   const full = compSuffixHtml({ ts, b: 94787, a: 40747, cr: 0, cw: 0, out: 3210, dur: 9400 }, 0, [{ ts }]);
   assert.equal(full,
     'Nov 21, 2026 23:13:46 · #1<br>' +
-    'Context: 74% (94,787)→32% (40,747) · Reduced: 54,040 tokens (57.01%)<br>' +
+    '74% (94,787)→32% (40,747) · Reduced: 54,040 tokens (57.01%)<br>' +
     'Compaction cost 3,210 tokens · Took 9s');
   // v437：en 同样不渲染缓存行
   assert.ok(!full.includes('Uncached') && !full.includes('Cache'));
   // 缺 b（无压缩前样本）：变化/减少段整行省略，只剩日期+序数单行
   const noB = compSuffixHtml({ ts: 123, a: 1000, cr: 250, cw: 0, out: 0, dur: 0 }, 0, [{ ts: 123 }]);
-  assert.ok(!noB.includes('Context:'));
+  assert.ok(!noB.includes('Reduced:'));
   assert.ok(!noB.includes('% ('));
   assert.ok(!noB.includes('Cache'));
   assert.equal((noB.match(/<br>/g) || []).length, 0);
@@ -145,7 +145,7 @@ test('syncCompactionRows appends one suffixed span per record and is signature-i
   syncCompactionRows();
   const spans = pill.children.filter(c => (c.attrs && c.attrs['data-zusage-cmp'] !== undefined));
   assert.equal(spans.length, 1);
-  assert.match(spans[0].innerHTML, /上下文变化：94,787→40,747/);
+  assert.match(spans[0].innerHTML, /<br>94,787→40,747 ·/);
   assert.equal((spans[0].innerHTML.match(/<br>/g) || []).length, 1, '标注块两行（v437 缓存行去除；样本无 out/dur 故 L4 缺）');
   assert.equal(spans[0].style.cssText,
     'flex:0 0 100%;font-size:12px;opacity:.78;text-align:center;line-height:1.5;white-space:nowrap;');
@@ -179,7 +179,7 @@ test('v445: a record carrying alt renders via the real gitEsc and never aborts l
   const spansOf = p => p.children.filter(c => (c.attrs && c.attrs['data-zusage-cmp'] !== undefined));
   const a = spansOf(first.pill), b = spansOf(pill);
   assert.equal(a.length, 1, '带 alt 的分隔线挂上标注');
-  assert.match(a[0].innerHTML, /第 1 次<br>上下文变化：[\s\S]*<br>由 &lt;b&gt;glm-4\.5-air&lt;\/b&gt; 执行$/, 'alt 走产物内真实 gitEsc');
+  assert.match(a[0].innerHTML, /第 1 次<br>94,787→40,747[\s\S]*<br>由 &lt;b&gt;glm-4\.5-air&lt;\/b&gt; 执行$/, 'alt 走产物内真实 gitEsc');
   assert.ok(!a[0].innerHTML.includes('<b>glm'), '原始标签不得进 innerHTML');
   assert.equal(b.length, 1, '带 alt 记录之后的分隔线仍有标注（异常不得中断后续行）');
   assert.match(b[0].innerHTML, /第 2 次 · 距上次 1 分<br>/);
@@ -237,7 +237,7 @@ test('syncCompactionRows strips annotations while state.cmpAnn is off and restor
   syncCompactionRows();
   const spans = pill.children.filter(c => c.attrs && c.attrs['data-zusage-cmp'] !== undefined);
   assert.equal(spans.length, 1);
-  assert.match(spans[0].innerHTML, /上下文变化：94,787→40,747/);
+  assert.match(spans[0].innerHTML, /<br>94,787→40,747 ·/);
   assert.equal(pill.style.flexWrap, 'wrap');
 });
 
