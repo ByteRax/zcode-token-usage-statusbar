@@ -451,6 +451,7 @@ class SpeedModelDetailTests(unittest.TestCase):
             by_time[acc] = t
         t1 = by_time[1300000]
         self.assertEqual(len(t1["msl"]), 2, "仅 out>0 的模型入列")
+        self.assertIn("tk", t1, "多模型轮带 tk")
         # 每行 input=1000：glm=(1000+100)+(1000+999)=3099，glm2=1000+300=1300
         self.assertEqual({h["mnames"][e[0]]: t1["tk"][j] for j, e in enumerate(t1["msl"])},
                          {"glm2": 1300, "glm": 3099}, "tk 与 msl 逐条对齐（out 降序），含无效窗口行的 token")
@@ -461,6 +462,21 @@ class SpeedModelDetailTests(unittest.TestCase):
         t3 = by_time[1600000]
         self.assertEqual(t3.get("tk"), [1200], "有未入列模型 token 的单入列模型轮仍带 tk")
         self.assertNotEqual(t3["i"] + t3["o"], 1200, "此时轮级合计含未入列 token，不可当该模型 token")
+
+    def test_turn_tk_cap_alignment_nine_models(self):
+        """v457 合并前审查补锁（specs/speed-tooltip-v3.md §25.1）：入列帽 8 条时 tk 与 msl 同帽、
+        逐条对齐；第 9 个模型的 token 只进轮级 i+o、不进 tk（渲染端按 tk[j] 对 msl[j] 读）。"""
+        self.con.execute("insert into session values ('s1','一',null,0,'proj','/w/a')")
+        for k in range(9):   # out 递增 → msl 为 out 降序，入列的是 m1..m8
+            self.row("c%d" % k, "s1", "t1", 100 + k, 1000, model="m%d" % k)
+        self.con.commit()
+        t1 = zusage._speed_history(self.con, "s1")["turns"][0]
+        self.assertEqual(len(t1["msl"]), 8, "入列帽 8 条")
+        self.assertIn("tk", t1, "多模型轮带 tk")
+        self.assertEqual(len(t1["tk"]), len(t1["msl"]), "tk 与 msl 同帽、等长")
+        self.assertEqual([t1["tk"][j] for j in range(len(t1["msl"]))], [1000 + e[1] for e in t1["msl"]],
+                         "tk[j] 与 msl[j] 是同一模型（out 降序），每模型 token=输入+输出")
+        self.assertLess(sum(t1["tk"]), t1["i"] + t1["o"], "第 9 个模型（m0，out 最小）未入列：Σtk < 轮级合计")
 
 
 class SpeedDaysTests(unittest.TestCase):
@@ -559,6 +575,7 @@ class SpeedDaysTests(unittest.TestCase):
         today = datetime.now().date()
         base = int(datetime(today.year, today.month, today.day, 10).timestamp() * 1000)
         win = zusage._SPEED_DAYS_TK_DAYS
+        self.assertEqual(win, 90, "每模型段窗口 90 天：帧体积预算（spec §8）按此核定")
         # 今天：两模型日（glm 另有一条无效窗口行）
         self.row("g1", "t1", 100, 1000, base, model="glm")
         self.row("g2", "t1", 999, 100, base, model="glm")
@@ -566,6 +583,10 @@ class SpeedDaysTests(unittest.TestCase):
         # 昨天：单模型日（同模型另有一条无效窗口行）
         self.row("g4", "t3", 50, 500, base - 86400000, model="glm")
         self.row("g5", "t3", 999, 100, base - 86400000, model="glm")
+        # 前天：2 个入列模型 + 1 个只有无效窗口行的未入列模型
+        self.row("i1", "w1", 100, 1000, base - 2 * 86400000, model="glm")
+        self.row("i2", "w2", 300, 2000, base - 2 * 86400000, model="glm2")
+        self.row("i3", "w1", 999, 100, base - 2 * 86400000, model="other")
         # 窗口末日内/外各一个两模型日（窗口=最近 win 天：win-1 天前在窗内，win 天前在窗外）
         for off, tag in ((win - 1, "in"), (win, "out")):
             at = base - off * 86400000
@@ -584,6 +605,10 @@ class SpeedDaysTests(unittest.TestCase):
         self.assertEqual(len(b[5]), 2 * 5, "msl 打平步长仍为 5（每模型 token 不进 msl）")
         self.assertEqual(self.bucket(sd, today - timedelta(days=1))[6], [2000, 1049],
                          "单模型日只带合计（含无效窗口行 token），不带每模型段")
+        b = self.bucket(sd, today - timedelta(days=2))
+        self.assertEqual(b[6], [3000, 1399, 1300, 1100],
+                         "未入列模型（out=0）的 token 进合计、不进每模型段")
+        self.assertEqual(len(b[6]), 2 + len(b[5]) // 5, "每模型段条数 = 入列模型数（msl 五元组数）")
         self.assertEqual(self.bucket(sd, today - timedelta(days=win - 1))[6], [2000, 400, 1300, 1100],
                          "窗口内的多模型日带每模型段")
         self.assertEqual(self.bucket(sd, today - timedelta(days=win))[6], [2000, 400],
@@ -592,9 +617,8 @@ class SpeedDaysTests(unittest.TestCase):
                          "窗口外的单入列模型日（含未入列 token）仍只带合计")
         empty = self.bucket(sd, today - timedelta(days=3))
         self.assertEqual(empty, [0, 0, 0, 0, 0, 0], "空日仍 6 个 0（不带 tk）")
-        self.assertTrue(all(isinstance(x, int) for b2 in sd["days"] if len(b2) > 6 for x in b2[6]),
-                        "tk 全整数（JSON 紧凑）")
-
+        self.assertTrue(all(isinstance(b2[6], list) and all(isinstance(x, int) for x in b2[6])
+                            for b2 in sd["days"] if len(b2) > 6), "tk 恒为整数列表（JSON 紧凑）")
 
     def test_null_turn_id_rows_count_independently(self):
         now = int(datetime.now().timestamp() * 1000)

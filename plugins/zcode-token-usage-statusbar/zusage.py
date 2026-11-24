@@ -3798,7 +3798,7 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
     include_all_projects（v331）：同门控产出全部项目聚合（specs/all-projects-usage.md，
     挂顶层 all_projects，~6KB 量级）；任何 sqlite3.Error/列漂移省略字段不拖垮整帧。
     include_speed_days（v384，specs/speed-tooltip-v3.md §1.2）：同门控产出全历史按日聚合
-    日桶帧（挂顶层 speed_days，≤550 日；550 日×8 模型满桶实测 ~105-120KB，与数值位数相关）；开关点与 include_speed_history
+    日桶帧（挂顶层 speed_days，≤550 日；帧体积预算与满帧实测见规格 §8，含 v457 第 7 位 tk）；开关点与 include_speed_history
     完全一致，失败降级 None 不拖垮整帧。
     include_worktree（specs/worktree-branch.md）：同门控产出 force_sid 中受管 worktree 会话的
     路径与创建记录（挂顶层 worktrees，~百字节级）；分支名不在此读，主进程 git 轮询按覆写路径实时给出。

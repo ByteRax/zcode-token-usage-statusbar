@@ -133,7 +133,10 @@
        * 该模型 token=合计（这类日在筛选下只有全选或整行剔除两态，推导值不参与显示）；
        * 多模型日的 tk 只含合计（早于近 N 天）→ 各模型 tt 未知，筛选后不出行 */
       var tkd = (Array.isArray(e[6]) && e[6].length >= 2) ? e[6] : null;
-      var tin = tkd ? spdNum(tkd[0]) : 0, tout = tkd ? spdNum(tkd[1]) : 0;
+      /* 合计段与每模型段同一严格判定（spd3TokNum）：非法 → 整行 tok 未知（i/o 记 0），
+       * 不把非法当 0 后照常显示一个被低估的合计 */
+      var tin = tkd ? spd3TokNum(tkd[0]) : null, tout = tkd ? spd3TokNum(tkd[1]) : null;
+      var tokKnown = tin != null && tout != null;
       var models = [], msAvail = false;
       if (e[5] && typeof e[5].length === "number") {
         /* v384 S1 打平形态：日行 msl 为五元组平铺序列 [mIdx,out,ms,n,tn, ...]
@@ -156,11 +159,11 @@
           models.push(m);
         }
       }
-      if (tkd && tkd.length === 2 && models.length === 1) models[0].tt = tin + tout;
+      if (tokKnown && tkd.length === 2 && models.length === 1) models[0].tt = tin + tout;
       rows.push({ t0: t0, t1: t1, t: t1 - 1, b: t0,
         out: outv, ms: ms, n: spdNum(e[2]), turns: spdNum(e[3]), capped: !!e[4],
         models: models, msAvail: msAvail, sid: "", pid: "", sname: "", pname: "",
-        i: tin, o: tout, tok: tkd ? tin + tout : null, c: null, cf: false });
+        i: tokKnown ? tin : 0, o: tokKnown ? tout : 0, tok: tokKnown ? tin + tout : null, c: null, cf: false });
     }
     /* end=覆盖末日次日日历零点（合并接缝界，B1/S10）：日行 t 恒 < end，晚于 end 的
      * 轮表行才由 spd3Analyze 并入，无重叠无遗漏。 */
