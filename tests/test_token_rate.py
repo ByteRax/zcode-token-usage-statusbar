@@ -1395,7 +1395,22 @@ class SubagentTurnRefTests(_RateCliMixin, unittest.TestCase):
         con.execute("insert into turn_usage values (?,?,?,?)", (self.SUB, "turn_s8", "completed", self.t0 + 42000))
         con.commit()
         con.close()
-        for bad in ("bad ref", "msg\nx", "a" * 81, "", "-x"):
+        for bad in ("bad ref", "a" * 81, "", "-x"):
+            r = self.run_rate("--turn", "--turn-ref", bad, "--session", self.SUB)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(r.stdout, "", repr(bad))
+
+    def test_ref_with_trailing_newline_is_rejected_even_if_seeded(self):
+        # 结尾换行：re 的 $ 会放过它，JS 侧不会；两端要一致，所以 Python 用 fullmatch。
+        # 库里真有一行轮号以换行结尾且已结束，格式校验仍要在查库之前拒绝它
+        con = sqlite3.connect(self.db)
+        con.execute("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ref_row("s12", self.SUB, "turn_s12", "subagent", self.t0 + 70000, self.t0 + 71000, 1000,
+                            self.t0 + 72000, 100, 800, 0, "msg_x\n"))
+        con.execute("insert into turn_usage values (?,?,?,?)", (self.SUB, "turn_s12", "completed", self.t0 + 72000))
+        con.commit()
+        con.close()
+        for bad in ("msg_x\n", "msg_x\r", "msg_x\r\n"):
             r = self.run_rate("--turn", "--turn-ref", bad, "--session", self.SUB)
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(r.stdout, "", repr(bad))

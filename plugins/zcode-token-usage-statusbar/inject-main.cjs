@@ -2285,7 +2285,8 @@ function queryTurnText(sid, wc, plainUnits, forceKmb, unitEpoch, noCost, turnRef
        取消或出错都算结束）才出数，否则空输出、渲染端按既有节奏重试。轮号缺席或不合法的子代理
        sid（旧渲染端不发子代理请求，所以没有轮号）与 sess_dwf-* 等其余 sid 一律维持 --current。
        轮号首字符不许 -：命令行按「--名字 值」解析，以 - 开头的值会被当成另一个开关（--json
-       还会同时被当成输出开关）。后缀上界 72 被外层 80 字符总长门遮蔽，与渲染端同一边界。 */
+       还会同时被当成输出开关）。后缀上界 72 与渲染端 zuSubDetEnsure 是同一条形状规则；主桥另加外层 80 字符总长门，所以后缀实际
+       不超过 66——更长的 sid 渲染端照发请求，主桥整单拒绝、不回推，该轮不出行。 */
     const subAgentTurn = /^sess_subagent_[A-Za-z0-9_-]{1,72}$/.test(sid);
     const ref = subAgentTurn && typeof turnRef === "string" && /^[A-Za-z0-9_][A-Za-z0-9_-]{0,79}$/.test(turnRef) ? turnRef : "";
     py = spawn(readCfgCached().python_path,
