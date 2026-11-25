@@ -331,14 +331,14 @@
      * → v454 生成中估算去「生成」标签（用户指示，接 v452 的去「历史」与「≈」；specs/speed-chip-stable-slot.md 面表修订）：估算面与完成态/数据库回退完全同款（无状态词、紧凑占位带单位），生成中靠流光动画区分，子代理仍带「代理×N」标签；aria/tooltip 全称（「生成中… 估 X t/s」）与数据口径零改动。
      * → v455 速度格占位从固定档位改为内容自适应（用户第四轮实报「空隙还是有点大」附六张截图；specs/speed-chip-stable-slot.md「稳定占位」契约改写）：宽度=内容，下限 6.6em、档位只留上限（宽裕 12.6em、紧凑/窄/药丸中等与紧张 10.9em、极窄 2.75em 仅图标），超长技能名在上限处省略、任何情况不推邻格；固定档位按最坏情况预留的 40~85px 内部空白归零（实测常见面 0~10px）。面类别宽差、zu-sp-roomy 宽度覆盖、完成态专用规则随之删除（roomy 保留窄档标签/单位的显示职责）；协调器、折叠、精简 chip 三档零改动。代价：状态词/数值/计时变化时占位随内容伸缩（用户接受），同格面内恒定。
      * → v456 速度格上限统一到速度态宽（用户定稿「最大不能超过速度态时的宽度」附三张截图：⚡130.6 t/s / 思考·2:43 / 执行·0.0s）：完成态内容自然宽 ≈95px（格 padding 7px×2+图标 14px 不随字号缩放），上限=calc(38px + 4.8em)（固定像素 38=padding 14+图标 14+gap 10 不随字号缩放，文本 4.8em 随格字号、留大字号/宽字体度量余量）——14px 格字号 ≈105px、12px ≈96px、11px ≈92px，任何界面字号都贴住速度态内容；数值本体各字号恒完整（unit「t/s」在 9999.9/子代理长数值下最多裁尾几像素）；带状态词面标签收缩省略（思…）；v455 按档位上限（12.6/10.9em）废除，zu-tight 与药丸中等/紧张改挂同款 calc
-     * → v458 速度格全部格面固定宽 + 去右内边距 + 右侧间隙 +10px（用户第六轮实报四张截图「上述状态变化时，宽度不一致，还是有抖动」，并指示「去除右侧的 padding」「右侧空隙再增加 10px」）：v455/v456 的内容自适应区间 [6.6em, calc(38px+4.8em)] 留下抖动，宿主实测 14px 格字号 60.5 t/s=92.4、101.4 t/s=94.95、执行 0.0s=105.2，状态每切一次其余格跳约 13px；改 width:6.6em（速度态宽，任何格面同宽），右内边距 0（带状态词面挤进固定宽的前提，标签收缩省略 思…/执…），其后分隔线加 10px 透明左内边距（写进盒宽而非 margin：折叠判据 zuBarContentWidth 不计外边距），仅图标档取消间隙；药丸把右内边距改成右外边距保持条内间距；speedNeed 同源改 6.6×格字号+10；精简 chip 不动
-     * → v459 速度格状态词与数值之间去掉「 · 」间隔点（用户第七轮三选一裁定「宽度不变，去掉间隔点」；备选是放宽 12~15px 保留间隔点）：v446 起宽裕档的「 · 」连内边距占 16px，固定宽 6.6em 里带数值的两字状态词一律省略成「思…」「执…」（v456 上限 105px 下标签盒只有约 37px、小于自然宽 44px，同样省略）；去掉后「执行 0.0s」余 3.2px、「思考 4:28」余 1.7px、「执行 59s」余 7.7px 全部完整，更长的（12:34、1:05:00、代理 28.8 t/s、英文 Think）才省略；无计时时不再有悬空的间隔点；删基础 ::after 规则与窄档/药丸中等的两条去分隔符规则，全部档位与精简 chip 一致
-     * → v460 子代理面改为「子·X」（用户规格「代理 28.8 t/s 改为 子·X」）：固定宽里「代理 28.8 t/s」被整个省略成「…」；改为单字「子」+ 贴紧的间隔点 + 速率，不带单位（英文 Ag·X）；六字符数值（1286.5）带点放不下，退成不带点的「子1286.5」。数量不再上面——「子×N·1286.5」放不下会被省略成「子…」，全称（aria/菜单/tooltip）仍有 ×N。实现：zuSpeedFace 子代理分支标签按数值长度取「子·」或「子」、单位置空、面对象带 glue；zuSpeedFaceHtml 据 glue 给标签加 zu-sp-glue，06 分片用 -5px 外边距抵消 .zu-live 的 gap 让点与数值贴紧（实机截图对比过贴紧与留 5px 两种排法）
-     * → v461 速度格左内边距也去掉（用户指示「左侧的 padding 也去掉」，贴的是默认条速度格 DOM）：默认条 .it.zu-speed:not([data-zu-speed-min='1']) 加 padding-left:0，图标贴格左缘（即状态条左缘，.zu-in 无横向内边距），.zu-live 可用宽 66.4px 变 73.4px（14px 格字号）；宽度仍是 6.6em、右侧间隙 10px，邻格不动。选择器用 :not(.zu-pill) 排除药丸——药丸有底色与 12px 圆角，图标靠这 7px/4px 左内边距离边缘；也没有做成「左内边距改左外边距」：药丸中等/紧张档自带 4px 左内边距，外边距抵消不了、会多推 7px。仅图标档保留两侧内边距
-     * → v462 无计时面换四字说法（用户实报截图「执行」右侧空一大块，指示「优化为 正在执行」）：宿主 inputStreaming 行不写 startedAt，工具开跑前数值位为空、两字状态词只占 28px；带计时的四种面（thinking/toolgroup/skill 兜底/tool）在无计时那一刻把已登记的短状态词换成四字（执行=正在执行、读取=正在读取、思考=正在思考…，英文动名词 Running/Reading…），一出计时换回短状态词 + 数字。实现：07 分片 zuSpeedFace 前加 ZU_SPEED_NAKED 表（行 = 短 zh/短 en/无计时 zh/无计时 en，按当前语言的短标签查），zuSpeedFace 末尾在数值为空时替换。只改格面，aria-label 与菜单全称仍是 text；技能名、MCP 服务名、未登记工具名不换。实机量过四字 56px 在默认条与药丸各档都放得下，英文取药丸宽裕档也放得下的短动名词
-     * → v463 长计时面不出文字标签（用户实报截图「思... 1:22:02」，问「为什么展示 思...」）：计时满 1 小时起紧凑时间写法从 59:59 变成 1:22:02 或 N天N时，数值自然宽由 39.7 涨到 45.7~52.8px（14px 格字号）；固定宽 6.6em 里扣掉图标与间隙后标签加数值只有 68.4px，两字状态词要 28px，数值不裁、状态词被省略成「思...」。带计时的四种面（thinking/toolgroup/skill/tool）在 elapsedMs 不小于 3600000 时标签置空（复用 .zu-sp-label:empty 的 display:none），只留图标加时间；格宽不变，aria-label 与全称不变。实现：07 分片 zuSpeedFace 末尾在无计时分支之后加一条 else-if，zuSpeedFace 与 zuSpeedFaceHtml 多一个 autoWidth 入参，精简 chip（11 分片）调用时传 true——chip 按内容定宽、中等档本就按 Think 23:59:59 标定，状态词放得下，不让位。换写法（1h22m 47.2px、N天N时 45.7px）同样放不下，所以不走换写法；英文较长状态词配五位计时的既有裁切不在本条范围
+     * → v459 速度格全部格面固定宽 + 去右内边距 + 右侧间隙 +10px（用户第六轮实报四张截图「上述状态变化时，宽度不一致，还是有抖动」，并指示「去除右侧的 padding」「右侧空隙再增加 10px」）：v455/v456 的内容自适应区间 [6.6em, calc(38px+4.8em)] 留下抖动，宿主实测 14px 格字号 60.5 t/s=92.4、101.4 t/s=94.95、执行 0.0s=105.2，状态每切一次其余格跳约 13px；改 width:6.6em（速度态宽，任何格面同宽），右内边距 0（带状态词面挤进固定宽的前提，标签收缩省略 思…/执…），其后分隔线加 10px 透明左内边距（写进盒宽而非 margin：折叠判据 zuBarContentWidth 不计外边距），仅图标档取消间隙；药丸把右内边距改成右外边距保持条内间距；speedNeed 同源改 6.6×格字号+10；精简 chip 不动
+     * → v460 速度格状态词与数值之间去掉「 · 」间隔点（用户第七轮三选一裁定「宽度不变，去掉间隔点」；备选是放宽 12~15px 保留间隔点）：v446 起宽裕档的「 · 」连内边距占 16px，固定宽 6.6em 里带数值的两字状态词一律省略成「思…」「执…」（v456 上限 105px 下标签盒只有约 37px、小于自然宽 44px，同样省略）；去掉后「执行 0.0s」余 3.2px、「思考 4:28」余 1.7px、「执行 59s」余 7.7px 全部完整，更长的（12:34、1:05:00、代理 28.8 t/s、英文 Think）才省略；无计时时不再有悬空的间隔点；删基础 ::after 规则与窄档/药丸中等的两条去分隔符规则，全部档位与精简 chip 一致
+     * → v461 子代理面改为「子·X」（用户规格「代理 28.8 t/s 改为 子·X」）：固定宽里「代理 28.8 t/s」被整个省略成「…」；改为单字「子」+ 贴紧的间隔点 + 速率，不带单位（英文 Ag·X）；六字符数值（1286.5）带点放不下，退成不带点的「子1286.5」。数量不再上面——「子×N·1286.5」放不下会被省略成「子…」，全称（aria/菜单/tooltip）仍有 ×N。实现：zuSpeedFace 子代理分支标签按数值长度取「子·」或「子」、单位置空、面对象带 glue；zuSpeedFaceHtml 据 glue 给标签加 zu-sp-glue，06 分片用 -5px 外边距抵消 .zu-live 的 gap 让点与数值贴紧（实机截图对比过贴紧与留 5px 两种排法）
+     * → v462 速度格左内边距也去掉（用户指示「左侧的 padding 也去掉」，贴的是默认条速度格 DOM）：默认条 .it.zu-speed:not([data-zu-speed-min='1']) 加 padding-left:0，图标贴格左缘（即状态条左缘，.zu-in 无横向内边距），.zu-live 可用宽 66.4px 变 73.4px（14px 格字号）；宽度仍是 6.6em、右侧间隙 10px，邻格不动。选择器用 :not(.zu-pill) 排除药丸——药丸有底色与 12px 圆角，图标靠这 7px/4px 左内边距离边缘；也没有做成「左内边距改左外边距」：药丸中等/紧张档自带 4px 左内边距，外边距抵消不了、会多推 7px。仅图标档保留两侧内边距
+     * → v463 无计时面换四字说法（用户实报截图「执行」右侧空一大块，指示「优化为 正在执行」）：宿主 inputStreaming 行不写 startedAt，工具开跑前数值位为空、两字状态词只占 28px；带计时的四种面（thinking/toolgroup/skill 兜底/tool）在无计时那一刻把已登记的短状态词换成四字（执行=正在执行、读取=正在读取、思考=正在思考…，英文动名词 Running/Reading…），一出计时换回短状态词 + 数字。实现：07 分片 zuSpeedFace 前加 ZU_SPEED_NAKED 表（行 = 短 zh/短 en/无计时 zh/无计时 en，按当前语言的短标签查），zuSpeedFace 末尾在数值为空时替换。只改格面，aria-label 与菜单全称仍是 text；技能名、MCP 服务名、未登记工具名不换。实机量过四字 56px 在默认条与药丸各档都放得下，英文取药丸宽裕档也放得下的短动名词
+     * → v464 长计时面不出文字标签（用户实报截图「思... 1:22:02」，问「为什么展示 思...」）：计时满 1 小时起紧凑时间写法从 59:59 变成 1:22:02 或 N天N时，数值自然宽由 39.7 涨到 45.7~52.8px（14px 格字号）；固定宽 6.6em 里扣掉图标与间隙后标签加数值只有 68.4px，两字状态词要 28px，数值不裁、状态词被省略成「思...」。带计时的四种面（thinking/toolgroup/skill/tool）在 elapsedMs 不小于 3600000 时标签置空（复用 .zu-sp-label:empty 的 display:none），只留图标加时间；格宽不变，aria-label 与全称不变。实现：07 分片 zuSpeedFace 末尾在无计时分支之后加一条 else-if，zuSpeedFace 与 zuSpeedFaceHtml 多一个 autoWidth 入参，精简 chip（11 分片）调用时传 true——chip 按内容定宽、中等档本就按 Think 23:59:59 标定，状态词放得下，不让位。换写法（1h22m 47.2px、N天N时 45.7px）同样放不下，所以不走换写法；英文较长状态词配五位计时的既有裁切不在本条范围
      */
-    var VERSION = "v463";
+    var VERSION = "v464";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -595,12 +595,12 @@
        * .zu-live.zu-shimmer 既有规则（flex 子项与标签 overflow 下宿主实测可正常渲染）。精简 chip
        * .zu-tsb 同样不随状态文字变：它挂在宿主工具行、没有窄宽状态机，三档由 11 分片 zuTsbTierSync
        * 按宿主工具行的真实空位选（规则与标定见 .zu-tsb 规则处的注释）。
-       * 占位=全部格面固定宽（v458，用户第六轮实报四张截图「上述状态变化时，宽度不一致，还是有抖动」，并指示
+       * 占位=全部格面固定宽（v459，用户第六轮实报四张截图「上述状态变化时，宽度不一致，还是有抖动」，并指示
        * 「去除右侧的 padding」「右侧空隙再增加 10px」）：v455/v456 让宽度随内容在 [6.6em, calc(38px + 4.8em)] 里
        * 伸缩，宿主实测（14px 格字号）60.5 t/s=92.4、101.4 t/s=94.95、执行 0.0s=105.2——思考/工具面钉在上限、
        * 速度面落在下限附近，状态每切一次其余格跳约 13px。改为 width:6.6em（即速度态宽：14px 格字号 92.4px、
-       * 12px 79.2px），任何格面同宽。右内边距 0（v458）：腾出的 7px 给内容，带状态词的面放不下时标签照样收缩省略
-       * （思…/执…），不必靠变宽容纳。左内边距 0（v461，用户指示「左侧的 padding 也去掉」）：图标贴格左缘（即状态条
+       * 12px 79.2px），任何格面同宽。右内边距 0（v459）：腾出的 7px 给内容，带状态词的面放不下时标签照样收缩省略
+       * （思…/执…），不必靠变宽容纳。左内边距 0（v462，用户指示「左侧的 padding 也去掉」）：图标贴格左缘（即状态条
        * 左缘），.zu-live 可用宽 66.4px 变 73.4px（14px 格字号）；只作用于默认条，药丸保留原左内边距；极窄档（仅图标）
        * 不在选择器内，两侧内边距与宽度都不变（图标从左内边距之后起排，不居中——实机克隆条实测右留白 17px）。
        * 格与右侧分隔线的间隙 +10px：写在分隔线的盒宽里（10px 透明左内边距 + background-clip:content-box，
@@ -609,7 +609,7 @@
        * 数值本体（.zu-sp-val，flex:0 0 auto）常规面完整；>1h 长计时（1:05:00/23:59:59）在固定宽里放不下时数值尾
        * 被裁（14px 系统字体 ≤2px，11px 界面字号 + 宽字体最多约 11px，已知名单），9999.9/子代理长数值的 unit「t/s」
        * 尾部允许裁几像素（dim 辅助色），overflow:hidden 兜底不推邻格。roomy 只管窄档下带状态词面的显示/隐藏，不改宽度。
-       * 状态词与数值之间不画间隔点（v459，用户三选一裁定「宽度不变，去掉间隔点」）：v446 起宽裕档用「 · 」隔开状态词
+       * 状态词与数值之间不画间隔点（v460，用户三选一裁定「宽度不变，去掉间隔点」）：v446 起宽裕档用「 · 」隔开状态词
        * 与数值（连内边距占 16px，标签自然宽 44px），固定宽里带数值的两字状态词一律被省略成「思…」「执…」；实测要让
        * 「思考 · 4:28」完整得放宽到约 107px（速度态右空白 +15px）。去掉后两字状态词加不超过 4 字符的计时都完整
        * （执行 0.0s 余 3.2px、思考 4:28 余 1.7px、执行 59s 余 7.7px，14px 格字号），更长的才省略（12:34、1:05:00、
@@ -617,13 +617,13 @@
        * 精简 chip 本来就不画，现在全部档位一致。 */
       ".zusage-root .zu-main>.it.zu-speed{box-sizing:border-box;width:6.6em;overflow:hidden}" +
       ".zusage-root .zu-main>.it.zu-speed:not([data-zu-speed-min='1']){padding-right:0}" +
-      /* v461 左内边距 0：选择器排除药丸（:not(.zu-pill)，与下方分隔线规则同构）——药丸有底色与 12px 圆角，图标靠这
+      /* v462 左内边距 0：选择器排除药丸（:not(.zu-pill)，与下方分隔线规则同构）——药丸有底色与 12px 圆角，图标靠这
        * 7px/4px 左内边距离边缘；也不能改成「左外边距」：药丸中等/紧张档自带 4px 左内边距，外边距抵消不了。 */
       ".zusage-root:not(.zu-pill) .zu-main>.it.zu-speed:not([data-zu-speed-min='1']){padding-left:0}" +
       ".zusage-root:not(.zu-pill) .zu-main>.it.zu-speed:not([data-zu-speed-min='1'])+.sep{box-sizing:content-box;padding-left:10px;background-clip:content-box}" +
       /* 药丸无窄宽状态机：速度格档位类由 track 按卡片可用宽度升降（zuPillSpeedTierSync）；
        * 中等/紧张档自带缩字号公式与内边距（药丸条上没有 zu-tight 类）。药丸里速度格后面没有分隔线语义：
-       * v458 去掉的右内边距改成右外边距（宽裕 7px、中等/紧张 4px），条内格间距不变。 */
+       * v459 去掉的右内边距改成右外边距（宽裕 7px、中等/紧张 4px），条内格间距不变。 */
       ".zusage-root.zu-pill .zu-main>.it.zu-speed{margin-right:7px}" +
       ".zusage-root.zu-pill.zu-speed-mid .zu-main>.it.zu-speed{padding-left:4px;padding-right:0;margin-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}" +
       ".zusage-root.zu-pill.zu-speed-tight .zu-main>.it.zu-speed{padding-left:4px;padding-right:0;margin-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}" +
@@ -635,7 +635,7 @@
       ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-label:empty{display:none}" +
       ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-val{flex:0 0 auto;white-space:nowrap;text-align:left}" +
       ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-unit{flex:0 0 auto}" +
-      /* v460 子代理面「子·X」（用户规格）：间隔点在标签末尾、与数值贴紧——负外边距抵消 .zu-live 的 gap:5px
+      /* v461 子代理面「子·X」（用户规格）：间隔点在标签末尾、与数值贴紧——负外边距抵消 .zu-live 的 gap:5px
        * （.zu-live 的 gap 只此一处定义、各档位都是 5px；改 gap 时这里一起动）。子代理面（glue）由 07 分片加 zu-sp-glue */
       ".zusage-root .it.zu-speed>.zu-live>.zu-sp-label.zu-sp-glue,.zu-tsb>.zu-live>.zu-sp-label.zu-sp-glue{margin-right:-5px}" +
       ".zusage-root.zu-narrow .it.zu-speed>.zu-live>.zu-sp-label,.zusage-root.zu-narrow .it.zu-speed>.zu-live>.zu-sp-unit{display:none}" +

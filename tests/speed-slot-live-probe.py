@@ -9,13 +9,13 @@
 默认模式做法：经宿主的 CDP 调试口（inject-main.cjs 启动时强制补开 9229）把 tests/speed-slot-live-probe.js
 送进渲染进程执行，对当前页面的第一条状态条逐档、逐状态面量矩形后原样还原。只读、不改任何文件，
 量取过程在同一个同步表达式里完成，不会画到屏幕上。
-判据：同一档位里全部状态面的速度格宽度只有一个值、等于固定宽 6.6em × 格字号（极窄档 2.75em；v458）、
+判据：同一档位里全部状态面的速度格宽度只有一个值、等于固定宽 6.6em × 格字号（极窄档 2.75em；v459）、
 数值不越界（亚像素）；任何界面字号都核对（纯 em 随字号等比缩放）。精简样式的速率 chip 保持档位固定宽，只查越界。
 唯一例外是 >1h 长计时（已知名单 KNOWN_CLIP_FACES）：固定宽里放不下时数值尾被裁，裁到 KNOWN_CLIP_PX 以内只提示不算异常。
 
 持续观察（--watch）做法：把 tests/speed-slot-live-watch.js 送进渲染进程，按固定间隔读真实速度格的宽度、
 位置与格面，布局签名取自与速度格自身宽度无关的量。判据：同一条状态条、同一布局（签名前 7 段，不分面类别）下
-速度格宽度只有一个值（v458：跨格面宽度不同即异常）、数值不越界；另报告格面切换序列、各态停留时长下界、同可用宽度下的档位来回次数（过密只提示）。
+速度格宽度只有一个值（v459：跨格面宽度不同即异常）、数值不越界；另报告格面切换序列、各态停留时长下界、同可用宽度下的档位来回次数（过密只提示）。
 退出码：0 通过（有可量样本、格面发生过变化、无异常）；1 有异常；2 连不上调试口、页面里没有状态条或观察中断；
 3 观察期间没有可量样本或格面从未变化（窗口隐藏、会话空闲时会出现），不算通过。
 只用标准库（Python 3.8+），不需要 Node。高 DPI 校准：先调整系统或应用缩放，再运行一次。
@@ -29,7 +29,7 @@ import struct
 import sys
 import urllib.request
 
-# v458 速度格全部格面固定宽 6.6em（随格字号缩放，与 CSS width:6.6em 同源）；极窄档固定 2.75em。
+# v459 速度格全部格面固定宽 6.6em（随格字号缩放，与 CSS width:6.6em 同源）；极窄档固定 2.75em。
 # 精简 chip 保持档位固定宽（12.4/9.7/6.6em），slot_px 返回 None 只查越界。
 ICON_EM = 2.75
 SLOT_EM = 6.6
@@ -168,7 +168,7 @@ def report(out):
             overflow = ["%s（已知裁尾 %.2fpx）" % (k, float(px[k])) if k in known else k for k in overflow]
             if bad:
                 problems.append("%s：数值越界 %s" % (name, "、".join("%s（%.2fpx）" % (k, float(px[k])) if k in px else k for k in bad)))
-        # v458 全部格面固定宽：任何界面字号都核对（纯 em 随字号等比缩放）；极窄档恒等于 2.75em
+        # v459 全部格面固定宽：任何界面字号都核对（纯 em 随字号等比缩放）；极窄档恒等于 2.75em
         if slot is not None and widths:
             checked_slots += 1
             icon_only = slot == ICON_EM * fs
@@ -223,7 +223,7 @@ def summarize(out):
 
     groups, runs, flips, last = {}, {}, {}, {}
     for s in ok:
-        # v458：布局 = 签名前 7 段；面类别（第 8 段 plain/tag）只用于报告——全部格面同宽，跨面类别宽度不同就是异常
+        # v459：布局 = 签名前 7 段；面类别（第 8 段 plain/tag）只用于报告——全部格面同宽，跨面类别宽度不同就是异常
         g = groups.setdefault((s["b"], "|".join(sig_parts(s["s"])[:7])), {"n": 0, "w": [], "faces": [], "l": [], "ov": 0, "sid": s["s"], "cls": set()})
         g["cls"].add(sig_parts(s["s"])[7])
         g["n"] += 1
@@ -251,7 +251,7 @@ def summarize(out):
         lines.append("  条#%d %s%s｜格字号 %s｜条父宽 %s｜窗口内宽 %s｜界面字号 %s｜像素比 %s：%d 拍，速度格宽 %s，格面 %d 种，水平位置 %d 种，越界 %d 拍" % (
             b, tier_of(g["sid"]), "｜完成态（无状态词）" if g["cls"] == {"plain"} else "", a[2], a[3], a[4], a[5], a[6], g["n"], " / ".join("%.2f" % w for w in g["w"]),
             len(g["faces"]), len(g["l"]), g["ov"]))
-        # v458 全部格面固定宽：同一布局下宽度只能有一个值（跨格面的宽度不同就是抖动）
+        # v459 全部格面固定宽：同一布局下宽度只能有一个值（跨格面的宽度不同就是抖动）
         if len(set(g["w"])) > 1:
             problems.append("条#%d %s 下同一布局宽度不恒定：%s" % (b, tier_of(g["sid"]), "、".join("%.2f" % w for w in sorted(set(g["w"])))))
         if g["ov"]:

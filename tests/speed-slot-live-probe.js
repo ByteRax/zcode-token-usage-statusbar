@@ -5,7 +5,7 @@
    此时只量 chip）。
    同一个同步表达式里临时显示条并切换档位类，量完全部还原（中间不让出事件循环，不会画到屏幕上）。
    面分两类记宽（specs/speed-chip-stable-slot.md「占位」）：带状态词的面记 speedW / turnL，
-   完成态（无状态词）记 plainW / plainTurnL——v458 起全部格面固定宽，两类都必须等于 6.6em × 格字号
+   完成态（无状态词）记 plainW / plainTurnL——v459 起全部格面固定宽，两类都必须等于 6.6em × 格字号
    （极窄档 2.75em）。精简 chip 保持档位固定宽，两类同宽。
    状态面与 zuSpeedFaceHtml 同构、不经数据链；数据链的行为由 tests/overlay-pill-theme.test.cjs 锁定。 */
 (() => {
@@ -14,7 +14,7 @@
   if (!bar && !tsb) return { error: '页面上没有状态条（.zusage-root）也没有精简速率 chip（.zu-tsb）' };
   const F = (label, val, unit) => '<span class="zu-sp-label">' + label + '</span><span class="zu-sp-val">' + val + '</span>' +
     (unit ? '<span class="zu-sp-unit dim">' + unit + '</span>' : '');
-  const G = (label, val) => '<span class="zu-sp-label zu-sp-glue">' + label + '</span><span class="zu-sp-val">' + val + '</span>';   // v460 子代理面「子·X」：与 zuSpeedFaceHtml 同构（标签带 zu-sp-glue）
+  const G = (label, val) => '<span class="zu-sp-label zu-sp-glue">' + label + '</span><span class="zu-sp-val">' + val + '</span>';   // v461 子代理面「子·X」：与 zuSpeedFaceHtml 同构（标签带 zu-sp-glue）
   const faces = {
     '完成 201': F('', '201', 't/s'), '回退 201.4': F('', '201.4', 't/s'), '完成 9.9': F('', '9.9', 't/s'), '完成 250.0': F('', '250.0', 't/s'),
     '估算 128.6': F('生成', '128.6', 't/s'), '估算 9999.9': F('生成', '9999.9', 't/s'), '估算 12.9k': F('生成', '12.9k', 't/s'),

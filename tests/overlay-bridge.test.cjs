@@ -858,7 +858,7 @@ test('⑪ heartbeat tick alone (no new store push) still advances the observed-s
   assert.equal(instanceOf(h).liveEl().textContent, '思考03s');
   for (const [now, expected] of [
     [59999, '思考59s'], [60000, '思考1:00'], [70000, '思考1:10'], [3599999, '思考59:59'],
-    // v463 长计时面：满 1 小时起状态词不出、只剩时间（进位写法仍逐拍钉住）
+    // v464 长计时面：满 1 小时起状态词不出、只剩时间（进位写法仍逐拍钉住）
     [3600000, '1:00:00'], [3610000, '1:00:10'], [3660000, '1:01:00'], [3670000, '1:01:10'],
   ]) {
     h.clock.now = now;

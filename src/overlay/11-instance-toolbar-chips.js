@@ -482,7 +482,7 @@
       var txt = v.kind === "live" ? v.sv.text : (v.dbTps ? v.dbTps + " t/s" : "");
       var fbBand = v.dbTps > 0 ? tpsBand(v.dbTps) : null;
       var cls = "zu-live " + (v.kind === "live" ? fv.cls + (fv.word ? " zu-shimmer" : "") : (fbBand ? fbBand.cls : "dim"));
-      /* v463：chip 按内容定宽，长计时面（≥1h）保留状态词（固定宽的速度格才不出；autoWidth=true） */
+      /* v464：chip 按内容定宽，长计时面（≥1h）保留状态词（固定宽的速度格才不出；autoWidth=true） */
       var face = zuSpeedFaceHtml(fv, true);
       var sig = v.kind + "|" + cls + "|" + face;
       if (chip.__zuSig !== sig) {   // 幂等：内容没变不重建，悬停/焦点态不被打断

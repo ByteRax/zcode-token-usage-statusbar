@@ -1118,14 +1118,14 @@
           /* 窄档真实空位（specs/speed-chip-stable-slot.md「窄档按真实空位」）：整条进窄档多因别的格放不下，压缩后常余大量
            * 空间，带状态词的速度面不必跟着收成「图标+数值」。空位 = 容器宽 − 其它格未折叠时在窄档下要占的宽
            * （speedRoomOthers，上面探针的第三档量得）——与折叠状态、速度格自身宽度都无关，不构成反馈环；装得下速度格
-           * 固定宽（6.6em × 格字号）+ 右侧间隙 10px + FOLD_HYS 才升档，不够立即降（v458：宽度不随标签变，roomy 只管显示）。
+           * 固定宽（6.6em × 格字号）+ 右侧间隙 10px + FOLD_HYS 才升档，不够立即降（v459：宽度不随标签变，roomy 只管显示）。
            * 只在默认样式的窄档、既有 250ms 检查里执行，无新增测量；完成态本就无标签，不受影响。 */
           var speedRoomy = false;
           if (shrink === 2 && speedRoomOthers > 0) {
             var speedCell = main.querySelector(".it.zu-speed");
             if (speedCell) {
               var speedLeft = room - speedRoomOthers;
-              var speedNeed = 6.6 * parseFloat(getComputedStyle(speedCell).fontSize) + 10;   // v458 与速度格固定宽 6.6em 及其后分隔线 10px 间隙同源（不再有档位上限公式）
+              var speedNeed = 6.6 * parseFloat(getComputedStyle(speedCell).fontSize) + 10;   // v459 与速度格固定宽 6.6em 及其后分隔线 10px 间隙同源（不再有档位上限公式）
               speedRoomy = speedLeft >= speedNeed + (bar.classList.contains("zu-sp-roomy") ? 0 : FOLD_HYS);
             }
           }

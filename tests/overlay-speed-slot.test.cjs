@@ -9,7 +9,7 @@ const { getNamedSlice, sliceOverlay } = require('./helpers/overlay-extract.cjs')
 // 外宽只随布局档位变、不随状态文字变；展示模型只读结构化字段；协调器只管展示时机。
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
-const FACE = (label, value, unit = '', glue = false) => ({ label, value, unit, glue });   // v460：glue=标签与数值贴紧（子代理面）
+const FACE = (label, value, unit = '', glue = false) => ({ label, value, unit, glue });   // v461：glue=标签与数值贴紧（子代理面）
 
 /* ---------- 展示模型（07 分片实例级渲染助手区的纯函数） + 状态机（02 分片） ---------- */
 const NOW = 100000;
@@ -39,7 +39,7 @@ test('展示模型住在 html() 切片夹具共用的渲染助手区（ttEsc→s
 
 test('zuSpeedFace: 八态标签/数值/单位（zh），只读结构化字段', () => {
   const m = model('zh');
-  // v460：子代理面「子·X」——单字标签 + 贴紧的间隔点 + 速率，不带单位；数量不上面（全称里才有 ×N）
+  // v461：子代理面「子·X」——单字标签 + 贴紧的间隔点 + 速率，不带单位；数量不上面（全称里才有 ×N）
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 3, speedValue: 128.6 })), FACE('子·', '128.6', '', true));
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 1, speedValue: 128.6 })), FACE('子·', '128.6', '', true), '数量不上格面：N=1 与 N>1 同面');
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 12, speedValue: 1286.5 })), FACE('子', '1286.5', '', true), '六字符数值带点放不下：退成不带点、同样贴紧的标签');
@@ -48,7 +48,7 @@ test('zuSpeedFace: 八态标签/数值/单位（zh），只读结构化字段', 
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'skill', nameText: '代码审查与修复', elapsedMs: 12500 })), FACE('代码审查与修复', '12s'));
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'tool', toolName: 'Read', elapsedMs: 1200 })), FACE('读取', '01s'));
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'tool', toolName: 'Bash', elapsedMs: 500 })), FACE('执行', '0.5s'), '不足 1 秒一位小数（时间格式表）');
-  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'tool', toolName: 'WebFetch', elapsedMs: null })), FACE('正在打开', ''), '缺起始时刻不显数值，标签换成四字说法（v462）');
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'tool', toolName: 'WebFetch', elapsedMs: null })), FACE('正在打开', ''), '缺起始时刻不显数值，标签换成四字说法（v463）');
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'tool', toolName: 'mcp__srv__tool', elapsedMs: 1000 })), FACE('srv', '01s'), 'MCP 工具取服务名');
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'tool', toolName: 'mcp__computer-use__click', elapsedMs: 1000 })), FACE('电脑', '01s'));
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'tool', toolName: 'js_repl', elapsedMs: 1000 })), FACE('代码', '01s'));
@@ -80,7 +80,7 @@ test('zuSpeedFace: 英文标签', () => {
   assert.equal(m.zuSpTime(90000000), '1d 1h');
 });
 
-test('v462 无计时面：已登记的短状态词换成四字说法（用户「执行 → 正在执行」），一出计时换回短状态词 + 数字', () => {
+test('v463 无计时面：已登记的短状态词换成四字说法（用户「执行 → 正在执行」），一出计时换回短状态词 + 数字', () => {
   const m = model('zh'), en = model('en');
   // [kind, 附加字段, 短 zh, 无计时 zh, 短 en, 无计时 en]
   const NAKE = [
@@ -142,7 +142,7 @@ test('v462 无计时面：已登记的短状态词换成四字说法（用户「
   for (const [, , , enLong] of cells) assert.ok(!tooWide.includes(enLong), `${enLong} 在最紧的档放不下`);
 });
 
-test('v463 长计时面：计时满 1 小时起不出文字标签（只留图标 + 时间），不足 1 小时不变，无标签面不受影响', () => {
+test('v464 长计时面：计时满 1 小时起不出文字标签（只留图标 + 时间），不足 1 小时不变，无标签面不受影响', () => {
   const m = model('zh'), en = model('en');
   const HOUR = 3600000;
   // [kind, 附加字段, 短 zh, 短 en]——四种带计时的面各取代表（技能名面也在内）
@@ -178,7 +178,7 @@ test('v463 长计时面：计时满 1 小时起不出文字标签（只留图标
   assert.equal(h.zuSpeedFaceHtml({ kind: 'thinking', elapsedMs: 4922000 }, true), '<span class="zu-sp-label">思考</span><span class="zu-sp-val">1:22:02</span>', 'autoWidth 透传到展示模型');
 });
 
-test('v460 子代理面「子·X」：标签带 zu-sp-glue（点与数值贴紧），其余面不带；贴紧规则与 .zu-live 的 gap 同源', () => {
+test('v461 子代理面「子·X」：标签带 zu-sp-glue（点与数值贴紧），其余面不带；贴紧规则与 .zu-live 的 gap 同源', () => {
   const m = faceHtml('zh'), en = faceHtml('en');
   assert.equal(m.zuSpeedFaceHtml({ kind: 'subagent', activeCount: 3, speedValue: 128.6 }), '<span class="zu-sp-label zu-sp-glue">子·</span><span class="zu-sp-val">128.6</span>');
   assert.equal(m.zuSpeedFaceHtml({ kind: 'subagent', activeCount: 1, speedValue: 28.8 }), '<span class="zu-sp-label zu-sp-glue">子·</span><span class="zu-sp-val">28.8</span>', '数量不上格面');
@@ -245,7 +245,7 @@ test('zuBarSpeedView 追加数值字段 elapsedMs/toolName/groupKind，text 逐�
   const noStart = m.zuBarSpeedView({ complete: false, characterRate: null, runningTool: { name: 'Read', startedAt: null, inputText: '{}' },
     runningGroup: null, startedAt: 0, observedMs: 0 });
   assert.equal(noStart.text, '读取中'); assert.equal(noStart.elapsedMs, null);
-  assert.deepEqual(plain(m.zuSpeedFace(noStart)), FACE('正在读取', ''), 'v462：无计时面换成四字说法，全称 text 仍是「读取中」');
+  assert.deepEqual(plain(m.zuSpeedFace(noStart)), FACE('正在读取', ''), 'v463：无计时面换成四字说法，全称 text 仍是「读取中」');
 });
 
 test('精简 chip（实时态）：面数值与档位色取同一个展示快照，全称读真实视图', () => {
@@ -880,22 +880,22 @@ test('药丸升档判据的宽度增量估计 ≥ 各界面字号下的真实档
   const em = (rule) => { const m = /width:([\d.]+)em/.exec(rule); assert.ok(css.includes(rule) && m, rule); return Number(m[1]); };
   const wideRule = '.zusage-root .zu-main>.it.zu-speed{box-sizing:border-box;width:6.6em;overflow:hidden}';
   assert.ok(css.includes(wideRule), wideRule);
-  /* v458：全部格面固定宽 6.6em（随格字号缩放）——档宽差只剩缩字号差 */
+  /* v459：全部格面固定宽 6.6em（随格字号缩放）——档宽差只剩缩字号差 */
   const slotPx = (fs) => 6.6 * fs;
   const wide = slotPx(14);
   /* 药丸条上没有 zu-tight 类：紧张档规则必须自带同一套缩字号公式与左内边距/间距，否则按 14px 算、数值越界；
-   * 右内边距 v458 起为 0（移到格外右外边距），默认条靠 :not([data-zu-speed-min]) 规则覆盖窄档的 4px */
+   * 右内边距 v459 起为 0（移到格外右外边距），默认条靠 :not([data-zu-speed-min]) 规则覆盖窄档的 4px */
   const ruleOf = (sel) => css.slice(css.indexOf(sel), css.indexOf('}', css.indexOf(sel)));
   const tightRule = ruleOf('.zusage-root.zu-pill.zu-speed-tight .zu-main>.it.zu-speed{'), midRule = ruleOf('.zusage-root.zu-pill.zu-speed-mid .zu-main>.it.zu-speed{');
   const narrowRule = source.slice(source.indexOf('.zusage-root.zu-tight .zu-main>.it{'), source.indexOf('}', source.indexOf('.zusage-root.zu-tight .zu-main>.it{')));   // 默认条窄档规则在稳定占位块之前，从整份源码取
   for (const decl of ['font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))', 'padding-left:4px', 'gap:3px']) {
     assert.ok(narrowRule.includes(decl) && tightRule.includes(decl) && midRule.includes(decl), `药丸中等/紧张档与默认条窄档同款：${decl}`);
   }
-  for (const rule of [tightRule, midRule]) assert.ok(rule.includes('padding-right:0'), `药丸中等/紧张档右内边距为 0（v458）：${rule}`);
+  for (const rule of [tightRule, midRule]) assert.ok(rule.includes('padding-right:0'), `药丸中等/紧张档右内边距为 0（v459）：${rule}`);
   const narrowFs = (ui) => Math.min(ui, Math.max(11, ui - 2));   // 紧张档字号公式（同 zu-tight；药丸条字号=界面字号）
   const est = /pillSpeedTier === 2 \? ([\d.]+) : ([\d.]+)\) \* pillSpeedEm \+ 24 <= avail/.exec(source);
   assert.ok(est, '升档判据在位');
-  // v458 固定宽后真实增量只剩宽裕→中段的字号差（wide=6.6em×ui、mid/tight=6.6em×narrowFs(ui)），估计值富余即安全
+  // v459 固定宽后真实增量只剩宽裕→中段的字号差（wide=6.6em×ui、mid/tight=6.6em×narrowFs(ui)），估计值富余即安全
   const realWideToMid = (ui) => (slotPx(ui) - slotPx(narrowFs(ui))) / ui, realMidToTight = () => 0;
   let worstA = 0, worstB = 0;
   for (let ui = 11; ui <= 40; ui++) {
@@ -906,7 +906,7 @@ test('药丸升档判据的宽度增量估计 ≥ 各界面字号下的真实档
   /* 固定宽后增量只剩宽裕→中段的字号差（最大 13.2px），估计值富余即安全 */
 });
 
-test('速度格占位 CSS：全部格面固定宽 6.6em、右内边距 0、右侧分隔线间隙 +10px（v458）、状态词与数值之间无间隔点（v459）、左内边距 0（v461），极窄档固定', () => {
+test('速度格占位 CSS：全部格面固定宽 6.6em、右内边距 0、右侧分隔线间隙 +10px（v459）、状态词与数值之间无间隔点（v460）、左内边距 0（v462），极窄档固定', () => {
   const start = source.indexOf('速度格稳定占位（specs/speed-chip-stable-slot.md）：外宽只随布局档位变');
   assert.ok(start >= 0, 'speed slot CSS block present');
   const css = source.slice(start, source.indexOf('.zusage-root .eb .ico{width:12px', start));
@@ -930,7 +930,7 @@ test('速度格占位 CSS：全部格面固定宽 6.6em、右内边距 0、右�
     '.zusage-root.zu-pill.zu-speed-tight .zu-main>.it.zu-speed{padding-left:4px;padding-right:0;margin-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}',
     '.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-label,.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-unit{display:none}',
   ]) assert.ok(css.includes(rule), rule);
-  /* v461 左内边距 0（用户指示「左侧的 padding 也去掉」）只作用于默认条：规则必须带 :not(.zu-pill)——药丸有底色与 12px 圆角，
+  /* v462 左内边距 0（用户指示「左侧的 padding 也去掉」）只作用于默认条：规则必须带 :not(.zu-pill)——药丸有底色与 12px 圆角，
    * 图标靠左内边距（宽裕 7px 来自基础 .it，中等/紧张 4px）离边缘；也不能做成「左内边距改左外边距」（中等/紧张档的 4px 左内边距
    * 抵消不了，会多推 7px）。仅图标档保留两侧内边距（图标靠左，不居中）。 */
   assert.ok(!css.includes(".zusage-root .zu-main>.it.zu-speed:not([data-zu-speed-min='1']){padding-left:0}"), '左内边距 0 规则不得作用于药丸');
@@ -943,7 +943,7 @@ test('速度格占位 CSS：全部格面固定宽 6.6em、右内边距 0、右�
   }
   assert.ok(pillRules >= 3, `药丸速度格规则应被逐条核对（看到 ${pillRules} 条）`);
   assert.ok(!/\.it\.zu-speed\[data-zu-speed-min='1'\]\{[^}]*padding-left:0/.test(css), '仅图标档保留左内边距');
-  /* v458：没有下限/上限区间——v455/v456 的 min-width/max-width 与 calc(38px + 4.8em) 上限、更早的 12.6/10.9em 档位宽都不再存在 */
+  /* v459：没有下限/上限区间——v455/v456 的 min-width/max-width 与 calc(38px + 4.8em) 上限、更早的 12.6/10.9em 档位宽都不再存在 */
   assert.ok(!/[;{]\s*(max-width|width):calc\(38px \+ 4\.8em\)/.test(css), 'v456 上限公式已废（只剩注释里的历史记录）');
   assert.ok(!/[;{]width:12\.6em|[;{]width:10\.9em|max-width:12\.6em|max-width:10\.9em/.test(css), '12.6/10.9em 档位上限已废除');
   assert.ok(!/\.it\.zu-speed[^{]*\{[^}]*max-width/.test(css), '速度格不再有 max-width（固定宽）');
@@ -954,9 +954,9 @@ test('速度格占位 CSS：全部格面固定宽 6.6em、右内边距 0、右�
   const sepRule = css.slice(css.indexOf('.it.zu-speed:not([data-zu-speed-min=\'1\'])+.sep{'), css.indexOf('}', css.indexOf('.it.zu-speed:not([data-zu-speed-min=\'1\'])+.sep{')));
   assert.ok(/box-sizing:content-box.*padding-left:10px.*background-clip:content-box/.test(sepRule), `分隔线间隙规则三件缺一不可：${sepRule}`);
   assert.ok(!/\.it\.zu-speed[^{]*\+\.sep\{[^}]*margin/.test(css), '分隔线间隙不写 margin：折叠判据 zuBarContentWidth 不计外边距');
-  /* v459：状态词与数值之间不画间隔点——v446 的「 · 」连内边距占 16px，固定宽 6.6em 里带数值的两字状态词全被省略成「思…」「执…」；
+  /* v460：状态词与数值之间不画间隔点——v446 的「 · 」连内边距占 16px，固定宽 6.6em 里带数值的两字状态词全被省略成「思…」「执…」；
    * 基础 ::after 规则与窄档/药丸中等两条去分隔符规则都已删，加回任何一条都会让两字状态词重新被省略 */
-  assert.ok(!/\.it\.zu-speed[^{]*::after/.test(css), '状态词与数值之间不画间隔点（v459）：速度格标签不得再有 ::after 规则');
+  assert.ok(!/\.it\.zu-speed[^{]*::after/.test(css), '状态词与数值之间不画间隔点（v460）：速度格标签不得再有 ::after 规则');
   assert.ok(!source.includes('.zu-sp-label:not(:empty)::after'), '全文件不再有速度格标签的 ::after 间隔点规则（含窄档/药丸中等的去分隔符规则）');
   const tsbStart = source.indexOf('".zu-tsb{display:inline-flex;');
   const tsbCss = source.slice(tsbStart, source.indexOf('.zu-tsb:hover', tsbStart));
@@ -985,7 +985,7 @@ test('接线锁：tooltip 读真实视图、探针剥离、菜单读全称、折
   assert.ok(source.includes('var speedLeft = room - speedRoomOthers;'), '空位 = 容器宽 − 其它格未折叠时的窄面宽（探针量得，不看当前折叠后的宽）');
   assert.ok(source.includes('speedRoomOthers = probeMain.getBoundingClientRect().width - (probeSpeedCell ? probeSpeedCell.getBoundingClientRect().width : 0);'), '探针第三档：窄档总宽减去速度格自己的紧凑占位');
   assert.ok(!source.includes('speedLeft = room - (zuBarContentWidth()'), '空位不读其它格当前占的宽（折叠后会变大，与回展互相触发）');
-  assert.ok(source.includes('var speedNeed = 6.6 * parseFloat(getComputedStyle(speedCell).fontSize) + 10;'), 'roomy 阈值与速度格固定宽 6.6em、分隔线间隙 10px 同源（v458）');
+  assert.ok(source.includes('var speedNeed = 6.6 * parseFloat(getComputedStyle(speedCell).fontSize) + 10;'), 'roomy 阈值与速度格固定宽 6.6em、分隔线间隙 10px 同源（v459）');
   assert.ok(!source.includes('38 + 4.8 * parseFloat'), 'v456 上限公式已废');
   assert.ok(source.includes('speedRoomy = speedLeft >= speedNeed + (bar.classList.contains("zu-sp-roomy") ? 0 : FOLD_HYS);'), '升档带迟滞、保持只需装得下');
   assert.ok(source.includes('main.innerHTML.replace(ZU_SPEED_FULL_ATTRS_RE, "").replace(ZU_SPEED_FACE_KEY_RE, "$1</span>")'), '测量签名剔除速度格面与全称属性');
@@ -1013,7 +1013,7 @@ test('接线锁：tooltip 读真实视图、探针剥离、菜单读全称、折
   assert.ok(source.includes('mainW === foldMainW'), '折叠门口同时记 .zu-main 自身宽度');
   assert.ok(source.includes('"zu-in", "zu-just-end", "zu-speed-mid", "zu-speed-tight", "zu-sp-roomy");'), '探针克隆剥药丸速度格档位类与窄档真实空位标记（残留会把自然宽量小）');
   assert.ok(source.includes('var cls = "zu-live " + (v.kind === "live" ? fv.cls + (fv.word ? " zu-shimmer" : "")'), '精简 chip：档位色取展示视图');
-  assert.ok(source.includes('var face = zuSpeedFaceHtml(fv, true);'), '精简 chip：面数值取同一个展示视图（数值与颜色同快照），并传 autoWidth=true（v463：长计时面保留状态词）');
+  assert.ok(source.includes('var face = zuSpeedFaceHtml(fv, true);'), '精简 chip：面数值取同一个展示视图（数值与颜色同快照），并传 autoWidth=true（v464：长计时面保留状态词）');
   assert.ok(source.includes('var txt = v.kind === "live" ? v.sv.text :'), '精简 chip：全称读真实视图');
   assert.ok(!source.includes('backEl.dataset.zuSpeedMin'), '回展分支不处理极窄：同轮「解除后富余够」不可达（降极窄前提是完整宽溢出），靠每轮开头清空');
   assert.ok(!source.includes('zuLiveFaceHtml('), '旧面构建函数无残留');

@@ -159,7 +159,7 @@
      * {kind:"avg"|"real", db:true, speedValue}。kind avg 的面数字取 latest（最后一轮真实
      * 速度，v298），不取 speedValue（那是会话均，只在 tooltip）；DB 回退无标签（v452，
      * 与完成态同面）。无值可显返回 null。 */
-    /* v462 无计时面（用户实报截图「执行」右侧空一大块，指示「优化为 正在执行」）：宿主从 tool_input_start 起就把工具行
+    /* v463 无计时面（用户实报截图「执行」右侧空一大块，指示「优化为 正在执行」）：宿主从 tool_input_start 起就把工具行
      * 算进行中，但 inputStreaming 行不写 startedAt——工具真正开跑前数值位是空的，固定宽里两字状态词只占 28px。
      * 已登记的短状态词换成四字说法填上这块（实机量过：四字 56px 从 11px 界面字号起在默认条与药丸各档都放得下，最紧的是
      * 药丸宽裕档 11px——标签可用 44.6px；英文动名词自然宽须 ≤ 约 55px@14px，取在该档也放得下
@@ -183,7 +183,7 @@
       if (!view) return null;
       var k = view.kind, lab = "", val = "", unit = "", glue = false;
       if (k === "subagent") {
-        /* v460（用户规格「代理 28.8 t/s 改为 子·X」）：子代理面 = 单字「子」+ 贴紧的间隔点 + 速率，不带单位与数量——
+        /* v461（用户规格「代理 28.8 t/s 改为 子·X」）：子代理面 = 单字「子」+ 贴紧的间隔点 + 速率，不带单位与数量——
          * 固定宽 6.6em 里「代理 28.8 t/s」整个被省略成「…」，「子×N·1286.5」也放不下；数量仍在全称（aria / 菜单 / tooltip）里。
          * 六字符数值（1286.5，多子代理合计上千 t/s）带间隔点放不下：退成不带点、同样贴紧的「子1286.5」 */
         val = zuSpNum(view.speedValue, true);   // v452：格面不带 ≈（估算靠「子」标签与流光区分）
@@ -215,8 +215,8 @@
         else lab = tn || L("执行", "Run");
         val = zuSpTime(view.elapsedMs);
       }
-      if (!val && lab) lab = ZU_SPEED_NAKED(lab);   // v462：无计时面换成四字说法
-      /* v463 长计时面（用户实报截图「思... 1:22:02」）：计时满 1 小时起写法变长（1:22:02、N天N时，
+      if (!val && lab) lab = ZU_SPEED_NAKED(lab);   // v463：无计时面换成四字说法
+      /* v464 长计时面（用户实报截图「思... 1:22:02」）：计时满 1 小时起写法变长（1:22:02、N天N时，
        * 实测 45.7~52.8px@14px），固定宽 6.6em 里两字状态词放不下、被省略成「思...」——这时不出
        * 文字标签，只留图标 + 时间（图标已表达状态；aria-label / 菜单全称 / tooltip 不变）。
        * 精简 chip（autoWidth）不在此列：它按内容定宽，中等档本来就是按「Think 23:59:59」标定的，状态词放得下 */
@@ -231,7 +231,7 @@
     function zuSpeedFaceHtml(view, autoWidth) {
       var f = zuSpeedFace(view, autoWidth);
       if (!f) return "";
-      /* v460：子代理面（glue）的标签与数值贴紧——zu-sp-glue 用负外边距抵消 .zu-live 的 gap（06 分片） */
+      /* v461：子代理面（glue）的标签与数值贴紧——zu-sp-glue 用负外边距抵消 .zu-live 的 gap（06 分片） */
       var glue = !!f.glue;
       return '<span class="zu-sp-label' + (glue ? " zu-sp-glue" : "") + '">' + ttEsc(f.label) + '</span><span class="zu-sp-val">' + ttEsc(f.value) + '</span>' +
         (f.unit ? '<span class="zu-sp-unit dim">' + ttEsc(f.unit) + '</span>' : "");

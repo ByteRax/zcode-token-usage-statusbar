@@ -84,7 +84,7 @@ test('zuSpeedFaceHtml behaviour lock: 标签/数值/单位三 item、数值与�
   assert.ok(start >= 0, 'zuSpeedFaceHtml missing');
   const endMarker = '(f.unit ? \'<span class="zu-sp-unit dim">\' + ttEsc(f.unit) + \'</span>\' : "");\n    }';
   const fnSrc = source.slice(start, source.indexOf(endMarker, start) + endMarker.length);
-  assert.ok(fnSrc.includes('var f = zuSpeedFace(view, autoWidth);'), '提取到的是完整函数体（autoWidth 透传，v463）');
+  assert.ok(fnSrc.includes('var f = zuSpeedFace(view, autoWidth);'), '提取到的是完整函数体（autoWidth 透传，v464）');
   const ttEsc = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const zuSpeedFace = (view) => view;   // 展示模型已给出 {label,value,unit}
   const f = new Function('ttEsc', 'zuSpeedFace', fnSrc + ';\nreturn zuSpeedFaceHtml;')(ttEsc, zuSpeedFace);

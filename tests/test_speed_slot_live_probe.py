@@ -2,7 +2,7 @@
 """速度格实机量宽探针的判定函数回归（specs/speed-chip-stable-slot.md）。
 
 tests/speed-slot-live-probe.py 是实机工具，这里不连调试口，只用构造的结果锁定：
-- 默认模式 report()：全部状态面同宽且等于固定宽 6.6em × 格字号（极窄档 2.75em；v458）、无越界，任何界面字号都核对；
+- 默认模式 report()：全部状态面同宽且等于固定宽 6.6em × 格字号（极窄档 2.75em；v459）、无越界，任何界面字号都核对；
 - 持续观察 summarize()：同一条状态条、同一布局（签名前 7 段，不分面类别）下宽度不唯一或越界才是异常；没有可量样本、格面从未变化
   都返回退出码 3（不算通过）；停留时长与档位来回只报告；不同条、不同签名互不混淆。
 页面侧采样器由 tests/overlay-pill-theme.test.cjs 的 watch-mode sampler 用例在真实 Chromium 数据链上校验。
@@ -69,7 +69,7 @@ class ReportTest(unittest.TestCase):
                 "minSlack": 5.0, "minLead": 0, "overflow": list(overflow)}
 
     def test_every_face_at_the_fixed_slot_width_passes(self):
-        # 行里的 fs 是格字号（随档位缩放）：紧凑/紧张/极窄格字号 12px；v458 全部格面固定宽 6.6em——14px 格字号 92.4、12px 79.2，极窄 2.75em
+        # 行里的 fs 是格字号（随档位缩放）：紧凑/紧张/极窄格字号 12px；v459 全部格面固定宽 6.6em——14px 格字号 92.4、12px 79.2，极窄 2.75em
         rows = {"14px 默认 宽裕": self.row([92.4, 92.4]), "14px 默认 中等": self.row([79.2], fs="12px"),
                 "14px 默认 紧张": self.row([79.2], fs="12px"), "14px 默认 极窄": self.row([33.0], fs="12px"),
                 "14px 药丸 宽裕": self.row([92.4]), "14px 药丸 中等": self.row([79.2], fs="12px"), "14px 药丸 紧张": self.row([79.2], fs="12px")}
@@ -82,7 +82,7 @@ class ReportTest(unittest.TestCase):
         self.assertEqual((base, checked), ("16px", 1))   # 固定宽是纯 em：任何界面字号都核对
         self.assertEqual(problems, ["16px 默认 宽裕：数值越界 估算 9999.9",
                                     "16px 默认 宽裕：宽度 70.0、180.0 应恒为 92.4px（6.6em×14px）——全部状态面必须同宽"])
-        # 都在 v455/v456 的区间里、只是不同宽（92.4 / 94.9 / 105.2）：v458 起同样算异常——这正是用户实报的抖动
+        # 都在 v455/v456 的区间里、只是不同宽（92.4 / 94.9 / 105.2）：v459 起同样算异常——这正是用户实报的抖动
         problems, _, checked = run_report(default_mode({"14px 默认 宽裕": self.row([92.4, 94.9, 105.2])}))
         self.assertEqual((problems, checked), (
             ["14px 默认 宽裕：宽度 94.9、105.2 应恒为 92.4px（6.6em×14px）——全部状态面必须同宽"], 1))
@@ -224,7 +224,7 @@ if __name__ == "__main__":
 
 
 class FaceClassTest(unittest.TestCase):
-    """v458 全部格面固定宽：跨格面的宽度不同就是异常（抖动）。默认模式核对 6.6em×格字号，
+    """v459 全部格面固定宽：跨格面的宽度不同就是异常（抖动）。默认模式核对 6.6em×格字号，
     持续观察按布局（签名前 7 段，不分面类别）归组核对；面类别只是报告用的标签。"""
 
     ROW = {"fs": "14px", "minSlack": 5.0, "minLead": 0, "overflow": []}
@@ -233,7 +233,7 @@ class FaceClassTest(unittest.TestCase):
         return dict(self.ROW, **fields)
 
     def test_report_flags_content_hugging_widths(self):
-        # v455/v456 的随内容伸缩（79.2 / 79.3 / 81.0）在 v458 是异常；0.5px 内视为同宽
+        # v455/v456 的随内容伸缩（79.2 / 79.3 / 81.0）在 v459 是异常；0.5px 内视为同宽
         row = self.row(speedW=[79.3, 81.0], plainW=[79.2], turnL=[300.0, 268.0], plainTurnL=[224.4], fs="12px")
         out = default_mode({"14px 默认 宽裕": row})
         self.assertEqual(run_report(out)[0], ["14px 默认 宽裕：宽度 81.0 应恒为 79.2px（6.6em×12px）——全部状态面必须同宽"])
@@ -276,7 +276,7 @@ class FaceClassTest(unittest.TestCase):
         self.assertEqual((problems, code), (["条#0 默认 宽裕 下同一布局宽度不恒定：86.40、90.00、130.80"], 1))
 
     def test_cross_face_width_change_is_a_problem(self):
-        # v458：思考 176.4、其余面 180.0——跨格面的宽度不同就是抖动，必须报异常（v455 时这算合法）
+        # v459：思考 176.4、其余面 180.0——跨格面的宽度不同就是抖动，必须报异常（v455 时这算合法）
         samples = chain()[:2] + chain(200, w=180.0)[2:]
         lines, problems, code = watch(samples, [WIDE])
         self.assertEqual((problems, code), (["条#0 默认 宽裕 下同一布局宽度不恒定：176.40、180.00"], 1))
