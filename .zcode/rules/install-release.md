@@ -14,7 +14,7 @@
 - 两份 manifest（`.zcode-plugin/plugin.json`、`.claude-plugin/plugin.json`）的 `packageLayout.files`——在野旧版解包器要求文件集精确声明，漏声明会让旧版无法升级到新版（曾两次事故），`release_tool.py build` 的 `require_layout` 与 `sync_plugin.py --verify-manifests` 会拦；
 - 相关契约测试（`tests/test_plugin_package.py`、`test_plugin_runtime.py`、`test_release*.py`）。
 
-反向也要成立（仅指插件链）：`usage_mcp.py`、`mcp-launch.cjs`、`overlay_install.py`、`plugin_auto_update.py`、`restart_notice.py` 与 `hooks/` 下的入口在插件链都从插件目录（缓存）运行，import 的兄弟文件同样来自插件目录，**不属于** `overlay_install.py` 的 `RUNTIME_FILES`，不要为「看起来同步」把它们加进运行时目录；`install.py` 独立链是例外——它的 `RUNTIME_FILES` 必须含 `usage_mcp.py`（独立链的 MCP 从运行目录运行）。
+反向也要成立（仅指插件链）：`usage_mcp.py`、`overlay_install.py`、`plugin_auto_update.py`、`restart_notice.py` 与 `hooks/` 下的入口在插件链都从插件目录（缓存）运行，import 的兄弟文件同样来自插件目录，**不属于** `overlay_install.py` 的 `RUNTIME_FILES`，不要为「看起来同步」把它们加进运行时目录；`install.py` 独立链是例外——它的 `RUNTIME_FILES` 必须含 `usage_mcp.py`（独立链的 MCP 从运行目录运行）。
 
 ## 2. 注入与运行目录
 
@@ -42,7 +42,7 @@
 
 ## 4. hooks 契约
 
-- `hooks.json` 是 command+shell 回退链 `python3 → python → py -3`（POSIX sh 与 Windows `%ComSpec%` 都支持 `||`，宿主丢弃成功 hook 的 stderr）；`.mcp.json` 以 `command: "node"` 启动 `mcp-launch.cjs` 透传 `usage_mcp.py`（stdio MCP 按 `shell:false` 经 cross-spawn 直接 spawn、单命令无回退，Windows 无 `python3`、macOS CLT 无 `python`；宿主给 MCP 子进程 PATH 末尾追加 Electron Node fallback shim——`ZCODE_NODE_FALLBACK_EXEC_PATH` + `node`/`node.cmd` shim，未装 Node 也能解析 `node`，shim 准备失败时降级回原样 ENOENT）。python.org 安装器从不建 `python3.exe`；Store 桩是 PATH 真实文件、存在性检查全过，只有执行能区分（退出码 49、广告走 stderr）——launcher 探测按 `--version` 退出码 0 且 stdout 行首 `Python 3.N`、`N ≥ 8` 双重校验（Python 2 残留、Store 桩与低于 3.8 的 `python` 一并排除），全部候选失败时 stderr 诊断 + exit 127。
+- `hooks.json` 是 command+shell 回退链 `python3 → python → py -3`（POSIX sh 与 Windows `%ComSpec%` 都支持 `||`，宿主丢弃成功 hook 的 stderr；候选低于 3.8 时由脚本入口版本门以退出码让位）；`.mcp.json` 以宿主预置 `zcode-python` 直接启动 `usage_mcp.py`——宿主把 preinstalled-tools bin 放在 MCP 子进程 PATH 首位，入口固定 3.8+ 且带 sqlite3；stdio MCP 单命令没有 shell 回退通道，所以不能改回裸 `python3`/`python`（Windows 无 `python3`、macOS CLT 无 `python`），也不再经 node 中转（node 空转基线 ~120–150MB/会话）。没有该入口的旧宿主：MCP 工具不可用，hooks、状态条与 CLI 不受影响。
 - **回退链只认退出码，低版本解释器靠脚本入口自证让位（issue #454）**：`hooks.json` 是静态命令串，没有「先读 config 再选解释器」的执行点（`python_path` 不参与发现）。两个 hook 脚本入口必须在读 stdin 与任何 3.8+ 语法/API 之前内联版本门——低于 3.8 即 stderr 一行 ASCII 诊断并以固定退出码 9 退出，让 `||` 链落到下一候选；不得为 0（链在此终止，旧版症状=异常被兜底吞成「自检失败」后正常退出）或 2（宿主语义=阻断），守卫段保持 3.7 可解析、不新增共享模块（hooks 文件逐文件登记）。链尾仍是 9 时宿主按单 hook 失败 fail-open。规格见 [specs/hook-interpreter-guard.md](../../specs/hook-interpreter-guard.md)，守护在 `tests/test_hook_interpreter_guard.py`。
 - SessionStart `matcher` 必须 `startup|resume`（引擎只派发这两种；桌面重启=恢复原会话 `source=resume`）。`timeoutMs=60000` 不得收紧：asar 重打包是磁盘密集操作，中断可经 pending 标记恢复。
 - SessionStart 输出：`systemMessage`/`suppressOutput` 引擎无消费者，用户可见提示必须走 `additionalContext`（`_nudge`/自检失败分支双键同写是有意设计；v172 起正常安装/待重启路径不再输出，仅剩故障提示）。hook 在远端会话（SSH/WSL 时在远端主机执行、无 asar）必须静默 no-op；拿不到交互 sudo 只能报告不硬试。

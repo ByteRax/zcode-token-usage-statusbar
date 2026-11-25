@@ -26,7 +26,6 @@ PLUGIN = ROOT / "plugins" / PLUGIN_NAME
 # 1. 仓库根同步到 plugins/zcode-token-usage-statusbar/ 的正本文件（单点事实源）
 FILES = [
     "usage_mcp.py",
-    "mcp-launch.cjs",
     "zusage.py",
     "patch_install.py",
     "install_monitor.py",
@@ -65,10 +64,10 @@ PLUGIN_ONLY_FILES = (
 )
 
 # 派生清单契约（对应 .zcode/rules/install-release.md §1 的 6 处登记点）：
-# - install.py 独立链运行目录：FILES 去掉插件专用的 mcp-launch.cjs
-STANDALONE_RUNTIME_FILES = tuple(f for f in FILES if f != "mcp-launch.cjs")
-# - overlay_install.py 插件链运行目录：FILES 去掉从插件目录直跑的 usage_mcp.py 与 mcp-launch.cjs
-PLUGIN_RUNTIME_FILES = tuple(f for f in FILES if f not in ("usage_mcp.py", "mcp-launch.cjs"))
+# - install.py 独立链运行目录：与 FILES 相同（独立链的 MCP 也从运行目录跑 usage_mcp.py）
+STANDALONE_RUNTIME_FILES = tuple(FILES)
+# - overlay_install.py 插件链运行目录：FILES 去掉从插件目录直跑的 usage_mcp.py
+PLUGIN_RUNTIME_FILES = tuple(f for f in FILES if f != "usage_mcp.py")
 # - 主进程冷文件（变更后需完全退出并重启客户端）
 COLD_FILES = (
     "inject-main.cjs",
