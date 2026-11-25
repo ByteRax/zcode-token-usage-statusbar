@@ -104,6 +104,10 @@ class Element {
       return this.children.filter(e => e.getAttribute('data-testid') === 'v4-model-config').concat(
         ...this.children.map(e => e.querySelectorAll(sel)));
     }
+    if (sel === '[data-testid="v4-composer-input"]') {   // issue #477：卡内可见就近选框按后代全量枚举
+      return this.children.filter(e => e.getAttribute && e.getAttribute('data-testid') === 'v4-composer-input').concat(
+        ...this.children.map(e => e.querySelectorAll && e.querySelectorAll(sel)));
+    }
     return [];
   }
   contains(el) { return el === this || this.children.some(e => e.contains(el)); }
@@ -218,7 +222,7 @@ function harness({ enhanceOn = true } = {}) {
     if (inst) { el.parentElement.parentElement.setAttribute('data-zusage-pane-id', inst.pid); el.setAttribute('data-zusage-pane-id', inst.pid); inst.attach(el, sid); }
   }
   const enhOf = wrap => wrap.children.find(e => e.classList.contains('zu-enhance'));
-  return { window, body, inject, boot, tick, buildComposer, payload, takeRequests, respond, enhOf, coordAttach, lsStore, timers };
+  return { window, body, inject, boot, tick, buildComposer, payload, takeRequests, respond, enhOf, coordAttach, lsStore, timers, candidates: panes };
 }
 
 function runPending(timers, ms) {
@@ -314,6 +318,163 @@ test('empty draft rejects without a request; failure shows warn phase', () => {
   assert.ok(req, 'request should fire with non-empty draft');
   h.respond(req.requestId, { ok: false, kind: 'auth', error: 'no api key' });
   assert.match(enh.getAttribute('aria-label'), /增强失败/);
+});
+
+/* ---------- issue #477：可见就近选框 + 读取失败分流（v469） ----------
+ * 报告：输入框里有可见文字，点增强却提示「先输入内容再增强」。旧实现只取卡内第一个输入节点，
+ * 且「找不到节点 / 桥未就绪 / 读取抛错 / 桥读空 / 真空草稿」并成同一句提示。 */
+const ZERO_RECT = { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 };
+const FAR_RECT = { top: 900, bottom: 950, left: 20, right: 520, width: 500, height: 50 };   // 夹具默认矩形在 (20,600)，按钮同位
+function mkInput(draft, rect) {   // 卡外候选输入节点：桥就绪、几何可控
+  const el = new Element();
+  el.setAttribute('data-testid', 'v4-composer-input');
+  el.setAttribute('data-e2e-lexical-bridge', 'ready');
+  el.__zcodeLexicalInputE2E = {
+    getText: () => el.__zuDraft,
+    setText: t => { el.__zuDraft = String(t); el.setTextCalls = (el.setTextCalls || 0) + 1; },
+  };
+  el.__zuDraft = draft;
+  el.getBoundingClientRect = () => ({ ...rect });
+  return el;
+}
+function mountEnh(h, ui) {   // 建实例到按钮就绪（不点击）；用例随后再制造故障现场
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  assert.ok(enh, 'enhance button should mount');
+  return enh;
+}
+const ENH_PROVIDER = { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX' };
+const enhanceRequests = h => h.takeRequests().filter(r => r.action === 'prompt-enhance');
+const clickButton = enh => enh.listeners.get('click')[0]();
+
+test('issue477: a hidden first input with an empty editor never shadows the visible one in the same card', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '看得见的草稿' });
+  const stale = mkInput('', ZERO_RECT);   // 卡内首份：隐藏且编辑器为空（布局切换后残留的旧编辑器）
+  ui.card.insertBefore(stale, ui.editor);   // DOM 序在可见输入框之前
+  const enh = mountEnh(h, ui);
+  clickButton(enh);
+  const reqs = enhanceRequests(h);
+  assert.equal(reqs.length, 1, enh.getAttribute('aria-label'));
+  assert.equal(reqs[0].text, '看得见的草稿');
+  h.respond(reqs[0].requestId, { ok: true, text: '增强结果' });
+  assert.equal(ui.editor.__zuDraft, '增强结果', 'write-back lands on the visible node');
+  assert.equal(stale.setTextCalls || 0, 0, 'the hidden leftover node is never written');
+  assert.equal(enh.getAttribute('aria-label'), '增强提示词');   // 回填链（重读/身份/确认）在选中节点上闭环
+});
+
+test('issue477: a hidden in-card input keeps ownership over visible inputs elsewhere', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '卡外草稿' });
+  const enh = mountEnh(h, ui);
+  ui.editor.remove();
+  ui.pane.appendChild(ui.editor);   // 实例仍挂在这个节点上，但它已不在卡内
+  const own = mkInput('本卡草稿', ZERO_RECT);   // 卡内唯一输入节点：隐藏（编辑器被按设计折叠一类的状态）
+  ui.card.appendChild(own);
+  const elsewhere = mkInput('别处的草稿', FAR_RECT);
+  h.candidates.unshift(elsewhere);   // 页面里另有可见输入框
+  clickButton(enh);
+  const reqs = enhanceRequests(h);
+  assert.equal(reqs.length, 1, enh.getAttribute('aria-label'));
+  assert.equal(reqs[0].text, '本卡草稿');
+  h.respond(reqs[0].requestId, { ok: true, text: '增强结果' });
+  assert.equal(own.__zuDraft, '增强结果');
+  assert.equal(ui.editor.__zuDraft, '卡外草稿');
+  assert.equal(elsewhere.__zuDraft, '别处的草稿', 'another pane draft is never touched');
+});
+
+test('issue477: with no input inside the card the nearest visible input to the button is used', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '就近草稿' });
+  const enh = mountEnh(h, ui);
+  ui.editor.remove();
+  ui.pane.appendChild(ui.editor);   // 输入框仍在页面里，但已不在本卡内
+  h.candidates.unshift(mkInput('更远候选', FAR_RECT), mkInput('隐藏候选', ZERO_RECT));   // 文档序更靠前：一个更远、一个零尺寸
+  clickButton(enh);
+  const reqs = enhanceRequests(h);
+  assert.equal(reqs.length, 1, enh.getAttribute('aria-label'));
+  assert.equal(reqs[0].text, '就近草稿');
+  h.respond(reqs[0].requestId, { ok: true, text: '增强结果' });
+  assert.equal(ui.editor.__zuDraft, '增强结果');
+  assert.equal(enh.getAttribute('aria-label'), '增强提示词');
+});
+
+test('issue477: with no input inside the card and no live button anchor nothing is picked', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '草稿' });
+  const enh = mountEnh(h, ui);
+  ui.editor.remove();
+  ui.pane.appendChild(ui.editor);   // 输入框不在卡内
+  enh.isConnected = false;   // 按钮临时 detach：矩形退化，不得当成有效锚点去就近
+  enh.getBoundingClientRect = () => ({ ...ZERO_RECT });
+  clickButton(enh);
+  assert.equal(enhanceRequests(h).length, 0);
+  assert.match(enh.getAttribute('aria-label'), /未找到当前输入框/);
+});
+
+test('issue477: no input node anywhere reports the real reason, not "type a prompt"', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '草稿' });
+  const enh = mountEnh(h, ui);
+  ui.editor.remove();
+  h.candidates.splice(h.candidates.indexOf(ui.editor), 1);
+  clickButton(enh);
+  assert.equal(enhanceRequests(h).length, 0);
+  assert.match(enh.getAttribute('aria-label'), /未找到当前输入框/);
+  assert.equal(enh.getAttribute('aria-busy'), 'false');
+});
+
+test('issue477: an input without a ready bridge reports "not readable", not "type a prompt"', () => {
+  const strips = {
+    'bridge attribute missing': ed => ed.removeAttribute('data-e2e-lexical-bridge'),
+    'bridge object removed': ed => { delete ed.__zcodeLexicalInputE2E; },   // 宿主桥被别的编辑器摘除后的现场
+  };
+  for (const [name, strip] of Object.entries(strips)) {
+    const h = harness();
+    const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '看得见的草稿' });
+    const enh = mountEnh(h, ui);
+    strip(ui.editor);
+    clickButton(enh);
+    assert.equal(enhanceRequests(h).length, 0, name);
+    assert.match(enh.getAttribute('aria-label'), /输入框暂不可读/, name);
+    assert.doesNotMatch(enh.getAttribute('aria-label'), /先输入内容/, name);
+    assert.equal(ui.editor.__zuDraft, '看得见的草稿', name);
+  }
+});
+
+test('issue477: a throwing getText reports a read failure and sends nothing', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '草稿' });
+  const enh = mountEnh(h, ui);
+  ui.editor.__zcodeLexicalInputE2E.getText = () => { throw new Error('editor detached'); };
+  clickButton(enh);
+  assert.equal(enhanceRequests(h).length, 0);
+  assert.match(enh.getAttribute('aria-label'), /读取草稿失败/);
+});
+
+test('issue477: bridge reads empty while the input visibly has text — unreadable draft, not "type a prompt"', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '' });
+  const enh = mountEnh(h, ui);
+  ui.editor.textContent = '看得见的草稿';   // 桥读到别的（空）编辑器，本节点 DOM 仍有文字
+  clickButton(enh);
+  assert.equal(enhanceRequests(h).length, 0);
+  assert.match(enh.getAttribute('aria-label'), /未能读取输入框里的草稿/);
+  assert.match(enh.getAttribute('aria-label'), /重启/);
+  assert.doesNotMatch(enh.getAttribute('aria-label'), /先输入内容/);
+  assert.equal(ui.editor.setTextCalls || 0, 0);
+});
+
+test('issue477: a genuinely empty draft keeps the original "type a prompt" wording', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '' });
+  const enh = mountEnh(h, ui);
+  ui.editor.textContent = ' \n';   // 只有空白：与空草稿等价
+  clickButton(enh);
+  assert.equal(enhanceRequests(h).length, 0);
+  assert.match(enh.getAttribute('aria-label'), /先输入内容再增强/);
 });
 
 test('enhance disabled: button not mounted even when payload present', () => {
