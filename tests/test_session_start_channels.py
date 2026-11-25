@@ -399,7 +399,7 @@ class SessionStartChannelTests(unittest.TestCase):
         # hook 入口把 stdout 钉成 UTF-8；父进程按 UTF-8 解码（text=True 走本进程启动时的区域
         # 编码，默认中文 Windows 上是 GBK——子进程 env 里的 PYTHONUTF8 救不了读线程）。
         process = subprocess.run([sys.executable, "-B", "-c", script], input='{"source": "startup"}',
-                                 capture_output=True, encoding="utf-8", errors="replace",
+                                 capture_output=True, encoding="utf-8",
                                  env=environment, cwd=str(self.home), timeout=10)
         self.assertEqual(process.returncode, 0, process.stderr)
         output = json.loads(process.stdout)

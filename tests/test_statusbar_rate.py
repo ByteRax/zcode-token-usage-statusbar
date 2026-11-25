@@ -840,11 +840,6 @@ class SpeedSegmentsTests(unittest.TestCase):
         self.assertEqual(zusage._empty_snapshot("s", {"context_window": 200000})["speed_segs"], [])
 
 
-
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ProjectTodayAggTests(unittest.TestCase):
     """v303 项目级 / v301 今日级聚合的口径补锁（review 变异猎杀发现零覆盖）：
     项目 avg_tps = 跨会话分片 Σ有效输出 ÷ Σ生成窗口的加权合成，且只计 main_turn
@@ -912,3 +907,7 @@ class ProjectTodayAggTests(unittest.TestCase):
         self.assertEqual(r[12], 7000.0)   # avg duration: main_turn 且 >0（子代理稀释=4500、含 0=3500，都不等）
         self.assertEqual(r[13], 2000.0)   # avg ttft 同口径
         self.assertEqual(r[0], 3)         # 计数列保持全请求口径不变
+
+
+if __name__ == "__main__":
+    unittest.main()

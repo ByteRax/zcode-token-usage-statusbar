@@ -32,6 +32,8 @@ const T0 = 1700000000000;
 
 let seq = 0;
 const freshCreds = () => `/virtual/v2-${process.pid}-${++seq}/credentials.json`;
+/* 客户端把 credsPath 过 path.resolve：win32 上 /virtual/… 成了盘符路径，readFile 替身的等值比较要先归一化
+ * （POSIX 上是恒等）；下面按基名匹配的那处是同一问题的既有写法。 */
 const credDirOf = (p) => path.dirname(p);
 
 /* 宿主 @napi-rs/keyring AsyncEntry 的替身：记录开条目参数与读取次数 */
@@ -300,7 +302,10 @@ function withFakeHostKeyring(t, secret) {
   return { resources, host: globalThis[bag] };
 }
 
-test("生产取钥路径：从宿主资源目录解析 keyring 并按宿主同款参数开条目（Windows 实测链）", async (t) => {
+/* Electron 充当 Node 时 fs shim 拦截 app.asar 路径（夹具要在临时目录里建同名目录），假 keyring 夹具只能在纯 Node
+ * 运行时跑——与 model-puller.test.cjs 的 KEYRING_FIXTURE_SKIP 同款 */
+const KEYRING_FIXTURE_SKIP = !!process.versions.electron && "Electron fs shim 拦截 app.asar 路径，假 keyring 夹具需纯 Node 运行时";
+test("生产取钥路径：从宿主资源目录解析 keyring 并按宿主同款参数开条目（Windows 实测链）", { skip: KEYRING_FIXTURE_SKIP }, async (t) => {
   const { resources, host } = withFakeHostKeyring(t, OS_SECRET);
   const credsPath = freshCreds();
   const dec = Q.makeHostDecryptor({ env: {}, credsPath, resourcesDir: resources });
@@ -358,7 +363,7 @@ test("client: enc:v2:os——密钥未热零请求（pending 短重试），预�
   const ring = fakeKeyring(OS_SECRET);
   const { client, calls, clock } = makeClient(t, {
     credsPath,
-    readFile: (p) => { if (p === credsPath) return { "oauth:bigmodel:access_token": v2Entry("jwt.v2.real", OS_KEY, "os") }; throw new Error("ENOENT"); },
+    readFile: (p) => { if (p === path.resolve(credsPath)) return { "oauth:bigmodel:access_token": v2Entry("jwt.v2.real", OS_KEY, "os") }; throw new Error("ENOENT"); },
   });
   Q.setDefaultDecryptCtx({ credsPath, credsDir: credDirOf(credsPath), env: {}, keyringMod: ring.mod });   // 构造后再绑：客户端构造时会按自身路径重绑 defaultDec
   client.noteProvider("account:bigmodel-individual-coding-plan");
@@ -381,7 +386,7 @@ test("client: 钥匙串持续取不到——冷却内 tick 不重读、零请求
   const ring = fakeKeyring(null);
   const { client, calls } = makeClient(t, {
     credsPath,
-    readFile: (p) => { if (p === credsPath) return { "oauth:bigmodel:access_token": v2Entry("jwt.hidden", OS_KEY, "os") }; throw new Error("ENOENT"); },
+    readFile: (p) => { if (p === path.resolve(credsPath)) return { "oauth:bigmodel:access_token": v2Entry("jwt.hidden", OS_KEY, "os") }; throw new Error("ENOENT"); },
   });
   Q.setDefaultDecryptCtx({ credsPath, credsDir: credDirOf(credsPath), env: {}, keyringMod: ring.mod });
   client.noteProvider("account:bigmodel-individual-coding-plan");
@@ -399,7 +404,7 @@ test("client: 凭据变更与手动刷新都越过冷却（v2KeyRetryNow 接线�
     const ring = fakeKeyring(null);   // 先取不到，解锁后可取
     const { client, calls, clock } = makeClient(t, {
       credsPath,
-      readFile: (p) => { if (p === credsPath) return { "oauth:bigmodel:access_token": v2Entry("jwt.unlock2", OS_KEY, "os") }; throw new Error("ENOENT"); },
+      readFile: (p) => { if (p === path.resolve(credsPath)) return { "oauth:bigmodel:access_token": v2Entry("jwt.unlock2", OS_KEY, "os") }; throw new Error("ENOENT"); },
     });
     Q.setDefaultDecryptCtx({ credsPath, credsDir: credDirOf(credsPath), env: {}, keyringMod: ring.mod });
     client.noteProvider("account:bigmodel-individual-coding-plan");
@@ -427,7 +432,7 @@ test("client: 密钥到位但 token 临期——离开未配置态，不残留 d
   const soon = Buffer.from(JSON.stringify({ exp: Math.floor((T0 + 30 * 1000) / 1000) })).toString("base64url");
   const { client, clock } = makeClient(t, {
     credsPath,
-    readFile: (p) => { if (p === credsPath) return { "oauth:bigmodel:access_token": v2Entry("h." + soon + ".s", OS_KEY, "os") }; throw new Error("ENOENT"); },
+    readFile: (p) => { if (p === path.resolve(credsPath)) return { "oauth:bigmodel:access_token": v2Entry("h." + soon + ".s", OS_KEY, "os") }; throw new Error("ENOENT"); },
   });
   Q.setDefaultDecryptCtx({ credsPath, credsDir: credDirOf(credsPath), env: {}, keyringMod: fakeKeyring(OS_SECRET).mod });
   client.noteProvider("account:bigmodel-individual-coding-plan");
@@ -455,7 +460,7 @@ test("client: zcode-start 链（zcodejwttoken）与重置卡链解 enc:v2，请�
         zcodejwttoken: v2Entry("start.v2.jwt", ENV_KEY, "env"),
         "oauth:bigmodel:access_token": v2Entry("oauth.v2.tok", ENV_KEY, "env"),
       };
-      if (p === path.join(dir, "telemetry-state.json")) return { deviceMid: "0123456789abcdef0123456789abcdef" };
+      if (p === path.resolve(path.join(dir, "telemetry-state.json"))) return { deviceMid: "0123456789abcdef0123456789abcdef" };
       throw new Error("ENOENT");
     },
   });

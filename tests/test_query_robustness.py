@@ -209,9 +209,6 @@ class CliCountTests(unittest.TestCase):
             self.assertEqual(zusage._cli_count(["days"], 7), 7)     # 缺省
             self.assertEqual(zusage._cli_count(["days", "14"], 7), 14)
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class McpProtocolTests(unittest.TestCase):
     """2026-10-24 第 4 轮：JSON-RPC/MCP 规范符合性（ping/-32700/通知/未知工具/协议版本）。"""
@@ -308,3 +305,7 @@ class McpNullIdTests(unittest.TestCase):
     def test_explicit_null_id_request_gets_a_null_id_response(self):
         out = self._run(['{"jsonrpc":"2.0","id":null,"method":"ping"}'])
         self.assertIn('"id": null, "result": {}', out)
+
+
+if __name__ == "__main__":
+    unittest.main()

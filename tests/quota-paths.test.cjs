@@ -23,21 +23,23 @@ function fixture(t) {
 }
 
 test("paths: explicit > env actual files > data base > desktop home > OS home", () => {
+  /* 期望值按 POSIX 形状写，注入 pathImpl: path.posix：win32 上默认的 path 会把 /data、/explicit-base
+   * 解析成盘符路径（产品允许按平台注入 pathOf），断言就不是在测优先级而是在测平台了。 */
   const env = { ZCODE_DATA_BASE_DIR: "/data", ZCODE_DESKTOP_HOME_DIR: "/desktop",
     ZCODE_PERSONAL_PROVIDER_CONFIG_FILE: "/runtime/personal.json", ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: "/runtime/builtin.json" };
-  const p = resolveQuotaPaths({ env, defaultHome: "/old" });
+  const p = resolveQuotaPaths({ pathImpl: path.posix, env, defaultHome: "/old" });
   assert.equal(p.credsPath, "/data/.zcode/v2/credentials.json");
   assert.equal(p.credsDir, "/data/.zcode/v2");
   assert.equal(p.customCfgPath, "/runtime/personal.json");
   assert.equal(p.builtinCfgDir, "/runtime");
-  const explicit = resolveQuotaPaths({ env, defaultHome: "/old", dataBaseDir: "/explicit-base", credsPath: "/explicit/creds.json",
+  const explicit = resolveQuotaPaths({ pathImpl: path.posix, env, defaultHome: "/old", dataBaseDir: "/explicit-base", credsPath: "/explicit/creds.json",
     customCfgPath: "/explicit/personal.json", builtinCfgPath: "/explicit/builtin.json" });
   assert.equal(explicit.credsPath, "/explicit/creds.json");
   assert.equal(explicit.customCfgPath, "/explicit/personal.json");
   assert.equal(explicit.builtinCfgPath, "/explicit/builtin.json");
-  assert.equal(resolveQuotaPaths({ env, dataBaseDir: "/explicit-base" }).credsPath, "/explicit-base/.zcode/v2/credentials.json");
-  assert.equal(resolveQuotaPaths({ env: { ZCODE_DESKTOP_HOME_DIR: "/desktop" }, defaultHome: "/old" }).credsDir, "/desktop/.zcode/v2");
-  assert.equal(resolveQuotaPaths({ env: {}, defaultHome: "/old" }).customCfgPath, "/old/.zcode/v2/provider_config.json");
+  assert.equal(resolveQuotaPaths({ pathImpl: path.posix, env, dataBaseDir: "/explicit-base" }).credsPath, "/explicit-base/.zcode/v2/credentials.json");
+  assert.equal(resolveQuotaPaths({ pathImpl: path.posix, env: { ZCODE_DESKTOP_HOME_DIR: "/desktop" }, defaultHome: "/old" }).credsDir, "/desktop/.zcode/v2");
+  assert.equal(resolveQuotaPaths({ pathImpl: path.posix, env: {}, defaultHome: "/old" }).customCfgPath, "/old/.zcode/v2/provider_config.json");
 });
 
 test("cipher: data migration does not change OS-home key derivation", () => {
@@ -270,7 +272,7 @@ test("main bridge: initialized paths and directory watchers use shared resolutio
   assert.deepEqual(dirs, [paths.credsDir, paths.customCfgDir, paths.builtinCfgDir]);
   assert.equal(clients[0].credsPath, paths.credsPath);
   assert.equal(clients[0].customCfgPath, paths.customCfgPath);
-  assert.equal(clients[0].secretsPath, "/fixture-runtime/quota-secrets.json");
+  assert.equal(clients[0].secretsPath, path.join("/fixture-runtime", "quota-secrets.json"));   /* 沙箱里是真 path：win32 是反斜杠形态 */
 });
 
 /* ---------- issue #205：主进程 env 没有 ZCODE_*（宿主只注入 CLI 子进程），数据目录
@@ -345,11 +347,11 @@ test("main bridge: setting.json precedence over env; relative or broken dataBase
   /* 宿主 bootstrap 优先级：setting.json > ZCODE_DATA_BASE_DIR env；env 显式指定 builtin 时让位。 */
   p = run({ ZCODE_DATA_BASE_DIR: "/env-base", ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: "/env/builtin.json" });
   assert.equal(p.credsPath, path.join(root, "数据 目录", ".zcode", "v2", "credentials.json"), "setting.json 优先于 env（同宿主 setDataBaseDir > env）");
-  assert.equal(p.builtinCfgPath, "/env/builtin.json", "env 显式 builtin 优先于打包副本");
+  assert.equal(p.builtinCfgPath, path.resolve("/env/builtin.json"), "env 显式 builtin 优先于打包副本");
   fs.unlinkSync(settings);
   p = run({ ZCODE_DATA_BASE_DIR: "/env-base", ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: "/env/builtin.json" });
-  assert.equal(p.credsPath, "/env-base/.zcode/v2/credentials.json", "无 setting.json 时 env 照常生效");
-  assert.equal(p.builtinCfgPath, "/env/builtin.json");
+  assert.equal(p.credsPath, path.resolve("/env-base/.zcode/v2/credentials.json"), "无 setting.json 时 env 照常生效");   /* /env-base 在 win32 上被解析到盘符下 */
+  assert.equal(p.builtinCfgPath, path.resolve("/env/builtin.json"));
   /* 打包副本缺失（如便携版裁剪）不得把不存在的路径当 builtin 交给监听与解析。 */
   fs.rmSync(bundled);
   p = run({});

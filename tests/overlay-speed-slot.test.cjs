@@ -954,8 +954,9 @@ test('速度格占位 CSS：全部格面固定宽 6.6em、右内边距 0、右�
     '.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-label,.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-unit{display:none}',
   ]) assert.ok(css.includes(rule), rule);
   /* v477 的反向锁：精简 chip（.zu-tsb）按内容定宽，空数值位不挤标签，不得被这条规则带走——
-   * 块内所有 zu-sp-val:empty{display:none} 的选择器都必须且只能是固定宽速度格这一个。 */
-  assert.deepEqual(css.match(/[{};][^{};]*\.zu-sp-val:empty\{display:none\}/g).map(s => s.slice(1)),
+   * 块内所有 zu-sp-val:empty{display:none} 的选择器（取到字符串引号为止，源码是 JS 拼接不是裸 CSS）
+   * 都必须且只能是固定宽速度格这一个。 */
+  assert.deepEqual(css.match(/[^{}"'\n]*zu-sp-val:empty\{display:none\}/g),
     ['.zusage-root .it.zu-speed>.zu-live>.zu-sp-val:empty{display:none}'], 'v477 empty-value rule is scoped to the fixed-width speed cell only');
   /* v462 左内边距 0（用户指示「左侧的 padding 也去掉」）只作用于默认条：规则必须带 :not(.zu-pill)——药丸有底色与 12px 圆角，
    * 图标靠左内边距（宽裕 7px 来自基础 .it，中等/紧张 4px）离边缘；也不能做成「左内边距改左外边距」（中等/紧张档的 4px 左内边距

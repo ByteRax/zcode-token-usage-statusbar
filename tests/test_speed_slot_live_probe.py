@@ -219,10 +219,6 @@ class MainWiringTest(unittest.TestCase):
         self.assertIn("连不上或观察中断", out.getvalue())
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class FaceClassTest(unittest.TestCase):
     """v459 全部格面固定宽：跨格面的宽度不同就是异常（抖动）。默认模式核对 6.6em×格字号，
     持续观察按布局（签名前 7 段，不分面类别）归组核对；面类别只是报告用的标签。"""
@@ -283,3 +279,7 @@ class FaceClassTest(unittest.TestCase):
 
     def test_tier_name_ignores_the_roomy_marker(self):
         self.assertEqual(probe.tier_name(["zu-tight", "zu-narrow", "zu-sp-roomy"], ""), "默认 紧张")
+
+
+if __name__ == "__main__":
+    unittest.main()
