@@ -427,12 +427,23 @@ function createModelPuller(opts) {
    * name=zcode-team-api-key 且 keyType=2（缺条目不创建——创建属宿主 App 内切换行为）→
    * ③ POST access_tokens 换项目级短期 PAT。PAT 打与 individual GLr token 同一 messages
    * 端点（宿主团队对话同链路）。只在内存：距过期还有 2 分钟以上才复用 memo（lead 内与
-   * 过期后一律重换，review C 措辞对齐），绝不落盘/进日志。 */
+   * 过期后一律重换，review C 措辞对齐），PAT 绝不落盘/进日志。 */
   const TEAM_PAT_REFRESH_LEAD_MS = 120 * 1000;
   const TEAM_PAT_DEFAULT_TTL_MS = 3600 * 1000;
   const TEAM_PAT_TIMEOUT_MS = 15000;
   const BIGMODEL_BIZ_ORIGIN = "https://bigmodel.cn";
   const teamMemo = { fp: "", pat: "", expiresAt: 0 };
+  /* issue #481：密钥 ID 在线上条目的 apiKey 字段（线上没有 apiKeyId；宿主 ProjectAccessTokenClient
+   * 同款读条目 apiKey 再拼 URL）。planTeamPatOfSolo 返回 { pat, fail, status }：失败时 pat 为空串、
+   * fail 是固定环节码（selection、token，customer 与 keys 与 pat 三步各自的 http、mismatch 或
+   * missing、shape，另有 network），HTTP 类另带 status——
+   * 只含环节与性质，不含令牌、密钥 ID、组织/项目 ID 与响应体，可随增强回执回渲染端并落一行
+   * 日志（此前所有失败分支静默回 null，线上换发断在哪一步无从定位）。 */
+  const teamPatResult = (pat, fail, status) => ({ pat: pat, fail: fail, status: status || 0 });
+  function teamPatFail(fail, status) {   // 失败环节落一行日志（只含环节码与 HTTP 状态）
+    log("team pat exchange failed: " + fail + (status ? " http " + status : ""));
+    return teamPatResult("", fail, status);
+  }
   function bigmodelTeamSelection() {
     let set = null;
     try { set = JSON.parse(fs.readFileSync(settingPath, "utf8")); } catch (e) { return null; }
@@ -462,65 +473,70 @@ function createModelPuller(opts) {
       : sharedInflight(teamInflight, "team|" + providerId, () => planTeamPatOfSolo(providerId, null));
   }
   async function planTeamPatOfSolo(providerId, externalSignal) {
+    if (externalSignal && externalSignal.aborted) return teamPatResult("", "cancelled", 0);   // 进门前已取消：不算失败、不落日志
     const src = PLAN_SOURCES[String(providerId || "")];
-    if (!src || src.fam !== "bigmodel" || !src.teamPat || !credentialsPath || !decryptValue) return null;
+    if (!src || src.fam !== "bigmodel" || !src.teamPat || !credentialsPath || !decryptValue) return teamPatFail("token");
     const oauth = planTokenOf(providerId);
-    if (!oauth) return null;
+    if (!oauth) return teamPatFail("token");
     const sel = bigmodelTeamSelection();
-    if (!sel) return null;
+    if (!sel) return teamPatFail("selection");
     const fp = createHash("sha256").update(oauth + "|" + sel.org + "|" + sel.project).digest("hex");
-    if (teamMemo.fp === fp && teamMemo.pat && Date.now() + TEAM_PAT_REFRESH_LEAD_MS < teamMemo.expiresAt) return teamMemo.pat;
+    if (teamMemo.fp === fp && teamMemo.pat && Date.now() + TEAM_PAT_REFRESH_LEAD_MS < teamMemo.expiresAt) return teamPatResult(teamMemo.pat, "", 0);
     const teamHeaders = { "Bigmodel-Organization": sel.org, "Bigmodel-Project": sel.project, "set-language": "zh" };
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), TEAM_PAT_TIMEOUT_MS);
     if (timer && typeof timer.unref === "function") timer.unref();   // 超时兜底定时器契约
     const onAbort = () => ctl.abort();
     if (externalSignal && typeof externalSignal.addEventListener === "function") externalSignal.addEventListener("abort", onAbort, { once: true });
-    /* 三步共用同一 15s 预算与外部 signal；任一步形状不符/网络失败/非 2xx 一律 null
-     * （enhanceText 回 plan_auth）——不重试（同 planGLrTokenOf：enhance 自身已有二次尝试）。 */
+    /* 三步共用同一 15s 预算与外部 signal；任一步失败按环节码回 fail（enhanceText 回 team_auth），
+     * 不重试（同 planGLrTokenOf：enhance 自身已有二次尝试）。读体/网络异常一律抛给末尾 catch。 */
     try {
       const infoRes = await fetchImpl(BIGMODEL_BIZ_ORIGIN + "/api/biz/customer/getCustomerInfo",
         { headers: { "authorization": oauth, "User-Agent": "ZCode" }, signal: ctl.signal, redirect: "error" });
-      if (!infoRes || !infoRes.ok) { dropBody(infoRes); return null; }
-      let infoText = "";
-      try { infoText = await readEnhanceBody(infoRes); } catch (e) { return null; }
-      if (infoText.length > 262144) return null;
+      if (!infoRes || !infoRes.ok) { dropBody(infoRes); return teamPatFail("customer_http", infoRes ? infoRes.status : 0); }
+      const infoText = await readEnhanceBody(infoRes);
+      if (infoText.length > 262144) return teamPatFail("customer_shape");
       let info = null;
-      try { info = JSON.parse(infoText); } catch (e) { return null; }
-      const orgs = info && info.data && Array.isArray(info.data.organizations) ? info.data.organizations : [];
+      try { info = JSON.parse(infoText); } catch (e) { return teamPatFail("customer_shape"); }
+      /* 信封里没有 organizations 列表（含 HTTP 200 的业务失败信封）算响应异常，不算「所选团队不存在」 */
+      const orgs = info && info.data && Array.isArray(info.data.organizations) ? info.data.organizations : null;
+      if (!orgs) return teamPatFail("customer_shape");
       const orgHit = orgs.some((x) => x && x.organizationId === sel.org &&
         Array.isArray(x.projects) && x.projects.some((pj) => pj && pj.projectId === sel.project));
-      if (!orgHit) return null;
+      if (!orgHit) return teamPatFail("customer_mismatch");
       const keysUrl = BIGMODEL_BIZ_ORIGIN + "/api/biz/v1/organization/" + encodeURIComponent(sel.org) +
         "/projects/" + encodeURIComponent(sel.project) + "/api_keys";
       const keysRes = await fetchImpl(keysUrl, { headers: Object.assign({ "authorization": oauth, "User-Agent": "ZCode" }, teamHeaders), signal: ctl.signal, redirect: "error" });
-      if (!keysRes || !keysRes.ok) { dropBody(keysRes); return null; }
-      let keysText = "";
-      try { keysText = await readEnhanceBody(keysRes); } catch (e) { return null; }
-      if (keysText.length > 262144) return null;
+      if (!keysRes || !keysRes.ok) { dropBody(keysRes); return teamPatFail("keys_http", keysRes ? keysRes.status : 0); }
+      const keysText = await readEnhanceBody(keysRes);
+      if (keysText.length > 262144) return teamPatFail("keys_shape");
       let keys = null;
-      try { keys = JSON.parse(keysText); } catch (e) { return null; }
-      const keyList = keys && keys.data && Array.isArray(keys.data) ? keys.data : [];
-      const teamKey = keyList.find((k) => k && k.name === "zcode-team-api-key" &&
-        k.keyType === 2 && typeof k.apiKeyId === "string" && k.apiKeyId.trim());
-      if (!teamKey) return null;
-      const patRes = await fetchImpl(keysUrl + "/" + encodeURIComponent(teamKey.apiKeyId.trim()) + "/access_tokens", {
+      try { keys = JSON.parse(keysText); } catch (e) { return teamPatFail("keys_shape"); }
+      const keyList = keys && keys.data && Array.isArray(keys.data) ? keys.data : null;
+      if (!keyList) return teamPatFail("keys_shape");
+      /* 密钥 ID 就是条目的 apiKey（线上无 apiKeyId 字段，issue #481）——URL 段经 encodeURIComponent */
+      const teamKeyId = keyList.filter((k) => k && k.name === "zcode-team-api-key" &&
+        k.keyType === 2 && typeof k.apiKey === "string" && k.apiKey.trim()).map((k) => k.apiKey.trim())[0] || "";
+      /* `.` 与 `..` 是路径段保留写法：URL 规范化会吃掉上一级路径段（同源内，仍不该发）——按没有团队密钥处理 */
+      if (!teamKeyId || teamKeyId === "." || teamKeyId === "..") return teamPatFail("keys_missing");
+      const patRes = await fetchImpl(keysUrl + "/" + encodeURIComponent(teamKeyId) + "/access_tokens", {
         method: "POST",
         headers: { "Authorization": "Bearer " + oauth, "Content-Type": "application/json", "User-Agent": "ZCode" },
         body: JSON.stringify(hostVersion ? { clientType: "zcode", clientVersion: hostVersion } : { clientType: "zcode" }),
         signal: ctl.signal, redirect: "error",
       });
-      if (!patRes || !patRes.ok) { dropBody(patRes); return null; }
-      let patText = "";
-      try { patText = await readEnhanceBody(patRes); } catch (e) { return null; }
-      if (patText.length > 65536) return null;
+      if (!patRes || !patRes.ok) { dropBody(patRes); return teamPatFail("pat_http", patRes ? patRes.status : 0); }
+      const patText = await readEnhanceBody(patRes);
+      if (patText.length > 65536) return teamPatFail("pat_shape");
       const parsed = parseGlrExchangePayload(patText);
-      if (!parsed) return null;
+      if (!parsed) return teamPatFail("pat_shape");
       teamMemo.fp = fp; teamMemo.pat = parsed.token;
       teamMemo.expiresAt = parsed.expiresAt > 0 ? parsed.expiresAt : Date.now() + TEAM_PAT_DEFAULT_TTL_MS;
-      return teamMemo.pat;
+      return teamPatResult(teamMemo.pat, "", 0);
     } catch (e) {
-      return null;
+      /* 用户取消不是失败（不落日志，enhanceText 按外部 signal 回 cancelled）；其余=超时/网络异常 */
+      if (externalSignal && externalSignal.aborted) return teamPatResult("", "cancelled", 0);
+      return teamPatFail("network");
     } finally {
       clearTimeout(timer);
       if (externalSignal && typeof externalSignal.removeEventListener === "function") externalSignal.removeEventListener("abort", onAbort);
@@ -536,7 +552,7 @@ function createModelPuller(opts) {
   async function planProbeKeyOf(providerId) {
     const src = PLAN_SOURCES[String(providerId || "")];
     if (!src || src.fam !== "bigmodel") return planTokenOf(providerId);
-    if (src.teamPat) return (await planTeamPatOf(providerId, null)) || null;   // 团队源无 OAuth 兜底：与 issue #442 同门，否则探测会把个人池令牌打到团队源
+    if (src.teamPat) return (await planTeamPatOf(providerId, null)).pat || null;   // 团队源无 OAuth 兜底：与 issue #442 同门，否则探测会把个人池令牌打到团队源
     return planEntryKeyOf(providerId) || (await planGLrTokenOf(providerId, null)) || planTokenOf(providerId);
   }
   /* 拉模型列表门控（issue #336 附加发现 2）：PLAN_SOURCES 从 1 条扩到 6 条后，共享凭据的

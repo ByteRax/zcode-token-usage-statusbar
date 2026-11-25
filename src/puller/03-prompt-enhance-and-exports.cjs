@@ -45,6 +45,7 @@
      * （review R3-A），不用于该路由——zcode 路由仅认会话 JWT，会话不可得即迁移表值路由。 */
     const isZcodeSessionRoute = !!planSrc && /(^|\.)zcode\.z\.ai$/.test((() => { try { return new URL(baseUrl).hostname.toLowerCase(); } catch (e) { return ""; } })());
     let apiKey = "", zcodeSession = null;
+    let teamFail = "", teamStatus = 0;   // 团队三步换发的失败环节码与该环节 HTTP 状态（issue #481）
     if (planSrc) {
       if (isBigmodelPlan) {
         /* GLr 时代凭据序（specs/plan-glr-credential.md）：v2 条目明文 key（3.18 宿主/旧机器，
@@ -53,9 +54,10 @@
          * 宿主运行时解析对等）→ 均不可用诚实报 plan_auth。
          * OAuth 直连兜底已移除——v344 实测被网关 500 code 1234 拒，绝不该作为 fallback 重现。
          * 团队套餐（issue #442）例外：条目 key 与 GLr location 都属个人项目，团队源绝不用
-         * ——凭据只走团队 PAT 三步换发（planTeamPatOf），未切团队/换发失败诚实 plan_auth。 */
+         * ——凭据只走团队 PAT 三步换发（planTeamPatOf），未切团队/换发失败回 team_auth 并带环节码（issue #481）。 */
         if (planSrc.teamPat) {
-          apiKey = await planTeamPatOf(providerId, external);
+          const team = await planTeamPatOf(providerId, external);
+          apiKey = team.pat; teamFail = team.fail; teamStatus = team.status;
         } else if (isZcodeSessionRoute) {
           zcodeSession = readZcodeSessionCred();
           if (zcodeSession) {
@@ -73,6 +75,14 @@
         }
         if (!apiKey) {
           if (external && external.aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
+          /* 团队源：换发在本地失败——与「套餐不支持」分开报（issue #481）。reason 是固定环节码、
+           * status 是该环节 HTTP 状态，均不含凭据；error 短语供旧渲染端兜底显示。 */
+          if (teamFail) {
+            const failed = { ok: false, kind: "team_auth", reason: teamFail,
+              error: "team credential exchange failed (" + teamFail + (teamStatus ? ", HTTP " + teamStatus : "") + ")" };
+            if (teamStatus) failed.status = teamStatus;
+            return failed;
+          }
           return { ok: false, kind: "plan_auth", error: "plan conversation key unavailable" };
         }
       } else {

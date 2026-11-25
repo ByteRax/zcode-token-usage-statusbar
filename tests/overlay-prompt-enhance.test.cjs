@@ -659,6 +659,76 @@ test('plan_auth and balance kinds surface localized kindMap text; invalid provid
   assert.doesNotMatch(enh.getAttribute('aria-label'), /草稿长度超出范围/);
 });
 
+test('team_auth surfaces the team-exchange copy with its failing step, not "plan unsupported" (issue #481)', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-team-coding-plan', model: 'GLM-5.4', draft: '草稿' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  const failWith = (receipt) => {
+    enh.listeners.get('click')[0]();
+    const req = h.takeRequests().find(r => r.action === 'prompt-enhance');
+    h.respond(req.requestId, receipt);
+    return enh.getAttribute('aria-label');
+  };
+  // 团队凭据换发在本地失败：不再误报「当前套餐暂不支持增强」，环节码本地化成第几步
+  const missing = failWith({ ok: false, kind: 'team_auth', reason: 'keys_missing', error: 'team credential exchange failed (keys_missing)' });
+  assert.match(missing, /增强失败：\s*团队凭据换发失败（第 2 步未找到团队密钥）$/);
+  const unauthorized = failWith({ ok: false, kind: 'team_auth', reason: 'customer_http', status: 401, error: 'team credential exchange failed (customer_http, HTTP 401)' });
+  assert.match(unauthorized, /增强失败：\s*团队凭据换发失败（第 1 步校验团队失败，HTTP 401）$/);
+  const malformed = failWith({ ok: false, kind: 'team_auth', reason: 'pat_shape', error: 'team credential exchange failed (pat_shape)' });
+  assert.match(malformed, /增强失败：\s*团队凭据换发失败（第 3 步响应异常）$/);
+  for (const label of [missing, unauthorized, malformed]) {
+    assert.doesNotMatch(label, /当前套餐暂不支持增强/);
+    assert.doesNotMatch(label, /team credential exchange failed/);
+  }
+  // 环节码不在本地表内（主进程比渲染端新）：回落 error 短语，不留空白也不误报套餐不支持
+  const fallback = failWith({ ok: false, kind: 'team_auth', reason: 'some_new_code', error: 'team credential exchange failed (some_new_code)' });
+  assert.match(fallback, /增强失败：\s*team credential exchange failed \(some_new_code\)$/);
+  // status 只认正整数：字符串或非正数不拼进文案
+  assert.match(failWith({ ok: false, kind: 'team_auth', reason: 'keys_http', status: '500', error: 'team credential exchange failed (keys_http, HTTP 500)' }), /增强失败：\s*团队凭据换发失败（第 2 步读取团队密钥失败）$/);
+  assert.match(failWith({ ok: false, kind: 'team_auth', reason: 'keys_http', status: -1, error: 'team credential exchange failed (keys_http, HTTP -1)' }), /增强失败：\s*团队凭据换发失败（第 2 步读取团队密钥失败）$/);
+  // 原型链上的名字（constructor/toString）不算表内环节码
+  const inherited = failWith({ ok: false, kind: 'team_auth', reason: 'constructor', error: 'team credential exchange failed (constructor)' });
+  assert.match(inherited, /增强失败：\s*team credential exchange failed \(constructor\)$/);
+});
+
+test('the team_auth English copy names the same step and nature as the Chinese one for every reason code (issue #481)', () => {
+  const h = harness();
+  h.lsStore.set('zusage3.lang', 'en');   // L() 在注入时读 localStorage：先置英文再注入
+  const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-team-coding-plan', model: 'GLM-5.4', draft: '草稿' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  const failWith = (receipt) => {
+    enh.listeners.get('click')[0]();
+    const req = h.takeRequests().find(r => r.action === 'prompt-enhance');
+    h.respond(req.requestId, receipt);
+    return enh.getAttribute('aria-label');
+  };
+  const expected = {
+    token: 'login credential unavailable',
+    selection: 'host is not on the team plan',
+    customer_http: 'step 1 (verify team) failed, HTTP 503',
+    customer_mismatch: 'step 1: selected team not found',
+    customer_shape: 'step 1: unexpected response',
+    keys_http: 'step 2 (list team keys) failed, HTTP 500',
+    keys_missing: 'step 2: team key not found',
+    keys_shape: 'step 2: unexpected response',
+    pat_http: 'step 3 (issue team token) failed, HTTP 404',
+    pat_shape: 'step 3: unexpected response',
+    network: 'network request failed or timed out',
+  };
+  const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  for (const [reason, text] of Object.entries(expected)) {
+    const status = /_http$/.test(reason) ? Number(text.slice(-3)) : 0;
+    const label = failWith({ ok: false, kind: 'team_auth', reason, status: status || undefined, error: 'team credential exchange failed (' + reason + ')' });
+    assert.match(label, new RegExp('Enhance failed:\\s*Team credential exchange failed \\(' + escape(text) + '\\)$'), reason);
+  }
+});
+
 test('unknown action fallback: stale main process never hangs the button', () => {
   const h = harness();
   const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '草稿' });

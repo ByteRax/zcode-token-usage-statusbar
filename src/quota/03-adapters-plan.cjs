@@ -93,11 +93,13 @@ function teamSelectionOf(j, fam) {
  *    （缺条目不创建——宿主在 App 内切换团队套餐时自建，本插件只读）；
  * ③ POST api_keys/{id}/access_tokens（Bearer 业务 token，body clientType/clientVersion）
  *    → 项目级短期 PAT，用作 monitor?type=2 的 authorization（裸头，不套 Bearer）。
- * PAT 按 fam|org|project 缓存到过期前 2 分钟；apiKeyId 稳定一并缓存。链上任一环节失败
+ *    {id} 就是条目的 apiKey 字段（线上条目没有 apiKeyId；宿主 ProjectAccessTokenClient 同款，
+ *    issue #481）。
+ * PAT 按 fam|org|project 缓存到过期前 2 分钟；密钥 ID 稳定一并缓存。链上任一环节失败
  * 按既有分类抛出（auth_failed/unsupported/network_error…），fail-closed 零请求降级。 */
 const TEAM_PAT_REFRESH_LEAD = 120 * 1000;
 const TEAM_PAT_CLIENT = { clientType: "zcode", clientVersion: "3.18.0" };
-const teamPatCache = new Map();   // fam|org|project → { pat, expiresAt, apiKeyId }
+const teamPatCache = new Map();   // fam|org|project → { pat, expiresAt(ms), apiKey }
 function teamPatCacheGet(key, now) {
   const c = teamPatCache.get(key);
   if (c && c.expiresAt - TEAM_PAT_REFRESH_LEAD > now) return c;
@@ -129,11 +131,15 @@ async function ensureTeamPat(j, fam, sel, loginToken, ctl) {
   const teamKey = keyList.find((k) => k && k.name === "zcode-team-api-key" &&
     k.keyType === 2 && typeof k.apiKey === "string" && k.apiKey.trim());
   if (!teamKey) throw qErr("unsupported", "team api key missing");
+  /* 密钥 ID 就是条目的 apiKey（issue #481）；`.` 与 `..` 是路径段保留写法——URL 规范化会吃掉上一级
+   * 路径段（同源内，仍不该发），按没有团队密钥处理 */
+  const teamKeyId = teamKey.apiKey.trim();
+  if (teamKeyId === "." || teamKeyId === "..") throw qErr("unsupported", "team api key missing");
   /* ③ PAT 签发（Bearer 业务 token；429/5xx 一次重试，与宿主 MAX_TOKEN_ISSUE_ATTEMPTS 对齐） */
   let raw = null, lastErr = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      raw = await j.http.post(keysUrl + "/" + encodeURIComponent(teamKey.apiKeyId) + "/access_tokens", {
+      raw = await j.http.post(keysUrl + "/" + encodeURIComponent(teamKeyId) + "/access_tokens", {
         authorization: "Bearer " + loginToken,
         "content-type": "application/json",
       }, ctl);
@@ -150,10 +156,19 @@ async function ensureTeamPat(j, fam, sel, loginToken, ctl) {
   const pat = patData && patData.enable !== false && typeof patData.accessToken === "string" &&
     patData.accessToken.trim() ? patData.accessToken.trim() : null;
   if (!pat) throw qErr("unsupported", "team pat missing");
-  const expiresAt = typeof patData.expiresAt === "number" && patData.expiresAt > 0
-    ? patData.expiresAt : (typeof patData.expiresIn === "number" && patData.expiresIn > 0
-      ? now + patData.expiresIn * 1000 : now + 3600 * 1000);
-  const cachedEntry = { pat, expiresAt, apiKeyId: teamKey.apiKeyId };
+  /* issue #481（线上样本来自报告者抓包）：expiresAt 是秒级时间戳（与 expiresIn 同单位）——< 1e12
+   * 视为秒换成毫秒，再与毫秒时钟比较（此前秒级值直接比较，缓存永不命中、每轮都重签 PAT）。
+   * 离谱值按缺失处理，否则 PAT 会被永久缓存：非有限值，换算后距今超过 7 天的 expiresAt，以及
+   * 折算超过 7 天的 expiresIn；已过期的 expiresAt 原样保留。 */
+  const maxTtlMs = 7 * 24 * 3600 * 1000;
+  /* 时钟在三步往返之后重取（函数开头的 now 只服务缓存命中判断）：有效期恰好 7 天的 PAT 不因往返
+   * 耗时被判成离谱值；增强链同样是在响应之后才取时钟 */
+  const settledAt = typeof j.now === "function" ? j.now() : Date.now();
+  const at = typeof patData.expiresAt === "number" ? patData.expiresAt : 0;
+  const atMs = at > 0 ? (at < 1e12 ? at * 1000 : at) : 0;
+  const ttlSec = typeof patData.expiresIn === "number" && patData.expiresIn > 0 && patData.expiresIn * 1000 <= maxTtlMs ? patData.expiresIn : 3600;
+  const expiresAt = atMs && atMs - settledAt <= maxTtlMs ? atMs : settledAt + ttlSec * 1000;
+  const cachedEntry = { pat, expiresAt, apiKey: teamKeyId };
   teamPatCache.set(cacheKey, cachedEntry);
   return cachedEntry.pat;
 }

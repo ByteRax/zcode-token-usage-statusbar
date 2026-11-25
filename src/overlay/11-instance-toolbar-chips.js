@@ -1146,7 +1146,8 @@
             /* kind 转可读文案；主进程不回传上游错误正文（仅 status/ kind），error 字段只承载
              * 插件自身的原因短语。kind 优先走 kindMap（i18n 层），error 兜底承载插件/主进程
              * 短语——issue #429 起 plan_auth/balance 不带 error 短语，靠 kindMap 本地化；
-             * 旧渲染端读新 kind 落 error 原文或 kind 串，热重载后即本地化。 */
+             * 旧渲染端读新 kind 落 error 原文或 kind 串，热重载后即本地化。v473（issue #481）：
+             * team_auth 走环节文案（团队凭据换发失败 + 第几步），不再并进「套餐不支持」。 */
             if (res && res.kind === "cancelled") { enhanceSetPhase("idle"); return; }   // 取消回包静默收口（正常路径已被身份门丢弃，此处兜 restore 摘除路径）
             var kindMap = {
               server: L("模型服务返回错误", "Model server error"),
@@ -1172,6 +1173,7 @@
              * 形状校验失败的 kind invalid_input 会误显「草稿长度超出范围」——按短语先行特判 */
             var errPhrase = res && res.error ? String(res.error) : "";
             var reason = (errPhrase === "invalid provider" ? L("供应商身份无效，请重试", "Invalid provider identity") : "")
+              || (res && res.kind === "team_auth" ? enhanceTeamAuthText(res) : "")   // v473：环节码不在本地表内时回空，由下方 error 短语兜底
               || (res && res.kind && kindMap[res.kind]) || errPhrase || (res && res.kind) || "enhance failed";
             enhanceWarn(L("增强失败：", "Enhance failed: ") + reason);
             enhanceSetPhase("idle");

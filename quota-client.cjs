@@ -37,7 +37,7 @@ const EXP_RETRY_MS = 5 * 60 * 1000;
  * 与额度 monitor 是两条链——卡是账号级「立即恢复额度池」的核销机会，每张带 expire_at。 */
 const RESET_PATH = "/api/v1/coding-plan/reset/status";
 const RESET_TTL_MS = 2 * 60 * 1000;       // 稳态轮询（v361 提速：5min→2min，status 是只读查询）
-const RESET_LIST_TTL_MS = 10 * 60 * 1000; // 网页列表增强子链独立 TTL（tooltip 深度信息，慢刷新控体量）
+const RESET_LIST_TTL_MS = RESET_TTL_MS;   // 网页列表增强子链与 status 同节奏（specs/reset-card-refresh.md）：徽标张数读 status、tooltip 明细读 list，同轮刷新才对得上；结算同一时刻写 nextAt 与 listFetchedAt 保证 status 到期即 list 到期
 const RESET_POKE_GAP_MS = 30 * 1000;      // pokeReset 软强刷最小间隔（visibility/hover 触发防抖）
 const RESET_PARSE_BACKOFF_MS = 15 * 60 * 1000;
 
@@ -908,11 +908,13 @@ function teamSelectionOf(j, fam) {
  *    （缺条目不创建——宿主在 App 内切换团队套餐时自建，本插件只读）；
  * ③ POST api_keys/{id}/access_tokens（Bearer 业务 token，body clientType/clientVersion）
  *    → 项目级短期 PAT，用作 monitor?type=2 的 authorization（裸头，不套 Bearer）。
- * PAT 按 fam|org|project 缓存到过期前 2 分钟；apiKeyId 稳定一并缓存。链上任一环节失败
+ *    {id} 就是条目的 apiKey 字段（线上条目没有 apiKeyId；宿主 ProjectAccessTokenClient 同款，
+ *    issue #481）。
+ * PAT 按 fam|org|project 缓存到过期前 2 分钟；密钥 ID 稳定一并缓存。链上任一环节失败
  * 按既有分类抛出（auth_failed/unsupported/network_error…），fail-closed 零请求降级。 */
 const TEAM_PAT_REFRESH_LEAD = 120 * 1000;
 const TEAM_PAT_CLIENT = { clientType: "zcode", clientVersion: "3.18.0" };
-const teamPatCache = new Map();   // fam|org|project → { pat, expiresAt, apiKeyId }
+const teamPatCache = new Map();   // fam|org|project → { pat, expiresAt(ms), apiKey }
 function teamPatCacheGet(key, now) {
   const c = teamPatCache.get(key);
   if (c && c.expiresAt - TEAM_PAT_REFRESH_LEAD > now) return c;
@@ -944,11 +946,15 @@ async function ensureTeamPat(j, fam, sel, loginToken, ctl) {
   const teamKey = keyList.find((k) => k && k.name === "zcode-team-api-key" &&
     k.keyType === 2 && typeof k.apiKey === "string" && k.apiKey.trim());
   if (!teamKey) throw qErr("unsupported", "team api key missing");
+  /* 密钥 ID 就是条目的 apiKey（issue #481）；`.` 与 `..` 是路径段保留写法——URL 规范化会吃掉上一级
+   * 路径段（同源内，仍不该发），按没有团队密钥处理 */
+  const teamKeyId = teamKey.apiKey.trim();
+  if (teamKeyId === "." || teamKeyId === "..") throw qErr("unsupported", "team api key missing");
   /* ③ PAT 签发（Bearer 业务 token；429/5xx 一次重试，与宿主 MAX_TOKEN_ISSUE_ATTEMPTS 对齐） */
   let raw = null, lastErr = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      raw = await j.http.post(keysUrl + "/" + encodeURIComponent(teamKey.apiKeyId) + "/access_tokens", {
+      raw = await j.http.post(keysUrl + "/" + encodeURIComponent(teamKeyId) + "/access_tokens", {
         authorization: "Bearer " + loginToken,
         "content-type": "application/json",
       }, ctl);
@@ -965,10 +971,19 @@ async function ensureTeamPat(j, fam, sel, loginToken, ctl) {
   const pat = patData && patData.enable !== false && typeof patData.accessToken === "string" &&
     patData.accessToken.trim() ? patData.accessToken.trim() : null;
   if (!pat) throw qErr("unsupported", "team pat missing");
-  const expiresAt = typeof patData.expiresAt === "number" && patData.expiresAt > 0
-    ? patData.expiresAt : (typeof patData.expiresIn === "number" && patData.expiresIn > 0
-      ? now + patData.expiresIn * 1000 : now + 3600 * 1000);
-  const cachedEntry = { pat, expiresAt, apiKeyId: teamKey.apiKeyId };
+  /* issue #481（线上样本来自报告者抓包）：expiresAt 是秒级时间戳（与 expiresIn 同单位）——< 1e12
+   * 视为秒换成毫秒，再与毫秒时钟比较（此前秒级值直接比较，缓存永不命中、每轮都重签 PAT）。
+   * 离谱值按缺失处理，否则 PAT 会被永久缓存：非有限值，换算后距今超过 7 天的 expiresAt，以及
+   * 折算超过 7 天的 expiresIn；已过期的 expiresAt 原样保留。 */
+  const maxTtlMs = 7 * 24 * 3600 * 1000;
+  /* 时钟在三步往返之后重取（函数开头的 now 只服务缓存命中判断）：有效期恰好 7 天的 PAT 不因往返
+   * 耗时被判成离谱值；增强链同样是在响应之后才取时钟 */
+  const settledAt = typeof j.now === "function" ? j.now() : Date.now();
+  const at = typeof patData.expiresAt === "number" ? patData.expiresAt : 0;
+  const atMs = at > 0 ? (at < 1e12 ? at * 1000 : at) : 0;
+  const ttlSec = typeof patData.expiresIn === "number" && patData.expiresIn > 0 && patData.expiresIn * 1000 <= maxTtlMs ? patData.expiresIn : 3600;
+  const expiresAt = atMs && atMs - settledAt <= maxTtlMs ? atMs : settledAt + ttlSec * 1000;
+  const cachedEntry = { pat, expiresAt, apiKey: teamKeyId };
   teamPatCache.set(cacheKey, cachedEntry);
   return cachedEntry.pat;
 }
@@ -3075,7 +3090,7 @@ function createQuotaClient(opts) {
       if (ctl.signal && typeof ctl.signal.addEventListener === "function") {
         ctl.signal.addEventListener("abort", () => clearTimeout(kill), { once: true });
       }
-      let listAttempted = false;   // v361：个人链列表增强按 RESET_LIST_TTL_MS 独立计时（尝试即计时）
+      let listAttempted = false;   // 个人链列表增强按 RESET_LIST_TTL_MS 计时（尝试即计时；v361 起独立计时，现与 status 同节奏）
       let listFailed = false;      // 本轮尝试了列表但未取到（传输失败/形状变化）：沿用旧 list 防天窗
       const p = (async () => {
         if (cred.team) {
@@ -3105,8 +3120,9 @@ function createQuotaClient(opts) {
             (force || t - st.listFetchedAt >= RESET_LIST_TTL_MS)) {
           /* 网页控制台列表端点：补充近 7 天过期卡与上次重置时间（status 无过期历史）。
            * 与 subscription 同款可选并行——失败/形状变化静默降级，不影响 status 主链。
-           * v361 status 提频到 2min 后列表不随之翻倍：独立 10min TTL，force 仍必打；
-           * 团队分支不走这里（团队 list 就是主链）。 */
+           * 列表与 status 同节奏（RESET_LIST_TTL_MS = RESET_TTL_MS，specs/reset-card-refresh.md）：
+           * 徽标张数读 status、tooltip 明细读 list，status 到期重查的同一轮必打列表，两边同轮落库；
+           * TTL 内的 poke 轮只刷 status，force 仍必打；团队分支不走这里（团队 list 就是主链）。 */
           listAttempted = true;
           const listBody = await j.http.maybeGetJson(RESET_LIST_ORIGIN + famConf.listPath,
             { authorization: cred.oauth, "set-language": "zh" }, ctl);
@@ -3123,23 +3139,25 @@ function createQuotaClient(opts) {
       })().then((value) => {
         if (!resetGateOpen() || resetStates.get(famConf.fam) !== st || ep !== st.epoch) return;
         if (syncResetCredential(st, resolveResetCred(famConf))) { if (onUpdate) onUpdate(); return; }
-        /* 列表增强按自己的 10 分钟窗口刷新：本轮未打列表或尝试失败（listFailed）时沿用上一轮
-         * 的 list/上次重置时间，否则 status 每 2 分钟重查会把深度信息清掉，tooltip 在两个列表
-         * 窗口之间开天窗；业务如实返回的空列表（extra 非 null）不沿用。仅限个人链——团队分支
-         * 每轮 list 都是新鲜抓取（listAttempted 恒 false），sticky 会把它冻结在首次抓取，
-         * tooltip 与 badge 张数从此不一致。 */
+        /* 列表增强按 RESET_LIST_TTL_MS 刷新：本轮未打列表（TTL 内 poke 轮）或尝试失败（listFailed）
+         * 时沿用上一轮的 list/上次重置时间，否则这一轮 status 重查会把深度信息清掉，tooltip 开天窗；
+         * 业务如实返回的空列表（extra 非 null）不沿用。仅限个人链——团队分支每轮 list 都是新鲜抓取
+         * （listAttempted 恒 false），sticky 会把它冻结在首次抓取，tooltip 与 badge 张数从此不一致。 */
         if (!cred.team && (!listAttempted || listFailed) && st.value) {
           if (st.value.list) value.list = st.value.list;
           if (st.value.lastFiveHour) value.lastFiveHour = st.value.lastFiveHour;
           if (st.value.lastWeek) value.lastWeek = st.value.lastWeek;
         }
         st.value = value;
-        st.fetchedAt = now();
+        /* 三个时刻同源：RESET_LIST_TTL_MS = RESET_TTL_MS 时「status 到期」恒推出「列表到期」；
+         * 分两次取时钟会在边界毫秒上让列表隔一轮（tick 恰等于 nextAt 而 listFetchedAt 晚 1ms）。 */
+        const doneAt = now();
+        st.fetchedAt = doneAt;
         st.status = "ok";
         st.lastError = "";
         st.backoffIdx = 0;
-        st.nextAt = now() + RESET_TTL_MS;
-        if (listAttempted) st.listFetchedAt = now();
+        st.nextAt = doneAt + RESET_TTL_MS;
+        if (listAttempted) st.listFetchedAt = doneAt;
       }).catch((e) => {
         if (!resetGateOpen() || resetStates.get(famConf.fam) !== st || ep !== st.epoch) return;
         if (syncResetCredential(st, resolveResetCred(famConf))) { if (onUpdate) onUpdate(); return; }

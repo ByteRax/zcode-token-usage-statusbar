@@ -292,7 +292,8 @@ class SessionStartChannelTests(unittest.TestCase):
         output, _ = self.invoke()
         self.assertEqual(output, {"suppressOutput": True})
         self.assertEqual((marker.read_bytes(), marker.stat().st_mtime_ns), before)
-        self.install.assert_not_called()
+        self.install.assert_called_once()
+        self.assertTrue(self.install.call_args.kwargs.get("mobile_only"))
 
     def test_successful_auto_install_stays_silent(self):
         # v172：自动安装成功同样不注入文字（红点由 marker → restartRequired 推送驱动）。
@@ -317,15 +318,26 @@ class SessionStartChannelTests(unittest.TestCase):
         output, _ = self.invoke()
         self.assertEqual(output, {"suppressOutput": True})
 
-    def test_no_marker_or_unreadable_client_stays_silent(self):
-        for readable in (True, False):
-            with self.subTest(readable=readable):
-                if readable:
-                    self.make_asar(injected=True)
-                else:
-                    self.asar.write_bytes(b"fixture unreadable asar")
-                output, _ = self.invoke()
-                self.assertEqual(output, {"suppressOutput": True})
+    def test_pending_mobile_only_remove_yields_to_uninstall(self):
+        self.make_asar(injected=False)
+        revive = mock.patch.object(self.installer, "_revive_orphan_pending")
+        with mock.patch.object(self.pi, "pending_operation", return_value="remove"), revive as revive_pending:
+            output, _ = self.invoke()
+        self.assertEqual(output, {"suppressOutput": True})
+        self.install.assert_not_called()
+        revive_pending.assert_called_once_with(self.pi)
+
+    def test_injected_client_without_restart_marker_supplements_mobile_silently(self):
+        self.make_asar(injected=True)
+        output, _ = self.invoke()
+        self.assertEqual(output, {"suppressOutput": True})
+        self.install.assert_called_once()
+        self.assertTrue(self.install.call_args.kwargs.get("mobile_only"))
+
+    def test_unreadable_client_stays_silent_and_skips_mobile_supplement(self):
+        self.asar.write_bytes(b"fixture unreadable asar")
+        output, _ = self.invoke()
+        self.assertEqual(output, {"suppressOutput": True})
         self.install.assert_not_called()
 
     def test_optout_suppresses_normal_and_failed_selfcheck_without_config_changes(self):

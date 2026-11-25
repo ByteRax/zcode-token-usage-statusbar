@@ -141,7 +141,7 @@ function harness(t, options = {}, setup = {}) {
       globals.__zusageRelayUplinkQueue.push({ frame: { zuUp: 2, zuCfg: { gen, prefs } }, b, relay: b.relayProtocol });
     },
     rawTransport(payload) {
-      // 与 mobile_relay_patch.inject_for_uplink 的持久 onRawTransportPayload 同序同形：
+      // 与 patch_install.inject_for_uplink 的持久 onRawTransportPayload 同序同形：
       // 在 acceptPayload dispatcher 之前无条件入队，并捕获当前 bridge/relay 的身份。
       const runtime = { currentBridge: globals.__zusageRelayStash[0].b };
       return (payload && payload.zuUp ? ((b) => ((globals.__zusageRelayUplinkQueue =
