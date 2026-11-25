@@ -17,7 +17,7 @@
 
 ## 2. 隔离接缝与替身陷阱
 
-- 进程内调用 `zusage.serve()` / `zusage.main(["serve"])` 的测试模块必须在 `setUpModule` 把 `token_pricing.start_refresh` 打成空操作（`zusage._pricing` 为 `None` 时跳过——按脚本直跑时它导不到 `token_pricing`）：serve 启动即按 TTL 拉新价表，否则默认回归会真实请求 models.dev 与汇率，并把未跟踪的 `pricing-cache.json` 写进检出目录（`zusage.CONFIG_PATH` 就是脚本目录的 `config.json`）。真子进程的 serve 用例则把脚本拷进带 `pricing.fetch: false` 配置的临时运行目录（`tests/test_serve_stdio.py`）。
+- 进程内调用 `zusage.serve()` / `zusage.main(["serve"])` 的测试模块必须在 `setUpModule` 把 `token_pricing.start_refresh` 打成空操作（`zusage._pricing` 为 `None` 时跳过——按脚本直跑时它导不到 `token_pricing`）：serve 启动即按 TTL 拉新价表，否则默认回归会真实请求 models.dev 与汇率，并写出 `pricing-cache.json`（缓存目录随 `token_pricing.configure` 的查找走：脚本目录没有 `config.json` 时落在检出目录；装了插件的开发机上标准运行目录有配置，落的是真实运行目录的缓存）。真子进程的 serve 用例则把脚本拷进带 `pricing.fetch: false` 配置的临时运行目录（`tests/test_serve_stdio.py`）。
 - `ZCODE_USAGE_DB` 只隔离插件逐问脚本，不是根 `zusage.py` 的通用数据库隔离开关；根实现的新测试沿用夹具替换数据库入口，默认不执行真实查询。插件安装器测试接缝 `ZUSAGE_PLUGIN_RUNTIME` / `ZUSAGE_PLUGIN_ASAR` 可指向临时副本，不碰真机。
 - Python sqlite 替身须同时支持可迭代与 `fetchone` 两种用法（列表子类化游标）。
 - Python 公共测试夹具与单文件独立运行纪律：

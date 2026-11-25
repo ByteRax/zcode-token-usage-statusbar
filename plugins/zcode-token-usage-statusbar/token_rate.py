@@ -190,7 +190,7 @@ def read_state():
 
 
 def _replace_state_file(tmp, path):
-    """os.replace 短暂重试：Windows 上读者/杀软正打开目标文件时（无 FILE_SHARE_DELETE）
+    """os.replace 短暂重试：Windows 上目标被任何句柄打开时（读者、杀软，也包括主进程自己的 fs 句柄，实测不论共享模式）
     替换会被拒绝，静默放弃会丢掉提问时刻、让 --current 守卫整轮失效；读者都是微秒级
     短开，重试窗口远大于它。POSIX 的 rename 不受并发读者影响，重试零成本。"""
     for attempt in range(20):

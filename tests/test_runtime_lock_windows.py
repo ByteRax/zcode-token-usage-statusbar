@@ -255,48 +255,60 @@ class FileLockPaddingTests(unittest.TestCase):
 
 
 class RuntimeLockStdinTests(unittest.TestCase):
-    """命令行入口的入站 JSON 按 UTF-8 严格解码（跨平台：用 PYTHONIOENCODING=gbk:strict 钉出中文
-    Windows 的管道）。经 stdin 的调用方里只有 --update-enhance-provider 的载荷可能含非 ASCII
-    （模型名、密钥）：未钉 UTF-8 时或被读成乱码、或直接 UnicodeDecodeError，这次保存都丢失。
-    一次性命令行没有读循环要保护：畸形字节直接以非零退出失败，不把替换字符写进配置。"""
+    """命令行入口的入站 JSON 按 UTF-8 严格解码（跨平台：用 PYTHONIOENCODING=gbk 钉出中文 Windows
+    的管道，strict 与 surrogateescape 两种错误处理各跑一遍）。经 stdin 的调用方里只有
+    --update-enhance-provider 的载荷可能含非 ASCII（模型名、密钥、地址这些自由落盘的字符串）：
+    未钉 UTF-8 时或被读成乱码、或留下孤立代理项让保存失败，这次保存都丢失。一次性命令行没有
+    读循环要保护：畸形字节直接以非零退出失败，不把替换字符写进配置。"""
+
+    # 默认代码页下管道 stdin 是 gbk/surrogateescape；strict 是更硬的对照
+    LEGACY_ERRORS = ("strict", "surrogateescape")
 
     @staticmethod
-    def legacy_env():
+    def legacy_env(errors):
         env = {name: os.environ[name] for name in ("SystemRoot", "COMSPEC", "PATHEXT")
                if name in os.environ}
-        env.update(PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="gbk:strict")
+        env.update(PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="gbk:" + errors)
         return env
 
     @staticmethod
     def seeded(runtime):
         config = runtime / "enhance-provider.json"
         config.write_text('{"version": 1, "revision": 0, "mode": "default"}', encoding="utf-8")
+        if os.name != "nt":
+            # POSIX 上 update_enhance_provider 要求文件是属主 0600；默认 umask 建出来的是 0644，
+            # 不收紧的话用例在 macOS/Linux 上恒红（与 test_config_transactions 同款夹具）
+            os.chmod(config, 0o600)
         return config
 
-    def save(self, runtime, payload):
+    def save(self, runtime, payload, errors):
         return subprocess.run(
             [sys.executable, "-B", str(ROOT / "runtime_lock.py"), "--update-enhance-provider", str(runtime)],
-            input=payload, capture_output=True, env=self.legacy_env(), cwd=str(runtime), timeout=30)
+            input=payload, capture_output=True, env=self.legacy_env(errors), cwd=str(runtime), timeout=30)
 
     def test_update_enhance_provider_keeps_non_ascii_fields_under_legacy_stdio(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            runtime = Path(tmp)
-            config = self.seeded(runtime)
-            model = "软件 模型"
-            payload = json.dumps({"revision": 0, "changes": {"mode": "custom", "model": model}}, ensure_ascii=False)
-            process = self.save(runtime, payload.encode("utf-8"))
-            self.assertEqual(process.returncode, 0, process.stderr)
-            self.assertEqual(json.loads(config.read_text(encoding="utf-8"))["model"], model)
+        for errors in self.LEGACY_ERRORS:
+            with self.subTest(errors=errors), tempfile.TemporaryDirectory() as tmp:
+                runtime = Path(tmp)
+                config = self.seeded(runtime)
+                model = "软件 模型"
+                payload = json.dumps({"revision": 0, "changes": {"mode": "custom", "model": model}},
+                                     ensure_ascii=False)
+                process = self.save(runtime, payload.encode("utf-8"), errors)
+                self.assertEqual(process.returncode, 0, process.stderr)
+                self.assertEqual(json.loads(config.read_text(encoding="utf-8"))["model"], model)
 
     def test_malformed_stdin_json_fails_closed_without_writing(self):
         """字符串里的非法字节不许被替换后照常解析：那会把带 U+FFFD 的值写进配置。"""
-        with tempfile.TemporaryDirectory() as tmp:
-            runtime = Path(tmp)
-            config = self.seeded(runtime)
-            before = config.read_bytes()
-            process = self.save(runtime, b'{"revision": 0, "changes": {"mode": "custom", "model": "\xff"}}')
-            self.assertNotEqual(process.returncode, 0)
-            self.assertEqual(config.read_bytes(), before)
+        for errors in self.LEGACY_ERRORS:
+            with self.subTest(errors=errors), tempfile.TemporaryDirectory() as tmp:
+                runtime = Path(tmp)
+                config = self.seeded(runtime)
+                before = config.read_bytes()
+                process = self.save(runtime, b'{"revision": 0, "changes": {"mode": "custom", "model": "\xff"}}',
+                                    errors)
+                self.assertNotEqual(process.returncode, 0)
+                self.assertEqual(config.read_bytes(), before)
 
 
 if __name__ == "__main__":

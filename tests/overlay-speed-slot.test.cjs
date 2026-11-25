@@ -953,12 +953,18 @@ test('速度格占位 CSS：全部格面固定宽 6.6em、右内边距 0、右�
     '.zusage-root.zu-pill.zu-speed-tight .zu-main>.it.zu-speed{padding-left:4px;padding-right:0;margin-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}',
     '.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-label,.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-unit{display:none}',
   ]) assert.ok(css.includes(rule), rule);
-  /* v477 的反向锁：精简 chip（.zu-tsb）按内容定宽，空数值位不挤标签，不得被这条规则带走——
-   * 块内所有 zu-sp-val:empty 的隐藏规则（取到字符串引号为止，源码是 JS 拼接不是裸 CSS；先剥掉
-   * 块内的 JS 注释，注释里写到同名规则不算）都必须且只能是固定宽速度格这一个；声明放宽到
-   * display:none 的任何等价写法（!important、带空格），免得另加一条也放行。 */
-  const cssCode = css.replace(/\/\*[\s\S]*?\*\//g, "");
-  assert.deepEqual(cssCode.match(/[^{}"'\n]*zu-sp-val:empty\{\s*display:\s*none[^}]*\}/g),
+  /* v477 的反向锁：精简 chip（.zu-tsb）按内容定宽，空数值位不挤标签，不得被这条规则带走。
+   * 源码是 JS 字符串拼接：剥掉注释后只取字符串字面量再拼回 CSS，按「选择器 { 声明块 }」切规则。
+   * 凡是选择器带 zu-sp-val:empty、声明块里把 display 设成 none 的规则（不分大小写、冒号两侧
+   * 空格、带 !important、不在首条、拆在两个字面量里都算），都必须且只能是固定宽速度格这一个。 */
+  const literals = (css.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")
+    .match(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g) || []);
+  const cssCode = literals.map(text => text.slice(1, -1).replace(/\\"/g, '"').replace(/\\'/g, "'").replace(/\\\\/g, '\\')).join("");
+  const emptyValueHidden = (cssCode.match(/[^{}]+\{[^{}]*\}/g) || []).filter(rule => {
+    const brace = rule.indexOf('{');
+    return /zu-sp-val:empty/.test(rule.slice(0, brace)) && /(^|;)\s*display\s*:\s*none\b/i.test(rule.slice(brace + 1, -1));
+  }).map(rule => rule.trim());
+  assert.deepEqual(emptyValueHidden,
     ['.zusage-root .it.zu-speed>.zu-live>.zu-sp-val:empty{display:none}'], 'v477 empty-value rule is scoped to the fixed-width speed cell only');
   /* v462 左内边距 0（用户指示「左侧的 padding 也去掉」）只作用于默认条：规则必须带 :not(.zu-pill)——药丸有底色与 12px 圆角，
    * 图标靠左内边距（宽裕 7px 来自基础 .it，中等/紧张 4px）离边缘；也不能做成「左内边距改左外边距」（中等/紧张档的 4px 左内边距

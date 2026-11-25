@@ -633,9 +633,9 @@ if __name__ == "__main__":
     # 入站 JSON（--record-restart / --update-config / --update-enhance-provider 的载荷）按 UTF-8
     # 严格解码：主进程与更新器按 JSON.stringify 写 stdin、spawn 时不注入 PYTHONUTF8，中文 Windows
     # 的管道默认按区域代码页解码——含非 ASCII 的载荷（经 stdin 的调用方里只有
-    # --update-enhance-provider 的模型名与密钥可能如此）会被解成乱码或直接 UnicodeDecodeError，
-    # 这次保存都丢失。一次性命令行没有读循环要保护：畸形字节直接以非零退出失败，不把替换
-    # 字符写进配置（字符串内的坏字节若换成 U+FFFD 会照常解析并落盘）。
+    # --update-enhance-provider 可能如此：模型名、密钥、地址这些自由落盘的字符串）会被读成乱码
+    # 或留下孤立代理项（后者让这次保存失败）。一次性命令行没有读循环要保护：畸形字节直接以
+    # 非零退出失败，不把替换字符写进配置（字符串内的坏字节若换成 U+FFFD 会照常解析并落盘）。
     try:
         sys.stdin.reconfigure(encoding="utf-8")
     except Exception:
