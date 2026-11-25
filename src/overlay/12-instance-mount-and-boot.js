@@ -308,7 +308,7 @@
       }
       shrink = 0;
       bar.classList.remove("zu-narrow", "zu-tight");
-      bar.classList.remove("zu-speed-mid", "zu-speed-tight");   // 药丸速度格档位随主题切换重置
+      bar.classList.remove("zu-speed-mid", "zu-speed-tight", "zu-sp-roomy");   // 药丸速度格档位、窄档真实空位标记随主题切换重置
       pillSpeedTier = 0;
       narrowMeasureKey = ""; narrowWidths = null;
       main.classList.remove("zu-clip", "zu-clip-left");
@@ -630,6 +630,7 @@
      * 重算；每帧另测一次溢出（流式原地改字会变宽，签名探测不到）；恢复带 FOLD_HYS 迟滞带，
      * 阈值附近数字刷新不再整格反复翻转。 */
     var foldDirty = true, foldWidth = -1, foldMainW = -1, foldFont = "", foldPrioritySig = "", foldedKeys = "";
+    var speedRoomOthers = 0;   // 窄档下其它格未折叠的自然宽（整条档位探针第三档量得；窄档真实空位判定用）
     var foldTrigger = true;
     var speedMinOn = false;   // 速度格「极窄」档（data-zu-speed-min，仅图标）是否在用：离开折叠态时的清理判据（specs/speed-chip-stable-slot.md）
     var FOLD_HYS = 24;   // 迟滞带（px）：进入折叠 ov>1；折叠态需 slack≥FOLD_HYS 才尝试回展
@@ -1062,7 +1063,7 @@
           if (!narrowWidths || measureKey !== narrowMeasureKey) {
             var probe = document.createElement("div");
             probe.className = bar.className;
-            probe.classList.remove("zu-narrow", "zu-tight", "zu-in", "zu-just-end", "zu-speed-mid", "zu-speed-tight");
+            probe.classList.remove("zu-narrow", "zu-tight", "zu-in", "zu-just-end", "zu-speed-mid", "zu-speed-tight", "zu-sp-roomy");
             probe.style.cssText = "position:fixed;left:-10000px;top:0;visibility:hidden;pointer-events:none;width:max-content;min-width:0;max-width:none";
             probe.style.fontFamily = mainStyle.fontFamily;
             probe.style.fontSize = mainStyle.fontSize;
@@ -1074,6 +1075,10 @@
             /* 同理剥速度格极窄档：折叠段内写入的 data-zu-speed-min 若被探针量到，自然宽会随
              * 档位反转（极窄装得下→离开折叠→恢复全宽→又溢出），与 v357 同款震荡环 */
             probeMain.querySelectorAll("[data-zu-speed-min]").forEach(function (el) { el.removeAttribute("data-zu-speed-min"); });
+            /* 完成态紧凑占位（specs/speed-chip-stable-slot.md）：完成态的空标签会让速度格按 7.2em 下限量，整条会随
+             * 「当前是不是完成态」升降档（一轮对话里反复切）。副本里给空标签填占位文字，恒按有状态词的档位占位量。 */
+            var probeSpLabel = probeMain.querySelector(".it.zu-speed>.zu-live>.zu-sp-label");
+            if (probeSpLabel && !probeSpLabel.textContent) probeSpLabel.textContent = "占位";
             probeMain.classList.remove("zu-clip", "zu-clip-left");
             probeMain.style.cssText = "width:max-content;min-width:max-content;flex:none;overflow:visible";
             /* v356 修复（用户实报「开启系统状态后整条抖动」）：format:"auto" 的系统状态面随
@@ -1090,6 +1095,11 @@
               var fullWidth = probeMain.getBoundingClientRect().width;
               probe.classList.add("zu-tight");
               var tightWidth = probeMain.getBoundingClientRect().width;
+              /* 第三档：窄档自然宽，减去速度格自己的紧凑占位 = 其它格未折叠时在窄档下要占的宽（窄档真实空位判定用，见下）。
+               * 不用「其它格当前占的宽」：别的格被折叠后空位反而变大，速度格升档又和它们的回展互相触发 */
+              probe.classList.add("zu-narrow");
+              var probeSpeedCell = probeMain.querySelector(".it.zu-speed");
+              speedRoomOthers = probeMain.getBoundingClientRect().width - (probeSpeedCell ? probeSpeedCell.getBoundingClientRect().width : 0);
               narrowWidths = [fullWidth, tightWidth];
               narrowMeasureKey = measureKey;
             } finally { probe.remove(); }
@@ -1104,6 +1114,24 @@
             bar.classList.toggle("zu-narrow", shrink === 2);
             foldDirty = true;   // 档位切换即重算折叠（折叠仅在 shrink===2 生效）
             try { sysmonApplyFace(); } catch (e) { }   // v356：format:"auto" 的系统状态面随档位切换（探针节流与迟滞沿用窄宽状态机，无新探针）
+          }
+          /* 窄档真实空位（specs/speed-chip-stable-slot.md「窄档按真实空位」）：整条进窄档多因别的格放不下，压缩后常余大量
+           * 空间，带状态词的速度面不必跟着收成「图标+数值」。空位 = 容器宽 − 其它格未折叠时在窄档下要占的宽
+           * （speedRoomOthers，上面探针的第三档量得）——与折叠状态、速度格自身宽度都无关，不构成反馈环；装得下速度格
+           * 固定宽（6.6em × 格字号）+ 右侧间隙 10px + FOLD_HYS 才升档，不够立即降（v458：宽度不随标签变，roomy 只管显示）。
+           * 只在默认样式的窄档、既有 250ms 检查里执行，无新增测量；完成态本就无标签，不受影响。 */
+          var speedRoomy = false;
+          if (shrink === 2 && speedRoomOthers > 0) {
+            var speedCell = main.querySelector(".it.zu-speed");
+            if (speedCell) {
+              var speedLeft = room - speedRoomOthers;
+              var speedNeed = 6.6 * parseFloat(getComputedStyle(speedCell).fontSize) + 10;   // v458 与速度格固定宽 6.6em 及其后分隔线 10px 间隙同源（不再有档位上限公式）
+              speedRoomy = speedLeft >= speedNeed + (bar.classList.contains("zu-sp-roomy") ? 0 : FOLD_HYS);
+            }
+          }
+          if (speedRoomy !== bar.classList.contains("zu-sp-roomy")) {
+            bar.classList.toggle("zu-sp-roomy", speedRoomy);
+            foldDirty = true;   // 速度格占位变了，折叠重算一遍（占位在空位之内，不会因此折叠）
           }
         }
         var rightClip = state.theme === "default" && main.scrollLeft + main.clientWidth < main.scrollWidth - 1;
