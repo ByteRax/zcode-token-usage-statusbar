@@ -286,7 +286,8 @@
               filt: (typeof spd3FilterAuto === "function" ? spd3FilterAuto() : { mode: "auto", keys: null }),
               pop: { open: false, query: "" } },
           (t && typeof t.speedHover === "number") ? t.speedHover : -1, t && t.speedLive,
-          { fmtTok: fmt, fmtCnt: countFmt, fmtMoney: state.cost ? fmtMoney : null }, sess)
+          { fmtTok: fmt, fmtCnt: countFmt, fmtMoney: state.cost ? fmtMoney : null,
+            cfgBtn: true }, sess)   /* v466：精简专属——整卡标题后带「打开设置」（issue #474） */
         : null);
       if (cv2) return cv2((t && typeof t.speedHover === "number") ? t.speedHover : -1, t.speedSel);
       try { FATAL.spdTip = { t: Date.now(), src: "fb-chip",
@@ -364,7 +365,13 @@
       chip.addEventListener("mouseenter", function () { cancelTpsHide(); zuChipHoverArm(chip, function () { showTpsTip(chip); }); });   // v440：悬停门槛（路过不弹）
       chip.addEventListener("mouseleave", function () { zuChipHoverDisarm(chip); scheduleTpsHide(); });   // 延迟收起：给指针移入 tooltip 留窗口（同重置卡桥）
       chip.addEventListener("focus", function () { showTpsTip(chip); });
-      chip.addEventListener("blur", hideTpsTip);
+      /* v466（issue #474 跟进，用户实报「点齿轮只关了速度卡」）：失焦收卡只服务键盘路径。用户先点了 chip
+       * （焦点落在 chip 上）再去点卡里的齿轮——mousedown 把焦点移到齿轮，blur 先把卡收走，其后的 click
+       * 落到页面内容上，设置面板打不开。指针还停在卡上时失焦不收（移开由 tip 的 mouseleave 延迟收起接管）。 */
+      chip.addEventListener("blur", function (e) {
+        try { if (typeof tpsTip !== "undefined" && tpsTip && typeof tpsTip.matches === "function" && tpsTip.matches(":hover")) return; } catch (eHover) { }
+        hideTpsTip(e);
+      });
       chip.addEventListener("keydown", function (e) { if (e.key === "Escape") hideTpsTip(); });
       /* 右键直开设置（用户规格 2026-11-09）：精简下 chip 是唯一常驻入口，悬停 tooltip
        * 里点「打开设置」要两步；右键镜像 .tps-cfg 路径——先收 tooltip 再开面板，

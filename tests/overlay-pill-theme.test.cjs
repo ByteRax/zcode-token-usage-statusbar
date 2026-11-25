@@ -2908,7 +2908,20 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
       assert.equal(snap.unitShown, tier === 'wide' && !!snap.unit, `${label}: unit shown only in the wide tier, and only for faces that have one`);
       assert.equal(snap.labelShown, tier !== 'tight' && !!snap.label, `${label}: label shown only outside the tight tier and only for faces that have one (the final face has no label box)`);
     }
-    for (const key of ['chip', 'cua', 'git', 'plan']) {
+    /* v466（用户截图裁定「现在的太宽了」）：三档是上限不是固定宽——chip 按内容定宽、不超过当前档位，
+     * 状态切换时宽度随内容变（此前锁的「一个档位一种宽度」废除）。左邻宿主按钮不动；右邻 Git chip 跟随
+     * chip 右缘（间距不变）。 */
+    const CAP = { wide: 161.2, mid: 126.1, tight: 85.8 }, r2 = x => Math.round(x * 100) / 100;
+    const gap0 = r2(g.think.git[0] - g.think.chip[0] - g.think.chip[2]);
+    assert.ok(new Set(all.map(s => s.chip[2])).size > 1, `${label}: chip width follows the content (v466) — ${all.map(s => s.chip[2])}`);
+    for (const snap of all) {
+      assert.ok(snap.chip[2] <= CAP[tier] + 0.05, `${label}: chip no wider than the ${tier} cap (${snap.chip[2]}; ${snap.label}|${snap.value})`);
+      assert.ok(snap.slack <= 1.5, `${label}: no room reserved past the content (v466; slack ${snap.slack}; ${snap.label}|${snap.value})`);
+      assert.deepEqual([snap.chip[0], snap.chip[1], snap.chip[3]], [g.think.chip[0], g.think.chip[1], g.think.chip[3]], `${label}: chip left edge and height unchanged across ${snap.label}|${snap.value}`);
+      assert.equal(r2(snap.git[0] - snap.chip[0] - snap.chip[2]), gap0, `${label}: git chip follows the rate chip's right edge (${snap.label}|${snap.value})`);
+      assert.equal(snap.git[2], g.think.git[2], `${label}: git chip width unchanged across ${snap.label}|${snap.value}`);
+    }
+    for (const key of ['cua', 'plan']) {
       for (const snap of all) assert.deepEqual(snap[key], g.think[key], `${label}: ${key} box unchanged across ${snap.label}|${snap.value}`);
     }
     /* 与条面同规则（v448）：标签可见时标签从 chip 内容区左缘起排、数值紧跟标签；标签隐藏（紧张档）或为空（完成态）时数值从
@@ -2924,9 +2937,10 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
     for (const snap of all) assert.equal(snap.hostCompact, g.think.hostCompact, `${label}: host compaction state unchanged across the chain`);
   }
 
-  /* 宽裕 161.2 / 中等 126.1 / 紧张 85.8px（chip 字号 13px）：空位决定档位；挂载当拍就选对档，chip 先让位，宿主按钮不被压缩 */
+  /* 宽裕 161.2 / 中等 126.1 / 紧张 85.8px（chip 字号 13px，v466 起是各档上限）：空位决定档位；挂载当拍就选对档，
+   * chip 先让位，宿主按钮不被压缩 */
   for (const [name, room, tier] of [['wide tier', 275, 'wide'], ['mid tier', 140, 'mid'], ['tight tier', 100, 'tight'], ['narrower than the tight tier', 20, 'tight']]) {
-    await t.test(`${name}: one chip width through 思考 → 生成 → 读取 → 生成 → 完成; neighbours and host controls stay put`, async () => {
+    await t.test(`${name}: content-sized chip under the ${tier} cap through 思考 → 生成 → 读取 → 生成 → 完成; left neighbour and host controls stay put`, async () => {
       await setup(room);
       const g0 = await geo();
       assert.equal(g0.tier, tier, `${name}: tier chosen at mount (room ${g0.room}px)`);
@@ -2942,7 +2956,8 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
   await t.test('control: with the chip pinned at the wide width the host does compact — so "never compacted" above is the chip yielding', async () => {
     await setup(140);
     assert.equal((await geo()).hostCompact, false);
-    await b.evaluate(`(() => { const s = document.createElement('style'); s.id = 'pin-wide'; s.textContent = '.zu-tsb{width:12.4em!important}'; document.head.appendChild(s); return true; })()`);
+    /* v466 起三档是 max-width：钉宽要同时压过上限，否则 161px 的 width 被 9.7em 的上限截掉、宿主照样放得下 */
+    await b.evaluate(`(() => { const s = document.createElement('style'); s.id = 'pin-wide'; s.textContent = '.zu-tsb{width:12.4em!important;max-width:12.4em!important}'; document.head.appendChild(s); return true; })()`);
     await settle();
     assert.equal((await geo()).hostCompact, true, 'host compacts its own controls when the chip does not yield');
     await b.evaluate(`document.getElementById('pin-wide').remove()`);
@@ -2967,16 +2982,24 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
       await b.evaluate(`(() => { document.getElementById('pane-a').style.width = '${width}px';
         const p = document.querySelector('#pane-a .hplan'); p.classList.toggle('wide', ${wide}); if (${wide}) p.dataset.full = '150'; else delete p.dataset.full; return true; })()`);
       const seen = [];
-      for (let i = 0; i < 12; i++) { await delay(250); const g = await geo(); seen.push([g.tier, g.hostCompact, Math.round(g.git[2]), Math.round(g.room)]); }
+      for (let i = 0; i < 12; i++) { await delay(250); const g = await geo(); seen.push([g.tier, g.hostCompact, Math.round(g.git[2]), Math.round(g.room), g.chip[2]]); }
       const tail = JSON.stringify(seen.slice(-6));
       assert.equal(new Set(seen.slice(-6).map(x => JSON.stringify(x))).size, 1, `width ${width}, host button ${wide ? 'wide' : 'normal'}: settled for the last 1.5s (${JSON.stringify(seen)})`);
       const [tier, compact, , room] = seen[seen.length - 1];
-      if (!compact) assert.ok(room + 0.5 >= [161.2, 126.1, 85.8][['wide', 'mid', 'tight'].indexOf(tier)], `${tail}: chip fits the room it settled in`);
+      /* v466：档位按上限判定（保守），实际 chip 只会比上限窄——未压缩时锁「实际宽度装得下、且不超过档位上限」 */
+      if (!compact) {
+        const chipW = seen[seen.length - 1][4], cap = { wide: 161.2, mid: 126.1, tight: 85.8 }[tier];
+        assert.ok(chipW <= room + 0.5, `${tail}: content-sized chip fits the room it settled in`);
+        assert.ok(chipW <= cap + 0.05, `${tail}: chip within the ${tier} cap`);
+      }
       else assert.equal(tier, 'tight', `${tail}: the host only stays compacted once the chip cannot yield more`);
     }
   });
 
-  await t.test('host compaction not caused by the chip: chip yields one tier, host expands again, chip does not climb back (no tug-of-war)', async () => {
+  /* v466 起芯片按内容定宽：空位 130 远大于实际内容宽，宿主自己的按钮变宽后宿主根本不必压缩——比 v459 的
+   * 「宿主压缩 → chip 让一档 → 宿主展开」更好；档位仍按上限判定降到中等（空位 130 < 宽裕上限 161.2），
+   * 且静默期后不回升。 */
+  await t.test('host compaction not caused by the chip: chip yields one tier, host never compacts, chip does not climb back (no tug-of-war)', async () => {
     await setup(170);   // 宽裕档 161.2 装得下
     assert.equal((await geo()).tier, 'wide');
     /* 钉住 Git chip 的宽度（否则它也按自己的档位收缩，三方一起动就看不清「宿主 ↔ 速率 chip」这一条链） */
@@ -2985,9 +3008,8 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
       const p = document.querySelector('#pane-a .hplan'); p.dataset.full = '150'; p.classList.add('wide');   // 宿主自己的按钮变宽 40px：空位 130，宽裕档放不下
       return true;
     })()`);
-    await b.waitFor(`!!document.querySelector('#pane-a .hplan[data-composer-compact]')`, 'host did not compact its own control', 80);
     await b.waitFor(`document.querySelector('#pane-a .zu-tsb').classList.contains('zu-speed-mid')`, 'chip did not yield to the mid tier', 80);
-    await b.waitFor(`!document.querySelector('#pane-a .hplan[data-composer-compact]')`, 'host controls did not expand again after the chip yielded', 80);
+    assert.equal(await b.evaluate(`!!window.__hostEverCompact`), false, 'content-sized chip leaves the host room: host controls never compacted');
     const seen = [];
     for (let i = 0; i < 10; i++) { await delay(500); const s = await geo(); seen.push([s.tier, s.hostCompact]); }
     assert.ok(seen.every(([x, c]) => x === 'mid' && !c), `stays at mid with host controls expanded for 5s, past the 2s dwell (${JSON.stringify(seen)})`);
@@ -3000,15 +3022,20 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
     const out = await b.evaluate(probeSrc);
     const rows = Object.entries(out.tiers).filter(([name]) => name.includes('精简'));
     assert.equal(rows.length, 9, `3 interface font sizes × 3 compact tiers (${Object.keys(out.tiers).join(', ')})`);
+    /* v466：三档是上限——宽度随状态面变（不止一个值），每个面都不超过「档位 em × chip 字号」 */
+    const TSB_CAP_EM = { 宽裕: 12.4, 中等: 9.7, 紧张: 6.6 };
     for (const [name, r] of rows) {
-      assert.equal(r.speedW.length, 1, `${name}: one chip width (${r.speedW})`);
-      assert.ok(r.turnL.length <= 1, `${name}: neighbour stays put (${r.turnL})`);
+      const all = [...r.speedW, ...(r.plainW || [])], cap = TSB_CAP_EM[name.split(' ')[2]] * parseFloat(r.fs);
+      assert.ok(all.length >= 2 && new Set(all).size >= 2, `${name}: chip width follows the face (${all})`);
+      for (const w of all) assert.ok(w <= cap + 0.05, `${name}: ${w}px within the cap ${cap.toFixed(1)}px`);
       assert.deepEqual(r.overflow, [], `${name}: no value crosses the chip edge`);
     }
-    for (const [tier, [lo, hi]] of Object.entries({ 宽裕: [160, 180], 中等: [112, 132], 紧张: [72, 88] })) {
-      const w = out.tiers['14px 精简 ' + tier].speedW[0];
-      assert.ok(w >= lo && w <= hi, `14px 精简 ${tier}: ${w}px outside ${lo}–${hi}`);
+    /* 14px 界面字号（chip 13px）下的上限：161.2 / 126.1 / 85.8px——最宽的面不超过它；紧张档没有面顶到上限（按内容定宽） */
+    for (const [tier, hi] of Object.entries({ 宽裕: 161.5, 中等: 126.4, 紧张: 86.1 })) {
+      const r = out.tiers['14px 精简 ' + tier], w = Math.max(...r.speedW, ...(r.plainW || []));
+      assert.ok(w <= hi, `14px 精简 ${tier}: widest face ${w}px over the cap ${hi}px`);
     }
+    assert.ok(Math.max(...out.tiers['14px 精简 宽裕'].speedW) >= 160, '宽裕档有面顶到上限（长标签面被上限截住）');
     assert.deepEqual(await b.evaluate(`(() => { const c = document.querySelector('#pane-a .zu-tsb'); return [c.className, c.innerHTML]; })()`), before, 'chip restored after the probe');
   });
 
