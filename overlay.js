@@ -14274,7 +14274,7 @@
        * 边框，留白不可见；v446 的「标签吃剩余空间、数值靠右」让图标贴最左、数字贴最右（宿主实测宽裕档图标到数字
        * 空 56~124px），用户实报「图标和文字分开了」。overflow:hidden 兜底裁切，任何情况下不推邻格。流光沿用包装层
        * .zu-live.zu-shimmer 既有规则（flex 子项与标签 overflow 下宿主实测可正常渲染）。精简 chip
-       * .zu-tsb 同样不随状态文字变：它挂在宿主工具行、没有窄宽状态机，三档由 11 分片 zuTsbTierSync
+       * .zu-tsb 按内容定宽、不超过档位上限（v468）：它挂在宿主工具行、没有窄宽状态机，三档由 11 分片 zuTsbTierSync
        * 按宿主工具行的真实空位选（规则与标定见 .zu-tsb 规则处的注释）。
        * 占位=全部格面固定宽（v459，用户第六轮实报四张截图「上述状态变化时，宽度不一致，还是有抖动」，并指示
        * 「去除右侧的 padding」「右侧空隙再增加 10px」）：v455/v456 让宽度随内容在 [6.6em, calc(38px + 4.8em)] 里
@@ -14517,7 +14517,7 @@
        * 速率色档复用全局 .ok/.warm/.hot 与 TPS 十档类（含 Ultra 渐变 ✦）；浅色组靠 chip
        * 自身的 .zu-light 类补链（条隐藏后 .zu-light 祖先缺失）。 */
       ".zu-tsb{display:inline-flex;align-items:center;gap:5px;height:1.75rem;padding:0 6px;border-radius:.5rem;cursor:pointer;user-select:none;flex:0 0 auto;" +
-      /* 稳定占位（specs/speed-chip-stable-slot.md）：chip 外宽只随布局档位变，标签+数值+单位随状态换而不推 git chip。
+      /* 稳定占位（specs/speed-chip-stable-slot.md）：三档是宽度上限，chip 外宽随内容变、不超过当前档位（v468 起不再固定宽），标签+数值+单位随状态换时右侧 git chip 跟随。
        * 三档类名与药丸档位同名，规则只作用于 .zu-tsb；档位由 11 分片 zuTsbTierSync 按宿主工具行的真实空位选
        * （chip 先让位，不拿宿主自己的按钮换宽度）。宽裕 12.4em=标签+数值+单位，按最宽的无省略面
        * 「代理×12 1286.5 t/s」标定（13px 粗体，六种字体栈下自然宽最大 157.8px；旧单一宽 10.5em 对它越界 7.3px）；
@@ -16109,7 +16109,7 @@
       '<label><input type="radio" class="zu-theme-choice" name="zu-theme-' + slot + '" value="default"><span>' + L("默认", "Default") + '</span></label>' +
       '<label><input type="radio" class="zu-theme-choice" name="zu-theme-' + slot + '" value="pill"><span>' + L("药丸", "Pill") + '</span></label>' +
       '<label><input type="radio" class="zu-theme-choice" name="zu-theme-' + slot + '" value="compact"><span>' + L("精简", "Compact") + '</span></label></div>' +
-      '<div class="pnote">' + L("精简：隐藏悬浮条，生成速度移到输入框工具行前导区（Git 状态左侧），悬停它可看速度卡，点卡内标题旁的设置图标（首轮对话完成前是卡底的「打开设置」按钮）或右键它可打开本设置。六个格全部关闭时自动转为精简，重新打开任一格即恢复原样式。", "Compact: hides the floating bar; the generation speed moves into the composer toolbar's leading group (left of the Git status chip) — hover it for the speed card, then click the settings icon next to the card title (before the first turn completes, use the Open settings button at the bottom of the card) or right-click it to open these settings. With all six cells off the style switches to Compact automatically, and restores once any cell is turned back on.") + '</div>' +
+      '<div class="pnote">' + L("精简：隐藏悬浮条，生成速度移到输入框工具行前导区（Git 状态左侧），悬停它可看速度卡，点卡内标题旁的设置图标（没有历史轮次数据时——首轮对话完成前或远程分栏——是卡底的「打开设置」按钮）或右键它可打开本设置。六个格全部关闭时自动转为精简，重新打开任一格即恢复原样式。", "Compact: hides the floating bar; the generation speed moves into the composer toolbar's leading group (left of the Git status chip) — hover it for the speed card, then click the settings icon next to the card title (when there is no turn history yet — before the first turn completes or in a remote split — use the Open settings button at the bottom of the card) or right-click it to open these settings. With all six cells off the style switches to Compact automatically, and restores once any cell is turned back on.") + '</div>' +
       '<div class="zu-just-block"' + (state.theme === "default" ? '' : ' style="display:none"') + '>' +
       '<div class="zu-theme-title">' + L("水平对齐", "Horizontal alignment") + '</div>' +
       '<div class="zu-theme-options" role="radiogroup" aria-label="' + L("水平对齐", "Horizontal alignment") + '">' +
