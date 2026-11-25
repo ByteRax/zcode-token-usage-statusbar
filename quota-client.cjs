@@ -37,7 +37,7 @@ const EXP_RETRY_MS = 5 * 60 * 1000;
  * 与额度 monitor 是两条链——卡是账号级「立即恢复额度池」的核销机会，每张带 expire_at。 */
 const RESET_PATH = "/api/v1/coding-plan/reset/status";
 const RESET_TTL_MS = 2 * 60 * 1000;       // 稳态轮询（v361 提速：5min→2min，status 是只读查询）
-const RESET_LIST_TTL_MS = 10 * 60 * 1000; // 网页列表增强子链独立 TTL（tooltip 深度信息，慢刷新控体量）
+const RESET_LIST_TTL_MS = RESET_TTL_MS;   // 网页列表增强子链与 status 同节奏（specs/reset-card-refresh.md）：徽标张数读 status、tooltip 明细读 list，同轮刷新才对得上；结算同一时刻写 nextAt 与 listFetchedAt 保证 status 到期即 list 到期
 const RESET_POKE_GAP_MS = 30 * 1000;      // pokeReset 软强刷最小间隔（visibility/hover 触发防抖）
 const RESET_PARSE_BACKOFF_MS = 15 * 60 * 1000;
 
@@ -3090,7 +3090,7 @@ function createQuotaClient(opts) {
       if (ctl.signal && typeof ctl.signal.addEventListener === "function") {
         ctl.signal.addEventListener("abort", () => clearTimeout(kill), { once: true });
       }
-      let listAttempted = false;   // v361：个人链列表增强按 RESET_LIST_TTL_MS 独立计时（尝试即计时）
+      let listAttempted = false;   // 个人链列表增强按 RESET_LIST_TTL_MS 计时（尝试即计时；v361 起独立计时，现与 status 同节奏）
       let listFailed = false;      // 本轮尝试了列表但未取到（传输失败/形状变化）：沿用旧 list 防天窗
       const p = (async () => {
         if (cred.team) {
@@ -3120,8 +3120,9 @@ function createQuotaClient(opts) {
             (force || t - st.listFetchedAt >= RESET_LIST_TTL_MS)) {
           /* 网页控制台列表端点：补充近 7 天过期卡与上次重置时间（status 无过期历史）。
            * 与 subscription 同款可选并行——失败/形状变化静默降级，不影响 status 主链。
-           * v361 status 提频到 2min 后列表不随之翻倍：独立 10min TTL，force 仍必打；
-           * 团队分支不走这里（团队 list 就是主链）。 */
+           * 列表与 status 同节奏（RESET_LIST_TTL_MS = RESET_TTL_MS，specs/reset-card-refresh.md）：
+           * 徽标张数读 status、tooltip 明细读 list，status 到期重查的同一轮必打列表，两边同轮落库；
+           * TTL 内的 poke 轮只刷 status，force 仍必打；团队分支不走这里（团队 list 就是主链）。 */
           listAttempted = true;
           const listBody = await j.http.maybeGetJson(RESET_LIST_ORIGIN + famConf.listPath,
             { authorization: cred.oauth, "set-language": "zh" }, ctl);
@@ -3138,23 +3139,25 @@ function createQuotaClient(opts) {
       })().then((value) => {
         if (!resetGateOpen() || resetStates.get(famConf.fam) !== st || ep !== st.epoch) return;
         if (syncResetCredential(st, resolveResetCred(famConf))) { if (onUpdate) onUpdate(); return; }
-        /* 列表增强按自己的 10 分钟窗口刷新：本轮未打列表或尝试失败（listFailed）时沿用上一轮
-         * 的 list/上次重置时间，否则 status 每 2 分钟重查会把深度信息清掉，tooltip 在两个列表
-         * 窗口之间开天窗；业务如实返回的空列表（extra 非 null）不沿用。仅限个人链——团队分支
-         * 每轮 list 都是新鲜抓取（listAttempted 恒 false），sticky 会把它冻结在首次抓取，
-         * tooltip 与 badge 张数从此不一致。 */
+        /* 列表增强按 RESET_LIST_TTL_MS 刷新：本轮未打列表（TTL 内 poke 轮）或尝试失败（listFailed）
+         * 时沿用上一轮的 list/上次重置时间，否则这一轮 status 重查会把深度信息清掉，tooltip 开天窗；
+         * 业务如实返回的空列表（extra 非 null）不沿用。仅限个人链——团队分支每轮 list 都是新鲜抓取
+         * （listAttempted 恒 false），sticky 会把它冻结在首次抓取，tooltip 与 badge 张数从此不一致。 */
         if (!cred.team && (!listAttempted || listFailed) && st.value) {
           if (st.value.list) value.list = st.value.list;
           if (st.value.lastFiveHour) value.lastFiveHour = st.value.lastFiveHour;
           if (st.value.lastWeek) value.lastWeek = st.value.lastWeek;
         }
         st.value = value;
-        st.fetchedAt = now();
+        /* 三个时刻同源：RESET_LIST_TTL_MS = RESET_TTL_MS 时「status 到期」恒推出「列表到期」；
+         * 分两次取时钟会在边界毫秒上让列表隔一轮（tick 恰等于 nextAt 而 listFetchedAt 晚 1ms）。 */
+        const doneAt = now();
+        st.fetchedAt = doneAt;
         st.status = "ok";
         st.lastError = "";
         st.backoffIdx = 0;
-        st.nextAt = now() + RESET_TTL_MS;
-        if (listAttempted) st.listFetchedAt = now();
+        st.nextAt = doneAt + RESET_TTL_MS;
+        if (listAttempted) st.listFetchedAt = doneAt;
       }).catch((e) => {
         if (!resetGateOpen() || resetStates.get(famConf.fam) !== st || ep !== st.epoch) return;
         if (syncResetCredential(st, resolveResetCred(famConf))) { if (onUpdate) onUpdate(); return; }
