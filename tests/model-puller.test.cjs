@@ -647,14 +647,18 @@ test("plan probe: falls back to OAuth only when the runtime credential is unavai
 
 test("plan probe: team source rides the team PAT, never personal credentials — and fails closed without it", async (t) => {
   const keysUrl = "https://bigmodel.cn/api/biz/v1/organization/org-team-9/projects/proj-team-8/api_keys";
+  /* issue #481：线上条目密钥 ID 在 apiKey（无 apiKeyId 字段），PAT 响应 expiresAt 为秒级 */
+  const teamKey = { name: "zcode-team-api-key", keyType: 2, apiKey: "9f3c6a1e5b7d4c2a8e0f1a2b3c4d5e6f" };
+  const patUrl = keysUrl + "/" + teamKey.apiKey + "/access_tokens";
+  const teamPatBody = { code: 200, msg: "操作成功", data: { enabled: true, accessToken: "team-pat-1", expiresIn: 3600, expiresAt: Math.floor(Date.now() / 1000) + 3600 } };
   const creds = { "oauth:bigmodel:access_token": "enc:oauth-1", [PROBE_LOC_KEY]: "enc:loc-1" };   // 个人 location 在盘：团队源绝不能拿它换发
   const withTeam = planProbePuller(t, {
     creds,
     setting: { providerFamilyConnectionSelections: { bigmodel: { kind: "team-coding-plan", organizationId: "org-team-9", projectId: "proj-team-8" } } },
     byUrl: {
       "https://bigmodel.cn/api/biz/customer/getCustomerInfo": { body: { code: 200, data: { organizations: [{ organizationId: "org-team-9", projects: [{ projectId: "proj-team-8" }] }] } } },
-      [keysUrl]: { body: { code: 200, data: [{ name: "zcode-team-api-key", keyType: 2, apiKeyId: "tk-1", apiKey: "id.secret" }] } },
-      [keysUrl + "/tk-1/access_tokens"]: { body: { code: 200, msg: "操作成功", data: { enabled: true, accessToken: "team-pat-1", expiresAt: Date.now() + 3600 * 1000 } } },
+      [keysUrl]: { body: { code: 200, data: [teamKey] } },
+      [patUrl]: { body: teamPatBody },
       [PLAN_MESSAGES_URL]: { body: {} },
     },
   });
@@ -663,14 +667,13 @@ test("plan probe: team source rides the team PAT, never personal credentials —
   assert.deepEqual(withTeam.requests.filter((q) => q.url === PLAN_MESSAGES_URL).map((q) => q.auth), ["Bearer team-pat-1"]);
 
   /* 并发探测共享同一次 PAT 三步换发 */
-  const patUrl = keysUrl + "/tk-1/access_tokens";
   const burst = planProbePuller(t, {
     creds,
     setting: { providerFamilyConnectionSelections: { bigmodel: { kind: "team-coding-plan", organizationId: "org-team-9", projectId: "proj-team-8" } } },
     byUrl: {
       "https://bigmodel.cn/api/biz/customer/getCustomerInfo": { body: { code: 200, data: { organizations: [{ organizationId: "org-team-9", projects: [{ projectId: "proj-team-8" }] }] } } },
-      [keysUrl]: { body: { code: 200, data: [{ name: "zcode-team-api-key", keyType: 2, apiKeyId: "tk-1" }] } },
-      [patUrl]: { body: { code: 200, data: { enabled: true, accessToken: "team-pat-1", expiresAt: Date.now() + 3600 * 1000 } } },
+      [keysUrl]: { body: { code: 200, data: [teamKey] } },
+      [patUrl]: { body: teamPatBody },
       [PLAN_MESSAGES_URL]: { body: {} },
     },
   });
@@ -678,6 +681,11 @@ test("plan probe: team source rides the team PAT, never personal credentials —
   assert.ok(four.every((r) => r.ok), JSON.stringify(four).slice(0, 200));
   assert.equal(burst.requests.filter((q) => q.url === patUrl).length, 1, "并发 4：PAT 换发只发一次");
   assert.equal(burst.requests.some((q) => q.url === PROBE_EXCHANGE_URL), false, "团队源不碰个人 location");
+  /* memo 复用（issue #481）：秒级 expiresAt 换算成毫秒后才与 Date.now() 可比——不换算时
+   * memo 永不命中，换发结束后再探测一次就会重签 PAT（修复前这里红：共 2 次）。 */
+  const again = await burst.mp.probeModel("account:bigmodel-team-coding-plan", "GLM-5.3");
+  assert.equal(again.ok, true, JSON.stringify(again).slice(0, 200));
+  assert.equal(burst.requests.filter((q) => q.url === patUrl).length, 1, "PAT 未到期：后续探测复用 memo，不再签发");
 
   /* 未切团队：PAT 拿不到即 fail-closed——账号级 OAuth 令牌属个人池，团队源绝不拿它打 messages
    * （issue #442 同门；review MAJOR：回退 OAuth 曾把个人令牌发到团队源的探测） */

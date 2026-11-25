@@ -908,11 +908,13 @@ function teamSelectionOf(j, fam) {
  *    （缺条目不创建——宿主在 App 内切换团队套餐时自建，本插件只读）；
  * ③ POST api_keys/{id}/access_tokens（Bearer 业务 token，body clientType/clientVersion）
  *    → 项目级短期 PAT，用作 monitor?type=2 的 authorization（裸头，不套 Bearer）。
- * PAT 按 fam|org|project 缓存到过期前 2 分钟；apiKeyId 稳定一并缓存。链上任一环节失败
+ *    {id} 就是条目的 apiKey 字段（线上条目没有 apiKeyId；宿主 ProjectAccessTokenClient 同款，
+ *    issue #481）。
+ * PAT 按 fam|org|project 缓存到过期前 2 分钟；密钥 ID 稳定一并缓存。链上任一环节失败
  * 按既有分类抛出（auth_failed/unsupported/network_error…），fail-closed 零请求降级。 */
 const TEAM_PAT_REFRESH_LEAD = 120 * 1000;
 const TEAM_PAT_CLIENT = { clientType: "zcode", clientVersion: "3.18.0" };
-const teamPatCache = new Map();   // fam|org|project → { pat, expiresAt, apiKeyId }
+const teamPatCache = new Map();   // fam|org|project → { pat, expiresAt(ms), apiKey }
 function teamPatCacheGet(key, now) {
   const c = teamPatCache.get(key);
   if (c && c.expiresAt - TEAM_PAT_REFRESH_LEAD > now) return c;
@@ -944,11 +946,12 @@ async function ensureTeamPat(j, fam, sel, loginToken, ctl) {
   const teamKey = keyList.find((k) => k && k.name === "zcode-team-api-key" &&
     k.keyType === 2 && typeof k.apiKey === "string" && k.apiKey.trim());
   if (!teamKey) throw qErr("unsupported", "team api key missing");
+  const teamKeyId = teamKey.apiKey.trim();   // 密钥 ID 就是条目的 apiKey（issue #481）
   /* ③ PAT 签发（Bearer 业务 token；429/5xx 一次重试，与宿主 MAX_TOKEN_ISSUE_ATTEMPTS 对齐） */
   let raw = null, lastErr = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      raw = await j.http.post(keysUrl + "/" + encodeURIComponent(teamKey.apiKeyId) + "/access_tokens", {
+      raw = await j.http.post(keysUrl + "/" + encodeURIComponent(teamKeyId) + "/access_tokens", {
         authorization: "Bearer " + loginToken,
         "content-type": "application/json",
       }, ctl);
@@ -965,10 +968,13 @@ async function ensureTeamPat(j, fam, sel, loginToken, ctl) {
   const pat = patData && patData.enable !== false && typeof patData.accessToken === "string" &&
     patData.accessToken.trim() ? patData.accessToken.trim() : null;
   if (!pat) throw qErr("unsupported", "team pat missing");
-  const expiresAt = typeof patData.expiresAt === "number" && patData.expiresAt > 0
-    ? patData.expiresAt : (typeof patData.expiresIn === "number" && patData.expiresIn > 0
+  /* issue #481：线上 expiresAt 是秒级时间戳（与 expiresIn 同单位）——< 1e12 视为秒换成毫秒，
+   * 再与毫秒时钟比较（此前秒级值直接比较，缓存永不命中、每轮都重签 PAT） */
+  const rawExpiresAt = typeof patData.expiresAt === "number" && patData.expiresAt > 0 ? patData.expiresAt : 0;
+  const expiresAt = rawExpiresAt ? (rawExpiresAt < 1e12 ? rawExpiresAt * 1000 : rawExpiresAt)
+    : (typeof patData.expiresIn === "number" && patData.expiresIn > 0
       ? now + patData.expiresIn * 1000 : now + 3600 * 1000);
-  const cachedEntry = { pat, expiresAt, apiKeyId: teamKey.apiKeyId };
+  const cachedEntry = { pat, expiresAt, apiKey: teamKeyId };
   teamPatCache.set(cacheKey, cachedEntry);
   return cachedEntry.pat;
 }

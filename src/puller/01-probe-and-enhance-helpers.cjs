@@ -374,7 +374,10 @@ function agreedCapabilities(entries, id) {
     const token = typeof data.accessToken === "string" && data.accessToken.trim() ? data.accessToken.trim()
       : typeof data.token === "string" ? data.token.trim() : "";
     if (!token) return null;
-    const expiresAt = typeof data.expiresAt === "number" && data.expiresAt > 0 ? data.expiresAt
+    /* issue #481：线上 expiresAt 是 10 位秒级时间戳（与 expiresIn 同单位，团队 PAT 实测）——
+     * 统一换成毫秒再交给 memo 与 Date.now() 比较；< 1e12 视为秒（额度链 reset 秒/毫秒自适应同款判定）。 */
+    const rawExpiresAt = typeof data.expiresAt === "number" && data.expiresAt > 0 ? data.expiresAt : 0;
+    const expiresAt = rawExpiresAt ? (rawExpiresAt < 1e12 ? rawExpiresAt * 1000 : rawExpiresAt)
       : typeof data.expiresIn === "number" && data.expiresIn > 0 ? Date.now() + data.expiresIn * 1000 : 0;
     return { token: token, expiresAt: expiresAt };
   }

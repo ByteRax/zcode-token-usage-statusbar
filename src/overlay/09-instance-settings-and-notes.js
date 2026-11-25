@@ -1791,7 +1791,9 @@
             "plan conversation key unavailable": L("当前套餐暂不支持增强（无可用的对话凭据）。", "This plan has no usable conversation credential; enhancement is unavailable.")
           };
           epTest.failed = true;
-          if (internal[raw]) epTest.status = internal[raw] + (detail ? "：" + detail : "");
+          var teamText = res && res.kind === "team_auth" ? enhanceTeamAuthText(res) : "";   // v469：团队凭据换发失败带环节文案（issue #481）
+          if (teamText) epTest.status = teamText + L("。", ".");
+          else if (internal[raw]) epTest.status = internal[raw] + (detail ? "：" + detail : "");
           else if (detail || /^HTTP /.test(raw)) epTest.status = L("增强失败：", "Enhancement failed: ") + (detail || raw);
           else epTest.status = L("增强失败，请检查已保存的供应商、模型与网络。", "Enhancement failed; check the saved provider, model and network.");
         }
@@ -1800,6 +1802,30 @@
       epTest.id = id;
       epTest.timer = setTimeout(function () { if (epTest && epTest.id === id) epTestStop(L("测试超时，请重试。", "Test timed out; retry."), true); }, 75000);
       epTestRender();
+    }
+    /* v469（issue #481）：团队套餐凭据换发失败的环节文案，工具栏增强与设置页测试区共用。主进程
+     * 回执 kind "team_auth" + reason 环节码（固定枚举，只含环节与性质）+ 可选 HTTP status。只认
+     * 表内 reason，表外码回空串由调用方回落 error 短语（主进程比渲染端新时不致空白）；
+     * 文案=「团队凭据换发失败（…）」。 */
+    function enhanceTeamAuthText(res) {
+      var why = {
+        token: L("登录凭据不可用", "login credential unavailable"),
+        selection: L("宿主未切换到团队套餐", "host is not on the team plan"),
+        customer_http: L("第 1 步校验团队失败", "step 1 (verify team) failed"),
+        customer_mismatch: L("第 1 步未找到所选团队", "step 1: selected team not found"),
+        customer_shape: L("第 1 步响应异常", "step 1: unexpected response"),
+        keys_http: L("第 2 步读取团队密钥失败", "step 2 (list team keys) failed"),
+        keys_missing: L("第 2 步未找到团队密钥", "step 2: team key not found"),
+        keys_shape: L("第 2 步响应异常", "step 2: unexpected response"),
+        pat_http: L("第 3 步签发团队令牌失败", "step 3 (issue team token) failed"),
+        pat_shape: L("第 3 步响应异常", "step 3: unexpected response"),
+        network: L("网络请求失败或超时", "network request failed or timed out"),
+      };
+      var code = res && typeof res.reason === "string" ? res.reason : "";
+      if (!code || !Object.prototype.hasOwnProperty.call(why, code)) return "";
+      var status = res && Number.isInteger(res.status) && res.status > 0 ? res.status : 0;
+      return L("团队凭据换发失败", "Team credential exchange failed") + L("（", " (") + why[code]
+        + (status ? L("，HTTP ", ", HTTP ") + status : "") + L("）", ")");
     }
     function epRisk(value) {
       try {

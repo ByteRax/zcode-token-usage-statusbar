@@ -107,6 +107,18 @@ test('plan_auth fail-fast phrase is localized in the EP test area (issue #429)',
   h.callbacks.r1({ ok: false, error: 'plan conversation key unavailable' });
   assert.equal(h.fields['.zu-ep-test-status'].textContent, '当前套餐暂不支持增强（无可用的对话凭据）。');
 });
+test('team_auth is localized with its failing step in the EP test area (issue #481)', () => {
+  const h = harness(); h.api.state.draft = 'draft'; h.api.start();
+  h.callbacks.r1({ ok: false, kind: 'team_auth', reason: 'keys_http', status: 500, error: 'team credential exchange failed (keys_http, HTTP 500)' });
+  assert.equal(h.fields['.zu-ep-test-status'].textContent, '团队凭据换发失败（第 2 步读取团队密钥失败，HTTP 500）。');
+  assert.equal(h.api.state.failed, true);
+});
+test('a team_auth reason outside the local table falls back to the generic failure text (issue #481)', () => {
+  const h = harness(); h.api.state.draft = 'draft'; h.api.start();
+  h.callbacks.r1({ ok: false, kind: 'team_auth', reason: 'some_new_code', error: 'team credential exchange failed (some_new_code)' });
+  assert.equal(h.fields['.zu-ep-test-status'].textContent, '增强失败，请检查已保存的供应商、模型与网络。');
+  assert.equal(h.api.state.failed, true);
+});
 test('cancel sends existing abort action and ignores a stale callback', () => {
   const h = harness(); h.api.state.draft = 'draft'; h.api.start(); const stale = h.callbacks.r1;
   h.api.stop('cancelled'); assert.equal(h.requests[1].action, 'prompt-enhance-cancel'); assert.equal(h.requests[1].opts.requestId, 'r1');
