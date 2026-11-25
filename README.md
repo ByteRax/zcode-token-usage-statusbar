@@ -59,11 +59,9 @@ A community toolkit for ZCode desktop: generation speed, token usage, context tr
 
 ### 手机远控页面（当前源码功能）
 
-手机浏览器需支持用户脚本管理器（如篡改猴 / Tampermonkey），并配合支持本功能的桌面插件使用。在桌面状态条 **⚙ → 维护 → 移动端远程控制** 独立分区开启「推送状态栏数据到远控页」；正式脚本链接在此分区单独提供，以只读输入框显示，开关关闭时仍可选择复制；面板不会自动安装或打开外链，请复制到手机浏览器的脚本管理器中安装。也可点击[安装正式版手机脚本](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js)，再开启宿主官方「Web 远程控制」并打开 `https://zcode.z.ai/remote/`。
+在打开远控页的浏览器中，通过 Tampermonkey 等用户脚本管理器[安装正式版手机脚本](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js)。在桌面状态条 **⚙ → 维护 → 移动端远程控制** 开启默认关闭的「推送状态栏数据到远控页」，再开启宿主「Web 远程控制」并打开 `https://zcode.z.ai/remote/`。
 
-开关写入运行目录 `config.json` 的 `mobile_relay.enabled`，仅对象内显式布尔 `true` 开启，缺字段、`false` 或异常值均关闭。旧用户缺此配置键时升级后关闭，已有显式 `true` 保留；安装脚本不会自动授权推送。关闭仅停止插件握手公告、统计查询和快照推送，不影响宿主远控正常消息，也不即时撤销手机上行偏好能力；关闭期间桌面忽略这些偏好，不应用、不回执，无需另行关闭手机上行。旧主进程不支持开关时，须先将匹配的新安装副本及冷文件 `inject-main.cjs` 部署到实际加载运行目录，再完全退出并重开 ZCode；只更新浮层或仅重启不能替代部署。
-
-该脚本跟随 `main` 源码，桌面正式渠道是否支持请以对应 Release 说明为准；安装步骤、数据边界与支持的设置见[手机远控指南](docs/user-guide.md#手机远控页面)。
+安装地址提供 `main` 根目录的发布快照，可能落后于桌面源码。请使用支持同一中继协议的桌面插件，正式渠道可用性以对应 Release 说明为准。安装、数据范围与排障见[手机远控指南](docs/user-guide.md#手机远控页面)。
 
 ### 故障排查与自动修复以及卸载说明
 
@@ -103,7 +101,7 @@ A community toolkit for ZCode desktop: generation speed, token usage, context tr
 | **搜索弹框加宽**           | 放宽命令中心等 cmdk 搜索弹框的宽高上限，便于查看长条目；不影响所有类型的弹窗                                                                                                                                           |
 | **状态轮播**               | 默认关闭；开启后，在思考 / 生成 / 长耗时阶段的消息流 Loading 行轮播状态短语，可自定义词包；默认在文案后追加与宿主一致的「工作中 X 分 X 秒」耗时（⚙ 可关，悬停可随时查看）与实时速度 t/s（档位配色与速度格一致，⚙ 可关）                                                              |
 | **SSH / WSL 远端会话**     | 在可信身份绑定下自动发现远端、按服务器独立查询统计，失败后持续重试；需手动在远端部署查询脚本，不替宿主重连 SSH。仅桌面快照链支持跨机，详见[远程会话指南](docs/user-guide.md#远程会话)                                  |
-| **Web 远控状态条（本检出）** | 在远控浏览器的脚本管理器中[安装正式版](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js)（[调试版](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.debug.user.js)）；脚本内嵌桌面同一份 overlay。本地与 WSL/SSH 共用状态条、tooltip 和设置；安装链接提供随正式发版更新的脚本快照，兼容与更新见[使用说明](docs/user-guide.md#web-远程控制页面) |
+| **Web 远控状态条（本检出）** | 浏览器脚本为本地与 WSL/SSH 会话复用桌面状态条、tooltip 和设置。详见[手机远控指南](docs/user-guide.md#手机远控页面) |
 | **子智能体明细**           | 查看子任务用量、模型、运行状态、速度和预估费用；运行中速度按字符增量估算，完成后在数据可用时回填统计值                                                                                                                 |
 | **用量查询**               | 对话中用 `/usage today`，终端在仓库目录运行 `python3 zusage.py days 7`，或调用 MCP 工具 `token_usage(scope="today")`；`current` 取数据库最近活跃会话，不保证是屏幕焦点                                                 |
 

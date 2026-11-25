@@ -692,7 +692,6 @@ class OverlayBridgeNoticeTests(unittest.TestCase):
         outcome, stdout = self.hook_output(pending)
         config.unlink()
         self.assertIn("自动补装", outcome["systemMessage"])
-        self.assertNotIn("mobile_relay_patch.py", outcome["systemMessage"])
         self.assertEqual(stdout, "")
         # v258：SessionStart 自动链（quiet_hook=True）且注入行在位时，桥缺席/打不上
         # 静默放行——fiber 兜底 + 渲染端运行时合成桥接手，DB 轮询保底；受保护目录

@@ -1063,8 +1063,8 @@ function initEnginePatcher() {
   }
 }
 initEnginePatcher();
-/* v331：mobile-relay（手机远控中继，热换模块 #7）。stash 由 mobile_relay_patch.py
- * 注入主 bundle；本模块只消费——加载失败只少推送，不拖垮主链。
+/* v331：mobile-relay（手机远控中继，热换模块 #7）。stash 由 patch_install.py
+ * 合并注入主 bundle；本模块只消费——加载失败只少推送，不拖垮主链。
  * 目标发现与发送前复验均读取宿主 mobileTaskView，并绑定唯一官方 live 桥；
  * config mobile_relay.enabled 仅显式 true 开启。 */
 let mobileRelay = null;
