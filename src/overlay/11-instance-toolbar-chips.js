@@ -1216,7 +1216,13 @@
           b.addEventListener("mouseenter", function () { var bT = this; zuChipHoverArm(bT, function () { showEnhanceTip(bT); }); });   // v440：悬停门槛（路过不弹）
           b.addEventListener("mouseleave", function () { zuChipHoverDisarm(b); scheduleEnhHide(); });   // 延迟收起：给移入历史面板留时间
           b.addEventListener("focus", function () { showEnhanceTip(this); });
-          b.addEventListener("blur", hideEnhanceTip);
+          /* v468（issue #476）：失焦收面板只服务键盘路径。点过按钮后焦点留在按钮上，再去点面板里的「设置」等
+           * 按钮——mousedown 把焦点移走，blur 抢在 click 之前把面板收走，click 落到下方页面（issue #474 速度 chip 齿轮同款）。
+           * 指针还停在面板上时失焦不收（移开由面板 mouseleave 延迟收起接管）。 */
+          b.addEventListener("blur", function () {
+            try { if (typeof enhanceTip !== "undefined" && enhanceTip && typeof enhanceTip.matches === "function" && enhanceTip.matches(":hover")) return; } catch (eHover) { }
+            hideEnhanceTip();
+          });
           b.addEventListener("keydown", function (e) { if (e.key === "Escape") hideEnhanceTip(); });
         }
         enhanceBtnCache = b;
