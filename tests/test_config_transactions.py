@@ -396,20 +396,30 @@ class BoundedTempPrimitivesTests(unittest.TestCase):
                                       side_effect=PermissionError(32, "sharing violation")):
                 token_rate.write_session_state("sess_1", "prompt-submit")
 
-    def test_marker_and_pending_zip_and_overlay_atomic_write_fail_fast_and_tolerate_unlink_error(self):
+    def test_marker_write_retries_a_bounded_number_of_times_while_pending_zip_and_overlay_writes_fail_fast(self):
+        """三处原子写都被拒、临时文件又删不掉：标记写入为并发读者短暂重试（次数有界，仍以原异常
+        上抛），待更新包与渲染桥的原子写第一次被拒就上抛；清理失败都不盖住原因。"""
         import pending_zip_patch
         from tests.test_bridge_pending import load_installer
         installer = load_installer()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             marker = root / ".marker.json"
-            with mock.patch.object(runtime_lock.os, "replace",
-                                   side_effect=PermissionError(5, "replace denied")), \
-                    mock.patch.object(runtime_lock.os, "unlink",
-                                      side_effect=PermissionError(32, "sharing violation")):
+            attempts = []
+
+            def denied_replace(source, target):
+                attempts.append(target)
+                raise PermissionError(5, "replace denied")
+
+            with mock.patch.object(runtime_lock.os, "replace", side_effect=denied_replace), \
+                 mock.patch.object(runtime_lock.os, "unlink",
+                                   side_effect=PermissionError(32, "sharing violation")), \
+                 mock.patch.object(runtime_lock.time, "sleep") as sleep:
                 with self.assertRaises(PermissionError) as ctx:
                     runtime_lock._write_marker(marker, {"ok": True})
                 self.assertEqual(ctx.exception.errno, 5)
+            self.assertEqual(len(attempts), 20)   # 钉字面值：重试预算调小要在这里变红
+            self.assertEqual(sleep.call_count, 19)
             with mock.patch.object(pending_zip_patch.os, "replace",
                                    side_effect=PermissionError(5, "replace denied")), \
                     mock.patch.object(Path, "unlink",

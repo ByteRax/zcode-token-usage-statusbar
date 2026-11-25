@@ -163,7 +163,7 @@ test('quota source requests write quota-secrets.json atomically with whitelist a
   assert.ok(final.sources.mimo.cookie, "白名单字段写入");
   assert.ok(!final.sources.mimo.evilField, "白名单外字段忽略");
   const first = writes[0];
-  assert.equal(first.file, "/fixture/runtime/quota-secrets.json.tmp", "同目录 tmp 原子替换");
+  assert.equal(first.file, path.join("/fixture/runtime", "quota-secrets.json.tmp"), "同目录 tmp 原子替换");   /* 被测代码用 path.join：win32 是反斜杠形态 */
   assert.equal(first.opts.mode, 0o600, "凭据文件 0600 创建");
 });
 

@@ -119,10 +119,6 @@ class DiscoveryTests(unittest.TestCase):
             self.assertEqual(installer.find_asar(), good)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class LinuxFallbackTests(unittest.TestCase):
     """2026-10-24 夜间扫描回归：Linux 兜底扫描必须过 is_zcode_app 身份门
     （目录名含 zcode 的其它 Electron 应用曾可被注入错目标）。"""
@@ -153,3 +149,7 @@ class LinuxFallbackTests(unittest.TestCase):
             only = base / "only-helper" / "zcode-helper" / "resources" / "app.asar"
             make_asar(only, {"package.json": json.dumps({"name": "helper-suite"}).encode()})
             self.assertIsNone(installer.find_asar(), "名字含 zcode 的第三方应用不再被命中")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -568,7 +568,9 @@ test("team: 重置卡走 targetType=TEAM 列表（团队头），值形与徽标
   const client = Q.createQuotaClient({
     env: {}, now: () => clock.t, settingPath: "/virtual/team/setting.json", credsPath: "/virtual/team/credentials.json",
     readFile: (p) => {
-      if (p === "/virtual/team/credentials.json") return {
+      // 同 quota-client.test.cjs：credsPath 经 path.resolve 后才到 readFile，win32 上不再是
+      // /virtual/… 字面量；settingPath 原样透传，保持字面量。
+      if (p === path.resolve("/virtual/team/credentials.json")) return {
         "oauth:bigmodel:access_token": tc.entry,
         zcodejwttoken: tc.entry,   // 与业务 token 相同：个人链视为陈旧，不影响团队模式
       };

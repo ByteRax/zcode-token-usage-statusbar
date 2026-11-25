@@ -598,7 +598,8 @@ class RestartNoticeTests(unittest.TestCase):
                       "restart_notice.installation_status = lambda runtime: True; runpy.run_path({!r}, run_name='__main__')"
                       ).format(str(PLUGIN), str(PLUGIN / "hooks" / "prompt-submit.py"))
             result = subprocess.run([sys.executable, "-c", script],
-                                    input="{}", capture_output=True, text=True, env=environment,
+                                    input="{}", capture_output=True, encoding="utf-8",
+                                    env=environment,
                                     cwd=str(self.runtime.parent), timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
             output = json.loads(result.stdout)

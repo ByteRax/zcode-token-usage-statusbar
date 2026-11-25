@@ -122,8 +122,12 @@ class RateTestBase(unittest.TestCase):
             env["ZUSAGE_RATE_STATE_FILE"] = state
         else:
             env["ZUSAGE_RATE_STATE_FILE"] = self.state
+        # 子进程的 stdout 被产品代码钉成 UTF-8（含 ⚡·⏱ 与中文），父进程必须按 UTF-8 解码：
+        # text=True 走区域代码页，默认中文 Windows（GBK）下读者线程抛 UnicodeDecodeError、
+        # stdout 收成 None，输出含非 ASCII 的 CLI 用例都会红（宿主注入的 PYTHONUTF8=1 会掩盖）。
+        # 用严格解码：产品侧的 UTF-8 钉子被改坏时这些用例要能发现。
         return subprocess.run([sys.executable, str(RATE), *args],
-                              capture_output=True, text=True, env=env, timeout=30)
+                              capture_output=True, encoding="utf-8", env=env, timeout=30)
 
 
 class TestTurnCurrent(RateTestBase):
@@ -337,7 +341,7 @@ class TestTurnCurrent(RateTestBase):
         env = dict(os.environ, ZCODE_USAGE_DB=db2, ZCODE_SESSION_ID="sess_one",
                    ZUSAGE_RATE_STATE_FILE=state2)
         r = subprocess.run([sys.executable, str(RATE), "--turn", "--current"],
-                           capture_output=True, text=True, env=env, timeout=30)
+                           capture_output=True, encoding="utf-8", env=env, timeout=30)
         line = r.stdout.strip()
         self.assertIn("200 token/s(本轮)", line)
         self.assertIn("输出 600 token / 生成 3.0s", line)
@@ -365,7 +369,7 @@ class TestTurnCurrent(RateTestBase):
                 env = dict(os.environ, ZCODE_USAGE_DB=str(db2), ZCODE_SESSION_ID="sess_claude",
                            ZUSAGE_RATE_STATE_FILE=str(state2))
                 r = subprocess.run([sys.executable, str(RATE), "--turn", "--current", "--json"],
-                                   capture_output=True, text=True, env=env, timeout=30)
+                                   capture_output=True, encoding="utf-8", env=env, timeout=30)
                 self.assertEqual(r.returncode, 0, r.stderr)
                 self.assertEqual(json.loads(r.stdout)["turn"]["tokPerSec"], expected)
 
@@ -403,7 +407,7 @@ class TestTurnCurrent(RateTestBase):
         env.pop("ZCODE_SESSION_ID", None)
         env.pop("CLAUDE_SESSION_ID", None)   # 模拟 Bash 工具调用：无任何会话环境变量
         r = subprocess.run([sys.executable, str(RATE), "--turn", "--current", "--json",
-                            "--session", SID], capture_output=True, text=True, env=env, timeout=30)
+                            "--session", SID], capture_output=True, encoding="utf-8", env=env, timeout=30)
         self.assertEqual(r.returncode, 0, r.stderr)
         data = json.loads(r.stdout)
         self.assertEqual(data["sessionId"], SID)
@@ -500,7 +504,7 @@ class TestLatestLine(RateTestBase):
         make_db(db2, [])
         env = dict(os.environ, ZCODE_USAGE_DB=db2,
                    ZUSAGE_RATE_STATE_FILE=str(Path(self.tmp.name) / "absent.json"))
-        r = subprocess.run([sys.executable, str(RATE)], capture_output=True, text=True,
+        r = subprocess.run([sys.executable, str(RATE)], capture_output=True, encoding="utf-8",
                            env=env, timeout=30)
         self.assertIn("暂无已完成的模型请求", r.stdout)
 
@@ -508,7 +512,7 @@ class TestLatestLine(RateTestBase):
         env = dict(os.environ, ZCODE_USAGE_DB=str(Path(self.tmp.name) / "no.sqlite"),
                    ZUSAGE_RATE_STATE_FILE=str(Path(self.tmp.name) / "absent.json"),
                    ZCODE_SESSION_ID="sess_none")
-        r = subprocess.run([sys.executable, str(RATE)], capture_output=True, text=True,
+        r = subprocess.run([sys.executable, str(RATE)], capture_output=True, encoding="utf-8",
                            env=env, timeout=30)
         self.assertEqual(r.returncode, 0)
         self.assertIn("暂无已完成的模型请求", r.stdout)
@@ -521,7 +525,7 @@ class TestPromptSubmitHook(RateTestBase):
                    ZUSAGE_RATE_STATE_FILE=self.state,
                    ZUSAGE_PLUGIN_RUNTIME=str(self.runtime))
         return subprocess.run([sys.executable, str(PROMPT_HOOK)], input="",
-                              capture_output=True, text=True, env=env, timeout=30)
+                              capture_output=True, encoding="utf-8", env=env, timeout=30)
 
     def test_strict_json_state_written_and_no_model_instruction(self):
         before = int(time.time() * 1000)
@@ -558,7 +562,7 @@ class TestPromptSubmitHook(RateTestBase):
         env.pop("ZCODE_SESSION_ID", None)
         env.pop("CLAUDE_SESSION_ID", None)
         r = subprocess.run([sys.executable, str(PROMPT_HOOK)], input="",
-                           capture_output=True, text=True, env=env, timeout=30)
+                           capture_output=True, encoding="utf-8", env=env, timeout=30)
         self.assertEqual(r.returncode, 0, r.stderr)
         out = json.loads(r.stdout)
         self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
@@ -646,7 +650,8 @@ runpy.run_path(sys.argv[2], run_name="__main__")
                     processes.append(subprocess.Popen(
                         [sys.executable, "-c", script, str(PLUGIN), str(PROMPT_HOOK),
                          str(ready), str(observed)], stdin=subprocess.DEVNULL,
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env))
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        encoding="utf-8", env=env))
                 deadline = time.monotonic() + 10
                 while not all(ready.exists() for ready, _ in markers) and time.monotonic() < deadline:
                     time.sleep(.01)
@@ -686,13 +691,13 @@ runpy.run_path(sys.argv[2], run_name="__main__")
         script = "import sys; sys.path.insert(0, sys.argv[1]); import token_rate; token_rate.write_session_state(sys.argv[2], 'session-start')"
         env = dict(os.environ, ZUSAGE_RATE_STATE_FILE=self.state, PYTHONDONTWRITEBYTECODE="1")
         result = subprocess.run([sys.executable, "-c", script, str(PLUGIN), SID],
-                                capture_output=True, text=True, env=env, timeout=10)
+                                capture_output=True, encoding="utf-8", env=env, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         after = json.loads(Path(self.state).read_text())
         self.assertEqual(after["prompts"][SID], before["prompts"][SID])
         self.assertEqual(after["promptTs"], before["promptTs"])
         result = subprocess.run([sys.executable, "-c", script, str(PLUGIN), "sess_new"],
-                                capture_output=True, text=True, env=env, timeout=10)
+                                capture_output=True, encoding="utf-8", env=env, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         state = json.loads(Path(self.state).read_text())
         self.assertNotIn("sess_new", state["prompts"])
@@ -983,8 +988,8 @@ class TestTurnLineV376(unittest.TestCase):
         env = dict(os.environ, ZCODE_USAGE_DB=db, ZUSAGE_RATE_STATE_FILE=state,
                    PYTHONDONTWRITEBYTECODE="1")
         base = [sys.executable, "-B", str(RATE), "--turn", "--current", "--session", SID]
-        on = subprocess.run(base, capture_output=True, text=True, env=env, timeout=30).stdout
-        off = subprocess.run(base + ["--no-cost"], capture_output=True, text=True, env=env, timeout=30).stdout
+        on = subprocess.run(base, capture_output=True, encoding="utf-8", env=env, timeout=30).stdout
+        off = subprocess.run(base + ["--no-cost"], capture_output=True, encoding="utf-8", env=env, timeout=30).stdout
         self.assertIn("预估费用", on, on)
         self.assertNotIn("预估费用", off, off)
 
@@ -1032,7 +1037,7 @@ class _RateCliMixin:
         env = dict(os.environ, ZCODE_USAGE_DB=self.db, ZCODE_SESSION_ID=sid,
                    ZUSAGE_RATE_STATE_FILE=str(Path(self.tmp.name) / "state.json"))
         return subprocess.run([sys.executable, str(RATE), *args],
-                              capture_output=True, text=True, env=env, timeout=30)
+                              capture_output=True, encoding="utf-8", env=env, timeout=30)
 
     def write_prompt_state(self, sid, ts):
         """给会话记一个提问时刻（prompt-submit hook 写的同款状态形状）：让 --current 越过

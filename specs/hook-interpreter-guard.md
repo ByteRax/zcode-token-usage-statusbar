@@ -10,7 +10,7 @@
   - 不达标时向 stderr 写一行 ASCII 诊断（`[zusage-plugin] Python x.y is too old; zusage needs 3.8+`），退出码固定 `9`。退出码不得为 `0`（链在此终止）或 `2`（宿主语义 = 阻断）。
   - 宿主侧语义：链尾退出码非 0 非 2 时按单个 hook 失败处理，fail-open，不阻断会话与提问。「本机只有旧 Python」由「自检失败（已忽略）」文字变为 hook 摘要里的失败状态；失败原因只在 stderr（引擎日志与事件载荷），界面不展开 stderr，只有退出码 2 的阻断才显示原因文字。SSH/WSL 远端主机上只有旧 Python 时同理：hook 由静默 no-op 变为失败状态，同样不阻断。
   - 下限本身放行：恰为 3.8 的解释器不得被让位。
-- 接口契约（MCP 侧）：MCP 由 ZCode 3.19.0 起内置的 `zcode-python` 直接启动 `usage_mcp.py`（issue #486：宿主每个会话各拉起一份 MCP，node 中转在 Windows 上每会话占 119–153MB）。解释器由宿主提供，插件不再做解释器探测（`mcp-launch.cjs` 已移除）；没有该入口的宿主（ZCode 3.18.2 及以下，或预装工具尚未下载完成）上 MCP 连接失败、`token_usage` 不可用，hooks、状态条与 CLI 不受影响——这是有意的取舍，不做两态兜底。stdio MCP 是单命令、没有 shell 回退通道，不能改回裸 `python3`/`python`。
+- 接口契约（MCP 侧）：MCP 由 ZCode 3.19.0 起内置的 `zcode-python` 直接启动 `usage_mcp.py`（issue #486：宿主每个会话各拉起一份 MCP，node 中转在 Windows 上每会话占 119–153MB）。解释器由宿主提供，插件不再做解释器探测（`mcp-launch.cjs` 已移除）；没有该入口的宿主（ZCode 3.18.2 及以下，或预装工具尚未下载完成）上 MCP 连接失败、`token_usage` 不可用，hooks、状态条与 CLI 不受影响——这是有意的取舍，不做两态兜底。stdio MCP 是单命令、没有 shell 回退通道，不能改回裸 `python3`/`python`。入站帧按 UTF-8 解码由 `usage_mcp.py` 自己负责（`sys.stdin.reconfigure`，与 stdout 同处）：宿主只给工具 shell 与 hooks 的执行环境注入 `PYTHONUTF8`，MCP 子进程拿不到这层注入，不钉 UTF-8 时中文 Windows 按 GBK 读帧、中文 `scope` 乱码。
 - `python_path` 不参与解释器发现：hook 由宿主 shell 按命令名解析解释器，没有「先读配置再选解释器」的执行点。`python_path` 仍是安装后的记录（安装与每次 SessionStart 写回 `sys.executable`，主桥与更新器消费）。
 - 生效方式：hooks 在插件链从插件目录（缓存）运行，不属于运行目录文件；hooks 在下一次会话启动/提问读新文件。
 
@@ -23,3 +23,4 @@
 | 真实 `hooks.json` 命令串：`python3` 缺失、`python` 为旧版、`py -3` 可用（#454 报告机形态） | 旧候选让位，链落到 `py -3`；`py -3` 收到的 stdin 与写入一致；stdout 不含「自检失败」 | 同文件链路用例：临时假解释器 + `/bin/sh -c <hooks.json 原命令串>`（Windows 跳过；`||` 命令串本身由 `tests/test_plugin_contract.py` 锁定） |
 | 达标解释器 | 守卫无副作用 | 既有 SessionStart 与 prompt-submit 回归不变 |
 | MCP：`usage_mcp.py` 被直接拉起，stdout 文本模式开着 `\n`→`\r\n` 翻译（Windows 文本模式的后果） | `initialize` / `tools/list` 正常应答；帧尾保持 LF、stdout 不含 CR、退出码 0 | `tests/test_usage_mcp_stdio.py`：POSIX 上给子进程换上开着翻译的文本 stdout，任何平台都能咬到 `reconfigure(newline="\n")` 被改坏 |
+| MCP：宿主按 UTF-8 写入含非 ASCII 的帧（如 `workspace:<中文关键词>`），子进程管道却按区域代码页解码（中文 Windows 的默认形态） | `scope` 原样到达：中文关键词命中对应工作区，不落到「未找到」分支；畸形字节按 U+FFFD 替换，不击穿读循环 | `tests/test_usage_mcp_stdio.py`：用 `PYTHONIOENCODING=gbk:strict` 给子进程钉传统代码页，任何平台都能咬到 stdin 的 `reconfigure(encoding="utf-8")` 被改坏 |

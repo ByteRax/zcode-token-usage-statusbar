@@ -103,6 +103,59 @@ class FileLockBusy(TimeoutError):
     """An advisory lock stayed held until its acquisition deadline."""
 
 
+# os.replace / os.unlink 遇并发读者的短暂重试（同 token_rate._replace_state_file）。
+_REPLACE_ATTEMPTS = 20
+_REPLACE_WAIT_S = 0.01
+
+
+def _replace_retrying(source, target):
+    """os.replace 短暂重试。Windows 上目标被任何句柄打开时替换都被拒绝——读者、杀软，也包括
+    主进程自己的 fs 句柄（实测不论共享模式）；这些读者都是微秒级短开，重试窗口远大于它。
+    静默放弃会丢掉重启待办，手机安装意图的回滚失败还会留下一条永不销账的
+    pending-install。POSIX 的 rename 不受并发读者影响，重试零成本；永久性拒绝只是多等
+    (_REPLACE_ATTEMPTS − 1) × _REPLACE_WAIT_S（约 190ms）才上抛同一异常。"""
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt == _REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(_REPLACE_WAIT_S)
+
+
+def _unlink_retrying(path):
+    """同 _replace_retrying，用于删除标记；文件本就不在按成功处理。"""
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            os.unlink(path)
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if attempt == _REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(_REPLACE_WAIT_S)
+
+
+def _discard_tmp(name):
+    """丢弃没发布的临时文件（尽力清理，不打断已经在传播的异常）。带 preserve 的写入会把
+    临时文件 chmod 成目标的权限位：Windows 上目标只读时它也只读，unlink 被拒——先补回写
+    权限再删，否则每次失败都留下一个 .tmp。"""
+    try:
+        os.unlink(name)
+    except FileNotFoundError:
+        return
+    except PermissionError:
+        try:
+            os.chmod(name, stat.S_IWRITE | stat.S_IREAD)
+            os.unlink(name)
+        except OSError:
+            pass
+    except OSError:
+        pass
+
+
 @contextmanager
 def file_lock(path, timeout=10.0):
     """Acquire an advisory lock or raise TimeoutError; never unlink the lock file."""
@@ -113,7 +166,14 @@ def file_lock(path, timeout=10.0):
         if os.name == "nt":
             import msvcrt
             if os.fstat(fd).st_size == 0:
-                os.write(fd, b"\0")
+                # 两个进程同时首次创建同一锁文件时，后到者在先到者补写之前看到大小 0，这次
+                # 补写会撞上对方刚锁定的首字节（EACCES）。这只是锁被占，落到下面的取锁
+                # 循环按 busy 处理；其它错误原样上抛。
+                try:
+                    os.write(fd, b"\0")
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                        raise
         else:
             import fcntl
         while True:
@@ -189,19 +249,16 @@ def _write_marker(marker, data, preserve=None):
             fd = None
             json.dump(data, stream, ensure_ascii=False)
             stream.write("\n")
-        os.replace(name, marker)
+        _replace_retrying(name, marker)
     finally:
         if fd is not None:
             os.close(fd)
-        try:
-            os.unlink(name)
-        except OSError:
-            pass
+        _discard_tmp(name)
 
 
 def _restore_marker_bytes(marker, previous):
     if previous is None:
-        marker.unlink(missing_ok=True)
+        _unlink_retrying(marker)
         return
     fd, name = bounded_mkstemp(prefix=marker.name + ".", suffix=".tmp", dir=marker.parent)
     try:
@@ -210,14 +267,11 @@ def _restore_marker_bytes(marker, previous):
             stream.write(previous)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(name, marker)
+        _replace_retrying(name, marker)
     finally:
         if fd is not None:
             os.close(fd)
-        try:
-            os.unlink(name)
-        except OSError:
-            pass
+        _discard_tmp(name)
 
 
 def update_config(runtime, changes, defaults=None, merge=None):
@@ -343,14 +397,11 @@ def update_enhance_provider(runtime, revision, changes):
                 fd = None
                 json.dump(updated, stream, ensure_ascii=False)
                 stream.write("\n")
-            os.replace(name, config)
+            _replace_retrying(name, config)   # 同标记写入：Windows 上并发读者会让替换被拒
         finally:
             if fd is not None:
                 os.close(fd)
-            try:
-                os.unlink(name)
-            except OSError:
-                pass
+            _discard_tmp(name)
         return updated
 
 
@@ -537,7 +588,7 @@ def ack_restart(runtime, loaded):
                 data["hashes"] = remaining
                 _write_marker(marker, data)
                 return {"ok": True, "cleared": False}
-        marker.unlink()
+        _unlink_retrying(marker)   # 同标记替换：Windows 上并发读者会让 unlink 被拒
     return {"ok": True, "cleared": True}
 
 
@@ -579,4 +630,14 @@ def main():
 
 
 if __name__ == "__main__":
+    # 入站 JSON（--record-restart / --update-config / --update-enhance-provider 的载荷）按 UTF-8
+    # 严格解码：主进程与更新器按 JSON.stringify 写 stdin、spawn 时不注入 PYTHONUTF8，中文 Windows
+    # 的管道默认按区域代码页解码——含非 ASCII 的载荷（经 stdin 的调用方里只有
+    # --update-enhance-provider 可能如此：模型名、密钥、地址这些自由落盘的字符串）会被读成乱码
+    # 或留下孤立代理项（后者让这次保存失败）。一次性命令行没有读循环要保护：畸形字节直接以
+    # 非零退出失败，不把替换字符写进配置（字符串内的坏字节若换成 U+FFFD 会照常解析并落盘）。
+    try:
+        sys.stdin.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
     raise SystemExit(main())   # main() 的 return 1（事务失败）必须传播为非零退出码，否则调用方把失败当成功

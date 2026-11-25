@@ -88,7 +88,8 @@ class IsolatedHookTestCase(unittest.TestCase):
     def run_hook(self, script, version, mode):
         return subprocess.run(
             [PYTHON, "-B", str(self.interpreter_stub), str(PLUGIN / "hooks" / script), version, mode],
-            input=PAYLOAD, capture_output=True, text=True, env=self.environment(),
+            # hook 入口把 stdout 钉成 UTF-8：父进程按 UTF-8 解码，不随运行器的区域代码页
+            input=PAYLOAD, capture_output=True, encoding="utf-8", env=self.environment(),
             cwd=str(self.home), timeout=30)
 
 
@@ -142,7 +143,7 @@ class FallbackChainTests(IsolatedHookTestCase):
         hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
         command = hooks[EVENT[script]][0]["hooks"][0]["command"]
         return subprocess.run(
-            ["/bin/sh", "-c", command], input=PAYLOAD, capture_output=True, text=True,
+            ["/bin/sh", "-c", command], input=PAYLOAD, capture_output=True, encoding="utf-8",
             env=self.environment(PATH=str(self.bin), ZCODE_PLUGIN_ROOT=str(PLUGIN)),
             cwd=str(self.home), timeout=30)
 

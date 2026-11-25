@@ -348,8 +348,9 @@
      * → v474 生成速度估算只计真实生成（issue #483：生成中切换窗口或会话后速度格一瞬间虚高数倍、约 2 秒回落，维护者本机在来回切换会话时复现；本批原立账 v473，v473 已被并行线立账，按时间线顺延）：切换会话必重挂，主会话实例新建 tracker，校准比例回到默认 2。真机实证（macOS、ZCode 4.0.0）：冷会话新建 tracker 的首个快照是尾 60 行，窗口随后一步从 60 行回填到 288 行，被压住的增量帧 71ms 内涌入 43 个 seq；单纯隐藏窗口与主线程卡顿 3 秒不产生这类增长。四条加固：不是这段时间生成的字符不计入速率分子（此前没见过的旧行按出现时的长度不计，出窗后回来的行按它回来时或出窗时的长度取更保守的那个），校准分子仍计入；tracker 建立 300ms 内每一帧字符增长的入库都改作新基线（逐条与合并入库一视同仁，不按帧间隔判，首个读数因此晚到约半秒），昂贵会话的第一个合并入库可能落在这段之后，放宽到建立 1.2 秒内、只做一次，换会话、换纪元与 clear() 后重新起算；字符数比上一条快照少就沿用它下降前的速率一个采样窗（2 秒），保持窗随每次下降重新计时，窗结束后 400ms 内与新基线不满 200ms 期间继续沿用，再回到正常计算，窗结束 400ms 之后才等来下一条快照的保持作废、不回显旧速率，输出已停 500ms 以上才来的下降不沿用，窗内再次下降续期时不看停了多久；校准比例按会话 sid 记在模块级，重挂时沿用。采样窗、最短 200ms、停更 2 秒判陈旧、迟到投递按窗口平均等既有口径不变。报告者的两条根因主张经核对都不成立，没有按它们去改宿主侧成因：他推测的「切回后行文本短暂缩水」在本机 5233 条通知里零出现，没有证实，字符数下降只做了上面这条防御性的保持窗（假时钟模拟约 1500 个缩水场景，读数稳定在真实值）；「校准被尾窗截断」不可达，tracker 要求 turnHeader 在窗口里，header 在则整轮的行都在。规格 specs/live-rate-estimate-robustness.md
      * → v475 精简速率 chip 紧张档不空白（用户实报截图「精简模式下，如果空间不够了，可以折叠 git chip、而不是把速度 chip 给隐藏了」；原立账 v470，按合入顺序顺延；排查证实速度 chip 没有被摘除，窄窗下它落在紧张档，而紧张档无条件去掉状态词与单位：只有状态词、没有数值的面——后台智能体在跑时合成的「正在派发」、工具已启动未开始计时的「正在执行」等——只剩左右内边距，成了约 12px 宽的空壳；截图像素量得「电脑操作」到 Git 图标的空隙 34~37px，等于空壳 chip 的 33px、不等于无 chip 的 17px）：06 分片紧张档拆成两条规则——单位照旧隐藏，状态词只在数值非空时隐藏（.zu-live:has(>.zu-sp-val:not(:empty))），数值为空保留状态词；四字说法整枚 chip 约 69px，在 6.6em 上限内，不多占空间，Git chip 等级与档位判定不变；长标签顶到上限照旧省略。速度 chip 不新增「空间不够就摘除」的路径
      * → v476 精简速率 chip 会话均兜底面（用户裁定，承接 v475 排查时发现的相邻行为；原立账 v471，按合入顺序顺延）：有会话均而没有最近一段速度、也没有实时视图时，chip 面按 v298 裁定留空——chip 没有图标，留空就是任何档位都只有内边距的空壳（节点仍挂着，它是精简模式右键设置入口）。改为显示「均 X t/s」：11 分片回退态在最近一段速度为 0 且会话均大于 0 时给伪视图传 avgFace 并取会话均作数值，07 分片 zuSpeedFace 据 avgFace 出标签「均」（英文 Avg）、面对象带 avg、zuSpeedFaceHtml 给标签挂 zu-sp-avg 类；档位色按会话均，aria-label 写「生成速度 会话均 X t/s」。有最近一段速度时仍是 v298 的面（最后一轮真实速度、不带「均」）；tooltip 不变。紧张档去标签规则对 zu-sp-avg 不生效，窄窗显示「均X」，会话均不冒充最后一轮速度。状态条速度格同一状态仍是有图标无数值的格面，不动
+     * → v477 速度格空数值位不占位（Windows 兼容审查实测；原立账 v477）：无计时面只有标签，空数值 span 却仍吃 .zu-live 的一个 5px gap。zh-CN Windows 上 system-ui 解析为微软雅黑 UI（拉丁字母与数字也走雅黑，不是 Segoe），英文动名词自然宽超过 v463 标定的 ≤ 约 55px@14px（Running 59.5px、Reading/Sending 57.5px、Loading/Starting 56.6px），11px 界面字号 + 药丸宽裕档标签可用 44.59px，「Running」「Sending」「Reading」被省略成「Runni…」，真实浏览器契约「untimed four-character labels are never clipped」在 Windows 上恒红（此前被 Chrome 夹具在 Windows 上起不来掩盖）。固定宽速度格里 .zu-sp-val:empty 与 .zu-sp-label:empty 同款 display:none，标签可用 49.59px；精简 chip（.zu-tsb）按内容定宽不动，带数值面没有空数值位，间距、格宽 6.6em、字体与档位判定都不变。带数值面的标签在雅黑下仍按 v459「放不下时收缩省略」（11px 界面字号下「思考 4:28」差约 0.9px），Windows 余量记入规格。规格 specs/speed-chip-stable-slot.md
      */
-    var VERSION = "v476";
+    var VERSION = "v477";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -644,6 +645,16 @@
       ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live{display:flex;flex:1 1 auto;min-width:0;align-items:baseline}" +
       ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-label{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}" +
       ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-label:empty{display:none}" +
+      /* v477 固定宽速度格的空数值位不再占位（.zu-live 的 gap 按子项计，空 span 也吃一个 5px）。无计时面
+       * （v463 四字说法、后台子代理合成的「正在派发」）只有标签，标签右侧却悬着 5px 空白。zh-CN Windows 上
+       * system-ui 解析为微软雅黑 UI（拉丁字母与数字也走雅黑，不是 Segoe），英文动名词自然宽超过 v463 标定的
+       * ≤ 约 55px@14px（Running 59.5px、Reading/Sending 57.5px、Loading/Starting 56.6px）：11px 界面字号 +
+       * 药丸宽裕档标签可用 44.59px，「Running」「Sending」「Reading」被省略成「Runni…」「Sendi…」，真实浏览器
+       * 契约「untimed four-character labels are never clipped」在 Windows 上恒红。去掉悬空间隔后可用 49.59px。
+       * 只动固定宽速度格：精简 chip（.zu-tsb）按内容定宽，空位不挤标签；带数值的面没有空数值位，间距、格宽、
+       * 字体与档位判定都不变。带数值面的标签在雅黑下仍按 v459「放不下时收缩省略」（11px 界面字号下
+       * 「思考 4:28」差约 0.9px），见规格 Windows 标定。 */
+      ".zusage-root .it.zu-speed>.zu-live>.zu-sp-val:empty{display:none}" +
       ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-val{flex:0 0 auto;white-space:nowrap;text-align:left}" +
       ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-unit{flex:0 0 auto}" +
       /* v461 子代理面「子·X」（用户规格）：间隔点在标签末尾、与数值贴紧——负外边距抵消 .zu-live 的 gap:5px

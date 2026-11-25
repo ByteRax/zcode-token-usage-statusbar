@@ -389,8 +389,9 @@ class CliSymptomTest(Fixture):
     def run_rate(self, *args, **extra_env):
         env = clean_env(HOME=str(self.home), USERPROFILE=str(self.home),
                         ZUSAGE_RATE_STATE_FILE=str(self.state), PYTHONDONTWRITEBYTECODE="1", **extra_env)
+        # 子进程输出被产品代码钉成 UTF-8；父进程按 UTF-8 解码（同 test_token_rate.run_rate）。
         return subprocess.run([sys.executable, str(self.scripts / "token_rate.py"), *args],
-                              capture_output=True, text=True, env=env, timeout=30)
+                              capture_output=True, encoding="utf-8", env=env, timeout=30)
 
     def test_control_without_override_has_no_data(self):
         # 对照：无覆盖时默认解析不到库（临时 HOME 里没有），证明下面的用例对该症状有判别力
@@ -468,7 +469,7 @@ class PromptSubmitHookSymptomTest(Fixture):
                         ZUSAGE_RATE_STATE_FILE=str(self.root / "state.json"),
                         ZUSAGE_PLUGIN_RUNTIME=str(self.data_dir), PYTHONDONTWRITEBYTECODE="1")
         return subprocess.run([sys.executable, str(self.plugin / "hooks" / "prompt-submit.py")], input="",
-                              capture_output=True, text=True, env=env, timeout=30)
+                              capture_output=True, encoding="utf-8", env=env, timeout=30)
 
     def background_line(self):
         r = self.run_hook()
@@ -566,7 +567,7 @@ class NodeMainBridgeParityTest(Fixture):
                     [node, "-e", node_driver],
                     cwd=str(REPO),
                     env=clean_env(**env_vars),
-                    capture_output=True, text=True, timeout=15,
+                    capture_output=True, encoding="utf-8", timeout=15,
                 )
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 node_out = json.loads(proc.stdout)

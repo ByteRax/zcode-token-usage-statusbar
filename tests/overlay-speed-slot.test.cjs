@@ -135,7 +135,9 @@ test('v463 无计时面：已登记的短状态词换成四字说法（用户「
   const cells = [...table.matchAll(/\["([^"]+)", "([^"]+)", "([^"]+)", "([^"]+)"\]/g)].map(x => x.slice(1, 5).map(String));
   assert.equal(cells.length, 19, `ZU_SPEED_NAKED 逐行可解析（看到 ${cells.length} 行）`);
   for (const [zh, , zhLong] of cells) assert.ok(Array.from(zhLong).length <= Array.from(zh).length + 2 && Array.from(zhLong).length <= 4, `${zh} → ${zhLong}`);
-  /* 英文：最紧的档（药丸宽裕 + 11px 界面字号）标签可用 44.6px；本机系统字体 14px 下自然宽 ≤ 55.5px 的词才放得下。
+  /* 英文：最紧的档（药丸宽裕 + 11px 界面字号）标签可用 44.6px（v477 起空数值位不占位，为 49.6px）；
+   * 55px 的上限是 v463 按 macOS 系统字体的标定——zh-CN Windows 上 system-ui 是微软雅黑 UI，英文动名词更宽，
+   * 余量见规格的 Windows 字体标定。本机系统字体 14px 下自然宽 ≤ 55.5px 的词才放得下。
    * 下列词实测更宽（Thinking 58.41、Fetching 58.81、Planning 58.5、Invoking 57.01、Stopping 61.14、Searching 67.95、Scanning 62.69、
    * Operating 67.4、Dispatching 80.74、Delegating 73.11、Launching 70.11），不得写进表里；真实宽度由 overlay-pill-theme 静态探针逐档锁定 */
   const tooWide = ['Thinking', 'Fetching', 'Planning', 'Invoking', 'Stopping', 'Searching', 'Scanning', 'Operating', 'Dispatching', 'Delegating', 'Launching'];
@@ -942,6 +944,8 @@ test('速度格占位 CSS：全部格面固定宽 6.6em、右内边距 0、右�
     ':is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live{display:flex;flex:1 1 auto;min-width:0;align-items:baseline}',
     ':is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-label{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}',
     ':is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-label:empty{display:none}',
+    /* v477 空数值位不占位：只作用于固定宽速度格，无计时面的标签拿回被空 span 吃掉的 5px gap */
+    '.zusage-root .it.zu-speed>.zu-live>.zu-sp-val:empty{display:none}',
     ':is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-val{flex:0 0 auto;white-space:nowrap;text-align:left}',
     ".zusage-root.zu-narrow .it.zu-speed>.zu-live>.zu-sp-label,.zusage-root.zu-narrow .it.zu-speed>.zu-live>.zu-sp-unit{display:none}",
     ".zusage-root .zu-main>.it.zu-speed[data-zu-speed-min='1']>.zu-live{display:none}",
@@ -949,6 +953,43 @@ test('速度格占位 CSS：全部格面固定宽 6.6em、右内边距 0、右�
     '.zusage-root.zu-pill.zu-speed-tight .zu-main>.it.zu-speed{padding-left:4px;padding-right:0;margin-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}',
     '.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-label,.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-unit{display:none}',
   ]) assert.ok(css.includes(rule), rule);
+  /* v477 的反向锁：精简 chip（.zu-tsb）按内容定宽，空数值位不挤标签，不得被这条规则带走。
+   * 源码是 JS 字符串拼接：逐字符扫描，只收字符串字面量（单引号、双引号、反引号都算）并拼回 CSS，
+   * 字符串之外的块注释与行注释（含行尾注释）一概不计。再按「选择器 { 声明块 }」切规则：
+   * 凡是选择器带 zu-sp-val:empty、声明块里把 display 设成 none 的规则（不分大小写、冒号两侧
+   * 空格、带 !important、不在首条、拆在两个字面量里都算），都必须且只能是固定宽速度格这一个。 */
+  const scanLiterals = (text) => {
+    const out = [];
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === "/" && text[i + 1] === "*") {
+        const end = text.indexOf("*/", i + 2);
+        if (end < 0) break;
+        i = end + 1;   // 落在结束符的 "/" 上，外层再自增：紧连的下一个注释不会被它的 "/" 带偏
+      } else if (text[i] === "/" && text[i + 1] === "/") {
+        i = text.indexOf("\n", i + 2);
+        if (i < 0) break;
+      } else if (text[i] === '"' || text[i] === "'" || text[i] === "`") {
+        const quote = text[i];
+        let body = "";
+        for (i++; i < text.length && text[i] !== quote; i++) {
+          if (text[i] === "\\" && i + 1 < text.length) body += text[++i];
+          else body += text[i];
+        }
+        out.push(body);
+      }
+    }
+    return out;
+  };
+  assert.deepEqual(scanLiterals('/* c *//* d */"a" + /* it\'s "x" */ \'b\'`c\\`d` // tail "e"\n"f"'),
+    ["a", "b", "c`d", "f"], "字符串字面量扫描：注释不计，三种引号与转义都认");
+  const literals = scanLiterals(css);
+  const cssCode = literals.join("");
+  const emptyValueHidden = (cssCode.match(/[^{}]+\{[^{}]*\}/g) || []).filter(rule => {
+    const brace = rule.indexOf('{');
+    return /zu-sp-val:empty/.test(rule.slice(0, brace)) && /(^|;)\s*display\s*:\s*none\b/i.test(rule.slice(brace + 1, -1));
+  }).map(rule => rule.trim());
+  assert.deepEqual(emptyValueHidden,
+    ['.zusage-root .it.zu-speed>.zu-live>.zu-sp-val:empty{display:none}'], 'v477 empty-value rule is scoped to the fixed-width speed cell only');
   /* v462 左内边距 0（用户指示「左侧的 padding 也去掉」）只作用于默认条：规则必须带 :not(.zu-pill)——药丸有底色与 12px 圆角，
    * 图标靠左内边距（宽裕 7px 来自基础 .it，中等/紧张 4px）离边缘；也不能做成「左内边距改左外边距」（中等/紧张档的 4px 左内边距
    * 抵消不了，会多推 7px）。仅图标档保留两侧内边距（图标靠左，不居中）。 */

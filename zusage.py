@@ -4731,6 +4731,10 @@ def serve():
     探活失败或查询异常后重建。json 一次性路径仍每请求开-关。"""
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        # 入站同样钉 UTF-8：主桥按 JSON.stringify 写请求行，spawn 时不注入 PYTHONIOENCODING /
+        # PYTHONUTF8（WorkBuddy 的 wb-overlay.cjs 注入了），区域代码页下含非 ASCII 的
+        # workspaceIdentity 会被解成乱码——远端分栏查不到已配置的目标，恒 remote_missing。
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
     # v202 价表/汇率 12h 定时同步（daemon 线程随本进程退出终止）；一次性 json 路径不启动。

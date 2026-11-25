@@ -18,6 +18,25 @@ _spec = importlib.util.spec_from_file_location("zusage_serve_test", REPO / "zusa
 zusage = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(zusage)
 
+
+# 进程内 serve 会按 TTL 拉新价表（真实联网，还会把 pricing-cache.json 写进检出目录）：回归不出网。
+_NO_PRICING_REFRESH = None
+
+
+def setUpModule():
+    global _NO_PRICING_REFRESH
+    if zusage._pricing is None:
+        return   # 按脚本直跑时 zusage 导不到 token_pricing，serve 本就不刷新价表
+    _NO_PRICING_REFRESH = mock.patch.object(zusage._pricing, "start_refresh", return_value=None)
+    _NO_PRICING_REFRESH.start()
+
+
+def tearDownModule():
+    global _NO_PRICING_REFRESH
+    if _NO_PRICING_REFRESH is not None:
+        _NO_PRICING_REFRESH.stop()
+        _NO_PRICING_REFRESH = None
+
 # 与 test_statusbar_rate 同款：snapshot 全链实际读取的表与列
 SCHEMA = """
 create table session (id text primary key, title text, parent_id text, time_created integer,
