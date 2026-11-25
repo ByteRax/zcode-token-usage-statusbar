@@ -40,7 +40,7 @@
 | thinking | 思考 / Think | 紧凑时间 | — | `text`（思考中…X分Y秒） |
 | estimate | 空（v454 起与完成态同面，流光动画区分） | 数值 | t/s | `text` |
 | avg / real（桥完成态） | 空 | 数值（既有格式：整数不带小数） | t/s | `text` |
-| DB 回退（伪视图 `db:true`） | 空（v452 起与完成态同面）；精简 chip 的会话均兜底面带「均」/ `Avg`（v476，见下） | 数值（同 `last.tps`；会话均兜底面为会话均） | t/s | 最近一段 X t/s |
+| DB 回退（伪视图 `db:true`） | 空（v452 起与完成态同面）；精简 chip 的会话均兜底面带「均」/ `Avg`（v476，见下） | 数值（同 `last.tps`；会话均兜底面为会话均） | t/s | 最近一段 X t/s；会话均兜底面的全称与 tooltip 主行写会话均（见下） |
 
 工具短名：Read 读取/Read、Write 写入/Write、Edit·ApplyPatch 编辑/Edit、Bash 执行/Run、Grep·Glob·WebSearch 搜索/Find、WebFetch 网页/Fetch、TodoWrite·TodoRead 待办/Todo、Skill 技能/Skill、ReadSessionContext 上下文/Ctx、Agent·Task 代理/Agent、SendMessage 消息/Send、TaskOutput 输出/Out、TaskStop 停止/Stop、CreateWorkflow 流程/Flow；`mcp__` 工具取服务名、computer-use 电脑/Cua、`js*` 代码/Code；其余有名字显示 执行/Run，空名回退 执行/Run。
 
