@@ -676,6 +676,87 @@ test('issue #483: a row that comes back longer than it left is excluded at the l
   assert.equal(tracker.get('t').characterRate, 600, '只有 a 的增长被算进去');
 });
 
+test('issue #483: a row mistaken for history at first sight does not have its in-window growth counted twice when it returns', () => {
+  let now = 0, seq = 0;
+  const tracker = createTracker({ now: () => now });
+  const r = (rowId, n) => ({ rowId, turnId: 't', kind: 'assistantText', text: 'x'.repeat(n) });
+  const at = (t, rows) => { now = t; tracker.ingest(snapshot(++seq, [header(), ...rows])); };
+  at(0, [r(7, 100), r(6, 100)]);                  // 首快照乱序：仍在流式的行 6 排在行 7 后面，被当作回填的旧行
+  at(350, [r(7, 100), r(6, 205)]);                // 行 6 在窗内长出来的部分照常计入
+  at(550, [r(7, 100), r(6, 265)]);
+  assert.equal(tracker.get('t').characterRate, 300);
+  at(750, []);                                    // 两行都出窗：字符数下降，保持窗到 2750
+  at(2750, []);
+  at(2950, [r(6, 325)]);                          // 行 6 以最大行身份回来：只算它出窗之后长出来的 60
+  assert.equal(tracker.get('t').characterRate, 300);
+});
+
+test('issue #483: a returning row counts only what it gained since it left', () => {
+  let now = 0, seq = 0;
+  const tracker = createTracker({ now: () => now });
+  const r = (rowId, n) => ({ rowId, turnId: 't', kind: 'assistantText', text: 'x'.repeat(n) });
+  const at = (t, rows) => { now = t; tracker.ingest(snapshot(++seq, [header(), ...rows])); };
+  at(0, [r(2, 100), r(3, 100), r(4, 100), r(5, 100)]);
+  at(350, [r(2, 205), r(3, 100), r(4, 100), r(5, 100)]);
+  at(550, [r(2, 265), r(3, 100), r(4, 100), r(5, 100)]);
+  at(750, [r(2, 265), r(3, 100)]);                // 行 4、5 出窗：最大行号回落到 3
+  at(2750, [r(2, 265), r(3, 100)]);
+  at(2950, [r(2, 265), r(3, 100), r(4, 160)]);    // 行 4 回来时长了 60
+  assert.equal(tracker.get('t').characterRate, 300, '只算这 60，整行不算「回来时才生成的」');
+});
+
+test('issue #483: the previous hold only lends its rate for 400ms after its window ends', () => {
+  let now = 0, seq = 0;
+  const tracker = createTracker({ now: () => now });
+  const at = (t, n) => { now = t; tracker.ingest(snapshot(++seq, [header(), text('a'.repeat(n))])); };
+  at(0, 100); at(350, 205); at(550, 265);
+  at(750, 65);                                    // 下降：保持窗到 2750，随后输出停止
+  at(2750, 65);
+  at(2950, 125);                                  // 新基线 200ms 后出现增长
+  assert.equal(tracker.get('t').characterRate, 300);
+  at(3700, 65);                                   // 上一段保持的窗结束已 950ms：不再借用它的速率
+  assert.equal(tracker.get('t').characterRate, null);
+});
+
+test('issue #483: the once-per-bind coalesced re-baseline is tracked per turn', () => {
+  let now = 0;
+  const tracker = createTracker({ now: () => now });
+  const rows = (a, b) => [
+    { rowId: 1, turnId: 'u', kind: 'turnHeader', state: 'running' }, { rowId: 2, turnId: 'u', kind: 'assistantText', text: 'a'.repeat(a) },
+    { rowId: 3, turnId: 't', kind: 'turnHeader', state: 'running' }, { rowId: 4, turnId: 't', kind: 'assistantText', text: 'b'.repeat(b) },
+  ];
+  tracker.ingest(snapshot(1, rows(100, 100)));        // 建立时的整份快照
+  now = 400;
+  tracker.ingest(snapshot(2, rows(700, 700)), true);  // 400ms 后一次合并入库：两轮各带着补齐的 600 字符
+  now = 600;
+  tracker.ingest(snapshot(3, rows(760, 760)), true);
+  assert.equal(tracker.get('u').characterRate, 300, '轮 u 重取了基线');
+  assert.equal(tracker.get('t').characterRate, 300, '轮 t 也重取了基线，不靠它在 Map 里的先后');
+});
+
+test('the live rate follows the last two seconds: a slowdown shows up as the window slides', () => {
+  let now = 100, n = 100, seq = 1;
+  const tracker = createTracker({ now: () => now });
+  tracker.ingest(snapshot(seq++, [header(), text('x'.repeat(n))]));
+  for (let t = 300; t <= 6000; t += 200) {           // 前 3 秒 1000 字符/s，后 3 秒 100 字符/s
+    now = t; n += t < 3000 ? 200 : 20;
+    tracker.ingest(snapshot(seq++, [header(), text('x'.repeat(n))]));
+  }
+  assert.equal(tracker.get('t').characterRate, 100, '窗口里只剩慢的那一段');
+});
+
+test('a last sample exactly 2000ms old still counts, one ms older is stale', () => {
+  let now = 0;
+  const tracker = createTracker({ now: () => now });
+  tracker.ingest(snapshot(1, [header(), text('x'.repeat(100))]));
+  now = 400;
+  tracker.ingest(snapshot(2, [header(), text('x'.repeat(340))]));
+  now = 2400;
+  assert.equal(tracker.get('t').characterRate, 100);
+  now = 2401;
+  assert.equal(tracker.get('t').characterRate, null);
+});
+
 test('issue #483: a row that comes back shorter than it left adds nothing and never counts as another drop', () => {
   let now = 0, seq = 0;
   const tracker = createTracker({ now: () => now });

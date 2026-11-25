@@ -49,7 +49,6 @@
     let session = null;
     let sequence = -1;
     let bornAt = null;   // 首个成功入库的快照时刻：稳窗从这里起算（换会话/纪元时重置；clear() 把纪元置空，下一帧走同一分支）
-    let mergeSettled = false;   // 稳窗内已为合并入库重取过基线：只做一次，不给昂贵会话的读数叠加延迟
     let disposed = false;
 
     /* merged=true：subscribeStore 把预算间隔内的通知合并后的入库（中间帧被跳过） */
@@ -62,7 +61,7 @@
         epoch = snapshot.logEpoch;
         session = snapshot.sessionId;
         sequence = -1;
-        bornAt = null; mergeSettled = false;   // 换会话/纪元：tracker 视同新建
+        bornAt = null;   // 换会话/纪元：tracker 视同新建（按轮记的 mergeSettled 随 turns.clear() 一并清掉）
       }
       if (snapshot.seq <= sequence) return false;
       sequence = snapshot.seq;
@@ -75,7 +74,7 @@
         let turn = turns.get(key);
         if (!turn) {
           turn = { sessionId: snapshot.sessionId, turnId: key, rows: new Map(), samples: [], observedAt: at, counts: new Map(),
-            hist: new Map(), maxRowId: null, allCharacters: 0, hold: null, prevChars: null };
+            hist: new Map(), maxRowId: null, allCharacters: 0, hold: null, prevChars: null, mergeSettled: false };
           turns.set(key, turn);
         }
         // 历史回填（issue #483）：此前没见过、行号又小于本轮已知最大行号的行，是宿主往前补拉的旧行（loadOlder、
@@ -93,7 +92,7 @@
           if (currentIds.has(id)) continue;
           const gone = turn.counts.get(id);
           turn.rows.delete(id); turn.counts.delete(id);
-          if (gone && !turn.hist.has(id)) turn.hist.set(id, gone.n);   // 出窗时记住长度：回来时这么多不算新生成
+          if (gone) turn.hist.set(id, Math.max(turn.hist.get(id) || 0, gone.n));   // 出窗时记住长度：回来时这么多不算新生成
           if (id === turn.maxRowId) turn.maxRowId = null;
         }
         if (turn.rows.size === 0) { turns.delete(turn.turnId); continue; }
@@ -134,11 +133,11 @@
           turn.samples.length = 0;
           turn.hold = { rate: held, until: at + 2000 };
         } else if (cur && characters > cur.characters &&
-                   (at - bornAt < SETTLE_MS || (merged && !mergeSettled && at - bornAt < MERGE_SETTLE_MS))) {
+                   (at - bornAt < SETTLE_MS || (merged && !turn.mergeSettled && at - bornAt < MERGE_SETTLE_MS))) {
           // 重挂后的补齐突发：tracker 建立后 SETTLE_MS 内的每一帧增长都改作新基线，逐条入库与合并入库都一样；
-          // 昂贵会话的第一个合并入库落在这段之后的话，由后半个条件接住。合并入库重取过一次就记上，不再重复。
+          // 昂贵会话的第一个合并入库落在这段之后的话，由后半个条件接住。合并入库重取过一次就按轮记上，不再重复。
           turn.samples.length = 0;
-          if (merged) mergeSettled = true;
+          if (merged) turn.mergeSettled = true;
         }
         turn.prevChars = characters;
         const base = turn.samples[turn.samples.length - 1];
@@ -160,8 +159,8 @@
       const hold = turn.hold;
       if (!complete && hold && characterRate === null) {
         // 缩水保持窗（issue #483）：窗内沿用下降前的速率；窗结束后 400ms 内（下一条通知通常马上就来）与新基线
-        // 未满 200ms 时也沿用，不闪「思考中」。以新基线自身的年龄为准：窗结束后新基线来得多晚都接得上；没有
-        // 新基线（不再有通知）则不沿用。
+        // 未满 200ms 时也沿用，不闪「思考中」。以新基线自身的年龄为准；窗结束 400ms 之后才来的新基线接不上
+        // （入库时保持已作废），没有新基线（不再有通知）也不沿用。
         const fresh = samples.length && sampledAt - samples[0].at < 200;
         if (sampledAt - hold.until < 400 || fresh) characterRate = hold.rate;
       }
