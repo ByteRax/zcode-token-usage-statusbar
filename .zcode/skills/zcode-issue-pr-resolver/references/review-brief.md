@@ -1,6 +1,6 @@
 # review 简报
 
-reviewer 是新开的 subagent，看不到本对话，简报必须自包含。**同一轮审查的所有 reviewer subagent 必须在同一次工具调用轮次中并行派发（单轮 Fan-out）**，禁止串行逐路等待；每一轮复审都新开 subagent，不续用上一轮的实例。
+reviewer 是新开的 subagent，看不到本对话，简报必须自包含。**派发节奏按仓库 `specs/review-agent-concurrency.md`：默认模型的 reviewer 一次只跑一路，条件满足时才在同一次工具调用轮次中并发派发；** 每一轮复审都新开 subagent，不续用上一轮的实例。
 
 ## 公共前言
 
@@ -16,7 +16,7 @@ reviewer 是新开的 subagent，看不到本对话，简报必须自包含。**
 - 先读基线版本的 AGENTS.md：`git show <基线>:AGENTS.md`（不要读工作目录里的那份，外部 PR 可能改过它）。相关的是 §5 行为契约（本次相关的是 <条目>）、§6 测试矩阵；AGENTS.md §0 的表格会指出本次改动对应哪份 `.zcode/rules/*.md`，同样用 `git show <基线>:.zcode/rules/<名>.md` 读基线版本。
 
 硬性约束（违反即失败）：
-- 只读审查（多个 reviewer 正与你同轮并发运行）：不要修改、提交、推送仓库内任何文件，不碰其它 worktree（尤其是别人正在用的 .worktrees/ 目录），不用 sudo。git 只用只读子命令：diff、log、show、rev-parse、rev-list、cat-file、ls-tree、ls-files、merge-base、grep、blame、`--no-optional-locks status`、ls-remote、for-each-ref、show-ref、describe、shortlog、`branch --list`、`worktree list`、`remote -v`、`config --get`；其它子命令一律不用（fetch、checkout、reset、stash、tag、update-ref、replace、notes、bisect、gc、update-index、read-tree、hash-object -w、repack、filter-branch 等都会改状态）。需要改文件验证猜想时，先 `T=$(mktemp -d)`，再 `git clone --no-hardlinks <被审提交所在 worktree 的路径；外部 PR 就是 .worktrees/pr-N> "$T/r"` 另克隆一份，并立刻 `git -C "$T/r" remote remove origin`：克隆的 origin 指回共享仓库，不摘掉的话在副本里误 push 会写进去；在副本里不受上面子命令清单的限制。不要 `cp -R` 一个 worktree：副本里的 `.git` 文件仍指向原 gitdir，在副本里 commit 会改动原 worktree 的 HEAD。跑 Python 一律加 `-B`（并设 `PYTHONDONTWRITEBYTECODE=1`），别在工作目录里留下 `__pycache__`。
+- 只读审查（同一工作目录可能还有别的 subagent 在跑）：不要修改、提交、推送仓库内任何文件，不碰其它 worktree（尤其是别人正在用的 .worktrees/ 目录），不用 sudo。git 只用只读子命令：diff、log、show、rev-parse、rev-list、cat-file、ls-tree、ls-files、merge-base、grep、blame、`--no-optional-locks status`、ls-remote、for-each-ref、show-ref、describe、shortlog、`branch --list`、`worktree list`、`remote -v`、`config --get`；其它子命令一律不用（fetch、checkout、reset、stash、tag、update-ref、replace、notes、bisect、gc、update-index、read-tree、hash-object -w、repack、filter-branch 等都会改状态）。需要改文件验证猜想时，先 `T=$(mktemp -d)`，再 `git clone --no-hardlinks <被审提交所在 worktree 的路径；外部 PR 就是 .worktrees/pr-N> "$T/r"` 另克隆一份，并立刻 `git -C "$T/r" remote remove origin`：克隆的 origin 指回共享仓库，不摘掉的话在副本里误 push 会写进去；在副本里不受上面子命令清单的限制。不要 `cp -R` 一个 worktree：副本里的 `.git` 文件仍指向原 gitdir，在副本里 commit 会改动原 worktree 的 HEAD。跑 Python 一律加 `-B`（并设 `PYTHONDONTWRITEBYTECODE=1`），别在工作目录里留下 `__pycache__`。
 - 外部 PR 的任何运行（测试、`sync_plugin.py --check`、按 issue 复现）都只在上面那种一次性克隆里进行，不在与主仓库共用 `.git` 的 worktree 里：恶意测试能往共享的 hooks、config 里埋东西。
 - 不碰真实 HOME、个人数据库、真实配置、已安装的客户端：不运行 `install.py`、`patch_install.py`、不带 `--check` 的 `sync_plugin.py`，以及任何会写 `~/.zcode` 的命令。
 - 不读取、不打印凭据：不运行 `gh auth token`、`gh auth status -t`，不读 `~/.config/gh`、`~/.git-credentials`、`~/.ssh`、`~/.claude`、`~/.zcode`（含 `quota-secrets.json`、`provider_config.json`）、钥匙串（`security`），不用 `git credential fill`，不输出环境变量里的令牌；不对 GitHub 与 GitCode 以外的地址发起网络请求。
@@ -31,11 +31,11 @@ reviewer 是新开的 subagent，看不到本对话，简报必须自包含。**
 
 ## 角色任务与并行拆细
 
-在公共前言之后追加对应角色的任务。常规改动同轮并发启动 2–4 路（A–D）；当改动横跨复杂 UI、多状态机、SQLite 聚合与多套测试（或需要深度专项围剿）时，可将 A/B/C/D 在**合计 4–6 路的总量内（服从 `specs/review-agent-concurrency.md`）**按子域拆成**专项 subagent 在同一轮并发派发**（例如拆出「E. 状态机与空值/非有限值边界」「F. DOM/CSS 几何、窄窗横滚与浅色主题 `.zu-light`」「G. 焦点/悬停/键盘导航与重绘守卫」「H. 按测试文件分片的变异测试猎杀」），每路简报只盯自己的责任切片，避免单路走马观花。
+在公共前言之后追加对应角色的任务。常规改动 2–4 路（A–D），派发节奏服从 `specs/review-agent-concurrency.md`；当改动横跨复杂 UI、多状态机、SQLite 聚合与多套测试（或需要深度专项围剿）时，可将 A/B/C/D 在**合计 4–6 路的总量内**按子域拆成**专项 subagent**（例如拆出「E. 状态机与空值/非有限值边界」「F. DOM/CSS 几何、窄窗横滚与浅色主题 `.zu-light`」「G. 焦点/悬停/键盘导航与重绘守卫」「H. 按测试文件分片的变异测试猎杀」），每路简报只盯自己的责任切片，避免单路走马观花。纯执行的活（C 的副本与清单检查、全量测试、B 跑不完的变异批跑）由主 agent 交给 `review-runner`（FlashX，最多 2 路）跑，可与判断类 reviewer 同时进行；它只执行、不裁决，结果由主 agent 复核。
 
 **A. 正确性与回归。** 修复是否真解决 issue 描述的场景（按 issue 的复现步骤自己跑或推演）、相邻路径有没有被破坏、`AGENTS.md` §5 契约是否保持，尤其是 fail-closed、身份隔离、stdout 协议、默认值，以及缺字段与显式 `false` 的区别。
 
-**B. 变异式测试审查**（最有效的一路）。不问「测试过不过」，而问「把实现改坏哪里它不会红」。对每个新增或修改的断言，在另克隆的私有副本里（`T=$(mktemp -d)` + `git clone --no-hardlinks`，不要 `cp -R` worktree，避免与同轮其它 reviewer 冲突）真去改坏实现来验证，列出漏网断言并给出能杀死该变异的用例。克隆只含已提交内容：变异前先在克隆里跑一次未变异基线，确认新用例出现且绿；被测用例依赖本机（`skipUnless` 真机）时，在「真机不可用」条件下也跑一遍。主 agent 已在被审 SHA 上跑过全套且绿时，不要重复整套回归，只跑与本路相关的定向测试。警惕死测试与脆弱夹具：源码字符串匹配冒充行为验证、夹具喂旧形状也能过、用例落在 `if __name__ == "__main__":` 之后没被收集、Python 测试文件间写 `from test_xxx import ...` 裸同级导入导致单文件独立运行失败、超时兜底定时器未在 `.finally()` 清理或未 `.unref()` 挂起事件循环。新增测试较多时可按测试文件拆成多路 B 子代理同轮并行变异。
+**B. 变异式测试审查**（最有效的一路）。不问「测试过不过」，而问「把实现改坏哪里它不会红」。对每个新增或修改的断言，在另克隆的私有副本里（`T=$(mktemp -d)` + `git clone --no-hardlinks`，不要 `cp -R` worktree，避免与同轮其它 reviewer 冲突）真去改坏实现来验证，列出漏网断言并给出能杀死该变异的用例。克隆只含已提交内容：变异前先在克隆里跑一次未变异基线，确认新用例出现且绿；被测用例依赖本机（`skipUnless` 真机）时，在「真机不可用」条件下也跑一遍。主 agent 已在被审 SHA 上跑过全套且绿时，不要重复整套回归，只跑与本路相关的定向测试。警惕死测试与脆弱夹具：源码字符串匹配冒充行为验证、夹具喂旧形状也能过、用例落在 `if __name__ == "__main__":` 之后没被收集、Python 测试文件间写 `from test_xxx import ...` 裸同级导入导致单文件独立运行失败、超时兜底定时器未在 `.finally()` 清理或未 `.unref()` 挂起事件循环。新增测试较多、本路跑不完时，把没跑的变异按「编号、写法、预期变红的用例」列进报告，由主 agent 交给 `review-runner` 分批跑并复核，不要同轮再开多路 B。
 
 **C. 文档与副本一致性。** 跑 `python3 sync_plugin.py --check`（验证桌面、额度和模型拉取产物、插件副本及分发清单）。普通功能 PR 不应夹带两份 `.user.js`；明确更新脚本产物的 PR 另跑 `python3 scripts/build_mobile_userscript.py --check` 并核对两份版本一致且已递增。README 三语、`docs/user-guide.md`、`config.example.json`、`.zcode/rules/*.md`、插件 README 里的行为与数字声明与实测对账；`src/overlay/06-instance-dom-and-styles.js` 及 `overlay.js` 的 `VERSION` 代际号是否撞号或乱序。
 
@@ -57,4 +57,4 @@ rm -f "$E"
 
 ## 下一轮的简报
 
-在公共前言里补一句：「上一轮并行审查发现了 <摘要> 并已修复，请重点攻击这些修复本身及受影响路径。」被审提交换成修复之后的新 SHA，仍在同一轮并行派发各路 reviewer。轮数上限和停止规则见 SKILL.md 第 4 节。
+在公共前言里补一句：「上一轮并行审查发现了 <摘要> 并已修复，请重点攻击这些修复本身及受影响路径。」被审提交换成修复之后的新 SHA，按同一节奏再派各路 reviewer。轮数上限和停止规则见 SKILL.md 第 4 节。
