@@ -6,7 +6,7 @@
    同一个同步表达式里临时显示条并切换档位类，量完全部还原（中间不让出事件循环，不会画到屏幕上）。
    面分两类记宽（specs/speed-chip-stable-slot.md「占位」）：带状态词的面记 speedW / turnL，
    完成态（无状态词）记 plainW / plainTurnL——v459 起全部格面固定宽，两类都必须等于 6.6em × 格字号
-   （极窄档 2.75em）。精简 chip 保持档位固定宽，两类同宽。
+   （极窄档 2.75em）。精简 chip v469 起按内容定宽、档位 em（12.4/9.7/6.6em）只是上限：宽度随面变，只查越界。
    状态面与 zuSpeedFaceHtml 同构、不经数据链；数据链的行为由 tests/overlay-pill-theme.test.cjs 锁定。 */
 (() => {
   const bar = document.querySelector('.zusage-root');
