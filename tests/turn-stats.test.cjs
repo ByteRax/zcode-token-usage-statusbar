@@ -356,6 +356,18 @@ test('issue #483: a coalesced ingest only re-baselines within the tracker\'s fir
   assert.equal(tracker.get('t').characterRate, 981 * 1000 / 5288, '建立 1.2 秒之后的合并入库是真实生成的迟到投递，仍按窗口平均');
 });
 
+test('issue #483: on a very expensive session the first coalesced ingest lands over a second after bind, still inside the settle window', () => {
+  const f = rateStore(150);                                // 预算间隔 min(1000, 150×9)，即上限 1000ms
+  const tracker = createTracker({ now: () => f.now });
+  subscribeStore(f.store, tracker, () => {}, f.options);   // t=150，600 字符
+  f.now = 160; f.chars = 900; f.listener();                // 间隔内：只置 pending
+  f.now = 1140; f.chars = 1460; f.listener();
+  f.now = 1150; f.timers[0].fire();                        // 合并入库：t=1300（建立后 1150ms），1460 字符
+  f.now = 1301; f.chars = 1552; f.listener();              // 之后 200ms 生成 92 字符；仍在间隔内，合并
+  f.now = 2300; f.timers[1].fire();                        // t=2450
+  assert.equal(tracker.get('t').characterRate, 92 * 1000 / 1150, '1.2 秒 = 预算间隔上限 1 秒加一次读取：这种会话也在稳窗内');
+});
+
 test('issue #483: synchronous ingests are never taken for a coalesced catch-up', () => {
   const f = rateStore(2);
   const tracker = createTracker({ now: () => f.now });
@@ -441,6 +453,22 @@ test('issue #483: a baseline that lands after the hold window still bridges, wit
   assert.equal(tracker.get('t').characterRate, 200, '新基线未满 200ms：仍沿用');
   now = 4000;
   assert.equal(tracker.get('t').characterRate, 300);                 // 新窗口接上：200ms 增 60 字符
+});
+
+test('issue #483: a baseline half a second after the hold window does not echo the pre-drop rate', () => {
+  let now = 0;
+  const tracker = createTracker({ now: () => now });
+  tracker.ingest(snapshot(1, [header(), text('a'.repeat(600))]));
+  now = 1000;
+  tracker.ingest(snapshot(2, [header(), text('a'.repeat(900))]));
+  now = 1500;
+  tracker.ingest(snapshot(3, [header(), text('a'.repeat(600))]));   // 缩水，保持窗到 3500
+  now = 3950;                                                       // 窗结束 450ms 后才有下一条通知
+  tracker.ingest(snapshot(4, [header(), text('a'.repeat(1650))]));
+  assert.equal(tracker.get('t').characterRate, null, '保持已作废：这一条只作新基线');
+  now = 4150;
+  tracker.ingest(snapshot(5, [header(), text('a'.repeat(1710))]));
+  assert.equal(tracker.get('t').characterRate, 300);
 });
 
 test('live speed does not stay stale indefinitely when output stops', () => {
