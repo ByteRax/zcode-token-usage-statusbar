@@ -382,6 +382,149 @@ test('hover shows self-drawn tooltip with phase text; leave hides it', () => {
   assert.equal(tip.style.display, 'none');
 });
 
+/* v468（issue #476）：用户点过增强按钮（焦点落在按钮上）再去点面板里的「设置」——mousedown 把焦点移到面板内
+ * 按钮，按钮的 blur 若在此时收面板，click 就落到下方页面。无头 Chrome 真实指针三样式实证（修复前）：blur 后
+ * 面板 display:none，mouseup/click 的目标变成 body，设置面板不打开。浏览器顺序固定为 mousedown→blur→mouseup→click，
+ * 这里按同一顺序驱动监听器。 */
+test('v468: button focused by a click → blur while the pointer is over the history panel keeps it open; settings click then opens the panel on the enhance section', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '   ' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  const tip = h.body.children.find(e => e.classList.contains('zusage-enhance-tip'));
+  const settingsPanel = () => h.body.children.find(e => e.classList.contains('panel') && e.classList.contains('zu-settings'));
+  enh.listeners.get('focus')[0].call(enh);   // 点击的 mousedown 阶段：按钮获得焦点，面板显示
+  assert.equal(tip.style.display, 'flex');
+  enh.listeners.get('click')[0]();   // 空草稿：警示相位（感叹号），不发请求
+  assert.ok(enh.classList.contains('zu-ewarn'), 'button enters the warn (exclamation) phase');
+  assert.equal(tip.style.display, 'flex', 'history panel stays open in the warn phase');
+  // 指针停在面板上时按下「设置」：mousedown 先把焦点移走
+  tip.matches = sel => sel === ':hover';   // 真实浏览器里指针停在面板上时 enhanceTip.matches(':hover') 为 true
+  enh.listeners.get('blur')[0].call(enh, { relatedTarget: null });
+  runPending(h.timers, 220);
+  assert.equal(tip.style.display, 'flex', 'blur with the pointer over the panel keeps it open (not a delayed hide)');
+  // click 到达面板的委托
+  const setBtn = new Element('button');
+  setBtn.setAttribute('data-ehset', '');
+  setBtn.closest = sel => sel === 'button' ? setBtn : null;
+  tip.listeners.get('click')[0]({ target: setBtn });
+  assert.equal(tip.style.display, 'none', 'the settings entry hides the panel');
+  assert.ok(settingsPanel() && settingsPanel().classList.contains('open'), 'settings panel opens');
+  assert.equal(h.window.enhanceTest.state().settingsSec, 'enhance-provider', 'opens the enhance-provider section');
+});
+
+test('v468: blur while the pointer is not over the history panel still hides it (keyboard path)', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '草稿' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  const tip = h.body.children.find(e => e.classList.contains('zusage-enhance-tip'));
+  enh.listeners.get('focus')[0].call(enh);
+  assert.equal(tip.style.display, 'flex');
+  enh.listeners.get('blur')[0].call(enh, { relatedTarget: null });   // 键盘 Tab 离开：指针不在面板上
+  assert.equal(tip.style.display, 'none', 'blur away from the panel hides it (keyboard path)');
+});
+
+/* v468 接管路径（审查补）：守卫放过 blur 之后，「按钮已失焦但面板仍显示」这个新状态完全靠面板自身的
+ * mouseleave 延迟收起来收。锁定：离开按钮的延迟收起被进入面板取消；守卫放过的 blur 不会变成延迟收起
+ * （离开延迟到期面板仍在）；指针离开面板后按延迟收起。 */
+test('v468: after a guarded blur the panel still hides when the pointer leaves it (mouseleave delayed hide takes over)', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '草稿' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  const tip = h.body.children.find(e => e.classList.contains('zusage-enhance-tip'));
+  enh.listeners.get('focus')[0].call(enh);
+  assert.equal(tip.style.display, 'flex');
+  tip.matches = sel => sel === ':hover';   // 指针在面板上
+  enh.listeners.get('mouseleave')[0]();   // 指针离开按钮：排一个延迟收起
+  tip.listeners.get('mouseenter')[0]();   // 进入面板：取消
+  runPending(h.timers, 220);
+  assert.equal(tip.style.display, 'flex', 'entering the panel cancels the leave delay');
+  enh.listeners.get('blur')[0].call(enh, { relatedTarget: null });   // 按下面板内按钮：mousedown 先移走焦点
+  runPending(h.timers, 220);
+  assert.equal(tip.style.display, 'flex', 'a guarded blur never turns into a delayed hide');
+  tip.listeners.get('mouseleave')[0]();   // 指针离开面板
+  assert.equal(tip.style.display, 'flex', 'leaving the panel hides it only after the delay');
+  runPending(h.timers, 220);
+  assert.equal(tip.style.display, 'none', 'mouseleave delayed hide takes over');
+});
+
+/* v468（审查补）：验收 11——同一状态下 footer 的「查看全部历史」「清空记录」同样要能点。修复前整排失效
+ * （无头 Chrome 真实指针实证：main v467 上两者的 click 均落到 body）。 */
+test('v468: after a guarded blur the other footer buttons still act — view-all opens the full panel, clear asks for confirmation', () => {
+  const cases = [
+    ['data-all', h => h.body.children.find(e => e.classList.contains('zusage-enhance-full') && e.style.display !== 'none'), 'view-all opens the full history panel'],
+    ['data-clear', h => h.body.children.find(e => e.classList.contains('zu-compact-dlg')), 'clear asks for confirmation'],
+  ];
+  for (const [attr, pick, what] of cases) {
+    const h = harness();
+    const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '   ' });
+    h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+    h.window.__zusageUpdate(h.payload());
+    h.tick();
+    const enh = h.enhOf(ui.wrap);
+    const tip = h.body.children.find(e => e.classList.contains('zusage-enhance-tip'));
+    enh.listeners.get('focus')[0].call(enh);
+    enh.listeners.get('click')[0]();   // 空草稿：警示相位（感叹号），不发请求
+    assert.ok(enh.classList.contains('zu-ewarn'));
+    tip.matches = sel => sel === ':hover';
+    enh.listeners.get('blur')[0].call(enh, { relatedTarget: null });
+    assert.equal(tip.style.display, 'flex', attr + ': panel survives the blur');
+    const footerBtn = new Element('button');
+    footerBtn.setAttribute(attr, '');
+    footerBtn.closest = sel => sel === 'button' ? footerBtn : null;
+    tip.listeners.get('click')[0]({ target: footerBtn });
+    assert.ok(pick(h), attr + ': ' + what + ' after a guarded blur');
+  }
+});
+
+/* v468（审查补）：降级环境——没有 matches 或 matches 抛错时 blur 照旧即收（规格「降级环境照旧即收」）。 */
+test('v468: without a usable matches() the blur handler still hides the panel (degraded environments keep the old behavior)', () => {
+  const variants = [['missing', undefined], ['throwing', () => { throw new Error('matches unavailable'); }]];
+  for (const [label, matches] of variants) {
+    const h = harness();
+    const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '草稿' });
+    h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+    h.window.__zusageUpdate(h.payload());
+    h.tick();
+    const enh = h.enhOf(ui.wrap);
+    const tip = h.body.children.find(e => e.classList.contains('zusage-enhance-tip'));
+    enh.listeners.get('focus')[0].call(enh);
+    assert.equal(tip.style.display, 'flex');
+    tip.matches = matches;
+    enh.listeners.get('blur')[0].call(enh, { relatedTarget: null });
+    assert.equal(tip.style.display, 'none', 'blur still hides when matches is ' + label);
+  }
+});
+
+/* v468（变异检查补）：壳层 openEnhanceSettings 先收面板这一步被实例侧 openEnhSettings 的同一动作遮住——
+ * 只有入口钩子缺席时才单独可见。锁定：钩子缺席时点「设置」，设置面板不开，但面板照样收起（不悬空）。 */
+test('v468: the settings entry still closes the panel when the entry hook is missing', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '草稿' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  const tip = h.body.children.find(e => e.classList.contains('zusage-enhance-tip'));
+  enh.listeners.get('focus')[0].call(enh);
+  assert.equal(tip.style.display, 'flex');
+  enh.__zuOpenEnhSettings = undefined;   // 入口钩子缺席：壳层无处分发
+  const setBtn = new Element('button');
+  setBtn.setAttribute('data-ehset', '');
+  setBtn.closest = sel => sel === 'button' ? setBtn : null;
+  tip.listeners.get('click')[0]({ target: setBtn });
+  assert.equal(tip.style.display, 'none', 'the panel closes even though nothing can be opened');
+  assert.equal(h.window.enhanceTest.state().settingsSec, 'display', 'nothing was opened');
+});
+
 test('click during enhance cancels: cancel request fired, phase resets, late reply ignored', () => {
   const h = harness();
   const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '原始草稿' });
