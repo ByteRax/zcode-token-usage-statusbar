@@ -1535,7 +1535,21 @@ const TEAM_PROJECT = "proj-team-8";
 const TEAM_CUSTOMER_URL = "https://bigmodel.cn/api/biz/customer/getCustomerInfo";
 const teamKeysUrlFor = (org, project) => "https://bigmodel.cn/api/biz/v1/organization/" + encodeURIComponent(org) + "/projects/" + encodeURIComponent(project) + "/api_keys";
 const TEAM_KEYS_URL = teamKeysUrlFor(TEAM_ORG, TEAM_PROJECT);
-const TEAM_PAT_URL = TEAM_KEYS_URL + "/tk-1/access_tokens";
+/* issue #481：线上 api_keys 条目里密钥 ID 在 apiKey（32 位串），没有 apiKeyId 字段——旧夹具
+ * 凭空造了 apiKeyId，把「第②步要求线上不存在的字段」这个缺陷挡在了测试外面。夹具条目
+ * 一律经 teamKeyEntry 生成，与线上 12 字段同形。 */
+const TEAM_KEY_ID = "9f3c6a1e5b7d4c2a8e0f1a2b3c4d5e6f";
+const TEAM_PAT_URL = TEAM_KEYS_URL + "/" + TEAM_KEY_ID + "/access_tokens";
+function teamKeyEntry(overrides) {
+  const o = overrides || {};
+  const entry = Object.assign({
+    apiKey: TEAM_KEY_ID, createTime: "2026-11-20 10:00:00", isHidden: false, keyType: 2, lastUseTime: null,
+    name: "zcode-team-api-key", publicKey: "", secretKey: "", tokenType: "", usageScene: 1,
+    useApiKeyUserId: "u-1", useUserName: "团队管理员",
+  }, o);
+  if (o.noKeyId) delete entry.apiKey;
+  return entry;
+}
 
 function teamFixture(opts) {
   const o = opts || {};
@@ -1544,9 +1558,10 @@ function teamFixture(opts) {
   const dir = path.dirname(file);
   const coords = o.coords || { organizationId: TEAM_ORG, projectId: TEAM_PROJECT };
   const keysUrl = teamKeysUrlFor(coords.organizationId, coords.projectId);
-  const patUrl = keysUrl + "/tk-1/access_tokens";
+  /* keyIdRaw：条目 apiKey 的原始值（可带首尾空白与需编码的字符），换发 URL 用 trim+encodeURIComponent 后的值 */
+  const patUrl = keysUrl + "/" + encodeURIComponent(String(o.keyIdRaw === undefined ? TEAM_KEY_ID : o.keyIdRaw).trim()) + "/access_tokens";
   const creds = {};
-  creds["oauth:bigmodel:access_token"] = "enc:oauth-1";
+  if (!o.noToken) creds["oauth:bigmodel:access_token"] = "enc:oauth-1";
   if (!o.noLocation) creds[GLR_LOC_KEY] = "enc:loc-1";   // 个人 location 在盘：团队链绝不能拿它换发
   fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify(creds));
   if (!o.noSelection) {
@@ -1561,8 +1576,16 @@ function teamFixture(opts) {
   const impl = async (url, requestOpts) => {
     if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
     calls.push({ url, opts: requestOpts });
+    if (url === o.throwOn) throw new Error("fetch failed");   // 网络异常（环节码 network）
+    if (url === o.hangOn) await new Promise((resolve, reject) => {   // 挂起到外部 signal 取消（取消用例）
+      const t = setTimeout(resolve, 2000);
+      requestOpts.signal.addEventListener("abort", () => { clearTimeout(t); reject(Object.assign(new Error("aborted"), { name: "AbortError" })); }, { once: true });
+    });
     if (url === TEAM_CUSTOMER_URL) {
       if (o.customerStatus) return { ok: false, status: o.customerStatus, text: async () => "", body: { cancel() { } } };
+      if (o.customerRaw !== undefined) return { ok: true, status: 200, text: async () => o.customerRaw };   // 非 JSON 响应体（网关错误页等）
+      /* 智谱系网关对业务失败可回 HTTP 200 + 错误信封：没有 organizations 列表，算响应异常而非「团队不存在」 */
+      if (o.customerEnvelope) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 401, msg: "登录状态已过期", success: false }) };
       /* 超限载荷必须是合法 JSON（review round2-B A7）：非法体会被 JSON.parse 兜住，上限成为
        * plan_auth 与采信之间唯一屏障时，变异「上限放大/删除」才会红。 */
       if (o.customerHuge) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { organizations: o.customerOrgs || [{ organizationId: coords.organizationId, projects: [{ projectId: coords.projectId }] }], pad: "x".repeat(262145) } }) };
@@ -1570,14 +1593,33 @@ function teamFixture(opts) {
     }
     if (url === keysUrl) {
       if (o.keysStatus) return { ok: false, status: o.keysStatus, text: async () => "", body: { cancel() { } } };
-      if (o.keysHuge) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: [{ name: "zcode-team-api-key", keyType: 2, apiKeyId: "tk-1", pad: "x".repeat(262145) }] }) };
-      return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: o.teamKeys || [{ name: "zcode-team-api-key", keyType: 2, apiKeyId: "tk-1", apiKey: "id.secret" }] }) };
+      if (o.keysRaw !== undefined) return { ok: true, status: 200, text: async () => o.keysRaw };   // 非 JSON 响应体
+      if (o.keysEnvelope) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 500, msg: "系统异常", success: false }) };
+      if (o.keysHuge) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: [teamKeyEntry({ pad: "x".repeat(262145) })] }) };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: o.teamKeys || [teamKeyEntry(o.keyIdRaw === undefined ? undefined : { apiKey: o.keyIdRaw })] }) };
     }
     if (url === patUrl) {
       if (o.patStatus) return { ok: false, status: o.patStatus, text: async () => "", body: { cancel() { } } };
+      if (o.patEnvelope) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 401, msg: "登录状态已过期", success: false }) };
       if (o.patHuge) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, msg: "操作成功", data: { enabled: true, accessToken: "team-pat-1", pad: "x".repeat(65537) } }) };
       if (o.patDisabled) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { enabled: false, accessToken: "x" } }) };
-      return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, msg: "操作成功", data: { enabled: true, accessToken: "team-pat-1", expiresIn: o.patShortTtl ? 60 : undefined, expiresAt: o.patShortTtl ? undefined : Date.now() + 3600 * 1000 } }) };
+      /* 线上形状来自 issue #481 报告者抓包：expiresAt 是 10 位秒级时间戳、expiresIn 单位秒。
+       * expiresUnit："s" 缺省（线上）、"ms" 毫秒、`none` 只带 expiresIn 别名不带回 expiresAt；
+       * expiresAtSec 可让 expiresAt 与 expiresIn（ttlSec）不一致。 */
+      const ttlSec = o.ttlSec || 3600, unit = o.expiresUnit || "s", atSec = o.expiresAtSec || ttlSec;
+      const expiresAt = unit === "none" ? undefined : unit === "ms" ? Date.now() + atSec * 1000 : Math.floor(Date.now() / 1000) + atSec;
+      const payload = JSON.stringify({ code: 200, msg: "操作成功", data: { enabled: true, accessToken: "team-pat-1", tokenType: "Bearer", expiresIn: ttlSec, expiresAt } });
+      /* patExpiresRaw / patExpiresInRaw：把 expiresAt、expiresIn 的 JSON 文本换成任意字面量（1e400 解析后非有限、1e308 这类离谱大值） */
+      let text = payload;
+      if (o.patExpiresRaw !== undefined) {
+        text = text.replace('"expiresAt":' + JSON.stringify(expiresAt), '"expiresAt":' + o.patExpiresRaw);
+        if (text === payload) throw new Error("fixture: expiresAt splice failed");
+      }
+      if (o.patExpiresInRaw !== undefined) {
+        text = text.replace('"expiresIn":' + ttlSec, '"expiresIn":' + o.patExpiresInRaw);
+        if (text.indexOf('"expiresIn":' + o.patExpiresInRaw) < 0) throw new Error("fixture: expiresIn splice failed");
+      }
+      return { ok: true, status: 200, text: async () => text };
     }
     if (url === GLR_EXCHANGE_URL) {
       return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, msg: "操作成功", data: { enabled: true, accessToken: "glr-tok-1" } }) };
@@ -1585,13 +1627,15 @@ function teamFixture(opts) {
     if (url.indexOf("/v1/messages") > 0) return sseRes(sse);
     throw new Error("unexpected url " + url);
   };
+  const logs = [];
   const mp = M.createModelPuller({
     customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "",
     credentialsPath: path.join(dir, "credentials.json"), settingPath: path.join(dir, "setting.json"),
-    decryptValue: (enc) => (enc === "enc:loc-1" ? GLR_LOC_JSON : String(enc).indexOf("enc:oauth-") === 0 ? "glr-oauth-1" : null),
+    ...(o.noDecrypt ? {} : { decryptValue: (enc) => (enc === "enc:loc-1" ? GLR_LOC_JSON : String(enc).indexOf("enc:oauth-") === 0 ? "glr-oauth-1" : null) }),   // noDecrypt：主进程未装配解密能力
     hostVersion: "3.19.1",
+    log: (...a) => logs.push(a.join(" ")),
   });
-  return { mp, calls, dir, keysUrl, patUrl };
+  return { mp, calls, dir, keysUrl, patUrl, logs };
 }
 
 test("Team: bigmodel team enhance exchanges the team PAT and rides it on open.bigmodel.cn", async () => {
@@ -1633,6 +1677,8 @@ test("Team: v2 entry key is the individual project key and is never used for tea
   assert.equal(f.calls.filter((c) => c.url === GLR_EXCHANGE_URL).length, 0, "individual GLr exchange never fires for team");
 });
 
+/* issue #481：线上 expiresAt 是秒级（夹具缺省即真实形状）——不换算成毫秒时 memo 永不命中，
+ * 每次增强都重跑三步链（本用例修复前红：PAT 被签发两次）。 */
 test("Team: PAT memo reused within expiry", async () => {
   const f = teamFixture();
   const r1 = await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "第一次");
@@ -1643,15 +1689,42 @@ test("Team: PAT memo reused within expiry", async () => {
   assert.equal(f.calls.filter((c) => c.url === TEAM_CUSTOMER_URL).length, 1, "three-step chain not re-run either");
 });
 
+test("Team: a millisecond expiresAt keeps the memo alive as well (unit auto-detected, issue #481)", async () => {
+  const f = teamFixture({ expiresUnit: "ms" });
+  assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "第一次")).ok, true);
+  assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "第二次")).ok, true);
+  assert.equal(f.calls.filter((c) => c.url === TEAM_PAT_URL).length, 1, "millisecond expiry is compared as-is, not scaled again");
+});
+
+test("Team: the key id is read from apiKey; a phantom apiKeyId alone is no key id (issue #481)", async () => {
+  /* 旧谓词要求 k.apiKeyId 字符串——线上条目没有这个字段，团队密钥恒找不到，增强恒报
+   * 「当前套餐暂不支持增强」。默认夹具即线上形状（12 字段、密钥 ID 在 apiKey）。 */
+  const f = teamFixture();
+  const r = await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r.ok, true, JSON.stringify(r).slice(0, 200));
+  const issued = f.calls.filter((c) => /\/access_tokens$/.test(c.url));
+  assert.deepEqual(issued.map((c) => c.url), [TEAM_KEYS_URL + "/" + TEAM_KEY_ID + "/access_tokens"], "key id from apiKey rides the access_tokens URL");
+  /* 只有线上不存在的 apiKeyId、没有 apiKey 的条目不得被当成团队密钥（变异「谓词或 URL 改回
+   * apiKeyId」在此变红：前者会照常签发，后者 URL 落空被夹具 throw）。 */
+  const phantom = teamFixture({ teamKeys: [{ name: "zcode-team-api-key", keyType: 2, apiKeyId: "phantom-id" }] });
+  const denied = await phantom.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(denied.ok, false);
+  assert.equal(denied.reason, "keys_missing", JSON.stringify(denied));
+  assert.equal(phantom.calls.filter((c) => /\/access_tokens$/.test(c.url)).length, 0, "no access_tokens request for a phantom apiKeyId");
+});
+
 test("Team: PAT within the 2-minute refresh lead (or expired) forces re-exchange; expiresIn alias honored", async () => {
-  /* 短 TTL 经 expiresIn 别名下发（60s < 120s lead）：变异「memo 去掉过期检查」在此变红
-   * （review B-A4）——第二次 enhance 必须重跑三步链，否则过期 PAT 会被复用到 401。 */
-  const f = teamFixture({ patShortTtl: true });
-  const r1 = await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "第一次");
-  assert.equal(r1.ok, true);
-  const r2 = await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "第二次");
-  assert.equal(r2.ok, true, JSON.stringify(r2).slice(0, 160));
-  assert.equal(f.calls.filter((c) => c.url === TEAM_PAT_URL).length, 2, "PAT inside refresh lead re-exchanges");
+  /* 短 TTL（60s < 120s lead）：变异「memo 去掉过期检查」在此变红（review B-A4）——第二次
+   * enhance 必须重跑三步链，否则过期 PAT 会被复用到 401。三种下发形态各测一遍（issue #481：
+   * 秒级/毫秒 expiresAt 与只带 expiresIn 别名；毫秒短 TTL 同时锁死「不分单位一律乘 1000」）。 */
+  for (const opts of [{ ttlSec: 60, expiresUnit: "none" }, { ttlSec: 60 }, { ttlSec: 60, expiresUnit: "ms" }]) {
+    const f = teamFixture(opts);
+    const r1 = await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "第一次");
+    assert.equal(r1.ok, true, JSON.stringify(opts));
+    const r2 = await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "第二次");
+    assert.equal(r2.ok, true, JSON.stringify(r2).slice(0, 160));
+    assert.equal(f.calls.filter((c) => c.url === TEAM_PAT_URL).length, 2, "PAT inside refresh lead re-exchanges: " + JSON.stringify(opts));
+  }
 });
 
 test("Team: legacy modelProviderFamilySelectedKeys selection rides the same three-step chain", async () => {
@@ -1675,40 +1748,242 @@ test("Team: org/project with reserved chars are percent-encoded into the api_key
   assert.ok(f.calls.some((c) => c.url === f.patUrl), "encoded PAT URL requested verbatim");
 });
 
-test("Team: oversized step responses fail closed (size caps)", async () => {
-  for (const variant of [{ customerHuge: true }, { keysHuge: true }, { patHuge: true }]) {
+test("Team: fail-closed matrix — every failure reports team_auth with its failing step, zero messages, nothing leaked (issue #481)", async () => {
+  /* 旧实现所有失败分支静默回 plan_auth，渲染端一律显示「当前套餐暂不支持增强」——线上换发
+   * 在哪一步断的无从定位。现在每个分支带固定环节码（reason），HTTP 类另带状态码。 */
+  const cases = [
+    [{ noSelection: true }, "selection"],
+    [{ selectionJson: {} }, "selection"],
+    /* kind 判定的可观测变体必须带坐标（review B-A1：缺坐标时 org/project 门先拦，变异不可见） */
+    [{ selectionJson: { providerFamilyConnectionSelections: { bigmodel: { kind: "individual-coding-plan", organizationId: TEAM_ORG, projectId: TEAM_PROJECT } } } }, "selection"],
+    [{ selectionJson: { providerFamilyConnectionSelections: { bigmodel: { kind: "team-coding-plan", organizationId: "", projectId: TEAM_PROJECT } } } }, "selection"],
+    [{ noToken: true }, "token"],
+    [{ noDecrypt: true }, "token"],
+    [{ customerStatus: 404 }, "customer_http", 404],
+    [{ customerOrgs: [{ organizationId: "other-org", projects: [{ projectId: TEAM_PROJECT }] }] }, "customer_mismatch"],
+    [{ customerOrgs: [{ organizationId: TEAM_ORG, projects: [{ projectId: "other-project" }] }] }, "customer_mismatch"],
+    [{ customerHuge: true }, "customer_shape"],
+    [{ customerEnvelope: true }, "customer_shape"],
+    [{ customerRaw: "<html>gateway</html>" }, "customer_shape"],
+    [{ throwOn: TEAM_CUSTOMER_URL }, "network"],
+    [{ keysStatus: 500 }, "keys_http", 500],
+    [{ keysHuge: true }, "keys_shape"],
+    [{ keysEnvelope: true }, "keys_shape"],
+    [{ keysRaw: "{not json" }, "keys_shape"],
+    /* 形状错误条目复用同一密钥 ID（review B-A3：不同 id 会被 URL 层 throw 掩盖选择层失效） */
+    [{ teamKeys: [teamKeyEntry({ name: "other-key" })] }, "keys_missing"],
+    [{ teamKeys: [teamKeyEntry({ keyType: 1 })] }, "keys_missing"],
+    [{ teamKeys: [teamKeyEntry({ noKeyId: true })] }, "keys_missing"],
+    /* `.` 与 `..` 是路径段保留写法，URL 规范化会吃掉上一级路径段——不得被当成密钥 ID 发出 */
+    [{ teamKeys: [teamKeyEntry({ apiKey: ".." })] }, "keys_missing"],
+    [{ teamKeys: [teamKeyEntry({ apiKey: "." })] }, "keys_missing"],
+    [{ patStatus: 404 }, "pat_http", 404],
+    [{ patHuge: true }, "pat_shape"],
+    [{ patEnvelope: true }, "pat_shape"],
+    [{ patDisabled: true }, "pat_shape"],
+    [{ throwOn: TEAM_PAT_URL }, "network"],
+  ];
+  for (const [variant, why, status] of cases) {
+    const tag = JSON.stringify(variant);
     const f = teamFixture(variant);
     const r = await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "写个脚本");
-    assert.equal(r.ok, false, JSON.stringify(variant));
-    assert.equal(r.kind, "plan_auth", JSON.stringify(variant));
-    assert.equal(f.calls.filter((c) => c.url.indexOf("/v1/messages") > 0).length, 0, "no messages after oversized body: " + JSON.stringify(variant));
+    assert.equal(r.ok, false, tag);
+    assert.equal(r.kind, "team_auth", "kind: " + tag);
+    assert.equal(r.reason, why, "reason: " + tag);
+    assert.equal(r.status || 0, status || 0, "status: " + tag);
+    assert.equal(f.calls.filter((c) => c.url.indexOf("/v1/messages") > 0).length, 0, "no messages call after team chain failure: " + tag);
+    /* error 短语是旧渲染端与表外环节码的兜底显示：固定英文短语 + 环节码（+ HTTP 状态），不得退回 plan_auth 的旧短语 */
+    assert.equal(r.error, "team credential exchange failed (" + why + (status ? ", HTTP " + status : "") + ")", "error phrase: " + tag);
+    /* 断在第③步之前的失败不得发出换发请求（含把 `.`/`..` 当密钥 ID 拼出的路径） */
+    if (/^(selection|token|customer_|keys_)/.test(why)) assert.equal(f.calls.filter((c) => /\/access_tokens$/.test(c.url)).length, 0, "failure before step 3 issues no PAT request: " + tag);
+    /* 回执与日志只含固定环节码：业务令牌、PAT、密钥 ID、组织/项目 ID 一律不得出现 */
+    const wire = JSON.stringify(r) + "\n" + f.logs.join("\n");
+    for (const secret of ["glr-oauth-1", "team-pat-1", TEAM_KEY_ID, TEAM_ORG, TEAM_PROJECT]) assert.equal(wire.indexOf(secret) < 0, true, "leak " + secret + ": " + tag);
+    assert.ok(f.logs.includes("team pat exchange failed: " + why + (status ? " http " + status : "")), "failing step is logged: " + tag + " → " + JSON.stringify(f.logs));
   }
 });
 
-test("Team: fail-closed matrix — no selection/bad org/missing team key/pat failures all plan_auth with zero messages", async () => {
-  for (const variant of [
-    { noSelection: true },
-    { selectionJson: {} },
-    /* kind 判定的可观测变体必须带坐标（review B-A1：缺坐标时 org/project 门先拦，变异不可见） */
-    { selectionJson: { providerFamilyConnectionSelections: { bigmodel: { kind: "individual-coding-plan", organizationId: TEAM_ORG, projectId: TEAM_PROJECT } } } },
-    { selectionJson: { providerFamilyConnectionSelections: { bigmodel: { kind: "team-coding-plan", organizationId: "", projectId: TEAM_PROJECT } } } },
-    { customerStatus: 404 },
-    { customerOrgs: [{ organizationId: "other-org", projects: [{ projectId: TEAM_PROJECT }] }] },
-    { customerOrgs: [{ organizationId: TEAM_ORG, projects: [{ projectId: "other-project" }] }] },
-    { keysStatus: 500 },
-    /* 形状错误条目复用 tk-1（review B-A3：不同 id 会被 URL 层 throw 掩盖选择层失效） */
-    { teamKeys: [{ name: "other-key", keyType: 2, apiKeyId: "tk-1" }] },
-    { teamKeys: [{ name: "zcode-team-api-key", keyType: 1, apiKeyId: "tk-1" }] },
-    { teamKeys: [{ name: "zcode-team-api-key", keyType: 2 }] },
-    { patStatus: 404 },
-    { patDisabled: true },
-  ]) {
+test("Team: a cancelled enhance stays cancelled — never reported as a failed exchange (issue #481)", async () => {
+  const f = teamFixture({ hangOn: TEAM_CUSTOMER_URL });
+  const ctl = new AbortController();
+  const pending = f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "写个脚本", { signal: ctl.signal });
+  await new Promise((r) => setTimeout(r, 10));
+  ctl.abort();
+  const r = await pending;
+  assert.equal(r.kind, "cancelled", JSON.stringify(r));
+  assert.equal(r.reason, undefined);
+  assert.equal(f.logs.includes("team pat exchange failed: network"), false, "user cancellation is not a failure to log");
+
+  /* 进门前 signal 已取消：回执仍是 cancelled，且不落失败日志（早期分支不看外部 signal 就会多记一行） */
+  const pre = teamFixture({ noSelection: true });
+  const done = new AbortController(); done.abort();
+  const r2 = await pre.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "写个脚本", { signal: done.signal });
+  assert.equal(r2.kind, "cancelled", JSON.stringify(r2));
+  assert.equal(pre.logs.some((l) => l.indexOf("team pat exchange failed") >= 0), false, "a caller cancelled before the chain starts is not a failure to log");
+});
+
+test("Team: a failed exchange never falls back to the personal entry key or GLr location, even with both available (issue #481 review)", async () => {
+  /* 矩阵夹具盘上没有 v2 条目 key（planEntryKeyOf 恒回 null），「零 messages」对「失败后回退个人 key」
+   * 是空断言——这里把个人条目 key 真写进盘上，再让团队链分别断在第②步与换发之前。 */
+  for (const variant of [{ keysStatus: 500 }, { noSelection: true }]) {
     const f = teamFixture(variant);
+    fs.writeFileSync(path.join(f.dir, "config.json"), JSON.stringify({ provider: {
+      "builtin:bigmodel-coding-plan": { options: { apiKey: "personal-entry-key" }, enabled: true },
+    } }));
     const r = await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "写个脚本");
     assert.equal(r.ok, false, JSON.stringify(variant));
-    assert.equal(r.kind, "plan_auth", JSON.stringify(variant));
-    assert.equal(f.calls.filter((c) => c.url.indexOf("/v1/messages") > 0).length, 0, "no messages call after team chain failure: " + JSON.stringify(variant));
+    assert.equal(r.kind, "team_auth", JSON.stringify(variant));
+    assert.equal(f.calls.filter((c) => c.url.indexOf("/v1/messages") > 0).length, 0, "no messages call: " + JSON.stringify(variant));
+    assert.equal(f.calls.filter((c) => c.url === GLR_EXCHANGE_URL).length, 0, "individual GLr location is never exchanged for a team source");
+    for (const c of f.calls) assert.equal(JSON.stringify(c.opts.headers).indexOf("personal-entry-key") < 0, true, "personal entry key never leaves: " + JSON.stringify(variant));
   }
+});
+
+test("Team: an absurd expiresAt (non-finite or beyond any sane clock) never caches the PAT forever (issue #481 review)", async () => {
+  /* JSON 文本里直接写：1e400（解析成 Infinity）、1e308、1e15 与 9.99e13（毫秒口径的离谱未来）、5e11 与 1e13
+   * （换算成毫秒后仍在 7 天以外）；配合 60 秒的 expiresIn，第二次必须重换 */
+  for (const raw of ["1e400", "1e308", "1e15", "9.99e13", "5e11", "1e13"]) {
+    const f = teamFixture({ ttlSec: 60, patExpiresRaw: raw });
+    assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "第一次")).ok, true, raw);
+    assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "第二次")).ok, true, raw);
+    assert.equal(f.calls.filter((c) => c.url === f.patUrl).length, 2, "absurd expiry falls back to expiresIn and re-exchanges: " + raw);
+  }
+});
+
+test("Team: a sane expiresAt is honoured even when it disagrees with expiresIn (seconds and milliseconds)", async () => {
+  /* memo 的过期时间取 expiresAt：把合理的值误判成无效（回落到 60 秒的 expiresIn）时第二次会多换发一次。
+   * 1 小时与 2 小时各验一遍——上界若被收紧到 1 小时，2 小时那一点会多换发一次。 */
+  for (const [unit, atSec] of [["s", 3600], ["ms", 3600], ["s", 7200], ["ms", 7200]]) {
+    const f = teamFixture({ ttlSec: 60, expiresAtSec: atSec, expiresUnit: unit });
+    assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "第一次")).ok, true, unit);
+    assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "第二次")).ok, true, unit);
+    assert.equal(f.calls.filter((c) => c.url === f.patUrl).length, 1, "expiresAt wins over expiresIn: " + unit + " +" + atSec + "s");
+  }
+});
+
+test("Team: the expiry bound is exactly 7 days — 7 days is honoured, 7 days and 2 seconds is treated as absent", async () => {
+  /* expiresAt 配 60 秒的 expiresIn：被判为合理值时 memo 复用（1 次换发），被判为离谱值时回落到 60 秒
+   * 的 expiresIn 并立刻重换（2 次）。上界被收紧（7 小时、6 天 23 小时）或放宽（70 天）都有一边变红。 */
+  const patCalls = async (atSec) => {
+    const f = teamFixture({ ttlSec: 60, expiresAtSec: atSec });
+    assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "一")).ok, true, String(atSec));
+    assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "二")).ok, true, String(atSec));
+    return f.calls.filter((c) => c.url === f.patUrl).length;
+  };
+  assert.equal(await patCalls(7 * 86400), 1, "exactly 7 days out is honoured");
+  assert.equal(await patCalls(7 * 86400 + 2), 2, "7 days and 2 seconds out is treated as absent");
+});
+
+test("Team: an absurd expiresIn falls back to the default 1-hour TTL, not years (issue #481 review)", async () => {
+  /* 没带 expiresAt、expiresIn 是 10 亿秒（31 年）或 1e306（折算后溢出成 Infinity）：只能落到缺省 1 小时。
+   * 用替换过的 Date.now 推进时钟：30 分钟时仍复用，75 分钟时必须重换。 */
+  const realNow = Date.now;
+  for (const raw of ["1e9", "1e306"]) {
+    const f = teamFixture({ expiresUnit: "none", ttlSec: 60, patExpiresInRaw: raw });
+    let fakeNow = realNow();
+    Date.now = () => fakeNow;
+    try {
+      assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "一")).ok, true, raw);
+      fakeNow += 30 * 60 * 1000;
+      assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "二")).ok, true, raw);
+      assert.equal(f.calls.filter((c) => c.url === f.patUrl).length, 1, "within the default hour: reused (" + raw + ")");
+      fakeNow += 45 * 60 * 1000;
+      assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "三")).ok, true, raw);
+      assert.equal(f.calls.filter((c) => c.url === f.patUrl).length, 2, "beyond the default hour: re-exchanged (" + raw + ")");
+    } finally { Date.now = realNow; }
+  }
+});
+
+test("Team: a sane multi-hour expiresIn is honoured as-is when expiresAt is absent (the bound is not too tight)", async () => {
+  /* expiresIn 给 2 小时：90 分钟时仍复用、150 分钟时才重换——上界若收得过紧（把 2 小时当成离谱值打回
+   * 缺省 1 小时），90 分钟那一次会多换发一次。 */
+  const realNow = Date.now;
+  const f = teamFixture({ expiresUnit: "none", ttlSec: 7200 });
+  let fakeNow = realNow();
+  Date.now = () => fakeNow;
+  try {
+    assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "一")).ok, true);
+    fakeNow += 90 * 60 * 1000;
+    assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "二")).ok, true);
+    assert.equal(f.calls.filter((c) => c.url === f.patUrl).length, 1, "still within the 2-hour validity: reused");
+    fakeNow += 60 * 60 * 1000;
+    assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "三")).ok, true);
+    assert.equal(f.calls.filter((c) => c.url === f.patUrl).length, 2, "past the 2-hour validity (and the refresh lead): re-exchanged");
+  } finally { Date.now = realNow; }
+});
+
+test("Team: an already-expired expiresAt is kept as-is, so the memo misses instead of borrowing the fallback TTL (issue #481 review)", async () => {
+  /* 过期时间在 60 秒前，expiresIn 却说还有 1 小时：以 expiresAt 为准，第二次必须重换 */
+  for (const unit of ["s", "ms"]) {
+    const f = teamFixture({ ttlSec: 3600, expiresAtSec: -60, expiresUnit: unit });
+    assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "一")).ok, true, unit);
+    assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "二")).ok, true, unit);
+    assert.equal(f.calls.filter((c) => c.url === f.patUrl).length, 2, "an expired PAT is not reused: " + unit);
+  }
+});
+
+test("Team: the 2-minute refresh lead is pinned — a 90-second PAT re-exchanges, a 150-second PAT is reused", async () => {
+  const patCalls = async (sec) => {
+    const f = teamFixture({ ttlSec: sec, expiresUnit: "ms" });
+    assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "一")).ok, true, String(sec));
+    assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "二")).ok, true, String(sec));
+    return f.calls.filter((c) => c.url === f.patUrl).length;
+  };
+  assert.equal(await patCalls(90), 2, "90 s left is inside the 120 s lead: re-exchange");
+  assert.equal(await patCalls(150), 1, "150 s left is outside the 120 s lead: reuse");
+});
+
+test("Team: the key id is trimmed and percent-encoded into the access_tokens URL (issue #481 review)", async () => {
+  const raw = "  id/with?reserved#chars &more  ";
+  const f = teamFixture({ keyIdRaw: raw });
+  const r = await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r.ok, true, JSON.stringify(r).slice(0, 200));
+  assert.equal(f.patUrl, TEAM_KEYS_URL + "/" + encodeURIComponent(raw.trim()) + "/access_tokens");
+  assert.deepEqual(f.calls.filter((c) => /\/access_tokens$/.test(c.url)).map((c) => c.url), [f.patUrl], "trimmed and encoded key id: no raw slash, space or hash lands in the path");
+});
+
+test("Team: the PAT memo is keyed by the team selection and the login token — switching either re-exchanges (issue #481 review)", async () => {
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+  const dir = path.dirname(file);
+  const settingPath = path.join(dir, "setting.json");
+  fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify({ "oauth:bigmodel:access_token": "enc:oauth-1" }));
+  const selectTeam = (org) => fs.writeFileSync(settingPath, JSON.stringify(
+    { providerFamilyConnectionSelections: { bigmodel: { kind: "team-coding-plan", organizationId: org, projectId: TEAM_PROJECT } } }));
+  selectTeam("org-a");
+  let loginToken = "oauth-1";
+  const calls = [];
+  const mp = M.createModelPuller({
+    customCfgPath: file, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "",
+    credentialsPath: path.join(dir, "credentials.json"), settingPath,
+    decryptValue: (enc) => (String(enc).indexOf("enc:oauth-") === 0 ? loginToken : null),
+    hostVersion: "3.19.1",
+    fetchImpl: async (url, opts) => {
+      if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
+      calls.push({ url, opts });
+      if (url === TEAM_CUSTOMER_URL) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { organizations: ["org-a", "org-b"].map((organizationId) => ({ organizationId, projects: [{ projectId: TEAM_PROJECT }] })) } }) };
+      const keys = /\/organization\/([^/]+)\/projects\/[^/]+\/api_keys$/.exec(url);
+      if (keys) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: [teamKeyEntry({ apiKey: "key-of-" + decodeURIComponent(keys[1]) })] }) };
+      const pat = /\/api_keys\/(key-of-[^/]+)\/access_tokens$/.exec(url);
+      if (pat) return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { enabled: true, accessToken: "pat-" + decodeURIComponent(pat[1]) + "-" + String(opts.headers.Authorization || "").replace("Bearer ", ""),
+        expiresIn: 3600, expiresAt: Math.floor(Date.now() / 1000) + 3600 } }) };
+      if (url.indexOf("/v1/messages") > 0) return sseRes(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']);
+      throw new Error("unexpected url " + url);
+    },
+  });
+  const auths = () => calls.filter((c) => c.url.indexOf("/v1/messages") > 0).map((c) => c.opts.headers.Authorization);
+  const issued = () => calls.filter((c) => /\/access_tokens$/.test(c.url)).length;
+  assert.equal((await mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "一")).ok, true);
+  assert.equal((await mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "二")).ok, true);
+  assert.deepEqual(auths(), ["Bearer pat-key-of-org-a-oauth-1", "Bearer pat-key-of-org-a-oauth-1"], "same team and login: memo reused");
+  assert.equal(issued(), 1);
+  selectTeam("org-b");   // 换团队：旧团队的 PAT 不得带过去
+  assert.equal((await mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "三")).ok, true);
+  assert.deepEqual(auths().slice(2), ["Bearer pat-key-of-org-b-oauth-1"], "switching the team re-exchanges for the new team");
+  loginToken = "oauth-2";   // 重新登录：业务令牌变了，旧 PAT 作废
+  assert.equal((await mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "四")).ok, true);
+  assert.deepEqual(auths().slice(3), ["Bearer pat-key-of-org-b-oauth-2"], "a new login token re-exchanges");
+  assert.equal(issued(), 3, "one issuance per (team, login) fingerprint");
 });
 
 test("GLr: a signalled enhance never rides a shared exchange — a cancelled enhance does not sink its concurrent peer (R2 MAJOR)", async () => {
