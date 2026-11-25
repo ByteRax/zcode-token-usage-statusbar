@@ -343,8 +343,9 @@
      * → v467 回答末尾统计行补捞最新完成轮（用户实证：任务完成时不在会话，切回后回答尾末没有统计行）：主会话实例每次换绑（切会话/新标签）都新建 tracker（08 分片 createTracker），切回时从快照窗口补捞的完成轮恒非亲历（observedLive=false），且窗口头部行只有最近完成轮带真实 outputTokens、更早的恒 0——v86「非亲历+无有效输出静默不插」让这类轮永远无行（真机 diag 实证缺失轮清一色 line:none/live:0/out:0，亲历轮正常出行）。修法=该类轮在仍是实例活跃轮（isCurrentTurn，无更新轮顶替，--current 语义正确定位这一轮）且非压缩轮时，按既有 --current 通道发富文本查询（最小替身只带 sessionId），到达后下一拍经缓存穿越插入、不插占位——空回执不写缓存即永不插行（v458 存量轮同契约），用户新提问后 promptTs 前移、旧轮回执为空自然放弃；被顶替的轮仍由 flush notCur 门静默丢弃。只救「最新完成轮」，更早的缺失轮维持 v86 既有限制（turnRef 泛化属 inject-main 冷文件方案，用户裁定不做）；diag 行状态新增 backwait。规则「重启后历史轮」条同步改写，spec det-backfill-line.md 新建
      * → v468 精简样式设置入口补回（issue #474：精简下速率图标悬停卡是速度整卡，「打开设置」只在无轮表的回退卡里，正常用过一轮后设置面板打不开）：精简速率 chip 调 spd3RebuildOr 时传 cfgBtn，整卡标题「生成速度」后出一枚齿轮图标按钮 .tps-cfg（图标同状态条 ⚙，用户裁定「改为设置图标，和底部状态栏的一样」；点击走 tpsTip 既有委托开面板，同 chip 右键）；默认/药丸条面的速度卡不传不出；面板说明与用户指南改述。chip 的 blur 收卡加「指针仍在卡上不收」门（用户实报：先点 chip 再点齿轮，mousedown 移走焦点，blur 抢在 click 前收卡，面板打不开；实机追踪证实）。同代（用户截图「现在的太宽了」）：精简 chip 三档宽度由固定宽改为上限 max-width——按内容定宽、不超过当前档位（12.4/9.7/6.6em），完成态不再给状态词留空位；档位判定与窄窗让位不变
      * → v470 精简速率 chip 紧张档不空白（用户实报截图「精简模式下，如果空间不够了，可以折叠 git chip、而不是把速度 chip 给隐藏了」；排查证实速度 chip 没有被摘除，窄窗下它落在紧张档，而紧张档无条件去掉状态词与单位：只有状态词、没有数值的面——后台智能体在跑时合成的「正在派发」、工具已启动未开始计时的「正在执行」等——只剩左右内边距，成了约 12px 宽的空壳；截图像素量得「电脑操作」到 Git 图标的空隙 34~37px，等于空壳 chip 的 33px、不等于无 chip 的 17px）：06 分片紧张档拆成两条规则——单位照旧隐藏，状态词只在数值非空时隐藏（.zu-live:has(>.zu-sp-val:not(:empty))），数值为空保留状态词；四字说法整枚 chip 约 69px，在 6.6em 上限内，不多占空间，Git chip 等级与档位判定不变；长标签顶到上限照旧省略。速度 chip 不新增「空间不够就摘除」的路径
+     * → v471 精简速率 chip 会话均兜底面（用户裁定，承接 v470 排查时发现的相邻行为）：有会话均而没有最近一段速度、也没有实时视图时，chip 面按 v298 裁定留空——chip 没有图标，留空就是任何档位都只有内边距的空壳（节点仍挂着，它是精简模式右键设置入口）。改为显示「均 X t/s」：11 分片回退态在最近一段速度为 0 且会话均大于 0 时给伪视图传 avgFace 并取会话均作数值，07 分片 zuSpeedFace 据 avgFace 出标签「均」（英文 Avg）、面对象带 avg、zuSpeedFaceHtml 给标签挂 zu-sp-avg 类；档位色按会话均，aria-label 写「生成速度 会话均 X t/s」。有最近一段速度时仍是 v298 的面（最后一轮真实速度、不带「均」）；tooltip 不变。紧张档去标签规则对 zu-sp-avg 不生效，窄窗显示「均X」，会话均不冒充最后一轮速度。状态条速度格同一状态仍是有图标无数值的格面，不动
      */
-    var VERSION = "v470";
+    var VERSION = "v471";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -853,14 +854,16 @@
        * v468（用户截图裁定「现在的太宽了」）：三档宽度由固定宽改为上限（max-width）——chip 按内容定宽、
        * 不超过当前档位；完成态（无状态词）不再给状态词留空位。超上限时 .zu-live 收缩、标签照旧省略。
        * v470（用户实报截图「空间不够时速度 chip 被隐藏」）：紧张档只在数值非空时去标签。只有状态词、没有数值的
-       * 面（后台智能体合成的「正在派发」、工具未开始计时的「正在执行」等）去了标签只剩内边距，而 chip 没有图标承载状态。 */
+       * 面（后台智能体合成的「正在派发」、工具未开始计时的「正在执行」等）去了标签只剩内边距，而 chip 没有图标承载状态。
+       * v471（用户裁定）：会话均兜底面「均 X t/s」的「均」字在紧张档保留（标签类 zu-sp-avg 不在去标签之列）——
+       * 窄窗下显示「均X」，会话均不冒充最后一轮真实速度；单位照旧隐藏。 */
       "box-sizing:border-box;max-width:12.4em;" +
       "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--text-ui-base,var(--ui-font-size,14px)) - 1px);font-weight:700;font-variant-numeric:tabular-nums}" +
       ".zu-tsb.zu-speed-mid{max-width:9.7em}" +
       ".zu-tsb.zu-speed-mid>.zu-live>.zu-sp-unit{display:none}" +
       ".zu-tsb.zu-speed-tight{max-width:6.6em}" +
       ".zu-tsb.zu-speed-tight>.zu-live>.zu-sp-unit{display:none}" +
-      ".zu-tsb.zu-speed-tight>.zu-live:has(>.zu-sp-val:not(:empty))>.zu-sp-label{display:none}" +
+      ".zu-tsb.zu-speed-tight>.zu-live:has(>.zu-sp-val:not(:empty))>.zu-sp-label:not(.zu-sp-avg){display:none}" +
       ".zu-tsb:hover,.zu-tsb:focus-visible{background:var(--color-hover,rgba(255,255,255,.08));outline:none}" +
       /* v356 系统状态（issue #338）：格面值/标签继承 .it .v/.dim 基础样式，zu-sys-* 只承载
        * 结构布局与预警色（柔和黄/红只染数值与图标，浅色档双套同源深化）；stale 整段降

@@ -450,18 +450,38 @@ test('session avg + dbTps>0: chip 面=最后一轮真实值（v298 拍板）；t
   assert.ok(!tip.includes('1970-'), 'segment range (epoch 1000/2000) must not leak into session-avg span');
 });
 
-test('session avg + dbTps=0: chip 面空（v298 无最后一轮不显会话均）；tooltip 无「最近一段」；会话起点缺失时无「时间范围」行', () => {
+test('session avg + dbTps=0: chip 面=「均 + 会话均」（v471 用户裁定，不再留空）；档位色按会话均；aria 写会话均；tooltip 无「最近一段」；会话起点缺失时无「时间范围」行', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
   const p = h.payload({});              // last.tps 缺席 → dbTps 0；started 缺席 → 无时间范围行
   p.recent[0].avg_tps = 85.5;
   h.window.__zusageUpdate(p);
   const chip = h.chipOf(ui.row);
-  assert.equal(chip.innerHTML, '<span class="zu-live dim"></span>');   // v298：无最后一轮真实值=面留空（无数值不带档位色）
+  /* v471：无最后一轮真实值时面显示会话均并带「均」字（与最后一轮真实速度区分；v298 的留空废除——chip 无图标，留空即空壳）。
+   * 档位色按面上数字（85.5∈70–150 ok）；标签挂 zu-sp-avg，紧张档不去标签 */
+  assert.equal(chip.innerHTML, '<span class="zu-live ok"><span class="zu-sp-label zu-sp-avg">均</span><span class="zu-sp-val">85.5</span><span class="zu-sp-unit dim">t/s</span></span>');
+  assert.equal(chip.getAttribute('aria-label'), '生成速度 会话均 85.5 t/s');
   chip.listeners.get('mouseenter')[0].call(chip);
   const tip = h.tipEl().innerHTML;
   assert.ok(!tip.includes('最近一段'), 'no latest-segment row without dbTps');
   assert.ok(!tip.includes('时间范围'), 'no time-span row without a session start (half span suppressed)');
+});
+
+test('session avg + dbTps=0 → dbTps>0: 面从「均 X」切回最后一轮真实速度（无「均」字），同一节点原地换面，aria 同步（v471）', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  const p = h.payload({});
+  p.recent[0].avg_tps = 85.5;
+  h.window.__zusageUpdate(p);
+  const chip = h.chipOf(ui.row);
+  assert.match(chip.innerHTML, /zu-sp-label zu-sp-avg">均</, 'avg face first');
+  const q = h.payload({ tps: 42 });     // 最近一段出现有效值：v298 的面（最后一轮真实速度）接管
+  q.recent[0].avg_tps = 85.5;
+  h.window.__zusageUpdate(q);
+  const chip2 = h.chipOf(ui.row);
+  assert.equal(chip2, chip, 'same chip node, face swapped in place');
+  assert.equal(chip2.innerHTML, '<span class="zu-live warm"><span class="zu-sp-label"></span><span class="zu-sp-val">42</span><span class="zu-sp-unit dim">t/s</span></span>');
+  assert.equal(chip2.getAttribute('aria-label'), '生成速度 42 t/s');
 });
 
 test('session avg + dbTps=0 + 会话起点在：无「最近一段」，「时间范围」行为会话口径（v222）', () => {

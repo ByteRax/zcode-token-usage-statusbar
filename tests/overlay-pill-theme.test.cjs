@@ -2770,7 +2770,9 @@ function tsbFaceProbe(faces) {
         /* v470：只有状态词、没有数值的面（后台智能体合成的「正在派发」、未开始计时的「正在执行」等）在紧张档去掉状态词后
          * chip 只剩内边距——chip 没有图标承载状态，这就是用户看到的「速度 chip 被隐藏」。状态词必须可见。 */
         const blank = !!lab.textContent && !chip.querySelector('.zu-sp-val').textContent && !shown(lab);
-        if (slack < -0.05 || blank || (clipped && !(clipOk[tier] || []).includes(key))) bad.push([tier, key, slack, clipped, blank]);
+        /* v471：会话均兜底面的「均」字（zu-sp-avg）在任何档位都不得去掉——紧张档去掉后，窄窗里的裸数字会冒充最后一轮真实速度 */
+        const markHidden = !!lab && lab.classList.contains('zu-sp-avg') && !shown(lab);
+        if (slack < -0.05 || blank || markHidden || (clipped && !(clipOk[tier] || []).includes(key))) bad.push([tier, key, slack, clipped, blank, markHidden]);
       }
     }
   } finally { chip.className = save.cls; chip.innerHTML = save.html; }
@@ -3092,7 +3094,7 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
     assert.deepEqual(await b.evaluate(`(() => { const c = document.querySelector('#pane-a .zu-tsb'); return [c.className, c.innerHTML]; })()`), before, 'chip restored after the probe');
   });
 
-  await t.test('every face fits its tier box under six font stacks; only capped long-label faces clip; label-only faces never go blank (v470)', async () => {
+  await t.test('every face fits its tier box under six font stacks; only capped long-label faces clip; label-only faces never go blank (v470); the 均 marker survives every tier (v471)', async () => {
     await setup(275);
     const F = (label, val, unit) => `<span class="zu-sp-label">${label}</span><span class="zu-sp-val">${val}</span>${unit ? `<span class="zu-sp-unit dim">${unit}</span>` : ''}`;
     const G = (label, val) => `<span class="zu-sp-label zu-sp-glue">${label}</span><span class="zu-sp-val">${val}</span>`;   // v461 子代理面「子·X」
@@ -3108,6 +3110,9 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
        * 原始工具名的无计时面最长，在中等/紧张档顶到上限按省略号降级 */
       '无计时 正在派发': F('正在派发', ''), '无计时 正在执行': F('正在执行', ''), '无计时 更新待办': F('更新待办', ''), 'en Running': F('Running', ''),
       '无计时 AskUserQuestion': F('AskUserQuestion', ''),
+      /* v471：会话均兜底面「均 X t/s」——「均」字挂 zu-sp-avg，三档都保留（紧张档显示「均X」，不冒充最后一轮真实速度） */
+      '会话均兜底 均 85.5': '<span class="zu-sp-label zu-sp-avg">均</span><span class="zu-sp-val">85.5</span><span class="zu-sp-unit dim">t/s</span>',
+      'en Avg 85.5': '<span class="zu-sp-label zu-sp-avg">Avg</span><span class="zu-sp-val">85.5</span><span class="zu-sp-unit dim">t/s</span>',
     };
     const stacks = ['', '"Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif', 'Verdana, Tahoma, sans-serif',
       '"PingFang SC", "Hiragino Sans GB", "Heiti SC", sans-serif', '"Songti SC", "STSong", serif', 'Menlo, Consolas, monospace'];

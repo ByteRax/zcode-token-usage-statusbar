@@ -158,7 +158,7 @@
     /* 展示模型：{label, value, unit}。view = zuBarSpeedView 的返回值，或 DB 回退伪视图
      * {kind:"avg"|"real", db:true, speedValue}。kind avg 的面数字取 latest（最后一轮真实
      * 速度，v298），不取 speedValue（那是会话均，只在 tooltip）；DB 回退无标签（v452，
-     * 与完成态同面）。无值可显返回 null。 */
+     * 与完成态同面；例外 v471：精简 chip 的会话均兜底面传 avgFace，带「均」标签）。无值可显返回 null。 */
     /* v463 无计时面（用户实报截图「执行」右侧空一大块，指示「优化为 正在执行」）：宿主从 tool_input_start 起就把工具行
      * 算进行中，但 inputStreaming 行不写 startedAt——工具真正开跑前数值位是空的，固定宽里两字状态词只占 28px。
      * 已登记的短状态词换成四字说法填上这块（实机量过：四字 56px 从 11px 界面字号起在默认条与药丸各档都放得下，最紧的是
@@ -199,6 +199,10 @@
         unit = "t/s";
         /* v452：DB 回退不再带「历史」标签（用户指示），与完成态同面；不冒充实时的区分在
          * 全称（aria/data-zu-full 写「最近一段」）与无流光，tooltip 仍按回退卡展示。 */
+        /* v471（用户裁定）：精简 chip 的会话均兜底面——有会话均而没有最近一段速度时不再留空（chip 无图标，留空即空壳）。
+         * 只有 11 分片传 avgFace：标签「均」与最后一轮真实速度区分，面对象带 avg，标签挂 zu-sp-avg 类，
+         * 06 分片紧张档对它不去标签（窄窗下会话均也不冒充最后一轮速度）。 */
+        if (view.avgFace) lab = L("均", "Avg");
       } else if (k === "thinking") {
         lab = L("思考", "Think"); val = zuSpTime(view.elapsedMs);
       } else if (k === "toolgroup") {
@@ -221,7 +225,9 @@
        * 文字标签，只留图标 + 时间（图标已表达状态；aria-label / 菜单全称 / tooltip 不变）。
        * 精简 chip（autoWidth）不在此列：它按内容定宽，中等档本来就是按「Think 23:59:59」标定的，状态词放得下 */
       else if (!autoWidth && unit === "" && typeof view.elapsedMs === "number" && view.elapsedMs >= 3600000) lab = "";
-      return { label: lab, value: val, unit: unit, glue: glue };
+      var face = { label: lab, value: val, unit: unit, glue: glue };
+      if (view.avgFace) face.avg = true;   // v471：只有会话均兜底面带 avg（其余面的对象形状不变）
+      return face;
     }
     /* 速度格稳定占位：格面=标签 + 数值 + 单位三个 span，文案由上方展示模型 zuSpeedFace 从结构化
      * 字段翻出（不解析 text）；数字与单位仍是零空格两 item、
@@ -233,7 +239,7 @@
       if (!f) return "";
       /* v461：子代理面（glue）的标签与数值贴紧——zu-sp-glue 用负外边距抵消 .zu-live 的 gap（06 分片） */
       var glue = !!f.glue;
-      return '<span class="zu-sp-label' + (glue ? " zu-sp-glue" : "") + '">' + ttEsc(f.label) + '</span><span class="zu-sp-val">' + ttEsc(f.value) + '</span>' +
+      return '<span class="zu-sp-label' + (glue ? " zu-sp-glue" : "") + (f.avg ? " zu-sp-avg" : "") + '">' + ttEsc(f.label) + '</span><span class="zu-sp-val">' + ttEsc(f.value) + '</span>' +
         (f.unit ? '<span class="zu-sp-unit dim">' + ttEsc(f.unit) + '</span>' : "");
     }
     /* 速度格图标：思考=动效脑、工具=扳手、其余相位=闪电。07 整条渲染与 08 原地换图标共用同一出口。 */
@@ -1137,8 +1143,8 @@
         liveIconCur = "bolt";
         /* v298（用户拍板）：chip 条面=最后一轮真实速度（chipTps）；tooltip V1 回退卡
          * 仍按会话均优先（mainTps 原语义不变）——两处取值分离。最近一段无有效值
-         * 时面留空且不渲染 t/s 单位（与 11 分片精简 chip 拍板语义一致：无最后一轮
-         * 不显会话均），绝不把无效样本渲染成 0 t/s（review 修复，§5 口径） */
+         * 时面留空且不渲染 t/s 单位（状态条格面有图标承载，留空不是空壳；精简 chip 没有
+         * 图标，v471 起同一状态改显「均 X」），绝不把无效样本渲染成 0 t/s（review 修复，§5 口径） */
         var chipTps = dbTps;
         var mainTps = sessAvg || dbTps;
         var tband = tpsBand(mainTps);
