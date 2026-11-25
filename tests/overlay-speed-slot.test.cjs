@@ -954,12 +954,29 @@ test('速度格占位 CSS：全部格面固定宽 6.6em、右内边距 0、右�
     '.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-label,.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-unit{display:none}',
   ]) assert.ok(css.includes(rule), rule);
   /* v477 的反向锁：精简 chip（.zu-tsb）按内容定宽，空数值位不挤标签，不得被这条规则带走。
-   * 源码是 JS 字符串拼接：剥掉注释后只取字符串字面量再拼回 CSS，按「选择器 { 声明块 }」切规则。
+   * 源码是 JS 字符串拼接：逐字符扫描，只收字符串字面量（单引号、双引号、反引号都算）并拼回 CSS，
+   * 字符串之外的块注释与行注释（含行尾注释）一概不计。再按「选择器 { 声明块 }」切规则：
    * 凡是选择器带 zu-sp-val:empty、声明块里把 display 设成 none 的规则（不分大小写、冒号两侧
    * 空格、带 !important、不在首条、拆在两个字面量里都算），都必须且只能是固定宽速度格这一个。 */
-  const literals = (css.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")
-    .match(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g) || []);
-  const cssCode = literals.map(text => text.slice(1, -1).replace(/\\"/g, '"').replace(/\\'/g, "'").replace(/\\\\/g, '\\')).join("");
+  const literals = [];
+  for (let i = 0; i < css.length; i++) {
+    if (css[i] === "/" && css[i + 1] === "*") {
+      i = css.indexOf("*/", i + 2);
+      if (i < 0) break;
+    } else if (css[i] === "/" && css[i + 1] === "/") {
+      i = css.indexOf("\n", i + 2);
+      if (i < 0) break;
+    } else if (css[i] === '"' || css[i] === "'" || css[i] === "`") {
+      const quote = css[i];
+      let body = "";
+      for (i++; i < css.length && css[i] !== quote; i++) {
+        if (css[i] === "\\" && i + 1 < css.length) body += css[++i];
+        else body += css[i];
+      }
+      literals.push(body);
+    }
+  }
+  const cssCode = literals.join("");
   const emptyValueHidden = (cssCode.match(/[^{}]+\{[^{}]*\}/g) || []).filter(rule => {
     const brace = rule.indexOf('{');
     return /zu-sp-val:empty/.test(rule.slice(0, brace)) && /(^|;)\s*display\s*:\s*none\b/i.test(rule.slice(brace + 1, -1));

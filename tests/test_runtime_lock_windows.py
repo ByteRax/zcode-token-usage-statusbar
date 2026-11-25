@@ -261,14 +261,20 @@ class RuntimeLockStdinTests(unittest.TestCase):
     未钉 UTF-8 时或被读成乱码、或留下孤立代理项让保存失败，这次保存都丢失。一次性命令行没有
     读循环要保护：畸形字节直接以非零退出失败，不把替换字符写进配置。"""
 
-    # 默认代码页下管道 stdin 是 gbk/surrogateescape；strict 是更硬的对照
+    # 默认代码页下管道 stdin 是 gbk/surrogateescape；strict 是另一种错误处理。修复在位时入口的
+    # reconfigure(encoding="utf-8") 会把 errors 归为 strict，两种 subTest 走同一条路径；未修时
+    # 两者的表现不同（strict 下解码失败，surrogateescape 下留下孤立代理项让写入失败）。
     LEGACY_ERRORS = ("strict", "surrogateescape")
 
     @staticmethod
     def legacy_env(errors):
-        env = {name: os.environ[name] for name in ("SystemRoot", "COMSPEC", "PATHEXT")
-               if name in os.environ}
-        env.update(PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="gbk:" + errors)
+        """继承当前环境再覆盖编码相关变量（与兄弟 stdio 用例同款）：只留两三个变量的最小环境在
+        依赖 LD_LIBRARY_PATH 之类变量才启动得了的 Python 构建上会拉不起子进程。"""
+        env = {name: value for name, value in os.environ.items()
+               if not name.startswith(("ZCODE_", "ZUSAGE_", "PYTHON"))
+               and name.upper() not in ("HOME", "USERPROFILE")}
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env["PYTHONIOENCODING"] = "gbk:" + errors
         return env
 
     @staticmethod
@@ -277,7 +283,8 @@ class RuntimeLockStdinTests(unittest.TestCase):
         config.write_text('{"version": 1, "revision": 0, "mode": "default"}', encoding="utf-8")
         if os.name != "nt":
             # POSIX 上 update_enhance_provider 要求文件是属主 0600；默认 umask 建出来的是 0644，
-            # 不收紧的话用例在 macOS/Linux 上恒红（与 test_config_transactions 同款夹具）
+            # 不收紧的话非 ASCII 用例在 macOS/Linux 的常见 umask 下恒红（与 test_config_transactions
+            # 同款夹具；畸形入站那条在解码阶段就失败，走不到权限检查）
             os.chmod(config, 0o600)
         return config
 
