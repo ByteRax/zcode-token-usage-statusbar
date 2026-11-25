@@ -558,7 +558,7 @@ test('⑭ empty delivery (DB not caught up yet) keeps the placeholder and retrie
 test('⑮ bar "generation speed" chip is untouched by the rich-text overlay path', () => {
   const h = harness();
   const store = driveLocalStreaming(h);
-  assert.equal(instanceOf(h).liveEl().textContent, '生成≈1.5t/s');   // 生成中：估算态
+  assert.equal(instanceOf(h).liveEl().textContent, '1.5t/s');   // 生成中：估算态（v452 格面不带 ≈）
   const { line } = completeTurn(h, store);
   // 完成态 chip：紧凑 tok/s + 档位色（v73 格式，与对话内长句无关）——富文本请求/交付全程不变
   assert.equal(instanceOf(h).liveEl().textContent, '250.0t/s');
@@ -627,7 +627,7 @@ test('② matched session binds store and live segment shows c2t-estimated tok/s
   const live = inst.liveEl();
   assert.ok(live, 'live segment node mounted');
   // 本会话尚无已完成轮次校准过比例：退回默认每 token 2 字符 → 3/2 = 1.5
-  assert.equal(live.textContent, '生成≈1.5t/s');
+  assert.equal(live.textContent, '1.5t/s');
   assert.equal(live.className, 'zu-live hot');   // 估算 1.5 t/s 套低速档（v127 估算态也分档）
   // 无桥时不渲染实时段（降级现状）：见用例①，liveEl 为 null
 });
@@ -754,7 +754,7 @@ test('⑦ rate-line toggle off detaches the bridge and withdraws live segment an
 test('⑧ c2t calibration uses the previous completed turn\'s real ratio for the next live estimate', () => {
   const h = harness();
   const store = driveStreaming(h);   // pt1 生成中，characterRate=3（尚无校准样本，用默认比例 2）
-  assert.equal(instanceOf(h).liveEl().textContent, '生成≈1.5t/s');
+  assert.equal(instanceOf(h).liveEl().textContent, '1.5t/s');
   h.clock.now = 2000;
   // pt1 完成：6 字符（'abcdef'）÷ 2 tokens = 每 token 3 字符（区别于默认值 2，便于断言区分）
   store.set(snap(3, [header('completedSuccess', { outputTokens: 2, modelDurationMs: 1000, activeMs: 1000 }), text('abcdef')]));
@@ -772,7 +772,7 @@ test('⑧ c2t calibration uses the previous completed turn\'s real ratio for the
   ]));
   assert.equal(instanceOf(h).statsFor('pt2').characterRate, 9);
   // 用上一轮校准出的 3 字符/token（而非默认 2）：9 ÷ 3 = 3.0
-  assert.equal(instanceOf(h).liveEl().textContent, '生成≈3.0t/s');
+  assert.equal(instanceOf(h).liveEl().textContent, '3.0t/s');
 });
 
 test('⑨ nested [data-v4-turn-unit] wrapping a section with the same turn-id inserts exactly one line', () => {
@@ -848,8 +848,8 @@ test('⑩b compact auxiliary turn (timelineMarker type=compact) never shows the 
 
 test('⑪ heartbeat tick alone (no new store push) still advances the observed-seconds display during a stall', () => {
   const h = harness();
-  const store = driveStreaming(h);   // 末尾：characterRate=3，liveEl 显示 '生成≈1.5t/s'（v326 两 item 拼接无空格）
-  assert.equal(instanceOf(h).liveEl().textContent, '生成≈1.5t/s');
+  const store = driveStreaming(h);   // 末尾：characterRate=3，liveEl 显示 '1.5t/s'（v326 两 item 拼接无空格）
+  assert.equal(instanceOf(h).liveEl().textContent, '1.5t/s');
   // 模拟工具执行期间宿主不再推送新快照：只推进时钟、只触发 bridgeTick 自身的 0.1s 心跳
   h.clock.now = 3100;   // 距上个样本（t=1000）超过 2000ms 陈旧窗口，characterRate 应变为 null
   h.runTimers(100);
@@ -857,12 +857,13 @@ test('⑪ heartbeat tick alone (no new store push) still advances the observed-s
   // 没有新快照也要能走字：证明心跳本身驱动了刷新，而不是只等 store 通知
   assert.equal(instanceOf(h).liveEl().textContent, '思考03s');
   for (const [now, expected] of [
-    [59999, '59s'], [60000, '1:00'], [70000, '1:10'],
+    [59999, '思考59s'], [60000, '思考1:00'], [70000, '思考1:10'], [3599999, '思考59:59'],
+    // v464 长计时面：满 1 小时起状态词不出、只剩时间（进位写法仍逐拍钉住）
     [3600000, '1:00:00'], [3610000, '1:00:10'], [3660000, '1:01:00'], [3670000, '1:01:10'],
   ]) {
     h.clock.now = now;
     h.runTimers(100);
-    assert.equal(instanceOf(h).liveEl().textContent, '思考' + expected);
+    assert.equal(instanceOf(h).liveEl().textContent, expected);
   }
   // 无可测字符流=思考态：chip 图标切到动效脑（v77：用户语义"生成中"改"思考中"）
   assert.equal(instanceOf(h).liveIconKind(), 'think');
@@ -1031,8 +1032,8 @@ test('issue #309: disposing with a pending trailing run leaves no timer and neve
 
 test('⑫ bar chip mirrors the running toolCall state (verb + elapsed) instead of a stale 生成中', () => {
   const h = harness();
-  const store = driveStreaming(h);   // 正文流式中：'生成≈1.5t/s'
-  assert.equal(instanceOf(h).liveEl().textContent, '生成≈1.5t/s');
+  const store = driveStreaming(h);   // 正文流式中：'1.5t/s'
+  assert.equal(instanceOf(h).liveEl().textContent, '1.5t/s');
   // 工具开始执行（本轮最后一个活动行变为 running 的 toolCall）：悬浮条切到宿主同款动词
   store.set(snap(3, [header('running'), text('abcdef'),
     { rowId: 5, turnId: 't1', productTurnId: 'pt1', kind: 'toolCall', toolName: 'Edit', inputText: '{}', status: 'running', startedAt: Date.now() - 4200 }]));
@@ -1041,7 +1042,7 @@ test('⑫ bar chip mirrors the running toolCall state (verb + elapsed) instead o
   h.clock.now = 4000;
   store.set(snap(4, [header('running'), text('abcdefghij'),
     { rowId: 5, turnId: 't1', productTurnId: 'pt1', kind: 'toolCall', toolName: 'Edit', inputText: '{}', status: 'success' }]));
-  assert.match(instanceOf(h).liveEl().textContent, /^生成≈\d/);
+  assert.match(instanceOf(h).liveEl().textContent, /^\d/);
 });
 
 test('⑬ running phases keep distinct generating, thinking and tool icons after updates', () => {
@@ -1055,7 +1056,7 @@ test('⑬ running phases keep distinct generating, thinking and tool icons after
     { rowId: 5, turnId: 't1', productTurnId: 'pt1', kind: 'reasoning', text: '想一想' }]));
   assert.equal(inst.statsFor('pt1').phase, 'thinking');
   assert.equal(inst.liveIconKind(), 'think');   // 相位切换触发整条重渲染：动效脑保持
-  assert.match(inst.liveEl().textContent, /^生成≈\d+(\.\d+)?t\/s$/);   // 思考文本也在流式：估算速度照常（v326 两 item 拼接无空格）
+  assert.match(inst.liveEl().textContent, /^\d+(\.\d+)?t\/s$/);   // 思考文本也在流式：估算速度照常（v326 两 item 拼接无空格）
   // 工具执行期同样保持动效脑（v77.1：运行期一律脑图标）
   store.set(snap(4, [header('running'), text('abcdef'),
     { rowId: 6, turnId: 't1', productTurnId: 'pt1', kind: 'toolCall', toolName: 'Read', inputText: '', status: 'running', startedAt: Date.now() }]));
@@ -1327,7 +1328,7 @@ test('㉓ v87 synthetic thinking fires only for phase=running, never for draft (
 
 test('㉓b thinking elapsed anchors to turnHeader.startedAt (host writes it at header creation), not first observation (v116)', () => {
   const h = harness();
-  const store = driveStreaming(h);   // t=1000，'生成≈1.5t/s'
+  const store = driveStreaming(h);   // t=1000，'1.5t/s'
   store.set(snap(3, [header('running', { startedAt: Date.now() - 4200 }), text('abcdef')]));
   h.clock.now = 3100;   // 字符流停滞 >2s：characterRate 失效进入思考态
   h.runTimers(100);     // 仅心跳驱动（无新快照），同 ⑪
@@ -1529,7 +1530,7 @@ test('v174 deterministic lines scope by owner: same turn id in main and side cha
 function liveText(h) { const el = instanceOf(h).liveEl(); return el ? el.textContent : ''; }
 /* 真实阈值下首个视图（思考态）立即上屏，之后的估算态要等思考态最短显示 400ms + 防抖 180ms：
  * driveStreaming 已把流式快照推到位，这里只推进时钟并跑一拍心跳。 */
-function showEstimate(h) { h.advanceDate(600); h.runTimers(100); assert.equal(liveText(h), '生成≈1.5t/s', '估算态在屏'); }
+function showEstimate(h) { h.advanceDate(600); h.runTimers(100); assert.equal(liveText(h), '1.5t/s', '估算态在屏'); }
 /* 数据库快照里的会话行：字段齐全才会渲染速度格（缺字段的行按无数据处理） */
 const dbRow = (extra) => Object.assign({ sid: 'sid_a', workspace_identity: '', ctx: 63400, context_window: 200000, last_at: 1, ctx_exc: 0,
   last_turn: { total: 5200, requests: 2 }, last: { provider_id: 'account:x', model: 'M', tps: 87.3 } }, extra);
@@ -1552,9 +1553,9 @@ test('§7.3 桥静默（存储不再推送）：估算值随内核既有 2s 陈�
   h.clock.now += 3100;             // 存储静默 3.1s：两个时钟一起走。距上个样本 >2s → characterRate 过期
   h.advanceDate(3100);             // （内核既有窗口；协调器不加第二个 2 秒判定）
   h.advanceDate(100); h.runTimers(100);
-  assert.equal(liveText(h), '生成≈1.5t/s', '真实态刚变：防抖窗内仍是旧态');
+  assert.equal(liveText(h), '1.5t/s', '真实态刚变：防抖窗内仍是旧态');
   h.advanceDate(100); h.runTimers(100);
-  assert.equal(liveText(h), '生成≈1.5t/s', '100ms：仍不足防抖');
+  assert.equal(liveText(h), '1.5t/s', '100ms：仍不足防抖');
   h.advanceDate(100); h.runTimers(100);
   const after = liveText(h);
   assert.ok(/^思考/.test(after), '300ms：已离开估算值、进入思考态：' + after);
@@ -1585,13 +1586,13 @@ test('§7.3 整轮失败（turnHeader.state=failed）：最终速度当拍上屏
   assert.equal(liveText(h), '250.0t/s', '订阅回调内同步更新：立即最终速度');
 });
 
-test('§7.3 数据库回退不被当成实时生成数据：标签「历史」、无估算前缀、无流光、全称写明「最近一段」', () => {
+test('§7.3 数据库回退不被当成实时生成数据：面与完成态同款（无状态词）、无流光、全称写明「最近一段」', () => {
   const h = harness(false);                      // 无桥：只有数据库路径
   h.setPanes(['a']); h.inject(); h.boot(); h.runTimers(600); h.runTimers(500);
   h.window.__zusageUpdate({ remote_evidence: false, scope_bindings: {}, recent: [dbRow()] });
   h.runTimers(100);
   const live = instanceOf(h).liveEl();
-  assert.equal(live.textContent, '历史87.3t/s');
+  assert.equal(live.textContent, '87.3t/s');
   assert.ok(!/zu-shimmer/.test(live.className) && !/≈/.test(live.textContent), '无流光、无估算前缀');
 });
 /* 工具错误徽标与速度格全称（aria-label / data-zu-full）要在真实元素树上断言，

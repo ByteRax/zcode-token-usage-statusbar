@@ -264,7 +264,11 @@ function liveGeo() {
   const c = card.getBoundingClientRect(), br = bar.getBoundingClientRect();
   return { label: lab ? lab.textContent : null, value: val ? val.textContent : null, unit: unit ? unit.textContent : null,
     cls: live.className, iconKind, cell: r(cell), icon: r(ico), live: r(live), labelRect: r(lab), val: r(val), unitRect: r(unit),
+    labelClipped: lab && getComputedStyle(lab).display !== 'none' ? lab.scrollWidth > lab.clientWidth + 0.5 : null,   // v460：两字状态词在固定宽里必须完整
+    pill: bar.classList.contains('zu-pill'), iconOnly: cell.dataset.zuSpeedMin === '1',
+    padL: Math.round(parseFloat(getComputedStyle(cell).paddingLeft) * 100) / 100,   // v462：默认条左内边距 0（图标贴格左缘），药丸保留
     cells, scrollLeft: main.scrollLeft, bar: r(bar), barCenter: br.left + br.width / 2, cardCenter: c.left + c.width / 2,
+    roomy: bar.classList.contains('zu-sp-roomy'), fontPx: parseFloat(getComputedStyle(cell).fontSize),
     barCls: bar.className, tier: bar.classList.contains('zu-narrow') ? 'narrow' : bar.classList.contains('zu-tight') ? 'tight'
       : bar.classList.contains('zu-speed-tight') ? 'pill-tight' : bar.classList.contains('zu-speed-mid') ? 'pill-mid' : 'wide',
     aria: cell.getAttribute('aria-label'), full: cell.dataset.zuFull,
@@ -300,19 +304,27 @@ async function compareSurface(browser, barIndex, selector) {
    overlay 建出来的状态条，逐档（默认四档 + 药丸三档）逐状态面写入格面并量矩形。状态面与
    zuSpeedFaceHtml 同构、不经数据链（展示时机由 overlay-speed-slot 锁）。越界判据=最后一个可见项
    右缘超过速度格内容区右缘（亚像素）——scrollWidth/clientWidth 是取整整数，会掩盖 1~3px 的越界
-   （紧张档 6.4em 时期「思考 23:59:59」实测越界 1.5px 即被掩盖）。量完全部还原。 */
+   （紧张档 6.4em 时期「思考 23:59:59」实测越界 1.5px 即被掩盖）。量完全部还原。带状态词的面与完成态（无状态词）分开记：前者用档位占位
+   （speedW/turnL），后者用紧凑占位（plainW/plainTurnL），同一类内宽度与邻格位置必须唯一。 */
+/* v459 速度格固定宽，与 CSS width:6.6em 同源（全部格面同宽，随格字号缩放）；其后分隔线间隙 10px */
+const ZU_SLOT_PX = fs => 6.6 * fs;
+const ZU_SPEED_GAP_PX = 10;
+
 function speedSlotProbe() {
   const bar = document.querySelector('#pane-a .zusage-root'), main = bar.querySelector('.zu-main');
   const speed = main.querySelector('.it.zu-speed');
   if (!speed) return { error: 'speed cell missing' };
   const F = (label, val, unit) => '<span class="zu-sp-label">' + label + '</span><span class="zu-sp-val">' + val + '</span>' + (unit ? '<span class="zu-sp-unit dim">' + unit + '</span>' : '');
+  const G = (label, val) => '<span class="zu-sp-label zu-sp-glue">' + label + '</span><span class="zu-sp-val">' + val + '</span>';   // v461 子代理面「子·X」：与 zuSpeedFaceHtml 同构（标签带 zu-sp-glue）
   const faces = {
-    real201: F('', '201', 't/s'), hist: F('历史', '201.4', 't/s'), real99: F('', '9.9', 't/s'), real250: F('', '250.0', 't/s'),
-    est: F('生成', '≈128.6', 't/s'), estMax: F('生成', '≈9999.9', 't/s'), estK: F('生成', '≈12.9k', 't/s'),
+    real201: F('', '201', 't/s'), hist: F('', '201.4', 't/s'), real99: F('', '9.9', 't/s'), real250: F('', '250.0', 't/s'),
+    est: F('生成', '128.6', 't/s'), estMax: F('生成', '9999.9', 't/s'), estK: F('生成', '12.9k', 't/s'),
     thinkHalf: F('思考', '0.5s'), think: F('思考', '6:33'), thinkHour: F('思考', '1:05:00'), thinkDay: F('思考', '23:59:59'), thinkOver: F('思考', '1天3时'),
     tool: F('读取', '01s'), group: F('查阅', '03s'), skill: F('代码审查与修复', '12s'),
-    sub1: F('代理', '≈1286.5', 't/s'), sub3: F('代理×3', '≈28.8', 't/s'), sub12: F('代理×12', '≈1286.5', 't/s'),
-    enThink: F('Think', '23:59:59'), enOver: F('Think', '1d 3h'), enAgt: F('Agt×12', '≈1286.5', 't/s'), enGen: F('Gen', '≈9999.9', 't/s'), enSkill: F('code-review-and-fix', '12s'),
+    sub1: G('子·', '128.6'), sub3: G('子·', '28.8'), sub12: G('子', '1286.5'),
+    enThink: F('Think', '23:59:59'), enOver: F('Think', '1d 3h'), enAgt: G('Ag·', '128.6'), enAgtLong: G('A', '1286.5'), enGen: F('Gen', '9999.9', 't/s'), enSkill: F('code-review-and-fix', '12s'),
+    /* v463 无计时面：四字说法（与 zuSpeedFace 的 ZU_SPEED_NAKED 同文案；中文四字等宽，取表里最宽的英文说法；Thinking 等更宽的词实测在最紧的档放不下，不入表） */
+    nakedRun: F('正在执行', ''), nakedCtx: F('正在读取', ''), nakedEn: F('Running', ''), nakedEnWide: F('Sending', ''),
   };
   const tiers = [
     ['默认 宽裕', [], null, ''], ['默认 中等', ['zu-tight'], null, ''], ['默认 紧张', ['zu-tight', 'zu-narrow'], null, ''], ['默认 极窄', ['zu-tight', 'zu-narrow'], '1', ''],
@@ -338,20 +350,29 @@ function speedSlotProbe() {
         bar.style.minWidth = lock; bar.style.maxWidth = lock;
         if (min) speed.dataset.zuSpeedMin = min; else delete speed.dataset.zuSpeedMin;
         const turn = main.querySelector('.it[data-zu-key="turn"]');
-        const row = { fs: getComputedStyle(speed).fontSize, speedW: [], turnL: [], overflow: [], minSlack: Infinity, minLead: Infinity };
+        const row = { fs: getComputedStyle(speed).fontSize, speedW: [], plainW: [], turnL: [], plainTurnL: [], overflow: [], minSlack: Infinity, minLead: Infinity, nakedClip: [] };
         res[(ui || 'default') + ' ' + name] = row;
+        row.padL = Math.round(parseFloat(getComputedStyle(speed).paddingLeft) * 100) / 100;   // v462：默认条非仅图标档为 0（图标贴格左缘），药丸与仅图标档保留
+        row.iconInset = speed.querySelector('.ico') ? Math.round((R(speed.querySelector('.ico')).left - R(speed).left) * 100) / 100 : null;
         const set = mode === 'min' ? { real201: faces.real201, hist: faces.hist } : faces;
         for (const [key, html] of Object.entries(set)) {
           setFace(html);
           const cs = getComputedStyle(speed), box = R(speed);
           const items = [...speed.querySelectorAll('.zu-live > *')].filter(e => getComputedStyle(e).display !== 'none');
-          row.speedW.push(Math.round(box.width * 100) / 100);
-          if (turn) row.turnL.push(Math.round(R(turn).left * 100) / 100);
+          const plain = /^<span class="zu-sp-label"><\/span>/.test(html);   // 完成态（无状态词）用紧凑占位，与带状态词的面分开记
+          (plain ? row.plainW : row.speedW).push(Math.round(box.width * 100) / 100);
+          if (turn) (plain ? row.plainTurnL : row.turnL).push(Math.round(R(turn).left * 100) / 100);
           if (!items.length) continue;
-          const slack = (box.right - parseFloat(cs.paddingRight)) - R(items[items.length - 1]).right;   // 右侧余量（<0 即越界）
-          const lead = R(items[0]).left - R(speed.querySelector('.zu-live')).left;                      // 左侧余量：最窄档数值靠右，余量在左
+          /* v456 上限=速度态宽：数值本体（.zu-sp-val，flex 不收缩）必须完整；unit「t/s」是 dim 辅助，
+           * 在 9999.9/子代理长数值面允许随钳制裁尾几像素，不算越界 */
+          const valEl = speed.querySelector('.zu-live > .zu-sp-val');
+          const slack = (box.right - parseFloat(cs.paddingRight)) - R(valEl).right;   // 数值右缘余量（<0 即数字被裁）
+          const lead = R(items[0]).left - R(speed.querySelector('.zu-live')).left;    // 左侧余量：内容成组靠左，恒为 0（v448）
           row.minSlack = Math.min(row.minSlack, Math.round(slack * 100) / 100);
           row.minLead = Math.min(row.minLead, Math.round(lead * 100) / 100);
+          /* v463：无计时面的四字说法在标签可见的档位里不得被省略（空数值 span 仍占一个 gap） */
+          const nakedLab = key.startsWith('naked') && speed.querySelector('.zu-live > .zu-sp-label');
+          if (nakedLab && nakedLab.scrollWidth > nakedLab.clientWidth + 0.5) row.nakedClip.push(key);
           if (slack < -0.05) row.overflow.push(key);
         }
       }
@@ -392,6 +413,10 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
     const dims = await b.evaluate(`(() => {
       const bar = document.querySelector('#pane-a .zusage-root'), main = bar.querySelector('.zu-main');
       const probe = bar.cloneNode(false), m = main.cloneNode(true);
+      /* 与生产窄宽探针同口径（specs/speed-chip-stable-slot.md「整条档位探针的保守口径」）：完成态的空标签填占位字，
+       * 恒按带状态词的档位占位量——否则这里量出的 full/tight 比机器用的自然宽小约 76px，中点/回宽阈值全部错位 */
+      const sl = m.querySelector('.it.zu-speed > .zu-live > .zu-sp-label');
+      if (sl && !sl.textContent) sl.textContent = '占位';
       probe.classList.remove('zu-in', 'zu-narrow', 'zu-tight');
       probe.style.cssText = 'position:fixed;left:-10000px;visibility:hidden;width:max-content;min-width:0;max-width:none';
       m.style.cssText = 'width:max-content;min-width:max-content;flex:none;overflow:visible';
@@ -475,34 +500,42 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
   /* 速度格稳定占位（specs/speed-chip-stable-slot.md）核心不变量的真实布局证据：同一布局档位里，状态
      面怎么变速度格宽度都恒定、邻格 left 不动；数值右缘不得越过速度格内容区（亚像素判据）；三种界面
      字号覆盖 em 随字号缩放与图标定宽的交互；药丸紧张档与默认条紧张档同宽。 */
-  await t.test('speed cell keeps one slot width per layout tier across all state faces; neighbours never move; no value crosses the cell edge', async () => {
+  await t.test('speed cell keeps one fixed width across all state faces (v459); neighbours stay put and no value crosses the cell edge', async () => {
     await reset(b);
     await b.evaluate(`document.querySelector('#pane-a').style.width = '1100px'`);
     await b.waitFor(`!document.querySelector('#pane-a .zusage-root').classList.contains('zu-tight')`, 'wide bar did not restore');
     const report = await b.evaluate(`(${speedSlotProbe.toString()})()`);
     assert.ok(!report.error, report.error);
     assert.equal(Object.keys(report).length, 21, '3 interface font sizes × 7 tiers');
+    /* v459：全部格面固定宽 6.6em（随格字号缩放），极窄档恒 2.75em；同一档位只有一个宽度，邻格 left 不随格面动。
+     * 硬判据：同宽、出界、数值越界、内容贴左 */
     for (const [tier, r] of Object.entries(report)) {
-      assert.equal(new Set(r.speedW).size, 1, `${tier}: speed width varies with state: ${[...new Set(r.speedW)]}`);
-      assert.ok(r.turnL.length > 0 && new Set(r.turnL).size === 1, `${tier}: neighbour cell moved: ${[...new Set(r.turnL)]}`);
-      assert.deepEqual(r.overflow, [], `${tier}: value crosses the cell edge`);
+      const all = [...r.speedW, ...r.plainW];
+      const fs = parseFloat(r.fs), iconOnly = tier.split(' ').pop() === '极窄';
+      assert.ok(all.length > 0, `${tier}: no widths measured`);
+      for (const w of all) {
+        if (iconOnly) assert.ok(Math.abs(w - 2.75 * fs) <= 1.5, `${tier}: icon-only slot ${w}px ≈ 2.75em×${fs}`);
+        else assert.ok(Math.abs(w - ZU_SLOT_PX(fs)) <= 0.5, `${tier}: width ${w}px is not the fixed 6.6em slot (${ZU_SLOT_PX(fs)}px @ ${r.fs})`);
+      }
+      assert.equal(new Set(all).size, 1, `${tier}: one width for every face class (${[...new Set(all)]})`);
+      assert.ok(r.turnL.length > 0, `${tier}: neighbour cells present`);
+      assert.deepEqual([...new Set(r.turnL)], [...new Set(r.plainTurnL)], `${tier}: neighbour cell does not move between labelled and labelless faces`);
+      /* v459 固定宽下 >1h 长计时（thinkDay 23:59:59 / thinkHour 1:05:00 / enThink）数值尾可能被裁（14px 系统字体 ≤2px；11px 界面字号 + 宽字体最多约 11px），其余面数值必须完整 */
+      assert.deepEqual(r.overflow.filter(k => !['thinkDay', 'thinkHour', 'enThink'].includes(k)), [], `${tier}: value crosses the cell edge`);
+      assert.equal(r.minLead, 0, `${tier}: content starts at the cell's left edge (icon next to text)`);
+      assert.deepEqual(r.nakedClip, [], `${tier}: untimed four-character labels are never clipped`);
+      /* v462 左内边距 0 只作用于默认条的非仅图标档：图标贴格左缘；药丸（底色圆角）与默认条仅图标档保留左内边距 */
+      if (tier.includes('药丸') || iconOnly) {
+        assert.ok(r.padL > 0, `${tier}: left padding is kept (${r.padL}px)`);
+        assert.ok(Math.abs(r.iconInset - r.padL) <= 0.02, `${tier}: icon sits one padding in from the cell edge (${r.iconInset}px vs ${r.padL}px)`);
+      } else {
+        assert.equal(r.padL, 0, `${tier}: no left padding`);
+        assert.equal(r.iconInset, 0, `${tier}: icon is flush with the cell's left edge`);
+      }
     }
-    for (const ui of ['default', '11px', '20px']) {
-      const d = report[ui + ' 默认 紧张'], p = report[ui + ' 药丸 紧张'];
-      assert.equal(d.fs, p.fs, `${ui}: pill tight tier uses the default bar's narrow font size`);
-      assert.equal(d.speedW[0], p.speedW[0], `${ui}: pill tight tier is as wide as the default bar's narrow tier`);
-      assert.ok(Math.min(d.minLead, p.minLead) >= 4, `${ui}: narrow tier lead ≥4px (got default ${d.minLead}, pill ${p.minLead})`);
-      assert.ok(report[ui + ' 默认 极窄'].speedW[0] < d.speedW[0] / 2, `${ui}: icon-only tier`);
-      assert.ok(d.speedW[0] < report[ui + ' 默认 中等'].speedW[0] && report[ui + ' 默认 中等'].speedW[0] < report[ui + ' 默认 宽裕'].speedW[0], `${ui}: tiers shrink monotonically`);
-      const m = report[ui + ' 药丸 中等'], dm = report[ui + ' 默认 中等'];
-      assert.equal(dm.fs, m.fs, `${ui}: pill mid tier uses the default bar's compact font size`);
-      assert.equal(dm.speedW[0], m.speedW[0], `${ui}: pill mid tier is as wide as the default bar's compact tier`);
-    }
-    /* 目标 §5 四档宽度区间（按默认界面字号 14px 校验；其它界面字号随 em 等比缩放）：宽裕 160–180 / 中等 112–132 / 紧张 72–88 / 极窄 32–40 */
-    const inRange = (tier, lo, hi) => { const w = report['default ' + tier].speedW[0]; assert.ok(w >= lo && w <= hi, `${tier}: ${w}px outside ${lo}–${hi}`); };
-    inRange('默认 宽裕', 160, 180); inRange('默认 中等', 112, 132); inRange('默认 紧张', 72, 88); inRange('默认 极窄', 32, 40);
-    inRange('药丸 宽裕', 160, 180); inRange('药丸 中等', 112, 132); inRange('药丸 紧张', 72, 88);
-    assert.ok(report['default 默认 宽裕'].speedW[0] > report['11px 默认 宽裕'].speedW[0] && report['20px 默认 宽裕'].speedW[0] > report['default 默认 宽裕'].speedW[0], 'em scales with the interface font size');
+    /* 常见面紧贴内容（实测空白 ≤ ~10px），内容比下限窄时落在下限上 */
+    const wide = report['default 默认 宽裕'];
+    assert.ok(Math.max(...wide.plainW) < 110, `wide-tier labelless faces stay near their content (${[...new Set(wide.plainW)]})`);
     assert.equal(await b.evaluate(`getComputedStyle(document.querySelector('#pane-a .zusage-root')).display !== 'none' && !!document.querySelector('#pane-a .it.zu-speed .zu-live') && !document.documentElement.style.getPropertyValue('--ui-font-size')`), true, 'bar and font variable restored after the probe');
   });
 
@@ -2315,9 +2348,10 @@ test('v146 compact theme browser behaviour (isolated fixture)', { skip: skipReas
 
 /* ---------- 速度格走真实数据链（目标 §1.2 / §4.2 / §6.2）：伪造会话 store → turn-stats.js →
    zuBarSpeedView → 展示协调器 → updateLive → 真实布局。生产阈值（防抖 180 / 最短显示 400 / 数值 600 /
-   颜色 400 / 计时 1000）下按真实节奏推进：每个状态等它上屏后再量几何。断言：
-   ①同一档位里图标切换（脑/扳手/闪电）不改变图标盒、不推动文字；②数值右缘不随位数/小数位变化；
-   ③邻格矩形不变；④右对齐无水平位移；⑤药丸居中坐标不变；⑥工具错误徽标与速度格互不阻塞。 ---------- */
+   颜色 400 / 计时 1000）下按真实节奏推进：每个状态等它上屏后再量几何。断言（v455 内容自适应）：
+   ①图标切换（脑/扳手/闪电）不改变图标盒与格内位置；②图标与文字相邻：标签从文字盒左缘起排、数值紧跟标签
+   （完成态无标签时紧跟图标），同一标签下数值左缘不随位数/小数位变化（v448）；
+   ③格宽恒在下限/上限之间、数值不越格（格面变化时伸缩合法，邻格允许移动）；④右对齐无水平位移；⑤药丸居中坐标不变；⑥工具错误徽标与速度格互不阻塞。 ---------- */
 test('speed slot through the live data chain (isolated fixture)', { skip: skipReason, timeout: 180000 }, async t => {
   const b = await startBrowser(t);
   const H = (state, extra) => `P.header(${JSON.stringify(state)}, ${JSON.stringify(extra || {})})`;
@@ -2330,12 +2364,11 @@ test('speed slot through the live data chain (isolated fixture)', { skip: skipRe
   };
   const face = label => b.waitFor(`(() => {
     const c = window.__liveProbe.cell && window.__liveProbe.cell();
-    const l = c && c.querySelector('.zu-sp-label'), v = c && c.querySelector('.zu-sp-val');
-    return !!l && !!v && l.textContent === ${JSON.stringify(label)}${label ? '' : " && !/≈/.test(v.textContent)"};
+    const l = c && c.querySelector('.zu-sp-label'), v = c && c.querySelector('.zu-sp-val'), live = c && c.querySelector('.zu-live');
+    return !!l && !!v && l.textContent === ${JSON.stringify(label)}${label ? '' : " && !/≈/.test(v.textContent) && !/zu-shimmer/.test(live.className)"};
   })()`, `speed face "${label}" did not appear`, 600);
   const bind = () => b.evaluate(`(() => { const P = window.__liveProbe; P.store = P.mkStore(P.snap(1, [P.header('running'), P.text('abc')]));
     P.sessions.push({ key: '__base__ /fixture/ws', topic: 'conversation/sid_a', store: P.store }); return true; })()`);
-  const right = rect => rect && Math.round((rect[0] + rect[2]) * 100) / 100;
 
   /* 思考 → 生成 → 读取（工具）→ 生成 → 完成；生成态内再推三次正文让数值变化。返回各态上屏后的几何。 */
   async function runChain() {
@@ -2344,7 +2377,7 @@ test('speed slot through the live data chain (isolated fixture)', { skip: skipRe
     const g = { think: await geo() };
     await delay(500);
     await push(2, [H('running'), T('abcdef')]);
-    await face('生成');
+    await face('');   // v454 估算与完成态同为空标签面；完成态此刻尚未推送
     g.estimate = await geo();
     g.estimateTicks = [];
     for (const [i, text] of ['abcdefghi', 'abcdefghijkl', 'abcdefghijklmnopq'].entries()) {
@@ -2354,22 +2387,26 @@ test('speed slot through the live data chain (isolated fixture)', { skip: skipRe
       g.estimateTicks.push(await geo());
     }
     await delay(500);
-    await push(6, [H('running'), T('abcdefghijklmnopq'), TOOL('running', '{ startedAt: Date.now() }')]);
+    await push(6, [H('running'), T('abcdefghijklmnopq'), TOOL('inputStreaming', '{}')]);   // v463：工具入参还在输出、没有 startedAt——无计时面
+    await face('正在读取');
+    g.naked = await geo();
+    await delay(300);
+    await push(7, [H('running'), T('abcdefghijklmnopq'), TOOL('running', '{ startedAt: Date.now() }')]);
     await face('读取');
     g.tool = await geo();
     await delay(500);
-    await push(7, [H('running'), T('abcdefghijklmnopqrstuvwx'), TOOL('completed', '{ startedAt: Date.now() - 1500 }')]);
-    await face('生成');
+    await push(8, [H('running'), T('abcdefghijklmnopqrstuvwx'), TOOL('completed', '{ startedAt: Date.now() - 1500 }')]);
+    await face('');   // v454 估算与完成态同为空标签面；完成态此刻尚未推送
     g.estimate2 = await geo();
-    await push(8, [H('completedSuccess', { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), T('abcdefghijklmnopqrstuvwx')]);
+    await push(9, [H('completedSuccess', { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), T('abcdefghijklmnopqrstuvwx')]);
     await face('');
     g.final = await geo();
     return g;
   }
 
-  /* 三种布局共用：速度格/图标盒/文字左缘/数值右缘/邻格在整个序列里不变；图标确实切换过 */
+  /* 四种布局共用（v459 固定宽）：逐面核对格宽 = 6.6em × 格字号（全部格面同宽）、图标贴左不变形、数值不越格；图标确实切换过 */
   function assertStableSlot(g, label) {
-    const all = [g.think, g.estimate, ...g.estimateTicks, g.tool, g.estimate2, g.final];
+    const all = [g.think, g.estimate, ...g.estimateTicks, g.naked, g.tool, g.estimate2, g.final];
     assert.ok(all.every(Boolean), `${label}: speed cell present in every state`);
     assert.deepEqual(g.think.iconKind, 'think', `${label}: thinking shows the brain icon`);
     assert.deepEqual(g.tool.iconKind, 'tool', `${label}: tool shows the wrench icon`);
@@ -2379,34 +2416,66 @@ test('speed slot through the live data chain (isolated fixture)', { skip: skipRe
       assert.equal(snap.focusable, 0, `${label}: speed cell is keyboard reachable (tooltip on focus)`);
     }
     assert.match(g.think.value, /^\d/, `${label}: thinking shows an elapsed time`);
-    assert.match(g.estimate.value, /^≈\d/, `${label}: estimate shows ≈ value`);
+    assert.doesNotMatch(g.estimate.value, /≈/, `${label}: estimate value has no ≈ prefix (v452)`);
     assert.deepEqual(g.tool.label, '读取', `${label}: tool label`);
     assert.doesNotMatch(g.final.value, /≈/, `${label}: final shows the real speed without ≈`);
     assert.deepEqual(g.final.label, '', `${label}: final has no label`);
+    /* v463 无计时面（用户「执行 → 正在执行」）：工具入参还在输出（宿主没写 startedAt）时数值位为空，标签换成四字说法；
+     * 同一状态一出计时立即换回短状态词 + 数字；全称（aria）仍读 text「读取中」，不读格面标签 */
+    assert.deepEqual([g.naked.label, g.naked.value, g.naked.iconKind], ['正在读取', '', 'tool'], `${label}: untimed tool face uses the four-character wording`);
+    assert.equal(g.naked.aria, '生成速度 读取中', `${label}: full text is unchanged by the face wording`);
+    if (g.naked.labelRect[2] > 0) assert.equal(g.naked.labelClipped, false, `${label}: the four-character label is shown in full`);
     for (const snap of all) assert.equal(snap.tier, g.think.tier, `${label}: layout tier unchanged across the sequence (${snap.label}|${snap.value})`);
-    for (const [name, snap] of [['estimate', g.estimate], ['tool', g.tool], ['estimate2', g.estimate2], ['final', g.final]]) {
-      assert.deepEqual(snap.cell, g.think.cell, `${label}: cell box unchanged across ${name}`);
-      assert.deepEqual(snap.icon, g.think.icon, `${label}: icon box unchanged across ${name} (icon switch does not push text)`);
-      assert.deepEqual(snap.live, g.think.live, `${label}: text box unchanged across ${name}`);
+    /* v459 全部格面固定宽（specs/speed-chip-stable-slot.md「占位」）：思考/工具/估算/完成态同一宽度，
+     * 图标盒不变形且贴左、数值不越格（v454 起估算与完成态/回退同为无标签面）。 */
+    const rel = (snap) => [snap.icon[1], snap.icon[2], snap.icon[3], Math.round((snap.icon[0] - snap.cell[0]) * 100) / 100];   // 图标盒：高宽与相对格子左缘的位置
+    for (const snap of all) {
+      assert.ok(Math.abs(snap.cell[2] - ZU_SLOT_PX(snap.fontPx)) <= 0.5, `${label}: width ${snap.cell[2]}px is not the fixed 6.6em slot (${ZU_SLOT_PX(snap.fontPx)}px @ ${snap.fontPx}px font) (${snap.label}|${snap.value})`);
+      assert.deepEqual(rel(snap), rel(g.think), `${label}: icon keeps its size and its place inside the cell (${snap.label}|${snap.value})`);
     }
-    g.estimateTicks.forEach((snap, i) => assert.deepEqual(snap.cell, g.think.cell, `${label}: cell box unchanged on value tick ${i}`));
-    for (const snap of [g.think, g.estimate, ...g.estimateTicks, g.tool, g.estimate2, g.final]) {
-      assert.deepEqual(snap.cells.filter(([k]) => k !== 'speed'), g.think.cells.filter(([k]) => k !== 'speed'), `${label}: neighbour cells unchanged (${snap.label}|${snap.value})`);
+    /* v462 左内边距 0（用户指示「左侧的 padding 也去掉」）：默认条里图标贴格左缘（= 状态条左缘）；药丸有底色与圆角，
+     * 保留左内边距、图标离格左缘正好一个内边距。序列里不进仅图标档（那一档保留两侧内边距，外观不变）。 */
+    for (const snap of all) {
+      assert.equal(snap.iconOnly, false, `${label}: the sequence never collapses to icon-only (${snap.label}|${snap.value})`);
+      const inset = Math.round((snap.icon[0] - snap.cell[0]) * 100) / 100;
+      if (snap.pill) {
+        assert.ok(snap.padL > 0, `${label}: pill keeps its left padding (${snap.padL}px)`);
+        assert.ok(Math.abs(inset - snap.padL) <= 0.02, `${label}: pill icon sits one padding in from the cell edge (${inset}px vs ${snap.padL}px)`);
+      } else {
+        assert.equal(snap.padL, 0, `${label}: default bar has no left padding (${snap.padL}px)`);
+        assert.equal(inset, 0, `${label}: icon is flush with the cell's left edge (${inset}px)`);
+      }
     }
-    /* 数值右缘：宽裕/中等档里带单位的态以单位右缘为准，不带单位的态（思考/工具计时）数值右缘落在同一条线上；
-     * 最窄档单位隐藏，所有态的数值右缘同线 */
-    const unitShown = g.estimate.unitRect[2] > 0;
-    const edge = unitShown ? right(g.estimate.unitRect) : right(g.estimate.val);
-    const edgeOf = snap => unitShown && snap.unitRect && snap.unitRect[2] > 0 ? right(snap.unitRect) : right(snap.val);
-    for (const [name, snap] of [['estimate2', g.estimate2], ['final', g.final], ['thinking', g.think], ['tool', g.tool]]) {
-      assert.equal(edgeOf(snap), edge, `${label}: value right edge fixed (${name})`);
-    }
-    /* 数值位数变化（估算态连续三次推送）：右缘不动 */
-    g.estimateTicks.forEach((snap, i) => assert.equal(edgeOf(snap), edge, `${label}: estimate right edge fixed on tick ${i} (${snap.value})`));
-    /* 文字：标签盒吃掉数值让出的剩余空间（宽度随数值变是设计），但左缘/基线不动——图标切换与换文案都不推动文字 */
+    assert.equal(g.final.unit, 't/s', `${label}: the final face carries its unit`);
+    assert.ok(g.final.unitRect[2] > 0, `${label}: the final face shows t/s in this layout too (unit box ${g.final.unitRect[2]}px)`);
+    /* 图标与文字贴近（v448）：标签可见时标签从文字盒左缘起排、数值紧跟标签（间距恒为 .zu-live 的 gap）；标签隐藏（最窄档）
+     * 或为空（完成态）时数值从文字盒左缘起排，即紧跟图标。同一标签下数值左缘不随位数/小数位变化，位数变化只向右伸展；
+     * 格内剩余空间全在右侧——数值与单位不越过速度格内容区。 */
+    const left = rect => rect && Math.round(rect[0] * 100) / 100;
     const labelAnchor = rect => rect && [rect[0], rect[1], rect[3]];
-    for (const snap of [g.estimate, ...g.estimateTicks, g.tool]) assert.deepEqual(labelAnchor(snap.labelRect), labelAnchor(g.think.labelRect), `${label}: label left edge fixed (${snap.label})`);
-    assert.ok(g.think.live[0] === g.think.icon[0] + g.think.icon[2] + (g.think.live[0] - g.think.icon[0] - g.think.icon[2]), 'sanity');
+    const afterLabel = snap => Math.round((snap.val[0] - snap.labelRect[0] - snap.labelRect[2]) * 100) / 100;
+    const labelShown = g.think.labelRect[2] > 0;
+    /* v460：间隔点去掉后，两字状态词 + 计时在固定宽 6.6em 里完整显示、不被省略（窄档标签本就隐藏，不核对）。
+     * 此前带「 · 」时这两类面在 v456/v459 里都是「思…」「执…」 */
+    if (labelShown) for (const [name, snap] of [['think', g.think], ['tool', g.tool]]) {
+      assert.equal(snap.labelClipped, false, `${label}: the two-character label is shown in full (${name}: ${snap.label} ${snap.value})`);
+    }
+    if (labelShown) {
+      const gap = afterLabel(g.think);
+      assert.ok(gap > 0 && gap <= 8, `${label}: value sits right after the label (gap ${gap}px)`);
+      for (const [name, snap] of [['tool', g.tool]]) {
+        assert.equal(left(snap.labelRect), left(snap.live), `${label}: label starts at the text box's left edge (${name})`);
+        assert.ok(Math.abs(afterLabel(snap) - gap) <= 0.02, `${label}: value follows the label (${name}, gap ${afterLabel(snap)})`);
+      }
+      for (const snap of [g.tool]) assert.deepEqual(labelAnchor(snap.labelRect), labelAnchor(g.think.labelRect), `${label}: label left edge fixed (${snap.label})`);
+    }
+    for (const snap of [g.estimate, ...g.estimateTicks, g.estimate2, g.final]) assert.equal(snap.labelRect[2], 0, `${label}: labelless faces have no label box (${snap.label})`);
+    for (const snap of labelShown ? [g.estimate, ...g.estimateTicks, g.estimate2, g.final] : all) assert.equal(left(snap.val), left(snap.live), `${label}: value starts right after the icon (${snap.label}|${snap.value})`);
+    for (const snap of [...g.estimateTicks, g.estimate2]) assert.equal(left(snap.val), left(g.estimate.val), `${label}: value left edge fixed for the same label (${snap.value})`);
+    for (const snap of all) {
+      const last = snap.unitRect && snap.unitRect[2] > 0 ? snap.unitRect : snap.val;
+      assert.ok(left(last) + last[2] <= snap.cell[0] + snap.cell[2] + 0.01, `${label}: value stays inside the cell (${snap.label}|${snap.value})`);
+    }
     /* 无障碍：完整 aria-label、不在 live region（高频速度更新不触发重复播报）。
      * 两处全称来源不同：aria-label 跟格面（数值 = 格面此刻显示的值，随 600ms 节流）；
      * data-zu-full（「···」菜单用）跟真实视图——节流窗内领先于格面。 */
@@ -2421,7 +2490,7 @@ test('speed slot through the live data chain (isolated fixture)', { skip: skipRe
     assert.ok(g.estimateTicks.some(snap => snap.aria !== '生成速度 ' + snap.full), `${label}: inside the numeric throttle the menu text (real view) leads the aria-label (display view)`);
   }
 
-  /* 卡片宽度决定档位：1100px=宽裕（四档的完整面）；420px=最窄档（图标+数值，标签与单位隐藏）；
+  /* 卡片宽度决定档位：1100px=宽裕；420px=窄档（v455 宽度随内容：标签收起、数值与单位保留）；
      药丸按卡片宽度走自己的档位。先等档位稳定再推数据。 */
   for (const [name, opts, paneWidth, tierReady] of [
     ['default-wide', { withKernel: true }, 1100, `!bar.classList.contains('zu-tight')`],
@@ -2429,22 +2498,27 @@ test('speed slot through the live data chain (isolated fixture)', { skip: skipRe
     ['default-narrow', { withKernel: true }, 420, `bar.classList.contains('zu-narrow')`],
     ['pill', { withKernel: true, stored: 'pill' }, 1100, `true`],
   ]) {
-    await t.test(`${name}: icon switches and value changes never move text or neighbours`, async () => {
+    await t.test(`${name}: speed cell keeps one width across icon switches and value changes; neighbours stay put`, async () => {
       await reset(b, opts);
       await b.evaluate(`document.querySelector('#pane-a').style.width = '${paneWidth}px'`);
       await b.waitFor(`(() => { const c = window.__liveProbe.cell(); const bar = c && c.closest('.zusage-root'); return !!bar && (${tierReady}); })()`, `${name}: layout tier did not settle`, 400);
       const g = await runChain();
       assertStableSlot(g, name);
-      for (const snap of [g.estimate, ...g.estimateTicks, g.tool, g.estimate2, g.final]) assert.deepEqual(snap.bar, g.think.bar, `${name}: bar box unchanged (${snap.label}|${snap.value})`);
+      /* v459 固定宽：速度格不随格面变宽变窄，整条与其余格全程不动——默认条的条矩形随卡片，药丸按内容定宽
+       * （速度格恒宽后药丸总宽也恒定，居中见下）。邻格矩形（左、上、宽、高）逐面与思考态比较。 */
+      for (const snap of [g.estimate, ...g.estimateTicks, g.naked, g.tool, g.estimate2, g.final]) {
+        assert.deepEqual(snap.bar, g.think.bar, `${name}: bar box does not move with the face (${snap.label}|${snap.value})`);
+        assert.deepEqual(snap.cells.filter(([k]) => k !== 'speed'), g.think.cells.filter(([k]) => k !== 'speed'), `${name}: neighbours stay put (${snap.label}|${snap.value})`);
+      }
       assert.equal(g.think.tier, name === 'default-narrow' ? 'narrow' : name === 'pill' ? g.think.tier : 'wide', `${name}: expected tier`);
       if (name === 'right-aligned') {
         assert.match(g.think.barCls, /zu-just-end/, 'right alignment active');
-        for (const snap of [g.estimate, ...g.estimateTicks, g.tool, g.estimate2, g.final]) assert.equal(snap.scrollLeft, 0, `${name}: no horizontal shift`);
+        for (const snap of [g.estimate, ...g.estimateTicks, g.naked, g.tool, g.estimate2, g.final]) assert.equal(snap.scrollLeft, 0, `${name}: no horizontal shift`);
         const last = g.think.cells[g.think.cells.length - 1];
         for (const snap of [g.estimate, g.tool, g.final]) assert.deepEqual(snap.cells[snap.cells.length - 1], last, `${name}: right-most cell fixed`);
       }
       if (name === 'pill') {
-        for (const snap of [g.think, g.estimate, ...g.estimateTicks, g.tool, g.estimate2, g.final]) {
+        for (const snap of [g.think, g.estimate, ...g.estimateTicks, g.naked, g.tool, g.estimate2, g.final]) {
           assert.ok(Math.abs(snap.barCenter - snap.cardCenter) < 1, `${name}: pill stays centred (bar ${snap.barCenter} vs card ${snap.cardCenter})`);
         }
       }
@@ -2481,21 +2555,78 @@ test('speed slot through the live data chain (isolated fixture)', { skip: skipRe
     assert.ok(sawNarrowWithTools, 'a compact tier with the tools cell still on the bar was exercised');
   });
 
-  /* 探针报告的共用判据：同档宽度单一、邻格不动、无越界；界面字号 14px 下落在目标 §5 区间内 */
+  /* 窄档真实空位（specs/speed-chip-stable-slot.md「窄档按真实空位」）：v455 起宽度随内容，roomy 只管窄档下带状态词面的
+   * 标签显示/隐藏——整条进了窄档但仍有大量空位时，带状态词的速度面显示状态词（条上 zu-sp-roomy，空位 = 容器宽 − 其它格
+   * 未折叠时的窄面宽）；空位不够立即收成「图标 + 数值」；完成态（无状态词）始终无标签并带单位；回升要多出 FOLD_HYS（24px）
+   * 空位（迟滞）。宽度在两种 roomy 状态下都落在下限/上限之间。 */
+  await t.test('narrow bar with room to spare: tagged faces keep their label while there is room, collapse to icon + value without room, come back with hysteresis; the final face stays labelless with its unit', async () => {
+    await reset(b, { withKernel: true });
+    await bind();
+    const state = () => b.evaluate(`(() => { const c = window.__liveProbe.cell(); const bar = c && c.closest('.zusage-root'); if (!bar) return null; const main = c.closest('.zu-main');
+      let others = 0; [...main.children].forEach(e => { if (e !== c && e.dataset.zuFolded !== '1') others += e.getBoundingClientRect().width; });
+      return { narrow: bar.classList.contains('zu-narrow'), roomy: bar.classList.contains('zu-sp-roomy'), main: main.clientWidth, others: Math.round(others * 10) / 10,
+        font: parseFloat(getComputedStyle(c).fontSize), w: Math.round(c.getBoundingClientRect().width * 100) / 100 }; })()`);
+    const setWidth = async w => { await b.evaluate(`document.querySelector('#pane-a').style.width = '${w}px'`); await delay(700); return state(); };
+    let on = null;
+    const seen = [];
+    for (const w of [1100, 1000, 900, 800, 700, 640, 600, 560, 520, 480]) { const st = await setWidth(w); seen.push([w, st]); if (st && st.narrow && st.roomy) { on = { w, st }; break; } }
+    assert.ok(on, `a pane width where the bar is narrow yet has room for the mid slot was found — ${JSON.stringify(seen)}`);
+    assert.ok(on.st.main - on.st.others >= ZU_SLOT_PX(on.st.font) + ZU_SPEED_GAP_PX + 24, `room is measured without the speed cell itself (${on.st.main} − ${on.st.others} ≥ 6.6em + 10px gap = ${ZU_SLOT_PX(on.st.font) + ZU_SPEED_GAP_PX}px + 24)`);
+    await face('思考');
+    const g1 = await geo();
+    assert.equal(g1.roomy, true);
+    assert.ok(g1.labelRect[2] > 0, 'a tagged face shows its label on a narrow bar that has room');
+    assert.ok(Math.abs(g1.cell[2] - ZU_SLOT_PX(g1.fontPx)) <= 0.5, `tagged face keeps the fixed slot width on a narrow bar (${g1.cell[2]}px vs ${ZU_SLOT_PX(g1.fontPx)}px @ ${g1.fontPx}px)`);
+    let off = null;
+    const seen2 = [];
+    for (const w of [on.w - 60, on.w - 120, on.w - 180, on.w - 240, 540, 470, 420]) { const st = await setWidth(w); seen2.push([w, st]); if (st && st.narrow && !st.roomy) { off = { w, st }; break; } }
+    assert.ok(off, `a narrower width where the mid slot no longer fits was found — on ${JSON.stringify(on.st)} then ${JSON.stringify(seen2)}`);
+    await delay(900);
+    assert.equal((await state()).roomy, false, 'stays collapsed: the room is judged with the other cells unfolded, so folding them cannot bring the mid slot back');
+    const g2 = await geo();
+    assert.equal(g2.roomy, false);
+    assert.equal(g2.labelRect[2], 0, 'without room the label is hidden again');
+    assert.ok(Math.abs(g2.cell[2] - ZU_SLOT_PX(g2.fontPx)) <= 0.5, `collapsed to icon + value at the same fixed width (${g2.cell[2]}px vs ${ZU_SLOT_PX(g2.fontPx)}px @ ${g2.fontPx}px)`);
+    assert.equal(g2.cell[2], g1.cell[2], 'showing or hiding the label does not change the slot width');
+    /* 两次量的分栏宽度不同，位置本就会变；更窄时别的格可能按优先级折叠了：仍显示的格，宽高应与之前一致（窄档面没变） */
+    const boxes = g => Object.fromEntries(g.cells.filter(([k]) => k !== 'speed').map(([k, r]) => [k, [r[2], r[3]]]));
+    const b1 = boxes(g1), b2 = boxes(g2);
+    for (const [k, box] of Object.entries(b2)) assert.deepEqual(box, b1[k], `cell ${k} keeps its narrow-face size in both states`);
+    await push(10, [H('completedSuccess', { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), T('abcdefghijklmnopqrstuvwx')]);
+    await face('');
+    const g3 = await geo();
+    assert.ok(g3.unitRect[2] > 0 && g3.unitRect[2] < 40, `the final face keeps its unit on a narrow bar without room (unit box ${g3.unitRect[2]}px)`);
+    assert.ok(Math.abs(g3.cell[2] - ZU_SLOT_PX(g3.fontPx)) <= 0.5, `the final face keeps the same fixed width (${g3.cell[2]}px vs ${ZU_SLOT_PX(g3.fontPx)}px @ ${g3.fontPx}px)`);
+    /* 迟滞：从收起状态一档档拉宽，记下回升的宽度；再从回升处一档档收窄，记下又收起的宽度。两个阈值不同（回升要多出
+     * FOLD_HYS 的空位），所以回升宽度应当明显大于收起宽度。空位的口径在实现里是探针量的「其它格未折叠窄面宽」
+     * （系统状态格按最宽面保守计），这里不自己算，只看行为。 */
+    let backOn = null;
+    for (let w = off.w + 10; w <= on.w; w += 10) { const st = await setWidth(w); if (st && st.narrow && st.roomy) { backOn = w; break; } }
+    assert.notEqual(backOn, null, `widening brings the mid slot back (off at ${off.w}px, on at ${on.w}px)`);
+    let offAgain = null;
+    for (let w = backOn - 10; w >= off.w; w -= 10) { const st = await setWidth(w); if (st && st.narrow && !st.roomy) { offAgain = w; break; } }
+    assert.notEqual(offAgain, null, 'narrowing again collapses it');
+    assert.ok(backOn - offAgain >= 20, `hysteresis: it comes back only with extra room (on at ${backOn}px, off again at ${offAgain}px)`);
+  });
+
+  /* 探针报告的共用判据：同一档位全部格面同宽（6.6em × 格字号）、无越界（v459） */
   const RANGE = { '默认 宽裕': [160, 180], '默认 中等': [112, 132], '默认 紧张': [72, 88], '默认 极窄': [32, 40],
     '药丸 宽裕': [160, 180], '药丸 中等': [112, 132], '药丸 紧张': [72, 88] };
   function checkSlotReport(report, tag) {
     assert.equal(Object.keys(report).length, 21, `${tag}: 3 interface font sizes × 7 tiers`);
     for (const [tier, r] of Object.entries(report)) {
-      assert.equal(new Set(r.speedW).size, 1, `${tag} ${tier}: speed width varies with state: ${[...new Set(r.speedW)]}`);
-      assert.equal(new Set(r.turnL).size, 1, `${tag} ${tier}: neighbour cell moved: ${[...new Set(r.turnL)]}`);
-      assert.deepEqual(r.overflow, [], `${tag} ${tier}: value crosses the cell edge`);
+      const all = [...r.speedW, ...r.plainW];
+      const fs = parseFloat(r.fs), iconOnly = tier.split(' ').pop() === '极窄';
+      for (const w of all) {
+        if (iconOnly) assert.ok(Math.abs(w - 2.75 * fs) <= 1.5, `${tag} ${tier}: icon-only slot ${w}px ≈ 2.75em×${fs}`);
+        else assert.ok(Math.abs(w - ZU_SLOT_PX(fs)) <= 0.5, `${tag} ${tier}: width ${w}px is not the fixed 6.6em slot (${ZU_SLOT_PX(fs)}px @ ${r.fs})`);
+      }
+      assert.equal(new Set(all).size, 1, `${tag} ${tier}: one width for every face class (${[...new Set(all)]})`);
+      assert.ok(r.turnL.length > 0, `${tag} ${tier}: neighbour cells present`);
+      assert.deepEqual(r.overflow.filter(k => !['thinkDay', 'thinkHour', 'enThink'].includes(k)), [], `${tag} ${tier}: value crosses the cell edge (>1h timers thinkDay/thinkHour/enThink may clip their tail under the fixed slot)`);
+      assert.equal(r.minLead, 0, `${tag} ${tier}: content starts at the cell's left edge (icon next to text)`);
     }
-    for (const [tier, [lo, hi]] of Object.entries(RANGE)) {
-      const w = report['default ' + tier].speedW[0];
-      assert.ok(w >= lo && w <= hi, `${tag} ${tier}: ${w}px outside ${lo}–${hi}`);
-    }
-    return Object.fromEntries(Object.entries(report).filter(([k]) => /紧张/.test(k)).map(([k, r]) => [k, r.minLead]));
+    return Object.fromEntries(Object.entries(report).filter(([k]) => /紧张/.test(k)).map(([k, r]) => [k, r.minSlack]));
   }
 
   await t.test('speed slot geometry is device-pixel-ratio independent (1.25×, 1.5×, 1.75×, 2×; high-DPI scaling)', async () => {
@@ -2505,8 +2636,8 @@ test('speed slot through the live data chain (isolated fixture)', { skip: skipRe
       await b.waitFor(`!document.querySelector('#pane-a .zusage-root').classList.contains('zu-tight')`, `dsf ${dsf}: wide tier did not settle`);
       const report = await b.evaluate(`(${speedSlotProbe.toString()})()`);
       const slack = checkSlotReport(report, `dsf ${dsf}`);
-      for (const [tier, v] of Object.entries(slack)) assert.ok(v >= 4, `dsf ${dsf} ${tier}: slack ${v}px`);
-      t.diagnostic(`dsf ${dsf}: narrow-tier lead ${JSON.stringify(slack)}`);
+      for (const [tier, v] of Object.entries(slack)) assert.ok(v >= -0.05, `dsf ${dsf} ${tier}: slack ${v}px`);
+      t.diagnostic(`dsf ${dsf}: narrow-tier right margin ${JSON.stringify(slack)}`);
     }
     await reset(b);   // 还原 1×
   });
@@ -2528,21 +2659,27 @@ test('speed slot through the live data chain (isolated fixture)', { skip: skipRe
       await b.evaluate(`document.documentElement.style.setProperty('--font-sans', ${JSON.stringify(stack)})`);
       const report = await b.evaluate(`(${speedSlotProbe.toString()})()`);
       const slack = checkSlotReport(report, stack.slice(0, 28));
-      t.diagnostic(`${stack.slice(0, 40)}: narrow-tier lead ${JSON.stringify(slack)}`);
+      t.diagnostic(`${stack.slice(0, 40)}: narrow-tier right margin ${JSON.stringify(slack)}`);
       await b.evaluate(`document.documentElement.style.removeProperty('--font-sans')`);
     }
   });
 
   /* 持续观察的页面侧采样器（tests/speed-slot-live-watch.js，供 tests/speed-slot-live-probe.py --watch 用）：同一条数据链在
-   * 观察期内走一遍，样本必须落在同一个布局签名里、宽度只有一个值、各态都采到；把速度格改成宽度随内容后，同一签名里
-   * 必须出现多个宽度（工具有牙）。判定（summarize）在 Python 侧，由 tests/test_speed_slot_live_probe.py 用构造样本锁定。 */
-  await t.test('speed slot watch-mode sampler: one width per layout signature through live transitions, and it sees a resizing slot', async () => {
+   * 观察期内走一遍，样本必须落在同一个布局签名里、各态都采到；v459 起全部格面固定宽——同一布局（签名前 7 段）下宽度
+   * 只能有一个值。负对照：把速度格改回随内容定宽，采样器必须看到同一布局下出现多个宽度（否则它看不出抖动）。
+   * 判定（summarize）在 Python 侧，由 tests/test_speed_slot_live_probe.py 用构造样本锁定。 */
+  await t.test('speed slot watch-mode sampler: one width across faces through live transitions, and it sees a resizing slot', async () => {
     const watchSrc = fs.readFileSync(path.join(__dirname, 'speed-slot-live-watch.js'), 'utf8');
-    for (const [label, breakSlot] of [['intact slot', false], ['slot whose width follows content', true]]) {
+    for (const [label, css, expectResize] of [
+      ['live transitions', '', false],
+      ['resizing slot (negative control)', '.zusage-root .zu-main>.it.zu-speed{width:auto !important;min-width:0 !important}', true],
+    ]) {
       await reset(b, { withKernel: true });
       await b.evaluate(`document.querySelector('#pane-a').style.width = '1100px'`);
       await b.waitFor(`(() => { const c = window.__liveProbe.cell(); const bar = c && c.closest('.zusage-root'); return !!bar && !bar.classList.contains('zu-tight'); })()`, 'wide tier did not settle', 400);
-      if (breakSlot) await b.evaluate(`(() => { const s = document.createElement('style'); s.textContent = '.zusage-root .zu-main>.it.zu-speed{width:auto!important}'; document.head.appendChild(s); return true; })()`);
+      /* 负对照的样式在 finally 里摘掉：留给后面的用例会把它们的速度格也变成随内容定宽 */
+      if (css) await b.evaluate(`(() => { const s = document.createElement('style'); s.id = 'zu-watch-negative'; s.textContent = ${JSON.stringify(css)}; document.head.appendChild(s); return true; })()`);
+      try {
       await b.evaluate(`(() => { window.__watch = (${watchSrc})({ seconds: 6, every: 50 }); return true; })()`);
       await runChain();
       const out = await b.evaluate('window.__watch');
@@ -2553,18 +2690,34 @@ test('speed slot through the live data chain (isolated fixture)', { skip: skipRe
       const ok = out.samples.filter(s => !s.none && s.b === paneBar);
       assert.ok(ok.length >= 20, `${label}: enough measurable samples (${ok.length})`);
       const sigs = [...new Set(ok.map(s => out.sigs[s.s]))];
-      assert.equal(sigs.length, 1, `${label}: every sample falls in one layout signature: ${JSON.stringify(sigs)}`);
+      /* 宽档的序列里有带状态词的面（tag）与完成态（plain），占位不同——布局签名带面类别，分成两个签名，其余 7 段相同 */
+      assert.equal(sigs.length, 2, `${label}: one layout signature per face class: ${JSON.stringify(sigs)}`);
+      assert.deepEqual(sigs.map(x => x.split('|').slice(0, 7)), [sigs[0].split('|').slice(0, 7), sigs[0].split('|').slice(0, 7)], `${label}: the two signatures differ only by face class`);
+      assert.deepEqual(sigs.map(x => x.split('|')[7]).sort(), ['plain', 'tag'], `${label}: face class is the last signature field`);
       assert.equal(sigs[0].split('|')[4], String(out.meta.width), `${label}: signature carries the window width`);
       const widths = [...new Set(ok.map(s => s.w))];
       const faces = [...new Set(ok.map(s => s.f))];
-      if (breakSlot) {
-        assert.ok(widths.length > 1, `${label}: sampler must see the slot resize (${widths})`);
+      if (expectResize) {
+        assert.ok(widths.length > 1, `${label}: with a content-sized slot the sampler must see several widths under one layout (${widths})`);
         continue;
       }
-      assert.deepEqual(widths.length, 1, `${label}: one speed width through every state (${widths})`);
+      assert.equal(widths.length, 1, `${label}: one width across every face (${widths})`);
+      /* 同一（签名, 格面）组合内宽度必须唯一（样本数足够多的格面才判） */
+      const byFace = {}, faceN = {};
+      for (const s of ok) {
+        const k = out.sigs[s.s] + ' ' + s.f;
+        faceN[k] = (faceN[k] || 0) + 1;
+        (byFace[k] = byFace[k] || new Set()).add(s.w);
+      }
+      const multi = Object.keys(byFace).filter(k => faceN[k] >= 4);   // 样本数足够多的格面才判（一闪而过的面无从谈恒定）
+      assert.ok(multi.length >= 3, `${label}: several faces were sampled repeatedly (${Object.keys(byFace).length} faces tracked)`);
+      for (const k of multi) assert.equal(byFace[k].size, 1, `${label}: one width per face under one signature (${k}: ${[...byFace[k]]})`);
       assert.ok(ok.every(s => !s.ov), `${label}: no overflow sampled`);
-      for (const re of [/^think\|思考 /, /^bolt\|生成 ≈/, /^tool\|读取 /, /^bolt\|\d/]) {
+      for (const re of [/^think\|思考 /, /^bolt\|\d/, /^tool\|读取 /]) {
         assert.ok(faces.some(f => re.test(f)), `${label}: face ${re} sampled (${faces.join(' / ')})`);
+      }
+      } finally {
+        if (css) await b.evaluate(`(() => { const s = document.getElementById('zu-watch-negative'); if (s) s.remove(); return true; })()`);
       }
     }
   });
@@ -2593,14 +2746,15 @@ function tsbGeo() {
     label: lab.textContent, value: val.textContent, unit: unit ? unit.textContent : null, unitShown: shown(unit), labelShown: shown(lab),
     slack: items.length ? r2((box.right - parseFloat(cs.paddingRight)) - items[items.length - 1].getBoundingClientRect().right) : null,
     labelClipped: shown(lab) && lab.scrollWidth > lab.clientWidth + 0.5,
-    edge: r2((shown(unit) ? unit : val).getBoundingClientRect().right), labelLeft: shown(lab) ? r2(lab.getBoundingClientRect().left) : null,
+    contentLeft: r2(box.left + parseFloat(cs.paddingLeft)), valLeft: r2(val.getBoundingClientRect().left),
+    labelLeft: shown(lab) ? r2(lab.getBoundingClientRect().left) : null, labelRight: shown(lab) ? r2(lab.getBoundingClientRect().right) : null,
     sameNode: chip === window.__tsbRef, aria: chip.getAttribute('aria-label'), icon: !!chip.querySelector('.ico'), focusable: chip.tabIndex };
 }
-/* 逐档 × 逐状态面量精简 chip：数值不越界、标签不被裁。例外只有中等档装不下的三个长标签面（两个「×12 + 四位数」、
- * 长技能名）——标签省略号是设计内的降级（完整文字在 tooltip 与 aria-label）。量完还原。 */
+/* 逐档 × 逐状态面量精简 chip：数值不越界、标签不被裁。例外只有中等档装不下的长技能名（v461 起子代理面是「子·X」，
+ * 两个「×12 + 四位数」面不再需要豁免）——标签省略号是设计内的降级（完整文字在 tooltip 与 aria-label）。量完还原。 */
 function tsbFaceProbe(faces) {
   const chip = document.querySelector('#pane-a .zu-tsb'), save = { html: chip.innerHTML, cls: chip.className }, bad = [];
-  const clipOk = { mid: ['代理×12 1286.5', 'en Agt×12 1286.5', '技能 代码审查与修复 12s'] };
+  const clipOk = { mid: ['技能 代码审查与修复 12s'] };
   const r2 = x => Math.round(x * 100) / 100;
   try {
     for (const [tier, cls] of [['wide', ''], ['mid', 'zu-speed-mid'], ['tight', 'zu-speed-tight']]) {
@@ -2639,8 +2793,8 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
     return b.evaluate(`(${tsbGeo.toString()})()`);
   };
   const face = label => b.waitFor(`(() => {
-    const c = document.querySelector('#pane-a .zu-tsb'); const l = c && c.querySelector('.zu-sp-label'), v = c && c.querySelector('.zu-sp-val');
-    return !!l && !!v && l.textContent === ${JSON.stringify(label)}${label ? '' : " && !/≈/.test(v.textContent)"};
+    const c = document.querySelector('#pane-a .zu-tsb'); const l = c && c.querySelector('.zu-sp-label'), v = c && c.querySelector('.zu-sp-val'), live = c && c.querySelector('.zu-live');
+    return !!l && !!v && l.textContent === ${JSON.stringify(label)}${label ? '' : " && !/≈/.test(v.textContent) && !/zu-shimmer/.test(live.className)"};
   })()`, `speed face "${label}" did not appear`, 600);
   /* 装载：精简主题 + 宿主同构工具行 + 实时数据链（桥接口 → turn-stats.js → overlay.js），分栏先开到 900px。等全部
    * chip 挂齐、宿主与 Git chip 的档位稳定后，targetRoom 给定时按实测空位换算分栏宽度（空位 = 前导区 − 同区其它内容，
@@ -2715,7 +2869,7 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
     const g = { think: await geo() };
     await delay(500);
     await push(2, [H('running'), T('abcdef')]);
-    await face('生成');
+    await face('');   // v454 估算与完成态同为空标签面；完成态此刻尚未推送
     g.estimate = await geo();
     g.estimateTicks = [];
     for (const [i, text] of ['abcdefghi', 'abcdefghijkl', 'abcdefghijklmnopq'].entries()) {
@@ -2730,7 +2884,7 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
     g.tool = await geo();
     await delay(500);
     await push(7, [H('running'), T('abcdefghijklmnopqrstuvwx'), TOOL('completed', '{ startedAt: Date.now() - 1500 }')]);
-    await face('生成');
+    await face('');   // v454 估算与完成态同为空标签面；完成态此刻尚未推送
     g.estimate2 = await geo();
     await push(8, [H('completedSuccess', { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), T('abcdefghijklmnopqrstuvwx')]);
     await face('');
@@ -2740,8 +2894,8 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
   function assertStableSlot(g, label, tier) {
     const all = [g.think, g.estimate, ...g.estimateTicks, g.tool, g.estimate2, g.final];
     assert.ok(all.every(Boolean), `${label}: rate chip present in every state`);
-    assert.deepEqual([g.think.label, g.estimate.label, g.tool.label, g.final.label], ['思考', '生成', '读取', ''], `${label}: labels`);
-    assert.match(g.estimate.value, /^≈\d/, `${label}: estimate shows ≈ value`);
+    assert.deepEqual([g.think.label, g.estimate.label, g.tool.label, g.final.label], ['思考', '', '读取', ''], `${label}: labels (estimate has no label since v454)`);
+    assert.doesNotMatch(g.estimate.value, /≈/, `${label}: estimate value has no ≈ prefix (v452)`);
     assert.doesNotMatch(g.final.value, /≈/, `${label}: final shows the real speed without ≈`);
     for (const snap of all) {
       assert.equal(snap.tier, tier, `${label}: tier ${tier} throughout (${snap.label}|${snap.value})`);
@@ -2752,15 +2906,21 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
       assert.ok(snap.slack >= -0.05, `${label}: value stays inside the chip (${snap.label}|${snap.value} slack ${snap.slack})`);
       assert.equal(snap.labelClipped, false, `${label}: short label not clipped (${snap.label})`);
       assert.equal(snap.unitShown, tier === 'wide' && !!snap.unit, `${label}: unit shown only in the wide tier, and only for faces that have one`);
-      assert.equal(snap.labelShown, tier !== 'tight', `${label}: label hidden only in the tight tier`);
+      assert.equal(snap.labelShown, tier !== 'tight' && !!snap.label, `${label}: label shown only outside the tight tier and only for faces that have one (the final face has no label box)`);
     }
     for (const key of ['chip', 'cua', 'git', 'plan']) {
       for (const snap of all) assert.deepEqual(snap[key], g.think[key], `${label}: ${key} box unchanged across ${snap.label}|${snap.value}`);
     }
+    /* 与条面同规则（v448）：标签可见时标签从 chip 内容区左缘起排、数值紧跟标签；标签隐藏（紧张档）或为空（完成态）时数值从
+     * 内容区左缘起排。同一标签下数值左缘不随位数变化。 */
+    const gapOf = snap => snap.labelLeft === null ? null : Math.round((snap.valLeft - snap.labelRight) * 100) / 100;
     for (const snap of all) {
-      assert.equal(snap.edge, g.think.edge, `${label}: value right edge fixed (${snap.label}|${snap.value})`);
-      if (snap.labelLeft !== null) assert.equal(snap.labelLeft, g.think.labelLeft, `${label}: label left edge fixed (${snap.label})`);
+      if (snap.labelLeft !== null) {
+        assert.equal(snap.labelLeft, snap.contentLeft, `${label}: label starts at the chip's left edge (${snap.label})`);
+        assert.ok(gapOf(snap) > 0 && gapOf(snap) <= 8, `${label}: value follows the label (${snap.label}, gap ${gapOf(snap)})`);
+      } else assert.equal(snap.valLeft, snap.contentLeft, `${label}: value starts at the chip's left edge (${snap.label}|${snap.value})`);
     }
+    for (const snap of [...g.estimateTicks, g.estimate2]) assert.equal(snap.valLeft, g.estimate.valLeft, `${label}: value left edge fixed for the same label (${snap.value})`);
     for (const snap of all) assert.equal(snap.hostCompact, g.think.hostCompact, `${label}: host compaction state unchanged across the chain`);
   }
 
@@ -2855,14 +3015,15 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
   await t.test('every face fits its tier box under six font stacks; only three long-label faces clip in the mid tier', async () => {
     await setup(275);
     const F = (label, val, unit) => `<span class="zu-sp-label">${label}</span><span class="zu-sp-val">${val}</span>${unit ? `<span class="zu-sp-unit dim">${unit}</span>` : ''}`;
+    const G = (label, val) => `<span class="zu-sp-label zu-sp-glue">${label}</span><span class="zu-sp-val">${val}</span>`;   // v461 子代理面「子·X」
     const faces = {
-      '完成 92': F('', '92', 't/s'), '完成 250.0': F('', '250.0', 't/s'), '回退 历史 201.4': F('历史', '201.4', 't/s'),
-      '估算 128.6': F('生成', '≈128.6', 't/s'), '估算 9999.9': F('生成', '≈9999.9', 't/s'), '估算 12.9k': F('生成', '≈12.9k', 't/s'),
+      '完成 92': F('', '92', 't/s'), '完成 250.0': F('', '250.0', 't/s'), '回退 201.4': F('', '201.4', 't/s'),
+      '估算 128.6': F('', '128.6', 't/s'), '估算 9999.9': F('', '9999.9', 't/s'), '估算 12.9k': F('', '12.9k', 't/s'),
       '思考 0.5s': F('思考', '0.5s'), '思考 23:59:59': F('思考', '23:59:59'), '思考 1:05:00': F('思考', '1:05:00'), '思考 1天3时': F('思考', '1天3时'),
       '读取 01s': F('读取', '01s'), '查阅 03s': F('查阅', '03s'), '终端 12s': F('终端', '12s'), '技能 代码审查与修复 12s': F('代码审查与修复', '12s'),
-      '代理 1286.5': F('代理', '≈1286.5', 't/s'), '代理×3 28.8': F('代理×3', '≈28.8', 't/s'), '代理×12 1286.5': F('代理×12', '≈1286.5', 't/s'),
-      'en Hist 201.4': F('Hist', '201.4', 't/s'), 'en Gen 9999.9': F('Gen', '≈9999.9', 't/s'), 'en Think 23:59:59': F('Think', '23:59:59'),
-      'en Agt×12 1286.5': F('Agt×12', '≈1286.5', 't/s'), 'en Scan 03s': F('Scan', '03s'),
+      '子· 128.6': G('子·', '128.6'), '子· 28.8': G('子·', '28.8'), '子 1286.5': G('子', '1286.5'),
+      'en 201.4': F('', '201.4', 't/s'), 'en Gen 9999.9': F('Gen', '9999.9', 't/s'), 'en Think 23:59:59': F('Think', '23:59:59'),
+      'en Ag· 128.6': G('Ag·', '128.6'), 'en A 1286.5': G('A', '1286.5'), 'en Scan 03s': F('Scan', '03s'),
     };
     const stacks = ['', '"Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif', 'Verdana, Tahoma, sans-serif',
       '"PingFang SC", "Hiragino Sans GB", "Heiti SC", sans-serif', '"Songti SC", "STSong", serif', 'Menlo, Consolas, monospace'];

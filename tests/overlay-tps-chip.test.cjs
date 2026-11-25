@@ -159,7 +159,7 @@ test('compact theme: tps chip mounts in the leading area, taking the git slot (a
   assert.ok(chip, 'chip mounted');
   assert.equal(chip.parentElement, ui.leadWrap, 'chip lives in the leading content group (git chip home)');
   assert.equal(ui.cua.nextElementSibling, chip, 'git absent -> chip takes the git anchor slot right after the cua button');
-  assert.equal(chip.innerHTML, '<span class="zu-live ok"><span class="zu-sp-label">历史</span><span class="zu-sp-val">87.3</span><span class="zu-sp-unit dim">t/s</span></span>', 'DB fallback renders 历史 label + value + unit with the 70-150 band class（稳定占位三 item，specs/speed-chip-stable-slot.md）');
+  assert.equal(chip.innerHTML, '<span class="zu-live ok"><span class="zu-sp-label"></span><span class="zu-sp-val">87.3</span><span class="zu-sp-unit dim">t/s</span></span>', 'DB fallback renders value + unit with the 70-150 band class, no label (v452，与完成态同面)');
   assert.equal(chip.getAttribute('aria-label'), '生成速度 87.3 t/s');
   assert.ok(chip.tabIndex === 0, 'keyboard reachable');
 });
@@ -218,7 +218,7 @@ test('content is signature-idempotent, re-anchors after being displaced, and upd
   // 数据变化：签名变化重建内容
   h.window.__zusageUpdate(h.payload({ tps: 12.5 }));
   chip = h.chipOf(ui.row);
-  assert.equal(chip.innerHTML, '<span class="zu-live hot"><span class="zu-sp-label">历史</span><span class="zu-sp-val">12.5</span><span class="zu-sp-unit dim">t/s</span></span>', 'new band class on new value');
+  assert.equal(chip.innerHTML, '<span class="zu-live hot"><span class="zu-sp-label"></span><span class="zu-sp-val">12.5</span><span class="zu-sp-unit dim">t/s</span></span>', 'new band class on new value');
 });
 
 test('tooltip: speed rows + bar summary gated by per-cell toggles + legend + settings button that opens the panel', () => {
@@ -320,7 +320,7 @@ test('session avg + dbTps>0: chip 面=最后一轮真实值（v298 拍板）；t
   p.recent[0].last_at = t1;   // 覆盖夹具的 last_at:1：会话范围行按真实时刻断言
   h.window.__zusageUpdate(p);
   const chip = h.chipOf(ui.row);
-  assert.equal(chip.innerHTML, '<span class="zu-live warm"><span class="zu-sp-label">历史</span><span class="zu-sp-val">42</span><span class="zu-sp-unit dim">t/s</span></span>');   // v298：面=最后一轮，去「均」前缀；档位色按面上数字（42∈40–70 warm），不再取会话均的档（稳定占位：数值与颜色同一快照）
+  assert.equal(chip.innerHTML, '<span class="zu-live warm"><span class="zu-sp-label"></span><span class="zu-sp-val">42</span><span class="zu-sp-unit dim">t/s</span></span>');   // v298：面=最后一轮，去「均」前缀；档位色按面上数字（42∈40–70 warm），不再取会话均的档（稳定占位：数值与颜色同一快照）
   chip.listeners.get('mouseenter')[0].call(chip);
   const tip = h.tipEl().innerHTML;
   assert.ok(tip.includes('zu-stat-scope">会话平均<'), 'session-avg scope tag');

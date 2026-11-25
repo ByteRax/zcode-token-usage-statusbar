@@ -325,10 +325,22 @@
      * → v447 OpenCode Go 额度撤回按模型换算（issue #453，撤回 v385）：官方文档（opencode.ai/docs/go「Usage limits」）明示 Go 的付费模型共用一个额度、各模型「月度额度」只是整月单用该模型时的标价用量覆盖、请求按模型折算计入同一池，/console/api/go/status 的 meters（Go 档 12/30/60 美元）即该池本身而非「基线」。v385（issue #382）把模型月度额度当成独立池放大窗口总额并重算 percent，实报 Go 档总额被显示成 20/50/100（当前模型 deepseek-v4.1-flash），月窗真实已用 24.20/60=40.33% 被显示成 24.2%，月度额度 15 美元的模型窗口总额缩到 1/4、已用比例放大 4 倍（已用约 30% 钳成 100%）。本批：删除 11 分片 quotaOpencodeModelView 与 28 款模型快照表，quotaChipMode 与 chip.__zuQ 回到源数据原值（窗口 total、used、remaining、percent 不换算）；01 分片 tooltip 页脚去掉 modelBasis 模型口径分支、恢复「套餐池为账号级」固定页脚；额度链、协议、调度器零改动（模型不入键、不触发重查不变）。回归 tests/overlay-quota-opencode-model.test.cjs 重写为「原样展示」契约；参考实现 magpie planquota 同样只读官方 usage 端点的窗口百分比。
      * → v448 压缩标注变化行去前缀（用户规格「去除上下文变化：这个开头」）：11 分片 compSuffixHtml 的 L2 去「上下文变化：」/en「Context: 」开头——宿主压缩分隔线本身已表达压缩语义，数值行直接以水位变化起句，「减少/压缩消耗/耗时/由 X 执行」措辞不变；compaction-rows 用例断言同步。
      * → v450 设置行非 checkbox 控件右对齐（用户截图实报「悬停显示延迟」下拉停在标题左侧；v448/v449 已被并行批次占用，按合入顺序顺延）：设置行是 flex 布局，全局 order:2 只覆盖 checkbox——.zu-tip-hover-ms 下拉与 .zu-rst-cdh 倒计时阈值输入框没有 order 规则，停在 DOM 原位（标题文字左侧）；补各自 order:2 靠右（对齐 .zu-ctxov 与 v436 .zu-ac-pair 先例），下拉样式对齐 .zu-ac-mode（appearance:none + 自绘箭头 + 同款边框圆角字号），不依赖宿主原生 select 外观，两处下拉观感一致；overlay-settings 结构锁两条防规则再被删。
+     * → v451 速度格图标与文字贴近 + 完成态紧凑占位 + 窄档按真实空位（用户两次实报截图：一「图标和文字应该贴近的，现在分开了」，二「还是很大的间隔，其次 t/s 也没了，看起来也不是紧张档」；specs/speed-chip-stable-slot.md「稳定占位」修订）：①v446 把标签设成吃掉全部剩余空间、数值恒靠右，任何档位都是图标贴最左、数字贴最右（宿主实测宽裕档图标到数字空 56~124px）——改标签 flex:0 1 auto、空标签 display:none、删窄档/药丸紧张档/精简紧张档三处 justify-content:flex-end，图标/标签/数值/单位成组靠左（精简 chip .zu-tsb 同规则）；②完成态没有状态词，此前在紧凑/宽裕档占 131/176px（面宽只有约 76px），把用户状态条挤过临界掉进窄档又丢了单位——改任何档位都用 7.2em 下限的紧凑占位并保留单位（:has 判空标签，零 JS；内容比下限宽时按内容、不裁切）；③窄档下带状态词的面按真实空位定形态：空位 = 容器宽 − 其它格内容宽（不含速度格自身），空位 = 容器宽 − 其它格未折叠时的窄面宽（整条档位探针顺带量的第三档，与折叠状态和速度格自身宽度都无关），装得下中等占位 + FOLD_HYS 时条上加 zu-sp-roomy、显示状态词与单位，不够立即收成图标+数值（12 分片既有 250ms 窄宽检查内判定，无新增测量，切主题摘除）；④整条选档探针给完成态的空标签填占位文字，恒按有状态词的档位占位量自然宽（否则一轮对话里整条跟着升降档）。占位改按面类别恒定：走字、换工具名、位数变化不改宽度，只有状态词出现或消失时变（紧张档两类同宽）；外宽分档常量、折叠优先级与协调器零改动；位数变化时数值向右伸展、不再右对齐。
+     * → v452 速度格面去「历史」标签与「≈」估算前缀（用户指示；specs/speed-chip-stable-slot.md 面表修订）：数据库回退与完成态同面（无状态词，紧凑占位带单位），不冒充实时的区分仍在（无流光、aria/菜单全称写明「最近一段」、tooltip 回退卡）；子代理/生成中估算的数值去掉 ≈ 前缀，估算态靠「代理/生成」标签与流光区分；tooltip 与 aria 全称的措辞不变。
+     * → v453 完成态紧凑占位下限 7.2em 收至 6.6em（用户实报「右侧空白的区域太多了」附三张截图；specs/speed-chip-stable-slot.md 完成/紧张两表行同步）：v449 的 7.2em 按最坏情况「23:59:59」标定，对常见 70~150 t/s（四~五位数值）常驻 13~21px 右空白；改按「250.0 t/s」+约 4px 余量标定（12px 字号 79.2px、14px 92.4px），999.9 以内全部装在下限里、9999.9 与更宽字族按内容伸展不裁切；窄档带状态词面仍 7.2em，两类在窄档差约 7px（面类别差，与宽裕/中等档一致）。
+     * → v454 生成中估算去「生成」标签（用户指示，接 v452 的去「历史」与「≈」；specs/speed-chip-stable-slot.md 面表修订）：估算面与完成态/数据库回退完全同款（无状态词、紧凑占位带单位），生成中靠流光动画区分，子代理仍带「代理×N」标签；aria/tooltip 全称（「生成中… 估 X t/s」）与数据口径零改动。
+     * → v455 速度格占位从固定档位改为内容自适应（用户第四轮实报「空隙还是有点大」附六张截图；specs/speed-chip-stable-slot.md「稳定占位」契约改写）：宽度=内容，下限 6.6em、档位只留上限（宽裕 12.6em、紧凑/窄/药丸中等与紧张 10.9em、极窄 2.75em 仅图标），超长技能名在上限处省略、任何情况不推邻格；固定档位按最坏情况预留的 40~85px 内部空白归零（实测常见面 0~10px）。面类别宽差、zu-sp-roomy 宽度覆盖、完成态专用规则随之删除（roomy 保留窄档标签/单位的显示职责）；协调器、折叠、精简 chip 三档零改动。代价：状态词/数值/计时变化时占位随内容伸缩（用户接受），同格面内恒定。
+     * → v456 速度格上限统一到速度态宽（用户定稿「最大不能超过速度态时的宽度」附三张截图：⚡130.6 t/s / 思考·2:43 / 执行·0.0s）：完成态内容自然宽 ≈95px（格 padding 7px×2+图标 14px 不随字号缩放），上限=calc(38px + 4.8em)（固定像素 38=padding 14+图标 14+gap 10 不随字号缩放，文本 4.8em 随格字号、留大字号/宽字体度量余量）——14px 格字号 ≈105px、12px ≈96px、11px ≈92px，任何界面字号都贴住速度态内容；数值本体各字号恒完整（unit「t/s」在 9999.9/子代理长数值下最多裁尾几像素）；带状态词面标签收缩省略（思…）；v455 按档位上限（12.6/10.9em）废除，zu-tight 与药丸中等/紧张改挂同款 calc
      * → v457 速度 Tooltip V3 热力图 token 行与数值贴右（用户截图规格，specs/speed-tooltip-v3.md §25；本批原立账 v451，v451 至 v456 已被并行线本地占用，按合入顺序顺延）：本月日历/全部日历/周列/月列/日卡五形态的速度下方新增当日（月列为整月）Token 总消耗行（输入+输出，经 fmtTok 跟随万/亿开关）；数据链=zusage _speed_turns 可选键 tk（每模型 token，与 msl 对齐，仅多模型或含未入列 token 的轮携带）与 _speed_days 日桶第 7 位 tk=[当日输入,当日输出,每模型 token]（空日仍 6 个 0、msl 步长恒 5；每模型段只给多模型日的最近 90 天，最坏满帧 99.8KiB、贴近上限值域的库仍会略超 100KiB，见 spec §8），渲染端解包出 row.tok/model.tt、只选部分模型时按所选模型 tt 重算（任一未知即 null）、spd3Aggregate 同口径聚合；tok 未知（旧帧、筛选后无法精确归属、合计段非法）不出行、绝不估数；速度与 token 数值贴格右缘（日号仍左上、模型点右上，左卡表格不动）；格高与格宽按 CSS 容器查询分档缩字（只把 .zu3-hm-grid/.zu3-hh-grid 的格设为尺寸容器，日卡不设），过矮或过窄整行隐藏、速度永远保留；周列/月列窄格用紧凑写法（1234.57万作 1234万）；日卡/月卡加「Token 总消耗」行（输入·输出拆分仅未筛选时带），格 aria 补「消耗 X token」。
      * → v458 子代理窗格统计行（用户规格，specs/subagent-turn-stats-line.md；本批原立账 v447，按合入顺序顺延）：sess_subagent_* 只读分栏的回答末尾也追加与主会话同款确定性统计行——03 分片伪 owner 观察器（sid 键：detRoot/getScope/statsFor/isCurrentTurn）接入 detOwnerOf 无归属回退，扫描/占位/富文本/诊断整套既有机制复用；身份取窗格自身的桥 scope 属性（远端或带工作区身份的窗格不认领，不借同窗本地实例的身份），store 按本地键精确直绑或走桥 v2 acquire 租约，生命周期搭 sharedTick/detOwnerOf 便车（零新增定时器/文档查询），主开关关闭与换代清理都释放租约；02 分片 noInst/isCurrentTurn/stale 三门对在册观察器放行（typeof 守卫，主会话实例走原门），存量轮（tracker 无记录）只给窗格最后一轮发请求且不插占位；取数带页面轮号（即用量行 parent_user_message_id，与 turn_id 不是同一套 id）：主桥走 token_rate --turn-ref，只认该会话内该轮号对应的唯一一轮、且 turn_usage 已有该轮终态行（完成、取消或出错）才出数，进行中/库未追上的轮空输出，不回退到最新一轮（没有轮号的子代理 sid 维持 --current）；latest_turn_id 对无 main_turn 行的会话在不带提问时刻的查询上补回退（排除压缩行，探测失败保持过滤，--current 路径不变；token_rate 根与插件副本同源）；inject-main 冷文件需完全重启生效
+     * → v459 速度格全部格面固定宽 + 去右内边距 + 右侧间隙 +10px（用户第六轮实报四张截图「上述状态变化时，宽度不一致，还是有抖动」，并指示「去除右侧的 padding」「右侧空隙再增加 10px」）：v455/v456 的内容自适应区间 [6.6em, calc(38px+4.8em)] 留下抖动，宿主实测 14px 格字号 60.5 t/s=92.4、101.4 t/s=94.95、执行 0.0s=105.2，状态每切一次其余格跳约 13px；改 width:6.6em（速度态宽，任何格面同宽），右内边距 0（带状态词面挤进固定宽的前提，标签收缩省略 思…/执…），其后分隔线加 10px 透明左内边距（写进盒宽而非 margin：折叠判据 zuBarContentWidth 不计外边距），仅图标档取消间隙；药丸把右内边距改成右外边距保持条内间距；speedNeed 同源改 6.6×格字号+10；精简 chip 不动
+     * → v460 速度格状态词与数值之间去掉「 · 」间隔点（用户第七轮三选一裁定「宽度不变，去掉间隔点」；备选是放宽 12~15px 保留间隔点）：v446 起宽裕档的「 · 」连内边距占 16px，固定宽 6.6em 里带数值的两字状态词一律省略成「思…」「执…」（v456 上限 105px 下标签盒只有约 37px、小于自然宽 44px，同样省略）；去掉后「执行 0.0s」余 3.2px、「思考 4:28」余 1.7px、「执行 59s」余 7.7px 全部完整，更长的（12:34、1:05:00、代理 28.8 t/s、英文 Think）才省略；无计时时不再有悬空的间隔点；删基础 ::after 规则与窄档/药丸中等的两条去分隔符规则，全部档位与精简 chip 一致
+     * → v461 子代理面改为「子·X」（用户规格「代理 28.8 t/s 改为 子·X」）：固定宽里「代理 28.8 t/s」被整个省略成「…」；改为单字「子」+ 贴紧的间隔点 + 速率，不带单位（英文 Ag·X）；六字符数值（1286.5）带点放不下，退成不带点的「子1286.5」。数量不再上面——「子×N·1286.5」放不下会被省略成「子…」，全称（aria/菜单/tooltip）仍有 ×N。实现：zuSpeedFace 子代理分支标签按数值长度取「子·」或「子」、单位置空、面对象带 glue；zuSpeedFaceHtml 据 glue 给标签加 zu-sp-glue，06 分片用 -5px 外边距抵消 .zu-live 的 gap 让点与数值贴紧（实机截图对比过贴紧与留 5px 两种排法）
+     * → v462 速度格左内边距也去掉（用户指示「左侧的 padding 也去掉」，贴的是默认条速度格 DOM）：默认条 .it.zu-speed:not([data-zu-speed-min='1']) 加 padding-left:0，图标贴格左缘（即状态条左缘，.zu-in 无横向内边距），.zu-live 可用宽 66.4px 变 73.4px（14px 格字号）；宽度仍是 6.6em、右侧间隙 10px，邻格不动。选择器用 :not(.zu-pill) 排除药丸——药丸有底色与 12px 圆角，图标靠这 7px/4px 左内边距离边缘；也没有做成「左内边距改左外边距」：药丸中等/紧张档自带 4px 左内边距，外边距抵消不了、会多推 7px。仅图标档保留两侧内边距
+     * → v463 无计时面换四字说法（用户实报截图「执行」右侧空一大块，指示「优化为 正在执行」）：宿主 inputStreaming 行不写 startedAt，工具开跑前数值位为空、两字状态词只占 28px；带计时的四种面（thinking/toolgroup/skill 兜底/tool）在无计时那一刻把已登记的短状态词换成四字（执行=正在执行、读取=正在读取、思考=正在思考…，英文动名词 Running/Reading…），一出计时换回短状态词 + 数字。实现：07 分片 zuSpeedFace 前加 ZU_SPEED_NAKED 表（行 = 短 zh/短 en/无计时 zh/无计时 en，按当前语言的短标签查），zuSpeedFace 末尾在数值为空时替换。只改格面，aria-label 与菜单全称仍是 text；技能名、MCP 服务名、未登记工具名不换。实机量过四字 56px 在默认条与药丸各档都放得下，英文取药丸宽裕档也放得下的短动名词
+     * → v464 长计时面不出文字标签（用户实报截图「思... 1:22:02」，问「为什么展示 思...」）：计时满 1 小时起紧凑时间写法从 59:59 变成 1:22:02 或 N天N时，数值自然宽由 39.7 涨到 45.7~52.8px（14px 格字号）；固定宽 6.6em 里扣掉图标与间隙后标签加数值只有 68.4px，两字状态词要 28px，数值不裁、状态词被省略成「思...」。带计时的四种面（thinking/toolgroup/skill/tool）在 elapsedMs 不小于 3600000 时标签置空（复用 .zu-sp-label:empty 的 display:none），只留图标加时间；格宽不变，aria-label 与全称不变。实现：07 分片 zuSpeedFace 末尾在无计时分支之后加一条 else-if，zuSpeedFace 与 zuSpeedFaceHtml 多一个 autoWidth 入参，精简 chip（11 分片）调用时传 true——chip 按内容定宽、中等档本就按 Think 23:59:59 标定，状态词放得下，不让位。换写法（1h22m 47.2px、N天N时 45.7px）同样放不下，所以不走换写法；英文较长状态词配五位计时的既有裁切不在本条范围
      */
-    var VERSION = "v458";
+    var VERSION = "v464";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -572,36 +584,69 @@
        * 间隔=动态态的 ~7.7px。.zu-live 作为 .it 的 flex item 会被块化，外部布局零变化。 */
       ".zusage-root .it{line-height:1.3}.zusage-root .it>span:not(.eb):not(.zu-live){display:inline-flex;align-items:center;min-height:1.3em}" +
       /* 速度格稳定占位（specs/speed-chip-stable-slot.md）：外宽只随布局档位变、不随状态文字变。
-       * 档位=既有窄宽类与折叠段属性（零新增测量）：宽裕 12.6em（14px 基准 176px）；zu-tight 10.9em（12px
+       * 档位=既有窄宽类与折叠段属性（零新增测量）。【以下档位宽是 v446 的原始值，v455 起已废，现行宽度见本段末「占位=全部格面固定宽」】
+       * 宽裕 12.6em（14px 基准 176px）；zu-tight 10.9em（12px
        * 基准 131px）；zu-narrow 7.2em
-       *（去标签与单位，图标+数值——按最长无标签面「图标+23:59:59」标定：格字号 12px 时速度格 86.4px、
+       *（图标+数值：带状态词的面去标签与单位——按最长无标签面「图标+23:59:59」标定：格字号 12px 时速度格 86.4px、
        * 内容自然宽 78.3px；旧值 6.4em 对该面越界 1.5px，被 scrollWidth 取整掩盖）；data-zu-speed-min
        * （折叠段内轮到速度格）仅图标。em 随格字号缩放，界面字号 11/14/20px 宿主实测余量 6~21px（2026-11-23）。
-       * 面结构=标签（吃剩余空间、省略）+数值（不收缩、右对齐）+单位；数字与单位仍是零空格两 item、
-       * 间距由 gap 提供（v326 机制）。overflow:hidden 兜底裁切，任何情况下不推邻格。流光沿用包装层
+       * 面结构=标签（只在装不下时收缩、省略；空标签不占位）+数值（不收缩）+单位；数字与单位仍是零空格两 item、
+       * 间距由 gap 提供（v326 机制）。v449：图标与文字紧凑成组、从格左缘起排，剩余空间留在格尾——格没有底色与
+       * 边框，留白不可见；v446 的「标签吃剩余空间、数值靠右」让图标贴最左、数字贴最右（宿主实测宽裕档图标到数字
+       * 空 56~124px），用户实报「图标和文字分开了」。overflow:hidden 兜底裁切，任何情况下不推邻格。流光沿用包装层
        * .zu-live.zu-shimmer 既有规则（flex 子项与标签 overflow 下宿主实测可正常渲染）。精简 chip
        * .zu-tsb 同样不随状态文字变：它挂在宿主工具行、没有窄宽状态机，三档由 11 分片 zuTsbTierSync
-       * 按宿主工具行的真实空位选（规则与标定见 .zu-tsb 规则处的注释）。 */
-      ".zusage-root .zu-main>.it.zu-speed{box-sizing:border-box;width:12.6em;overflow:hidden}" +
-      ".zusage-root.zu-tight .zu-main>.it.zu-speed{width:10.9em}" +
-      ".zusage-root.zu-narrow .zu-main>.it.zu-speed{width:7.2em}" +
-      /* 药丸无窄宽状态机：速度格档位类由 track 按卡片可用宽度升降（zuPillSpeedTierSync）——中等去分隔符；
-       * 中等/紧张档与默认条窄档同款同宽（药丸条上没有 zu-tight 类，缩字号公式与内边距在档位规则里自带：
-       * 14px 字号下要塞进中等档宽度，两字标签会被挤成省略号） */
-      ".zusage-root.zu-pill.zu-speed-mid .zu-main>.it.zu-speed{width:10.9em;padding-left:4px;padding-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}" +
-      ".zusage-root.zu-pill.zu-speed-mid .it.zu-speed>.zu-live>.zu-sp-label:not(:empty)::after{content:none}" +
-      ".zusage-root.zu-pill.zu-speed-tight .zu-main>.it.zu-speed{width:7.2em;padding-left:4px;padding-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}" +
+       * 按宿主工具行的真实空位选（规则与标定见 .zu-tsb 规则处的注释）。
+       * 占位=全部格面固定宽（v459，用户第六轮实报四张截图「上述状态变化时，宽度不一致，还是有抖动」，并指示
+       * 「去除右侧的 padding」「右侧空隙再增加 10px」）：v455/v456 让宽度随内容在 [6.6em, calc(38px + 4.8em)] 里
+       * 伸缩，宿主实测（14px 格字号）60.5 t/s=92.4、101.4 t/s=94.95、执行 0.0s=105.2——思考/工具面钉在上限、
+       * 速度面落在下限附近，状态每切一次其余格跳约 13px。改为 width:6.6em（即速度态宽：14px 格字号 92.4px、
+       * 12px 79.2px），任何格面同宽。右内边距 0（v459）：腾出的 7px 给内容，带状态词的面放不下时标签照样收缩省略
+       * （思…/执…），不必靠变宽容纳。左内边距 0（v462，用户指示「左侧的 padding 也去掉」）：图标贴格左缘（即状态条
+       * 左缘），.zu-live 可用宽 66.4px 变 73.4px（14px 格字号）；只作用于默认条，药丸保留原左内边距；极窄档（仅图标）
+       * 不在选择器内，两侧内边距与宽度都不变（图标从左内边距之后起排，不居中——实机克隆条实测右留白 17px）。
+       * 格与右侧分隔线的间隙 +10px：写在分隔线的盒宽里（10px 透明左内边距 + background-clip:content-box，
+       * 线仍是 1px）而不用 margin——折叠判据 zuBarContentWidth() 按可见子项盒子宽求和、不计外边距。
+       * 必须同时写 box-sizing:content-box：.sep 是 border-box，只加内边距会把 1px 的线压成 0 宽（实机实验抓到）。
+       * 数值本体（.zu-sp-val，flex:0 0 auto）常规面完整；>1h 长计时（1:05:00/23:59:59）在固定宽里放不下时数值尾
+       * 被裁（14px 系统字体 ≤2px，11px 界面字号 + 宽字体最多约 11px，已知名单），9999.9/子代理长数值的 unit「t/s」
+       * 尾部允许裁几像素（dim 辅助色），overflow:hidden 兜底不推邻格。roomy 只管窄档下带状态词面的显示/隐藏，不改宽度。
+       * 状态词与数值之间不画间隔点（v460，用户三选一裁定「宽度不变，去掉间隔点」）：v446 起宽裕档用「 · 」隔开状态词
+       * 与数值（连内边距占 16px，标签自然宽 44px），固定宽里带数值的两字状态词一律被省略成「思…」「执…」；实测要让
+       * 「思考 · 4:28」完整得放宽到约 107px（速度态右空白 +15px）。去掉后两字状态词加不超过 4 字符的计时都完整
+       * （执行 0.0s 余 3.2px、思考 4:28 余 1.7px、执行 59s 余 7.7px，14px 格字号），更长的才省略（12:34、1:05:00、
+       * 代理 28.8 t/s、英文 Think）；无计时（宿主未写 startedAt）时只剩状态词，不再有悬空的间隔点。中等/紧张档与
+       * 精简 chip 本来就不画，现在全部档位一致。 */
+      ".zusage-root .zu-main>.it.zu-speed{box-sizing:border-box;width:6.6em;overflow:hidden}" +
+      ".zusage-root .zu-main>.it.zu-speed:not([data-zu-speed-min='1']){padding-right:0}" +
+      /* v462 左内边距 0：选择器排除药丸（:not(.zu-pill)，与下方分隔线规则同构）——药丸有底色与 12px 圆角，图标靠这
+       * 7px/4px 左内边距离边缘；也不能改成「左外边距」：药丸中等/紧张档自带 4px 左内边距，外边距抵消不了。 */
+      ".zusage-root:not(.zu-pill) .zu-main>.it.zu-speed:not([data-zu-speed-min='1']){padding-left:0}" +
+      ".zusage-root:not(.zu-pill) .zu-main>.it.zu-speed:not([data-zu-speed-min='1'])+.sep{box-sizing:content-box;padding-left:10px;background-clip:content-box}" +
+      /* 药丸无窄宽状态机：速度格档位类由 track 按卡片可用宽度升降（zuPillSpeedTierSync）；
+       * 中等/紧张档自带缩字号公式与内边距（药丸条上没有 zu-tight 类）。药丸里速度格后面没有分隔线语义：
+       * v459 去掉的右内边距改成右外边距（宽裕 7px、中等/紧张 4px），条内格间距不变。 */
+      ".zusage-root.zu-pill .zu-main>.it.zu-speed{margin-right:7px}" +
+      ".zusage-root.zu-pill.zu-speed-mid .zu-main>.it.zu-speed{padding-left:4px;padding-right:0;margin-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}" +
+      ".zusage-root.zu-pill.zu-speed-tight .zu-main>.it.zu-speed{padding-left:4px;padding-right:0;margin-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}" +
       ".zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-label,.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-unit{display:none}" +
       ".zusage-root .zu-main>.it.zu-speed[data-zu-speed-min='1']{width:2.75em}" +
+      /* 完成态（面没有状态词）：任何档位都保留单位 */
       ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live{display:flex;flex:1 1 auto;min-width:0;align-items:baseline}" +
-      ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}" +
-      ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-val{flex:0 0 auto;white-space:nowrap;text-align:right}" +
+      ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-label{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}" +
+      ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-label:empty{display:none}" +
+      ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-val{flex:0 0 auto;white-space:nowrap;text-align:left}" +
       ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-unit{flex:0 0 auto}" +
-      ".zusage-root .it.zu-speed>.zu-live>.zu-sp-label:not(:empty)::after{content:' · ';padding:0 4px}" +
-      ".zusage-root.zu-tight .it.zu-speed>.zu-live>.zu-sp-label:not(:empty)::after{content:none}" +
+      /* v461 子代理面「子·X」（用户规格）：间隔点在标签末尾、与数值贴紧——负外边距抵消 .zu-live 的 gap:5px
+       * （.zu-live 的 gap 只此一处定义、各档位都是 5px；改 gap 时这里一起动）。子代理面（glue）由 07 分片加 zu-sp-glue */
+      ".zusage-root .it.zu-speed>.zu-live>.zu-sp-label.zu-sp-glue,.zu-tsb>.zu-live>.zu-sp-label.zu-sp-glue{margin-right:-5px}" +
       ".zusage-root.zu-narrow .it.zu-speed>.zu-live>.zu-sp-label,.zusage-root.zu-narrow .it.zu-speed>.zu-live>.zu-sp-unit{display:none}" +
-      /* 最窄档标签隐藏后没有「吃剩余空间」的弹簧把数值推到右边——显式靠右，与宽裕/中等档的数值右缘一致（位数变化不动右缘） */
-      ".zusage-root.zu-narrow .it.zu-speed>.zu-live,.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live{justify-content:flex-end}" +
+      /* 完成态在窄档、药丸紧张档也保留单位（空标签本就不占位） */
+      ".zusage-root.zu-narrow .it.zu-speed:has(>.zu-live>.zu-sp-label:empty)>.zu-live>.zu-sp-unit{display:block}" +
+      ".zusage-root.zu-pill.zu-speed-tight .it.zu-speed:has(>.zu-live>.zu-sp-label:empty)>.zu-live>.zu-sp-unit{display:block}" +
+      /* 窄档真实空位：整条因别的格放不下才进窄档，压缩后常余大量空间——空位装得下中等占位时（12 分片按「容器宽 − 其它格
+       * 未折叠时的窄面宽」判定，带 FOLD_HYS 迟滞），带状态词的面按中等占位显示状态词与单位；完成态不受影响 */
+      ".zusage-root.zu-narrow.zu-sp-roomy .it.zu-speed>.zu-live>.zu-sp-label:not(:empty),.zusage-root.zu-narrow.zu-sp-roomy .it.zu-speed>.zu-live>.zu-sp-unit{display:block}" +
       ".zusage-root .zu-main>.it.zu-speed[data-zu-speed-min='1']>.zu-live{display:none}" +
       ".zusage-root .eb .ico{width:12px;height:12px;transform:none}" +
       ".zusage-root .zu-think{color:var(--color-brand,#8171e8);opacity:1}" +
@@ -796,8 +841,9 @@
       /* 稳定占位（specs/speed-chip-stable-slot.md）：chip 外宽只随布局档位变，标签+数值+单位随状态换而不推 git chip。
        * 三档类名与药丸档位同名，规则只作用于 .zu-tsb；档位由 11 分片 zuTsbTierSync 按宿主工具行的真实空位选
        * （chip 先让位，不拿宿主自己的按钮换宽度）。宽裕 12.4em=标签+数值+单位，按最宽的无省略面
-       * 「代理×12 ≈1286.5 t/s」标定（13px 粗体，六种字体栈下自然宽最大 157.8px；旧单一宽 10.5em 对它越界 7.3px）；
-       * 中等 9.7em=去单位（「Think 23:59:59」123.5px）；紧张 6.6em=仅数值靠右（「23:59:59」82.9px）。
+       * 「代理×12 1286.5 t/s」标定（13px 粗体，六种字体栈下自然宽最大 157.8px；旧单一宽 10.5em 对它越界 7.3px）；
+       * 中等 9.7em=去单位（「Think 23:59:59」123.5px）；紧张 6.6em=仅数值（「23:59:59」82.9px）。
+       * 面内排布与条面同规则（v448）：标签+数值+单位紧凑成组靠左，剩余空间留在 chip 右侧。
        * chip 无图标，故没有「仅图标」的最窄档。 */
       "box-sizing:border-box;width:12.4em;" +
       "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--text-ui-base,var(--ui-font-size,14px)) - 1px);font-weight:700;font-variant-numeric:tabular-nums}" +
@@ -805,7 +851,6 @@
       ".zu-tsb.zu-speed-mid>.zu-live>.zu-sp-unit{display:none}" +
       ".zu-tsb.zu-speed-tight{width:6.6em}" +
       ".zu-tsb.zu-speed-tight>.zu-live>.zu-sp-label,.zu-tsb.zu-speed-tight>.zu-live>.zu-sp-unit{display:none}" +
-      ".zu-tsb.zu-speed-tight>.zu-live{justify-content:flex-end}" +
       ".zu-tsb:hover,.zu-tsb:focus-visible{background:var(--color-hover,rgba(255,255,255,.08));outline:none}" +
       /* v356 系统状态（issue #338）：格面值/标签继承 .it .v/.dim 基础样式，zu-sys-* 只承载
        * 结构布局与预警色（柔和黄/红只染数值与图标，浅色档双套同源深化）；stale 整段降

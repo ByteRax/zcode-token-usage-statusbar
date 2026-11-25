@@ -80,11 +80,11 @@ test('speed number/unit spacing: gap:5px mechanism + zero-space faces (v326 → 
 test('zuSpeedFaceHtml behaviour lock: 标签/数值/单位三 item、数值与单位零间隔、文案转义', () => {
   // 行为级锁（字符串存在性断言抓不住「函数被改成 no-op」——变异实验实证）：
   // 从产物提取真函数体在隔离函数里执行，锁定结构输出与转义边界
-  const start = source.indexOf('function zuSpeedFaceHtml(view) {');
+  const start = source.indexOf('function zuSpeedFaceHtml(view, autoWidth) {');
   assert.ok(start >= 0, 'zuSpeedFaceHtml missing');
   const endMarker = '(f.unit ? \'<span class="zu-sp-unit dim">\' + ttEsc(f.unit) + \'</span>\' : "");\n    }';
   const fnSrc = source.slice(start, source.indexOf(endMarker, start) + endMarker.length);
-  assert.ok(fnSrc.includes('var f = zuSpeedFace(view);'), '提取到的是完整函数体');
+  assert.ok(fnSrc.includes('var f = zuSpeedFace(view, autoWidth);'), '提取到的是完整函数体（autoWidth 透传，v464）');
   const ttEsc = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const zuSpeedFace = (view) => view;   // 展示模型已给出 {label,value,unit}
   const f = new Function('ttEsc', 'zuSpeedFace', fnSrc + ';\nreturn zuSpeedFaceHtml;')(ttEsc, zuSpeedFace);

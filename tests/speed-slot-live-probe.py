@@ -9,12 +9,13 @@
 默认模式做法：经宿主的 CDP 调试口（inject-main.cjs 启动时强制补开 9229）把 tests/speed-slot-live-probe.js
 送进渲染进程执行，对当前页面的第一条状态条逐档、逐状态面量矩形后原样还原。只读、不改任何文件，
 量取过程在同一个同步表达式里完成，不会画到屏幕上。
-判据：同一档位里全部状态面的速度格宽度只有一个值、邻格位置只有一个值、数值不越界（亚像素）；
-界面字号为 14px 的那一组再核对目标区间 宽裕 160–180 / 中等 112–132 / 紧张 72–88 / 极窄 32–40。
+判据：同一档位里全部状态面的速度格宽度只有一个值、等于固定宽 6.6em × 格字号（极窄档 2.75em；v459）、
+数值不越界（亚像素）；任何界面字号都核对（纯 em 随字号等比缩放）。精简样式的速率 chip 保持档位固定宽，只查越界。
+唯一例外是 >1h 长计时（已知名单 KNOWN_CLIP_FACES）：固定宽里放不下时数值尾被裁，裁到 KNOWN_CLIP_PX 以内只提示不算异常。
 
 持续观察（--watch）做法：把 tests/speed-slot-live-watch.js 送进渲染进程，按固定间隔读真实速度格的宽度、
-位置与格面，布局签名取自与速度格自身宽度无关的量。判据：同一条状态条、同一布局签名下速度格宽度只有一个值、
-数值不越界；另报告格面切换序列、各态停留时长下界、同可用宽度下的档位来回次数（过密只提示）。
+位置与格面，布局签名取自与速度格自身宽度无关的量。判据：同一条状态条、同一布局（签名前 7 段，不分面类别）下
+速度格宽度只有一个值（v459：跨格面宽度不同即异常）、数值不越界；另报告格面切换序列、各态停留时长下界、同可用宽度下的档位来回次数（过密只提示）。
 退出码：0 通过（有可量样本、格面发生过变化、无异常）；1 有异常；2 连不上调试口、页面里没有状态条或观察中断；
 3 观察期间没有可量样本或格面从未变化（窗口隐藏、会话空闲时会出现），不算通过。
 只用标准库（Python 3.8+），不需要 Node。高 DPI 校准：先调整系统或应用缩放，再运行一次。
@@ -28,9 +29,22 @@ import struct
 import sys
 import urllib.request
 
-RANGES = {
-    "宽裕": (160, 180), "中等": (112, 132), "紧张": (72, 88), "极窄": (32, 40),
-}
+# v459 速度格全部格面固定宽 6.6em（随格字号缩放，与 CSS width:6.6em 同源）；极窄档固定 2.75em。
+# 精简 chip 保持档位固定宽（12.4/9.7/6.6em），slot_px 返回 None 只查越界。
+ICON_EM = 2.75
+SLOT_EM = 6.6
+# >1h 长计时在固定宽里放不下时数值尾被裁（specs/speed-chip-stable-slot.md 已知名单）：只提示、不算异常，但裁切不得超过上限
+KNOWN_CLIP_FACES = {"思考 1:05:00", "思考 1天3时", "思考 23:59:59", "en Think"}
+KNOWN_CLIP_PX = 12   # 实测最大约 11px（11px 界面字号 + Verdana）；14px 系统字体 ≤2px
+
+
+def slot_px(fs, tier):
+    """固定格宽（px）；精简档返回 None（不核对宽度，只查越界）。"""
+    if tier.startswith("精简"):
+        return None
+    if tier.split(" ")[-1] == "极窄":
+        return ICON_EM * fs
+    return SLOT_EM * fs
 
 
 def ws_connect(url):
@@ -137,28 +151,36 @@ def report(out):
     print("字体：%s" % meta.get("font"))
     base = str(meta.get("uiFont") or "")
     problems = []
-    checked_ranges = 0
-    print("%-18s %-6s %-9s %-7s %-9s %-12s %s" % ("档位 @界面字号", "格字号", "速度格宽", "同档恒定", "邻格不动", "数值余量", "越界面"))
+    checked_slots = 0
+    print("%-18s %-6s %-10s %-14s %-12s %s" % ("档位 @界面字号", "格字号", "宽度范围", "固定宽(px)", "数值余量", "越界面"))
     for name, row in out.get("tiers", {}).items():
-        ui, _, tier = name.partition(" ")   # 键 = "<界面字号> <主题 档位>"
-        one_width = len(row["speedW"]) == 1
-        one_turn = len(row["turnL"]) <= 1
-        lead = "左 %.2fpx" % row["minLead"] if "紧张" in tier else "右 %.2fpx" % row["minSlack"]
-        if not one_width:
-            problems.append("%s：宽度随状态变化 %s" % (name, row["speedW"]))
-        if not one_turn:
-            problems.append("%s：邻格位置变化 %s" % (name, row["turnL"]))
-        if row["overflow"]:
-            problems.append("%s：数值越界 %s" % (name, "、".join(row["overflow"])))
-        widths = row["speedW"][0] if row["speedW"] and isinstance(row["speedW"][0], list) else row["speedW"]
-        rng = RANGES.get(tier.split(" ")[-1]) if ui == base and base == "14px" else None
-        if rng:
-            checked_ranges += 1
-            if widths and not rng[0] <= widths[0] <= rng[1]:
-                problems.append("%s：%.1fpx 不在目标区间 %d–%d" % (name, widths[0], rng[0], rng[1]))
-        print("%-18s %-6s %-9s %-7s %-9s %-12s %s" % (
-            name, row["fs"], widths[0] if widths else "?", "是" if one_width else "否", "是" if one_turn else "否", lead, "、".join(row["overflow"]) or "无"))
-    return problems, base, checked_ranges
+        tier = name.partition(" ")[2]   # 键 = "<界面字号> <主题 档位>"
+        fs = float(str(row["fs"]).replace("px", "") or 0)
+        slot = slot_px(fs, tier)   # 固定格宽（None=精简档不核对）；极窄档 = 2.75em
+        widths = sorted(set(row["speedW"]) | set(row.get("plainW") or row["speedW"]))
+        lead = "右 %.2fpx" % row["minSlack"]   # 内容成组靠左（v448），余量只在右侧
+        overflow = list(row["overflow"])
+        if overflow:
+            px = row.get("overflowPx") or {}
+            # 已知名单里的长计时面：裁切在上限内只提示（列在「越界面」一栏并标出裁了多少），超限或名单外的面才算异常
+            known = [k for k in overflow if k in KNOWN_CLIP_FACES and -KNOWN_CLIP_PX <= float(px.get(k, -99)) < 0]
+            bad = [k for k in overflow if k not in known]
+            overflow = ["%s（已知裁尾 %.2fpx）" % (k, float(px[k])) if k in known else k for k in overflow]
+            if bad:
+                problems.append("%s：数值越界 %s" % (name, "、".join("%s（%.2fpx）" % (k, float(px[k])) if k in px else k for k in bad)))
+        # v459 全部格面固定宽：任何界面字号都核对（纯 em 随字号等比缩放）；极窄档恒等于 2.75em
+        if slot is not None and widths:
+            checked_slots += 1
+            icon_only = slot == ICON_EM * fs
+            bad = [w for w in widths if abs(w - slot) > (1.5 if icon_only else 0.5)]
+            if bad:
+                problems.append("%s：极窄档应恒为 %.1fpx（2.75em×%s），实测 %s" % (name, slot, row["fs"], "、".join("%.1f" % w for w in bad)) if icon_only else
+                                "%s：宽度 %s 应恒为 %.1fpx（6.6em×%s）——全部状态面必须同宽" % (name, "、".join("%.1f" % w for w in bad), slot, row["fs"]))
+        span = ("%.1f~%.1f" % (min(widths), max(widths))) if widths else "?"
+        target = ("%.1f" % slot) if slot is not None else "?"
+        print("%-18s %-6s %-10s %-14s %-12s %s" % (
+            name, row["fs"], span, target, lead, "、".join(overflow) or "无"))
+    return problems, base, checked_slots
 
 
 def tier_name(tokens, min_flag):
@@ -193,7 +215,7 @@ def summarize(out):
 
     def sig_parts(sid):
         p = (sigs[sid] if isinstance(sid, int) and 0 <= sid < len(sigs) else "").split("|")
-        return (p + [""] * 7)[:7]   # 档位类 | 最窄标记 | 格字号 | 条父宽 | 窗口内宽 | 界面字号 | 像素比
+        return (p + [""] * 8)[:8]   # 档位类 | 最窄标记 | 格字号 | 条父宽 | 窗口内宽 | 界面字号 | 像素比 | 面类别（plain/tag）
 
     def tier_of(sid):
         a = sig_parts(sid)
@@ -201,7 +223,9 @@ def summarize(out):
 
     groups, runs, flips, last = {}, {}, {}, {}
     for s in ok:
-        g = groups.setdefault((s["b"], s["s"]), {"n": 0, "w": [], "faces": [], "l": [], "ov": 0})
+        # v459：布局 = 签名前 7 段；面类别（第 8 段 plain/tag）只用于报告——全部格面同宽，跨面类别宽度不同就是异常
+        g = groups.setdefault((s["b"], "|".join(sig_parts(s["s"])[:7])), {"n": 0, "w": [], "faces": [], "l": [], "ov": 0, "sid": s["s"], "cls": set()})
+        g["cls"].add(sig_parts(s["s"])[7])
         g["n"] += 1
         for key, val in (("w", s["w"]), ("l", s["l"]), ("faces", s["f"])):
             if val not in g[key]:
@@ -216,18 +240,22 @@ def summarize(out):
         prev = last.get(s["b"])
         if prev and prev["s"] != s["s"]:
             a, c = sig_parts(prev["s"]), sig_parts(s["s"])
+            if a[:7] == c[:7]:
+                last[s["b"]] = s   # 只是面类别换了（完成态与带状态词的面占位不同，一轮对话里本就会切几次），不算档位切换
+                continue
             flips.setdefault(s["b"], []).append((s["t"], a[3] == c[3] and a[4] == c[4]))
         last[s["b"]] = s
 
-    for (b, sid), g in sorted(groups.items()):
-        a = sig_parts(sid)
-        lines.append("  条#%d %s｜格字号 %s｜条父宽 %s｜窗口内宽 %s｜界面字号 %s｜像素比 %s：%d 拍，速度格宽 %s，格面 %d 种，水平位置 %d 种，越界 %d 拍" % (
-            b, tier_of(sid), a[2], a[3], a[4], a[5], a[6], g["n"], " / ".join("%.2f" % w for w in g["w"]),
+    for (b, _layout), g in sorted(groups.items()):
+        a = sig_parts(g["sid"])
+        lines.append("  条#%d %s%s｜格字号 %s｜条父宽 %s｜窗口内宽 %s｜界面字号 %s｜像素比 %s：%d 拍，速度格宽 %s，格面 %d 种，水平位置 %d 种，越界 %d 拍" % (
+            b, tier_of(g["sid"]), "｜完成态（无状态词）" if g["cls"] == {"plain"} else "", a[2], a[3], a[4], a[5], a[6], g["n"], " / ".join("%.2f" % w for w in g["w"]),
             len(g["faces"]), len(g["l"]), g["ov"]))
-        if len(g["w"]) > 1:
-            problems.append("条#%d %s 下速度格宽度随状态变化：%s" % (b, tier_of(sid), "、".join("%.2f" % w for w in g["w"])))
+        # v459 全部格面固定宽：同一布局下宽度只能有一个值（跨格面的宽度不同就是抖动）
+        if len(set(g["w"])) > 1:
+            problems.append("条#%d %s 下同一布局宽度不恒定：%s" % (b, tier_of(g["sid"]), "、".join("%.2f" % w for w in sorted(set(g["w"])))))
         if g["ov"]:
-            problems.append("条#%d %s 下数值越界 %d 拍" % (b, tier_of(sid), g["ov"]))
+            problems.append("条#%d %s 下数值越界 %d 拍" % (b, tier_of(g["sid"]), g["ov"]))
 
     changes = sum(max(len(r) - 1, 0) for r in runs.values())
     for b, seq in sorted(runs.items()):
@@ -299,8 +327,7 @@ def main(argv):
         print("无法量取：%s" % (out.get("error") if isinstance(out, dict) else out))
         return 2
     problems, base, checked = report(out)
-    print("汇总：%d 组，异常 %d 组%s" % (len(out.get("tiers", {})), len(problems),
-          "（界面字号基准 %s 不是 14px：未核对目标区间，宽度随字号等比缩放）" % base if base != "14px" else "（14px 的 %d 个档位已核对目标区间）" % checked))
+    print("汇总：%d 组，异常 %d 组（%d 个档位已核对固定宽 6.6em / 极窄 2.75em，精简档只查越界）" % (len(out.get("tiers", {})), len(problems), checked))
     for line in problems:
         print("  ✗ " + line)
     return 1 if problems else 0

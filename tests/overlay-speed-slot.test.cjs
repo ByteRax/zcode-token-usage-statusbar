@@ -9,7 +9,7 @@ const { getNamedSlice, sliceOverlay } = require('./helpers/overlay-extract.cjs')
 // 外宽只随布局档位变、不随状态文字变；展示模型只读结构化字段；协调器只管展示时机。
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
-const FACE = (label, value, unit = '') => ({ label, value, unit });
+const FACE = (label, value, unit = '', glue = false) => ({ label, value, unit, glue });   // v461：glue=标签与数值贴紧（子代理面）
 
 /* ---------- 展示模型（07 分片实例级渲染助手区的纯函数） + 状态机（02 分片） ---------- */
 const NOW = 100000;
@@ -17,7 +17,7 @@ function model(lang = 'zh') {
   const ctx = { L: (zh, en) => (lang === 'en' ? en : zh), Date: { now: () => NOW } };
   vm.runInNewContext(sliceOverlay('  var ZU_TOOL_VERBS = {', '  /* v78：消息流 loading 状态词') + '\n' +
     getNamedSlice('zuBarSpeedView') + '\n' +
-    sliceOverlay('    /* ---------- 速度格稳定占位：展示模型', '    function zuSpeedFaceHtml(view) {') + '\n', ctx);
+    sliceOverlay('    /* ---------- 速度格稳定占位：展示模型', '    function zuSpeedFaceHtml(view, autoWidth) {') + '\n', ctx);
   return ctx;
 }
 const plain = (o) => JSON.parse(JSON.stringify(o));
@@ -25,13 +25,13 @@ const plain = (o) => JSON.parse(JSON.stringify(o));
 function faceHtml(lang = 'zh') {
   const m = model(lang);
   m.ttEsc = (x) => String(x);
-  vm.runInNewContext(sliceOverlay('    function zuSpeedFaceHtml(view) {', '    function zuSpeedIconHtml(phase) {') + '\n', m);
+  vm.runInNewContext(sliceOverlay('    function zuSpeedFaceHtml(view, autoWidth) {', '    function zuSpeedIconHtml(phase) {') + '\n', m);
   return m;
 }
 
 test('展示模型住在 html() 切片夹具共用的渲染助手区（ttEsc→stubFor），布局类回归零打桩可用', () => {
   const helperSlice = sliceOverlay('    function ttEsc(', '    function stubFor(');
-  for (const name of ['function zuSpeedFace(view)', 'function zuSpTime(ms)', 'function zuSpNum(v, est)', 'function zuSpeedFaceHtml(view)', 'function zuSpeedIconHtml(phase)', 'function zuSpeedCellAttrs(full, live)'])
+  for (const name of ['function zuSpeedFace(view, autoWidth)', 'function zuSpTime(ms)', 'function zuSpNum(v, est)', 'function zuSpeedFaceHtml(view, autoWidth)', 'function zuSpeedIconHtml(phase)', 'function zuSpeedCellAttrs(full, live)'])
     assert.ok(helperSlice.includes(name), name);
   assert.ok(getNamedSlice('zuBarSpeedView').includes('elapsedMs: elapsedMs'), '状态机仍在 02 分片并透出数值字段');
   assert.ok(!getNamedSlice('zuBarSpeedView').includes('function zuSpeedFace('), '展示模型不回迁状态机分片');
@@ -39,24 +39,26 @@ test('展示模型住在 html() 切片夹具共用的渲染助手区（ttEsc→s
 
 test('zuSpeedFace: 八态标签/数值/单位（zh），只读结构化字段', () => {
   const m = model('zh');
-  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 3, speedValue: 128.6 })), FACE('代理×3', '≈128.6', 't/s'));
-  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 1, speedValue: 128.6 })), FACE('代理', '≈128.6', 't/s'), '单个子代理不带 ×1');
+  // v461：子代理面「子·X」——单字标签 + 贴紧的间隔点 + 速率，不带单位；数量不上面（全称里才有 ×N）
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 3, speedValue: 128.6 })), FACE('子·', '128.6', '', true));
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 1, speedValue: 128.6 })), FACE('子·', '128.6', '', true), '数量不上格面：N=1 与 N>1 同面');
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 12, speedValue: 1286.5 })), FACE('子', '1286.5', '', true), '六字符数值带点放不下：退成不带点、同样贴紧的标签');
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'toolgroup', groupKind: 'explore', elapsedMs: 3200 })), FACE('查阅', '03s'));
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'toolgroup', groupKind: 'terminal', elapsedMs: 3200 })), FACE('终端', '03s'));
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'skill', nameText: '代码审查与修复', elapsedMs: 12500 })), FACE('代码审查与修复', '12s'));
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'tool', toolName: 'Read', elapsedMs: 1200 })), FACE('读取', '01s'));
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'tool', toolName: 'Bash', elapsedMs: 500 })), FACE('执行', '0.5s'), '不足 1 秒一位小数（时间格式表）');
-  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'tool', toolName: 'WebFetch', elapsedMs: null })), FACE('网页', ''), '缺起始时刻不显数值');
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'tool', toolName: 'WebFetch', elapsedMs: null })), FACE('正在打开', ''), '缺起始时刻不显数值，标签换成四字说法（v463）');
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'tool', toolName: 'mcp__srv__tool', elapsedMs: 1000 })), FACE('srv', '01s'), 'MCP 工具取服务名');
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'tool', toolName: 'mcp__computer-use__click', elapsedMs: 1000 })), FACE('电脑', '01s'));
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'tool', toolName: 'js_repl', elapsedMs: 1000 })), FACE('代码', '01s'));
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'tool', toolName: 'NotebookEdit', elapsedMs: 1000 })), FACE('NotebookEdit', '01s'), '未登记工具显示工具名');
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'tool', toolName: '', elapsedMs: 1000 })), FACE('执行', '01s'), '空名回退「执行」');
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'thinking', elapsedMs: 393000 })), FACE('思考', '6:33'));
-  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'estimate', speedValue: 173.4 })), FACE('生成', '≈173.4', 't/s'));
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'estimate', speedValue: 173.4 })), FACE('', '173.4', 't/s'), 'v454 起估算无标签');
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'avg', latest: 212.9, speedValue: 80 })), FACE('', '212.9', 't/s'), 'avg 的面数字取 latest（最后一轮真实值，v298），不取会话均');
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'real', speedValue: 250 })), FACE('', '250.0', 't/s'), 'real 恒一位小数（与 text 一致）');
-  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'real', db: true, speedValue: 87.3 })), FACE('历史', '87.3', 't/s'), 'DB 回退带「历史」标签');
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'real', db: true, speedValue: 87.3 })), FACE('', '87.3', 't/s'), 'DB 回退无标签（v452，与完成态同面）');
   assert.equal(m.zuSpeedFace({ kind: 'real', db: true, speedValue: null }), null, 'DB 回退无值不显');
   assert.equal(m.zuSpeedFace(null), null);
   /* 不解析 text：同一结构化字段配上任意 text，产出不变 */
@@ -67,14 +69,132 @@ test('zuSpeedFace: 八态标签/数值/单位（zh），只读结构化字段', 
 
 test('zuSpeedFace: 英文标签', () => {
   const m = model('en');
-  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 3, speedValue: 128.6 })), FACE('Agt×3', '≈128.6', 't/s'));
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 3, speedValue: 128.6 })), FACE('Ag·', '128.6', '', true));
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 3, speedValue: 1286.5 })), FACE('A', '1286.5', '', true), '英文六字符数值退成单字母（实测 Ag1286.5 在 14px 下仍被省略');
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'toolgroup', groupKind: 'explore', elapsedMs: 3200 })), FACE('Scan', '03s'));
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'toolgroup', groupKind: 'terminal', elapsedMs: 3200 })), FACE('Shell', '03s'));
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'tool', toolName: 'Bash', elapsedMs: 3200 })), FACE('Run', '03s'));
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'thinking', elapsedMs: 393000 })), FACE('Think', '6:33'));
-  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'estimate', speedValue: 173.4 })), FACE('Gen', '≈173.4', 't/s'));
-  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'real', db: true, speedValue: 87.3 })), FACE('Hist', '87.3', 't/s'));
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'estimate', speedValue: 173.4 })), FACE('', '173.4', 't/s'));
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'real', db: true, speedValue: 87.3 })), FACE('', '87.3', 't/s'));
   assert.equal(m.zuSpTime(90000000), '1d 1h');
+});
+
+test('v463 无计时面：已登记的短状态词换成四字说法（用户「执行 → 正在执行」），一出计时换回短状态词 + 数字', () => {
+  const m = model('zh'), en = model('en');
+  // [kind, 附加字段, 短 zh, 无计时 zh, 短 en, 无计时 en]
+  const NAKE = [
+    ['thinking', {}, '思考', '正在思考', 'Think', 'Think'],   // Thinking 在最紧的档放不下：英文不换
+    ['toolgroup', { groupKind: 'explore' }, '查阅', '正在查阅', 'Scan', 'Reading'],
+    ['toolgroup', { groupKind: 'terminal' }, '终端', '正在执行', 'Shell', 'Running'],
+    ['tool', { toolName: 'Read' }, '读取', '正在读取', 'Read', 'Reading'],
+    ['tool', { toolName: 'Write' }, '写入', '正在写入', 'Write', 'Writing'],
+    ['tool', { toolName: 'Edit' }, '编辑', '正在编辑', 'Edit', 'Editing'],
+    ['tool', { toolName: 'ApplyPatch' }, '编辑', '正在编辑', 'Edit', 'Editing'],
+    ['tool', { toolName: 'Bash' }, '执行', '正在执行', 'Run', 'Running'],
+    ['tool', { toolName: 'Grep' }, '搜索', '正在搜索', 'Find', 'Finding'],
+    ['tool', { toolName: 'Glob' }, '搜索', '正在搜索', 'Find', 'Finding'],
+    ['tool', { toolName: 'WebSearch' }, '搜索', '正在搜索', 'Find', 'Finding'],
+    ['tool', { toolName: 'WebFetch' }, '网页', '正在打开', 'Fetch', 'Loading'],
+    ['tool', { toolName: 'TodoWrite' }, '待办', '更新待办', 'Todo', 'Todo'],
+    ['tool', { toolName: 'Skill' }, '技能', '正在调用', 'Skill', 'Calling'],
+    ['tool', { toolName: 'ReadSessionContext' }, '上下文', '正在读取', 'Ctx', 'Loading'],
+    ['tool', { toolName: 'Task' }, '代理', '正在派发', 'Agent', 'Agent'],
+    ['tool', { toolName: 'SendMessage' }, '消息', '正在发送', 'Send', 'Sending'],
+    ['tool', { toolName: 'TaskOutput' }, '输出', '正在查看', 'Out', 'Polling'],
+    ['tool', { toolName: 'TaskStop' }, '停止', '正在停止', 'Stop', 'Halting'],
+    ['tool', { toolName: 'CreateWorkflow' }, '流程', '正在启动', 'Flow', 'Starting'],
+    ['tool', { toolName: 'js_repl' }, '代码', '正在运行', 'Code', 'Running'],
+    ['tool', { toolName: 'mcp__computer-use__click' }, '电脑', '正在操作', 'Cua', 'Clicking'],
+    ['skill', { nameText: '' }, '技能', '正在调用', 'Skill', 'Calling'],
+  ];
+  for (const [kind, extra, zh, zhLong, enShort, enLong] of NAKE) {
+    const tag = `${kind} ${JSON.stringify(extra)}`, base = { kind, ...extra, elapsedMs: null };
+    assert.deepEqual(plain(m.zuSpeedFace(base)), FACE(zhLong, ''), `${tag}: zh 无计时`);
+    assert.deepEqual(plain(en.zuSpeedFace(base)), FACE(enLong, ''), `${tag}: en 无计时`);
+    assert.ok(Array.from(zhLong).length <= 4, `${zhLong} 不超过四个字（更长的在固定宽里放不下）`);
+    // 同一面一旦有计时：短状态词 + 数字（四字说法带数字放不下）
+    assert.deepEqual(plain(m.zuSpeedFace({ ...base, elapsedMs: 3200 })), FACE(zh, '03s'), `${tag}: zh 有计时用短状态词`);
+    assert.deepEqual(plain(en.zuSpeedFace({ ...base, elapsedMs: 3200 })), FACE(enShort, '03s'), `${tag}: en 有计时用短状态词`);
+  }
+  /* 耗时缺失或非法都算无计时 */
+  for (const bad of [undefined, -5, NaN, Infinity]) assert.deepEqual(plain(m.zuSpeedFace({ kind: 'tool', toolName: 'Bash', elapsedMs: bad })), FACE('正在执行', ''), `elapsedMs ${String(bad)}`);
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'tool', toolName: '', elapsedMs: null })), FACE('正在执行', ''), '空名回退「执行」同样换');
+  /* 不换的三类：技能名、MCP 服务名、未登记工具的原始名（无计时也原样） */
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'skill', nameText: 'zcode-github-release', elapsedMs: null })), FACE('zcode-github-release', ''), '技能名不换');
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'tool', toolName: 'mcp__web_reader__webReader', elapsedMs: null })), FACE('web_reader', ''), 'MCP 服务名不换');
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'tool', toolName: 'AskUserQuestion', elapsedMs: null })), FACE('AskUserQuestion', ''), '未登记工具名不换');
+  /* 无标签面与子代理面不受影响 */
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'estimate', speedValue: 173.4 })), FACE('', '173.4', 't/s'));
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 3, speedValue: 128.6 })), FACE('子·', '128.6', '', true));
+  /* 格面 HTML：仍是三个 item 的结构（空的数值位 span 保留），标签不带 glue */
+  assert.equal(faceHtml('zh').zuSpeedFaceHtml({ kind: 'tool', toolName: 'Bash', elapsedMs: null }), '<span class="zu-sp-label">正在执行</span><span class="zu-sp-val"></span>');
+  assert.equal(faceHtml('en').zuSpeedFaceHtml({ kind: 'tool', toolName: 'Bash', elapsedMs: null }), '<span class="zu-sp-label">Running</span><span class="zu-sp-val"></span>');
+  /* 表里的中文都不超过四个字、英文互不重复到放不下由真实浏览器夹具锁定（overlay-pill-theme 静态探针） */
+  const table = sliceOverlay('    var ZU_SPEED_NAKED = (function () {', '    function zuSpeedFace(view, autoWidth) {');
+  const cells = [...table.matchAll(/\["([^"]+)", "([^"]+)", "([^"]+)", "([^"]+)"\]/g)].map(x => x.slice(1, 5).map(String));
+  assert.equal(cells.length, 19, `ZU_SPEED_NAKED 逐行可解析（看到 ${cells.length} 行）`);
+  for (const [zh, , zhLong] of cells) assert.ok(Array.from(zhLong).length <= Array.from(zh).length + 2 && Array.from(zhLong).length <= 4, `${zh} → ${zhLong}`);
+  /* 英文：最紧的档（药丸宽裕 + 11px 界面字号）标签可用 44.6px；本机系统字体 14px 下自然宽 ≤ 55.5px 的词才放得下。
+   * 下列词实测更宽（Thinking 58.41、Fetching 58.81、Planning 58.5、Invoking 57.01、Stopping 61.14、Searching 67.95、Scanning 62.69、
+   * Operating 67.4、Dispatching 80.74、Delegating 73.11、Launching 70.11），不得写进表里；真实宽度由 overlay-pill-theme 静态探针逐档锁定 */
+  const tooWide = ['Thinking', 'Fetching', 'Planning', 'Invoking', 'Stopping', 'Searching', 'Scanning', 'Operating', 'Dispatching', 'Delegating', 'Launching'];
+  for (const [, , , enLong] of cells) assert.ok(!tooWide.includes(enLong), `${enLong} 在最紧的档放不下`);
+});
+
+test('v464 长计时面：计时满 1 小时起不出文字标签（只留图标 + 时间），不足 1 小时不变，无标签面不受影响', () => {
+  const m = model('zh'), en = model('en');
+  const HOUR = 3600000;
+  // [kind, 附加字段, 短 zh, 短 en]——四种带计时的面各取代表（技能名面也在内）
+  const TIMED = [
+    ['thinking', {}, '思考', 'Think'],
+    ['toolgroup', { groupKind: 'explore' }, '查阅', 'Scan'],
+    ['toolgroup', { groupKind: 'terminal' }, '终端', 'Shell'],
+    ['tool', { toolName: 'Bash' }, '执行', 'Run'],
+    ['skill', { nameText: 'zcode-github-release' }, 'zcode-github-release', 'zcode-github-release'],
+  ];
+  for (const [kind, extra, zh, enShort] of TIMED) {
+    const tag = `${kind} ${JSON.stringify(extra)}`, base = { kind, ...extra };
+    // 1 小时以内：状态词 + 数字（59:59 是固定宽里放得下的最宽数值）
+    assert.deepEqual(plain(m.zuSpeedFace({ ...base, elapsedMs: HOUR - 1 })), FACE(zh, '59:59'), `${tag}: 不足 1 小时仍带状态词`);
+    assert.deepEqual(plain(en.zuSpeedFace({ ...base, elapsedMs: HOUR - 1 })), FACE(enShort, '59:59'), `${tag}: en 不足 1 小时仍带状态词`);
+    // 满 1 小时：写法变长（1:00:00、1:22:02，跨天 1天3时），状态词不出
+    assert.deepEqual(plain(m.zuSpeedFace({ ...base, elapsedMs: HOUR })), FACE('', '1:00:00'), `${tag}: 满 1 小时不出状态词`);
+    assert.deepEqual(plain(m.zuSpeedFace({ ...base, elapsedMs: 4922000 })), FACE('', '1:22:02'), `${tag}: 1:22:02`);
+    assert.deepEqual(plain(m.zuSpeedFace({ ...base, elapsedMs: 97200000 })), FACE('', '1天3时'), `${tag}: 跨天`);
+    assert.deepEqual(plain(en.zuSpeedFace({ ...base, elapsedMs: 4922000 })), FACE('', '1:22:02'), `${tag}: en 满 1 小时同样不出`);
+  }
+  /* 格面 HTML：标签 span 为空（.zu-sp-label:empty → display:none），数值紧跟图标；空 span 结构不变（原地更新按三个 span 写） */
+  const h = faceHtml('zh');
+  assert.equal(h.zuSpeedFaceHtml({ kind: 'thinking', elapsedMs: 4922000 }), '<span class="zu-sp-label"></span><span class="zu-sp-val">1:22:02</span>');
+  assert.equal(h.zuSpeedFaceHtml({ kind: 'thinking', elapsedMs: 3599000 }), '<span class="zu-sp-label">思考</span><span class="zu-sp-val">59:59</span>');
+  assert.ok(source.includes('>.zu-live>.zu-sp-label:empty{display:none}'), '空标签不占位依赖既有 :empty 规则（06 分片）');
+  /* 无标签面与子代理面不受影响（没有 elapsedMs）；全称来自 text，不经展示模型 */
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'estimate', speedValue: 173.4 })), FACE('', '173.4', 't/s'));
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 3, speedValue: 128.6 })), FACE('子·', '128.6', '', true));
+  /* 精简 chip（autoWidth=true）不在此列：按内容定宽，中等档按「Think 23:59:59」标定——长计时面照旧带状态词 */
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'thinking', elapsedMs: 4922000 }, true)), FACE('思考', '1:22:02'), '精简 chip：满 1 小时仍带状态词');
+  assert.deepEqual(plain(en.zuSpeedFace({ kind: 'tool', toolName: 'Bash', elapsedMs: 97200000 }, true)), FACE('Run', '1d 3h'), '精简 chip：英文同理');
+  assert.equal(h.zuSpeedFaceHtml({ kind: 'thinking', elapsedMs: 4922000 }, true), '<span class="zu-sp-label">思考</span><span class="zu-sp-val">1:22:02</span>', 'autoWidth 透传到展示模型');
+});
+
+test('v461 子代理面「子·X」：标签带 zu-sp-glue（点与数值贴紧），其余面不带；贴紧规则与 .zu-live 的 gap 同源', () => {
+  const m = faceHtml('zh'), en = faceHtml('en');
+  assert.equal(m.zuSpeedFaceHtml({ kind: 'subagent', activeCount: 3, speedValue: 128.6 }), '<span class="zu-sp-label zu-sp-glue">子·</span><span class="zu-sp-val">128.6</span>');
+  assert.equal(m.zuSpeedFaceHtml({ kind: 'subagent', activeCount: 1, speedValue: 28.8 }), '<span class="zu-sp-label zu-sp-glue">子·</span><span class="zu-sp-val">28.8</span>', '数量不上格面');
+  assert.equal(en.zuSpeedFaceHtml({ kind: 'subagent', activeCount: 3, speedValue: 128.6 }), '<span class="zu-sp-label zu-sp-glue">Ag·</span><span class="zu-sp-val">128.6</span>');
+  assert.equal(m.zuSpeedFaceHtml({ kind: 'subagent', activeCount: 12, speedValue: 1286.5 }), '<span class="zu-sp-label zu-sp-glue">子</span><span class="zu-sp-val">1286.5</span>', '六字符数值：不带点、仍贴紧');
+  assert.equal(m.zuSpeedFaceHtml({ kind: 'subagent', activeCount: 12, speedValue: 9999.9 }), '<span class="zu-sp-label zu-sp-glue">子</span><span class="zu-sp-val">9999.9</span>');
+  assert.equal(m.zuSpeedFaceHtml({ kind: 'subagent', activeCount: 12, speedValue: 10000 }), '<span class="zu-sp-label zu-sp-glue">子·</span><span class="zu-sp-val">10.0k</span>', '万位起缩写成五字符，回到带点的面');
+  assert.equal(m.zuSpeedFaceHtml({ kind: 'thinking', elapsedMs: 393000 }), '<span class="zu-sp-label">思考</span><span class="zu-sp-val">6:33</span>', '思考面不带 glue');
+  assert.equal(m.zuSpeedFaceHtml({ kind: 'avg', speedValue: 128.6 }), '<span class="zu-sp-label"></span><span class="zu-sp-val">128.6</span><span class="zu-sp-unit dim">t/s</span>', '完成态不带 glue、单位仍在');
+  assert.ok(!/代理/.test(m.zuSpeedFaceHtml({ kind: 'subagent', activeCount: 12, speedValue: 128.6 })), '子代理面不再出现「代理」与 ×N');
+  /* 贴紧靠负外边距抵消 .zu-live 的 gap：两个数值必须相反数，且 .zu-live 的 gap 只此一处定义 */
+  const glue = /\.zu-sp-label\.zu-sp-glue\{margin-right:(-?[\d.]+px)\}/.exec(source);
+  const gap = /"\.zu-live\{[^}]*?gap:([\d.]+px)/.exec(source);
+  assert.ok(glue && gap, `glue ${glue && glue[1]} / gap ${gap && gap[1]}`);
+  assert.equal(Number(glue[1]), -Number(gap[1]), `zu-sp-glue 的外边距 ${glue[1]} 必须抵消 .zu-live 的 gap ${gap[1]}`);
+  assert.equal((source.match(/"\.zu-live\{/g) || []).length, 1, '.zu-live 的 gap 只此一处定义（各档位都是 5px）');
 });
 
 test('zuSpTime: 格面紧凑时间（不足 1 秒一位小数→整数秒两位补零→分:秒→时:分:秒→天+时）', () => {
@@ -90,12 +210,12 @@ test('zuSpTime: 格面紧凑时间（不足 1 秒一位小数→整数秒两位�
 test('zuSpNum: 位数跨越不改变精度，万位起缩写，异常值不伪造 0', () => {
   const m = model('zh');
   const est = (v) => m.zuSpeedFace({ kind: 'estimate', speedValue: v }).value;
-  assert.equal(est(9.9), '≈9.9'); assert.equal(est(10), '≈10.0'); assert.equal(est(100), '≈100.0'); assert.equal(est(1000), '≈1000.0');
-  assert.equal(est(999.9), '≈999.9'); assert.equal(est(1000.0), '≈1000.0'); assert.equal(est(9999.9), '≈9999.9');
-  assert.equal(est(10000), '≈10.0k'); assert.equal(est(12864), '≈12.9k');
-  assert.equal(est(999949), '≈999.9k'); assert.equal(est(999999), '≈1.0M', '进位不跨档'); assert.equal(est(1234567), '≈1.2M');
-  assert.equal(est(999.9e6), '≈999.9M'); assert.equal(est(999.96e6), '≈1.0B'); assert.equal(est(2.5e12), '≈2.5T'); assert.equal(est(1234e12), '≈1234T'), '超上限位数不再增长';
-  assert.equal(est(1999.9), '≈1999.9'); assert.equal(est(2000.0), '≈2000.0');
+  assert.equal(est(9.9), '9.9'); assert.equal(est(10), '10.0'); assert.equal(est(100), '100.0'); assert.equal(est(1000), '1000.0');
+  assert.equal(est(999.9), '999.9'); assert.equal(est(1000.0), '1000.0'); assert.equal(est(9999.9), '9999.9');
+  assert.equal(est(10000), '10.0k'); assert.equal(est(12864), '12.9k');
+  assert.equal(est(999949), '999.9k'); assert.equal(est(999999), '1.0M', '进位不跨档'); assert.equal(est(1234567), '1.2M');
+  assert.equal(est(999.9e6), '999.9M'); assert.equal(est(999.96e6), '1.0B'); assert.equal(est(2.5e12), '2.5T'); assert.equal(est(1234e12), '1234T'), '超上限位数不再增长';
+  assert.equal(est(1999.9), '1999.9'); assert.equal(est(2000.0), '2000.0');
   const done = (v) => m.zuSpeedFace({ kind: 'real', db: true, speedValue: v });
   assert.equal(done(9.9).value, '9.9'); assert.equal(done(10).value, '10'); assert.equal(done(100).value, '100'); assert.equal(done(1000).value, '1000');
   assert.equal(done(2000).value, '2000'); assert.equal(done(12864.4).value, '12.9k');
@@ -125,6 +245,7 @@ test('zuBarSpeedView 追加数值字段 elapsedMs/toolName/groupKind，text 逐�
   const noStart = m.zuBarSpeedView({ complete: false, characterRate: null, runningTool: { name: 'Read', startedAt: null, inputText: '{}' },
     runningGroup: null, startedAt: 0, observedMs: 0 });
   assert.equal(noStart.text, '读取中'); assert.equal(noStart.elapsedMs, null);
+  assert.deepEqual(plain(m.zuSpeedFace(noStart)), FACE('正在读取', ''), 'v463：无计时面换成四字说法，全称 text 仍是「读取中」');
 });
 
 test('精简 chip（实时态）：面数值与档位色取同一个展示快照，全称读真实视图', () => {
@@ -136,7 +257,7 @@ test('精简 chip（实时态）：面数值与档位色取同一个展示快照
     v: { kind: 'live', sv, face }, chip, L: (zh) => zh, tpsBand: (x) => ({ cls: 'band-' + x }),
     zuSpeedFaceHtml: m.zuSpeedFaceHtml,
   });
-  assert.equal(chip.innerHTML, '<span class="zu-live ok"><span class="zu-sp-label">生成</span><span class="zu-sp-val">≈28.8</span><span class="zu-sp-unit dim">t/s</span></span>', '数值与颜色同拍：都是展示快照（不出现 1286.5，也不出现 zu-ultra）');
+  assert.equal(chip.innerHTML, '<span class="zu-live ok"><span class="zu-sp-label"></span><span class="zu-sp-val">28.8</span><span class="zu-sp-unit dim">t/s</span></span>', '数值与颜色同拍：都是展示快照（不出现 1286.5，也不出现 zu-ultra）');
   assert.equal(chip['aria-label'], '生成速度 生成中… 估 1286.5 t/s', '无障碍全称读真实视图');
   assert.equal(chip.__zuSig, 'live|zu-live ok|' + chip.innerHTML.slice('<span class="zu-live ok">'.length, -'</span>'.length), '签名=种类|类串|面');
 });
@@ -148,7 +269,7 @@ test('精简 chip（DB 回退态）：面数值与档位色都按最后一轮真
     v: { kind: 'fallback', dbTps: 87.3, sessAvg: 250, band: { cls: 'zu-ultra' } }, chip, L: (zh) => zh,
     tpsBand: (x) => ({ cls: x >= 200 ? 'zu-ultra' : 'ok' }), zuSpeedFaceHtml: m.zuSpeedFaceHtml,
   });
-  assert.equal(chip.innerHTML, '<span class="zu-live ok"><span class="zu-sp-label">历史</span><span class="zu-sp-val">87.3</span><span class="zu-sp-unit dim">t/s</span></span>');
+  assert.equal(chip.innerHTML, '<span class="zu-live ok"><span class="zu-sp-label"></span><span class="zu-sp-val">87.3</span><span class="zu-sp-unit dim">t/s</span></span>');
   assert.equal(chip['aria-label'], '生成速度 87.3 t/s');
 });
 
@@ -412,7 +533,7 @@ test('§7.4 状态序列（各态持续 ≥600ms）：七态按序全部上屏�
     : t < 2800 ? seqBash(t, 2100) : t < 3600 ? seqView(t, 'estimate', { speedValue: 128.6 }) : t < 4500 ? seqRead(t, 3600)
     : seqView(t, 'real', { speedValue: 201.4, latest: 201.4, phase: null });
   const shown = e.tick(pick, script, 100, 4500);
-  assert.deepEqual(shown, ['0:think|思考', '900:tool|读取', '1600:think|思考', '2300:tool|执行', '3000:bolt|生成', '3800:tool|读取', '4500:bolt|'],
+  assert.deepEqual(shown, ['0:think|思考', '900:tool|读取', '1600:think|思考', '2300:tool|执行', '3000:bolt|', '3800:tool|读取', '4500:bolt|'],
     '每个持续明显的状态都显示；切换点=真实切换 + 180ms 防抖（思考/生成态另有 400ms 最短显示）；生成完成在当拍立即');
 });
 
@@ -422,11 +543,11 @@ test('§7.4 状态序列（中间态极短）：60ms 的工具不闪现、图标
   const fast = t => t < 700 ? seqView(t, 'thinking') : t < 760 ? seqRead(t, 700) : t < 820 ? seqView(t, 'thinking')
     : t < 880 ? seqBash(t, 820) : t < 1600 ? seqView(t, 'thinking') : t < 3000 ? seqView(t, 'estimate', { speedValue: 128.6 })
     : t < 3060 ? seqRead(t, 3000) : t < 3800 ? seqView(t, 'thinking') : seqView(t, 'real', { speedValue: 201.4, latest: 201.4, phase: null });
-  assert.deepEqual(e.tick(coordinator().pick, fast, 20, 3800), ['0:think|思考', '1780:bolt|生成', '3240:think|思考', '3800:bolt|'],
+  assert.deepEqual(e.tick(coordinator().pick, fast, 20, 3800), ['0:think|思考', '1780:bolt|', '3240:think|思考', '3800:bolt|'],
     '三个 60ms 的工具都被防抖吞掉（图标不跟着切）；完成态立即');
   const mid = t => t < 700 ? seqView(t, 'thinking') : t < 1000 ? seqRead(t, 700) : t < 1600 ? seqView(t, 'thinking')
     : t < 3000 ? seqView(t, 'estimate', { speedValue: 128.6 }) : seqView(t, 'real', { speedValue: 201.4, latest: 201.4, phase: null });
-  assert.deepEqual(e.tick(coordinator().pick, mid, 20, 3800), ['0:think|思考', '880:tool|读取', '1180:think|思考', '1780:bolt|生成', '3000:bolt|'],
+  assert.deepEqual(e.tick(coordinator().pick, mid, 20, 3800), ['0:think|思考', '880:tool|读取', '1180:think|思考', '1780:bolt|'],   // 估算与完成态同面（v454）：签名相同不再单独记录
     '300ms 的工具有实际意义：照常显示，不被隐藏');
 });
 
@@ -757,63 +878,96 @@ test('药丸升档判据的宽度增量估计 ≥ 各界面字号下的真实档
   const start = source.indexOf('速度格稳定占位（specs/speed-chip-stable-slot.md）：外宽只随布局档位变');
   const css = source.slice(start, source.indexOf('.zusage-root .eb .ico{width:12px', start));
   const em = (rule) => { const m = /width:([\d.]+)em/.exec(rule); assert.ok(css.includes(rule) && m, rule); return Number(m[1]); };
-  const wide = em('.zusage-root .zu-main>.it.zu-speed{box-sizing:border-box;width:12.6em;overflow:hidden}');
-  const mid = em('.zusage-root.zu-pill.zu-speed-mid .zu-main>.it.zu-speed{width:10.9em;padding-left:4px;padding-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}');
-  const tight = em('.zusage-root.zu-pill.zu-speed-tight .zu-main>.it.zu-speed{width:7.2em;padding-left:4px;padding-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}');
-  assert.equal(tight, em('.zusage-root.zu-narrow .zu-main>.it.zu-speed{width:7.2em}'), '药丸紧张档与默认条紧张档同宽');
-  assert.equal(mid, em('.zusage-root.zu-tight .zu-main>.it.zu-speed{width:10.9em}'), '药丸中等档与默认条中等档同宽');
-  /* 药丸条上没有 zu-tight 类：紧张档规则必须自带同一套缩字号公式与内边距，否则 7.2em 按 14px 算、数值越界 */
+  const wideRule = '.zusage-root .zu-main>.it.zu-speed{box-sizing:border-box;width:6.6em;overflow:hidden}';
+  assert.ok(css.includes(wideRule), wideRule);
+  /* v459：全部格面固定宽 6.6em（随格字号缩放）——档宽差只剩缩字号差 */
+  const slotPx = (fs) => 6.6 * fs;
+  const wide = slotPx(14);
+  /* 药丸条上没有 zu-tight 类：紧张档规则必须自带同一套缩字号公式与左内边距/间距，否则按 14px 算、数值越界；
+   * 右内边距 v459 起为 0（移到格外右外边距），默认条靠 :not([data-zu-speed-min]) 规则覆盖窄档的 4px */
   const ruleOf = (sel) => css.slice(css.indexOf(sel), css.indexOf('}', css.indexOf(sel)));
   const tightRule = ruleOf('.zusage-root.zu-pill.zu-speed-tight .zu-main>.it.zu-speed{'), midRule = ruleOf('.zusage-root.zu-pill.zu-speed-mid .zu-main>.it.zu-speed{');
   const narrowRule = source.slice(source.indexOf('.zusage-root.zu-tight .zu-main>.it{'), source.indexOf('}', source.indexOf('.zusage-root.zu-tight .zu-main>.it{')));   // 默认条窄档规则在稳定占位块之前，从整份源码取
-  for (const decl of ['font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))', 'padding-left:4px', 'padding-right:4px', 'gap:3px']) {
+  for (const decl of ['font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))', 'padding-left:4px', 'gap:3px']) {
     assert.ok(narrowRule.includes(decl) && tightRule.includes(decl) && midRule.includes(decl), `药丸中等/紧张档与默认条窄档同款：${decl}`);
   }
+  for (const rule of [tightRule, midRule]) assert.ok(rule.includes('padding-right:0'), `药丸中等/紧张档右内边距为 0（v459）：${rule}`);
   const narrowFs = (ui) => Math.min(ui, Math.max(11, ui - 2));   // 紧张档字号公式（同 zu-tight；药丸条字号=界面字号）
   const est = /pillSpeedTier === 2 \? ([\d.]+) : ([\d.]+)\) \* pillSpeedEm \+ 24 <= avail/.exec(source);
   assert.ok(est, '升档判据在位');
-  // 宽裕档不缩字号、中等/紧张档缩到 narrowFs(ui)：真实增量换算成条字号（=界面字号）下的 em
-  const realWideToMid = (ui) => (wide * ui - mid * narrowFs(ui)) / ui, realMidToTight = (ui) => (mid - tight) * narrowFs(ui) / ui;
+  // v459 固定宽后真实增量只剩宽裕→中段的字号差（wide=6.6em×ui、mid/tight=6.6em×narrowFs(ui)），估计值富余即安全
+  const realWideToMid = (ui) => (slotPx(ui) - slotPx(narrowFs(ui))) / ui, realMidToTight = () => 0;
   let worstA = 0, worstB = 0;
   for (let ui = 11; ui <= 40; ui++) {
     worstA = Math.max(worstA, realWideToMid(ui)); worstB = Math.max(worstB, realMidToTight(ui));
   }
   assert.ok(worstB <= Number(est[1]) + 1e-9, `中等→紧张真实增量上界 ${worstB.toFixed(3)}em ≤ 估计 ${est[1]}em`);
   assert.ok(worstA <= Number(est[2]) + 1e-9, `宽裕→中等真实增量上界 ${worstA.toFixed(3)}em ≤ 估计 ${est[2]}em`);
-  assert.ok(Number(est[1]) - worstB < 0.15 && Number(est[2]) - worstA < 0.15, `估计不过度保守（差 ${(Number(est[1]) - worstB).toFixed(3)}em / ${(Number(est[2]) - worstA).toFixed(3)}em）`);
+  /* 固定宽后增量只剩宽裕→中段的字号差（最大 13.2px），估计值富余即安全 */
 });
 
-test('速度格稳定占位 CSS：四档宽度只由既有布局类/折叠属性驱动', () => {
+test('速度格占位 CSS：全部格面固定宽 6.6em、右内边距 0、右侧分隔线间隙 +10px（v459）、状态词与数值之间无间隔点（v460）、左内边距 0（v462），极窄档固定', () => {
   const start = source.indexOf('速度格稳定占位（specs/speed-chip-stable-slot.md）：外宽只随布局档位变');
   assert.ok(start >= 0, 'speed slot CSS block present');
   const css = source.slice(start, source.indexOf('.zusage-root .eb .ico{width:12px', start));
   for (const rule of [
-    '.zusage-root .zu-main>.it.zu-speed{box-sizing:border-box;width:12.6em;overflow:hidden}',
-    '.zusage-root.zu-tight .zu-main>.it.zu-speed{width:10.9em}',
-    '.zusage-root.zu-narrow .zu-main>.it.zu-speed{width:7.2em}',
+    '.zusage-root .zu-main>.it.zu-speed{box-sizing:border-box;width:6.6em;overflow:hidden}',
+    ".zusage-root .zu-main>.it.zu-speed:not([data-zu-speed-min='1']){padding-right:0}",
+    ".zusage-root:not(.zu-pill) .zu-main>.it.zu-speed:not([data-zu-speed-min='1']){padding-left:0}",
+    ".zusage-root:not(.zu-pill) .zu-main>.it.zu-speed:not([data-zu-speed-min='1'])+.sep{box-sizing:content-box;padding-left:10px;background-clip:content-box}",
+    '.zusage-root.zu-pill .zu-main>.it.zu-speed{margin-right:7px}',
     ".zusage-root .zu-main>.it.zu-speed[data-zu-speed-min='1']{width:2.75em}",
+    ".zusage-root.zu-narrow .it.zu-speed:has(>.zu-live>.zu-sp-label:empty)>.zu-live>.zu-sp-unit{display:block}",
+    ".zusage-root.zu-pill.zu-speed-tight .it.zu-speed:has(>.zu-live>.zu-sp-label:empty)>.zu-live>.zu-sp-unit{display:block}",
+    ".zusage-root.zu-narrow.zu-sp-roomy .it.zu-speed>.zu-live>.zu-sp-label:not(:empty),.zusage-root.zu-narrow.zu-sp-roomy .it.zu-speed>.zu-live>.zu-sp-unit{display:block}",
     ':is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live{display:flex;flex:1 1 auto;min-width:0;align-items:baseline}',
-    ':is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}',
-    ':is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-val{flex:0 0 auto;white-space:nowrap;text-align:right}',
+    ':is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-label{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}',
+    ':is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-label:empty{display:none}',
+    ':is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-val{flex:0 0 auto;white-space:nowrap;text-align:left}',
     ".zusage-root.zu-narrow .it.zu-speed>.zu-live>.zu-sp-label,.zusage-root.zu-narrow .it.zu-speed>.zu-live>.zu-sp-unit{display:none}",
-    '.zusage-root.zu-narrow .it.zu-speed>.zu-live,.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live{justify-content:flex-end}',
     ".zusage-root .zu-main>.it.zu-speed[data-zu-speed-min='1']>.zu-live{display:none}",
-    '.zusage-root.zu-pill.zu-speed-mid .zu-main>.it.zu-speed{width:10.9em;padding-left:4px;padding-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}',
-    '.zusage-root.zu-pill.zu-speed-tight .zu-main>.it.zu-speed{width:7.2em;padding-left:4px;padding-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}',
+    '.zusage-root.zu-pill.zu-speed-mid .zu-main>.it.zu-speed{padding-left:4px;padding-right:0;margin-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}',
+    '.zusage-root.zu-pill.zu-speed-tight .zu-main>.it.zu-speed{padding-left:4px;padding-right:0;margin-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}',
     '.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-label,.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-unit{display:none}',
   ]) assert.ok(css.includes(rule), rule);
+  /* v462 左内边距 0（用户指示「左侧的 padding 也去掉」）只作用于默认条：规则必须带 :not(.zu-pill)——药丸有底色与 12px 圆角，
+   * 图标靠左内边距（宽裕 7px 来自基础 .it，中等/紧张 4px）离边缘；也不能做成「左内边距改左外边距」（中等/紧张档的 4px 左内边距
+   * 抵消不了，会多推 7px）。仅图标档保留两侧内边距（图标靠左，不居中）。 */
+  assert.ok(!css.includes(".zusage-root .zu-main>.it.zu-speed:not([data-zu-speed-min='1']){padding-left:0}"), '左内边距 0 规则不得作用于药丸');
+  /* 逐条看药丸速度格规则（选择器去掉 :not(...) 组再判，否则 :not(.zu-pill) 自己会被当成药丸） */
+  let pillRules = 0;
+  for (const [, sel, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (!/\.it\.zu-speed/.test(sel) || !/\.zu-pill/.test(sel.replace(/:not\([^)]*\)/g, ''))) continue;
+    pillRules += 1;
+    assert.ok(!/padding-left:0(?:;|$)/.test(body), `药丸速度格规则不得把左内边距清零：${sel}{${body}}`);
+  }
+  assert.ok(pillRules >= 3, `药丸速度格规则应被逐条核对（看到 ${pillRules} 条）`);
+  assert.ok(!/\.it\.zu-speed\[data-zu-speed-min='1'\]\{[^}]*padding-left:0/.test(css), '仅图标档保留左内边距');
+  /* v459：没有下限/上限区间——v455/v456 的 min-width/max-width 与 calc(38px + 4.8em) 上限、更早的 12.6/10.9em 档位宽都不再存在 */
+  assert.ok(!/[;{]\s*(max-width|width):calc\(38px \+ 4\.8em\)/.test(css), 'v456 上限公式已废（只剩注释里的历史记录）');
+  assert.ok(!/[;{]width:12\.6em|[;{]width:10\.9em|max-width:12\.6em|max-width:10\.9em/.test(css), '12.6/10.9em 档位上限已废除');
+  assert.ok(!/\.it\.zu-speed[^{]*\{[^}]*max-width/.test(css), '速度格不再有 max-width（固定宽）');
+  assert.ok(!css.includes('.zusage-root.zu-narrow .zu-main>.it.zu-speed{width:auto;min-width:7.2em}'), '窄档固定宽度规则已删');
+  assert.ok(!css.includes(":has(>.zu-live>.zu-sp-label:empty){width:auto;min-width:6.6em}"), '完成态专用宽度规则已并入基础');
+  assert.ok(!css.includes('.zu-sp-roomy .zu-main>.it.zu-speed:has('), 'roomy 不再改宽度（只管显示）');
+  /* 分隔线间隙必须自带 box-sizing:content-box：.sep 是 border-box，只加内边距会把 1px 的线压成 0 宽（实机实验抓到） */
+  const sepRule = css.slice(css.indexOf('.it.zu-speed:not([data-zu-speed-min=\'1\'])+.sep{'), css.indexOf('}', css.indexOf('.it.zu-speed:not([data-zu-speed-min=\'1\'])+.sep{')));
+  assert.ok(/box-sizing:content-box.*padding-left:10px.*background-clip:content-box/.test(sepRule), `分隔线间隙规则三件缺一不可：${sepRule}`);
+  assert.ok(!/\.it\.zu-speed[^{]*\+\.sep\{[^}]*margin/.test(css), '分隔线间隙不写 margin：折叠判据 zuBarContentWidth 不计外边距');
+  /* v460：状态词与数值之间不画间隔点——v446 的「 · 」连内边距占 16px，固定宽 6.6em 里带数值的两字状态词全被省略成「思…」「执…」；
+   * 基础 ::after 规则与窄档/药丸中等两条去分隔符规则都已删，加回任何一条都会让两字状态词重新被省略 */
+  assert.ok(!/\.it\.zu-speed[^{]*::after/.test(css), '状态词与数值之间不画间隔点（v460）：速度格标签不得再有 ::after 规则');
+  assert.ok(!source.includes('.zu-sp-label:not(:empty)::after'), '全文件不再有速度格标签的 ::after 间隔点规则（含窄档/药丸中等的去分隔符规则）');
   const tsbStart = source.indexOf('".zu-tsb{display:inline-flex;');
-  assert.ok(/"\.zu-tsb\{display:inline-flex;[^}]*flex:0 0 auto;" \+\n\s*\/\*[\s\S]*?\*\/\n\s*"box-sizing:border-box;width:([\d.]+)em;" \+/.test(source.slice(tsbStart, tsbStart + 1600)), '精简 chip 稳定占位：宽裕档宽紧跟 .zu-tsb 主规则');
   const tsbCss = source.slice(tsbStart, source.indexOf('.zu-tsb:hover', tsbStart));
   const tsbEm = (rule) => { const m = /width:([\d.]+)em/.exec(rule); assert.ok(tsbCss.includes(rule) && m, rule); return Number(m[1]); };
   const tsbWide = tsbEm('"box-sizing:border-box;width:12.4em;"'), tsbMid = tsbEm('.zu-tsb.zu-speed-mid{width:9.7em}'), tsbTight = tsbEm('.zu-tsb.zu-speed-tight{width:6.6em}');
-  assert.deepEqual([tsbWide, tsbMid, tsbTight], TSB_EM, '样式三档与判定常量 ZU_TSB_TIERS 同源');
-  assert.deepEqual([tsbWide, tsbMid, tsbTight].map(e => Math.round(e * 13 * 10) / 10), [161.2, 126.1, 85.8], '界面字号 14px（chip 13px）下三档落在目标区间 160–180 / 112–132 / 72–88');
-  for (const rule of ['.zu-tsb.zu-speed-mid>.zu-live>.zu-sp-unit{display:none}',
-    '.zu-tsb.zu-speed-tight>.zu-live>.zu-sp-label,.zu-tsb.zu-speed-tight>.zu-live>.zu-sp-unit{display:none}',
-    '.zu-tsb.zu-speed-tight>.zu-live{justify-content:flex-end}']) assert.ok(tsbCss.includes(rule), rule);
-  assert.ok(!/\.zusage-root[^{]*\.zu-tsb\.zu-speed-(mid|tight)/.test(source), '精简档位类不作用于状态条（药丸同名类挂在条上，规则前缀不同）');
+  assert.deepEqual([tsbWide, tsbMid, tsbTight], TSB_EM, '精简 chip 三档（固定宽）与判定常量 ZU_TSB_TIERS 同源');
+  assert.deepEqual([tsbWide, tsbMid, tsbTight].map(e => Math.round(e * 13 * 10) / 10), [161.2, 126.1, 85.8], '精简 chip 三档不随本次改动（工具行场景仍是固定档）');
+  assert.ok(!tsbCss.includes('.zu-tsb.zu-speed-tight>.zu-live{justify-content:flex-end}'), '精简紧张档数值不再靠右（成组靠左）');
+  assert.ok(!/\.zusage-root[^{]*\.zu-tsb\.zu-speed-(mid|tight)/.test(source), '精简档位类不作用于状态条');
   assert.ok(!css.includes('transition'), '不得用 width transition 掩盖跳动');
+  assert.ok(!/\.it\.zu-speed[^{]*\{[^}]*min-width:(?!0)/.test(css), '速度格规则不再有 min-width（固定宽；只剩 .zu-live 的 min-width:0）');
   assert.ok(!/min-width:\s*\d{3}/.test(css), '不得靠统一大 min-width 敷衍');
 });
 
@@ -823,6 +977,18 @@ test('接线锁：tooltip 读真实视图、探针剥离、菜单读全称、折
   assert.ok(source.includes('buildLiveTip(speedRaw), "zu-speed", zuSpeedCellAttrs(speedView.text, speedRaw && speedRaw.text))'), '整条渲染：tooltip 真实视图 + 面展示视图 + aria-label 取展示视图 / data-zu-full 取真实视图');
   assert.ok(source.includes('zuSpeedCellSync(liveCell, view.text, rview && rview.text);'), '原地更新：aria-label 取展示视图（不随 10Hz 速度更新反复播报）、菜单全称取真实视图（保持最新）');
   assert.ok(source.includes('probeMain.querySelectorAll("[data-zu-speed-min]")'), '探针剥速度格极窄档（防正反馈震荡环）');
+  assert.ok(source.includes('el.removeAttribute("data-zu-speed-min")'), '探针剥的是极窄档属性本身（删错属性时震荡环修复失效）');
+  assert.ok(source.includes('if (probeSpLabel && !probeSpLabel.textContent) probeSpLabel.textContent = "占位";'), '探针给完成态的空标签填占位：整条选档恒按有状态词的档位占位量，不随完成态升降档');
+  /* 窄档真实空位：只在默认样式的窄档、既有 250ms 检查里判定；空位不含速度格自身；升档带 FOLD_HYS、保持只需装得下；切主题摘除 */
+  const roomyAt = source.indexOf('var speedRoomy = false;');
+  assert.ok(roomyAt > source.indexOf('if (state.theme === "default" && main.clientWidth > 0 && Date.now() - narrowCheckAt >= 250)') && roomyAt < source.indexOf('var rightClip = state.theme === "default" && main.scrollLeft', roomyAt), '真实空位判定在 250ms 窄宽检查块内');
+  assert.ok(source.includes('if (shrink === 2 && speedRoomOthers > 0) {\n            var speedCell = main.querySelector(".it.zu-speed");'), '只在窄档、且探针已量到其它格窄面宽时判定');
+  assert.ok(source.includes('var speedLeft = room - speedRoomOthers;'), '空位 = 容器宽 − 其它格未折叠时的窄面宽（探针量得，不看当前折叠后的宽）');
+  assert.ok(source.includes('speedRoomOthers = probeMain.getBoundingClientRect().width - (probeSpeedCell ? probeSpeedCell.getBoundingClientRect().width : 0);'), '探针第三档：窄档总宽减去速度格自己的紧凑占位');
+  assert.ok(!source.includes('speedLeft = room - (zuBarContentWidth()'), '空位不读其它格当前占的宽（折叠后会变大，与回展互相触发）');
+  assert.ok(source.includes('var speedNeed = 6.6 * parseFloat(getComputedStyle(speedCell).fontSize) + 10;'), 'roomy 阈值与速度格固定宽 6.6em、分隔线间隙 10px 同源（v459）');
+  assert.ok(!source.includes('38 + 4.8 * parseFloat'), 'v456 上限公式已废');
+  assert.ok(source.includes('speedRoomy = speedLeft >= speedNeed + (bar.classList.contains("zu-sp-roomy") ? 0 : FOLD_HYS);'), '升档带迟滞、保持只需装得下');
   assert.ok(source.includes('main.innerHTML.replace(ZU_SPEED_FULL_ATTRS_RE, "").replace(ZU_SPEED_FACE_KEY_RE, "$1</span>")'), '测量签名剔除速度格面与全称属性');
   assert.ok(source.includes('value.textContent = (el.dataset && el.dataset.zuFull) || (el.textContent || "").trim();'), '菜单项读完整状态词');
   assert.ok(source.includes('var v = (el.dataset && el.dataset.zuFull) || (el.textContent || "").trim();'), '菜单项随拍同步完整状态词');
@@ -844,11 +1010,11 @@ test('接线锁：tooltip 读真实视图、探针剥离、菜单读全称、折
   assert.ok(source.includes('for (; fi < candidates.length && zuBarContentWidth() > main.clientWidth + 1; fi++) {'), 'fold loop overflow check uses content width');
   assert.ok(!source.includes('main.scrollWidth <= main.clientWidth + 1 - FOLD_HYS'), 'scrollWidth 以 clientWidth 为下限，不得再用它判富余');
   assert.ok(source.includes('zuPillSpeedTierSync(width, available);'), '药丸档位升降挂在药丸 track 帧');
-  assert.ok(source.includes('bar.classList.remove("zu-speed-mid", "zu-speed-tight");'), '切主题重置药丸档位类');
+  assert.ok(source.includes('bar.classList.remove("zu-speed-mid", "zu-speed-tight", "zu-sp-roomy");'), '切主题重置药丸档位类与窄档真实空位标记');
   assert.ok(source.includes('mainW === foldMainW'), '折叠门口同时记 .zu-main 自身宽度');
-  assert.ok(source.includes('"zu-in", "zu-just-end", "zu-speed-mid", "zu-speed-tight");'), '探针克隆剥药丸速度格档位类（残留会把自然宽量小）');
+  assert.ok(source.includes('"zu-in", "zu-just-end", "zu-speed-mid", "zu-speed-tight", "zu-sp-roomy");'), '探针克隆剥药丸速度格档位类与窄档真实空位标记（残留会把自然宽量小）');
   assert.ok(source.includes('var cls = "zu-live " + (v.kind === "live" ? fv.cls + (fv.word ? " zu-shimmer" : "")'), '精简 chip：档位色取展示视图');
-  assert.ok(source.includes('var face = zuSpeedFaceHtml(fv);'), '精简 chip：面数值取同一个展示视图（数值与颜色同快照）');
+  assert.ok(source.includes('var face = zuSpeedFaceHtml(fv, true);'), '精简 chip：面数值取同一个展示视图（数值与颜色同快照），并传 autoWidth=true（v464：长计时面保留状态词）');
   assert.ok(source.includes('var txt = v.kind === "live" ? v.sv.text :'), '精简 chip：全称读真实视图');
   assert.ok(!source.includes('backEl.dataset.zuSpeedMin'), '回展分支不处理极窄：同轮「解除后富余够」不可达（降极窄前提是完整宽溢出），靠每轮开头清空');
   assert.ok(!source.includes('zuLiveFaceHtml('), '旧面构建函数无残留');

@@ -157,21 +157,48 @@
     }
     /* 展示模型：{label, value, unit}。view = zuBarSpeedView 的返回值，或 DB 回退伪视图
      * {kind:"avg"|"real", db:true, speedValue}。kind avg 的面数字取 latest（最后一轮真实
-     * 速度，v298），不取 speedValue（那是会话均，只在 tooltip）。无值可显返回 null。 */
-    function zuSpeedFace(view) {
+     * 速度，v298），不取 speedValue（那是会话均，只在 tooltip）；DB 回退无标签（v452，
+     * 与完成态同面）。无值可显返回 null。 */
+    /* v463 无计时面（用户实报截图「执行」右侧空一大块，指示「优化为 正在执行」）：宿主从 tool_input_start 起就把工具行
+     * 算进行中，但 inputStreaming 行不写 startedAt——工具真正开跑前数值位是空的，固定宽里两字状态词只占 28px。
+     * 已登记的短状态词换成四字说法填上这块（实机量过：四字 56px 从 11px 界面字号起在默认条与药丸各档都放得下，最紧的是
+     * 药丸宽裕档 11px——标签可用 44.6px；英文动名词自然宽须 ≤ 约 55px@14px，取在该档也放得下
+     * 的短动名词，Think/Todo/Agent 的动名词放不下、英文不换）；一出计时换回短状态词 + 数字（四字说法带数字放不下）。只改格面：aria-label / 菜单全称仍是 text；
+     * 技能名、MCP 服务名、未登记工具的原始名不换。行 = [短 zh, 短 en, 无计时 zh, 无计时 en]。 */
+    var ZU_SPEED_NAKED = (function () {
+      var rows = [
+        ["思考", "Think", "正在思考", "Think"], ["读取", "Read", "正在读取", "Reading"], ["写入", "Write", "正在写入", "Writing"],
+        ["编辑", "Edit", "正在编辑", "Editing"], ["执行", "Run", "正在执行", "Running"], ["搜索", "Find", "正在搜索", "Finding"],
+        ["网页", "Fetch", "正在打开", "Loading"], ["待办", "Todo", "更新待办", "Todo"], ["技能", "Skill", "正在调用", "Calling"],
+        ["上下文", "Ctx", "正在读取", "Loading"], ["代理", "Agent", "正在派发", "Agent"], ["消息", "Send", "正在发送", "Sending"],
+        ["输出", "Out", "正在查看", "Polling"], ["停止", "Stop", "正在停止", "Halting"], ["流程", "Flow", "正在启动", "Starting"],
+        ["查阅", "Scan", "正在查阅", "Reading"], ["终端", "Shell", "正在执行", "Running"], ["代码", "Code", "正在运行", "Running"],
+        ["电脑", "Cua", "正在操作", "Clicking"],
+      ];
+      var m = {};
+      for (var i = 0; i < rows.length; i++) { m[rows[i][0]] = rows[i]; m[rows[i][1]] = rows[i]; }
+      return function (lab) { var r = m[lab]; return r ? L(r[2], r[3]) : lab; };
+    })();
+    function zuSpeedFace(view, autoWidth) {
       if (!view) return null;
-      var k = view.kind, lab = "", val = "", unit = "";
+      var k = view.kind, lab = "", val = "", unit = "", glue = false;
       if (k === "subagent") {
-        lab = L("代理", "Agt") + (view.activeCount > 1 ? "×" + view.activeCount : "");
-        val = "≈" + zuSpNum(view.speedValue, true); unit = "t/s";
+        /* v461（用户规格「代理 28.8 t/s 改为 子·X」）：子代理面 = 单字「子」+ 贴紧的间隔点 + 速率，不带单位与数量——
+         * 固定宽 6.6em 里「代理 28.8 t/s」整个被省略成「…」，「子×N·1286.5」也放不下；数量仍在全称（aria / 菜单 / tooltip）里。
+         * 六字符数值（1286.5，多子代理合计上千 t/s）带间隔点放不下：退成不带点、同样贴紧的「子1286.5」 */
+        val = zuSpNum(view.speedValue, true);   // v452：格面不带 ≈（估算靠「子」标签与流光区分）
+        lab = val.length < 6 ? L("子·", "Ag·") : L("子", "A");
+        glue = true;   // 标签与数值贴紧：zuSpeedFaceHtml 给标签加 zu-sp-glue
       } else if (k === "estimate") {
-        lab = L("生成", "Gen"); val = "≈" + zuSpNum(view.speedValue, true); unit = "t/s";
+        /* v454：生成中也不带「生成」标签（用户指示），与完成态同面；流光动画区分生成中，aria/tooltip 全称不变 */
+        lab = ""; val = zuSpNum(view.speedValue, true); unit = "t/s";
       } else if (k === "avg" || k === "real") {
         /* 精度逐字沿用 text：real 恒一位小数（250.0），avg 与 DB 回退整数不带小数（250） */
         val = zuSpNum(view.latest != null ? view.latest : view.speedValue, k === "real" && !view.db);
         if (!val) return null;
         unit = "t/s";
-        if (view.db) lab = L("历史", "Hist");
+        /* v452：DB 回退不再带「历史」标签（用户指示），与完成态同面；不冒充实时的区分在
+         * 全称（aria/data-zu-full 写「最近一段」）与无流光，tooltip 仍按回退卡展示。 */
       } else if (k === "thinking") {
         lab = L("思考", "Think"); val = zuSpTime(view.elapsedMs);
       } else if (k === "toolgroup") {
@@ -188,17 +215,25 @@
         else lab = tn || L("执行", "Run");
         val = zuSpTime(view.elapsedMs);
       }
-      return { label: lab, value: val, unit: unit };
+      if (!val && lab) lab = ZU_SPEED_NAKED(lab);   // v463：无计时面换成四字说法
+      /* v464 长计时面（用户实报截图「思... 1:22:02」）：计时满 1 小时起写法变长（1:22:02、N天N时，
+       * 实测 45.7~52.8px@14px），固定宽 6.6em 里两字状态词放不下、被省略成「思...」——这时不出
+       * 文字标签，只留图标 + 时间（图标已表达状态；aria-label / 菜单全称 / tooltip 不变）。
+       * 精简 chip（autoWidth）不在此列：它按内容定宽，中等档本来就是按「Think 23:59:59」标定的，状态词放得下 */
+      else if (!autoWidth && unit === "" && typeof view.elapsedMs === "number" && view.elapsedMs >= 3600000) lab = "";
+      return { label: lab, value: val, unit: unit, glue: glue };
     }
     /* 速度格稳定占位：格面=标签 + 数值 + 单位三个 span，文案由上方展示模型 zuSpeedFace 从结构化
      * 字段翻出（不解析 text）；数字与单位仍是零空格两 item、
      * 间距由 gap 提供（v326 机制延续）。声明必须在实例一级：07 render、08 updateLive 原地更新、
      * 11 compact chip 三处消费——放在 html(d) 分支块内是 Annex B 块级函数声明，live 分支执行时
      * 绑定未初始化（TypeError），跨分片 08 直接 ReferenceError（实测 44 测试红）。 */
-    function zuSpeedFaceHtml(view) {
-      var f = zuSpeedFace(view);
+    function zuSpeedFaceHtml(view, autoWidth) {
+      var f = zuSpeedFace(view, autoWidth);
       if (!f) return "";
-      return '<span class="zu-sp-label">' + ttEsc(f.label) + '</span><span class="zu-sp-val">' + ttEsc(f.value) + '</span>' +
+      /* v461：子代理面（glue）的标签与数值贴紧——zu-sp-glue 用负外边距抵消 .zu-live 的 gap（06 分片） */
+      var glue = !!f.glue;
+      return '<span class="zu-sp-label' + (glue ? " zu-sp-glue" : "") + '">' + ttEsc(f.label) + '</span><span class="zu-sp-val">' + ttEsc(f.value) + '</span>' +
         (f.unit ? '<span class="zu-sp-unit dim">' + ttEsc(f.unit) + '</span>' : "");
     }
     /* 速度格图标：思考=动效脑、工具=扳手、其余相位=闪电。07 整条渲染与 08 原地换图标共用同一出口。 */
@@ -1190,7 +1225,7 @@
          * 不带「均」前缀）；tooltip 左卡仍为会话加权平均（"平均速度"语义不变） */
         var chipBand = tpsBand(chipTps);
         /* 最后一轮无效：面空（含单位），仅留图标作悬停锚；空面仍带 aria-label 保可访问名（review 修复）。
-         * 面走展示模型（标签「历史」+ 数值 + 单位，specs/speed-chip-stable-slot.md）；数值格式与 v298 一致 */
+         * 面走展示模型（无标签，与完成态同面；specs/speed-chip-stable-slot.md）；数值格式与 v298 一致 */
         var fbText = chipTps > 0 ? (chipTps % 1 ? chipTps.toFixed(1) : String(chipTps)) + L(" t/s", " t/s") : "";
         it(zuSpeedIconHtml(null) +
           '<span class="zu-live ' + (chipBand ? chipBand.cls : "dim") + '">' +
