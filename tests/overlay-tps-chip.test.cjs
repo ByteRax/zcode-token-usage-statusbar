@@ -289,6 +289,126 @@ test('tooltip: speed rows + bar summary gated by per-cell toggles + legend + set
   assert.equal(gear.getAttribute('aria-expanded'), 'true');
 });
 
+const src04Gear = () => /var SPD3_SVG_GEAR = '([^']*)'/.exec(
+  fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay', '04-speed-v3-view.js'), 'utf8'))[1];
+// v469（issue #474）：带轮表时精简速率 chip 的悬停卡是速度整卡（spd3RebuildOr 闭包产物），
+// 此前「打开设置」只在无轮表的回退卡里——正常用过一轮后整卡里没有任何设置入口。锁定：整卡标题后
+// 带 .tps-cfg 且点击开面板；按钮只由精简 chip 这条调用链传 cfgBtn（条面速度卡不传、纯装配层测试另锁）。
+test('v469: 带轮表的速度整卡带「打开设置」并打开面板（精简速率 chip，issue #474）', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  const now = Date.now(), HOUR = 3600000;
+  const row = (i, at, out, ms) => ({ s: 0, t: at, b: at - 60000, out, ms, i: 2000, o: out, n: 1, msl: [[0, out, 2000, 1]] });
+  const p = h.payload({ tps: 97.1 });
+  p.speed_history = { sid: 'sid_main', source: 'local', truncated: false, sids: ['sid_main'], snames: ['本会话'],
+    pids: [['proj_a', '项目A']], mnames: ['GLM-A'], mkeys: ['prov_a\u001fglm-a'],
+    turns: [row(0, now - 2 * HOUR, 600, 6000), row(1, now - HOUR, 400, 4000)] };
+  h.window.__zusageUpdate(p);
+  const chip = h.chipOf(ui.row);
+  chip.listeners.get('mouseenter')[0].call(chip);
+  const tip = h.tipEl();
+  assert.ok(tip.innerHTML.includes('class="zu-sv3-root"'), '带轮表 → 速度整卡（不是回退卡）');
+  assert.ok(!tip.innerHTML.includes('状态条摘要'), '整卡不含旧摘要区（报告者所述事实）');
+  const open = tip.innerHTML.indexOf('class="zu-sv-title"'), close = tip.innerHTML.indexOf('class="zu-sv-filter"');
+  assert.ok(open >= 0 && close > open, '标题行在前、筛选组在后');
+  const head = tip.innerHTML.slice(open, close);
+  assert.ok(head.includes('class="tps-cfg zu-sv-cfg" aria-label="打开设置"') && head.includes('aria-haspopup="dialog"'), '标题行内是带无障碍名称的设置图标按钮');
+  assert.ok(head.includes('title="打开设置"'), '图标按钮带悬停提示');
+  assert.ok(head.includes('<circle cx="12" cy="12" r="3.5"/></svg>'), '按钮内容是齿轮图标');
+  const cfgOpen = head.lastIndexOf('<button', head.indexOf('class="tps-cfg zu-sv-cfg"'));
+  assert.equal(cfgOpen >= 0 && head.slice(cfgOpen, head.indexOf('</button>', cfgOpen)).replace(/<[^>]+>/g, ''), '', '按钮不带「打开设置」文字（v469：图标同状态条齿轮）');
+  // 图标与状态条 ⚙ 同款：04 分片 SPD3_SVG_GEAR 与 06 分片 .zu-gear 的 SVG 串逐字一致
+  const src06 = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay', '06-instance-dom-and-styles.js'), 'utf8');
+  // 06 分片里这枚 SVG 跨两行字符串拼接，按「开头标签」与「path…</svg>」两段分别比对
+  const part = (s, from, to) => { const i = s.indexOf(from); return i < 0 ? null : s.slice(i, s.indexOf(to, i) + to.length); };
+  const g06 = src06.indexOf('class="btn zu-gear"'), tail06 = src06.slice(g06);
+  assert.ok(g06 >= 0, '找到 06 分片的齿轮按钮');
+  assert.equal(part(tail06, '<svg viewBox="0 0 24 24"', 'aria-hidden="true">'), part(src04Gear(), '<svg viewBox="0 0 24 24"', 'aria-hidden="true">'), '开头标签同款');
+  assert.equal(part(tail06, '<path d="M9.5 2h5', '</svg>'), part(src04Gear(), '<path d="M9.5 2h5', '</svg>'), '齿轮路径同款');
+  assert.equal(tip.innerHTML.split('tps-cfg zu-sv-cfg').length - 1, 1, '整卡只有一枚设置按钮');
+  const bar = h.barEl(), gear = bar.querySelector('.zu-gear');
+  const onCfg = { closest: sel => (sel === '.tps-cfg' ? {} : null) }, noOp = () => {};
+  /* 只走 click、不走 pointerdown（v469 实机教训）：pointerdown 开面板后，同一次按压的 mousedown 会被
+   * 文档级「点面板外即关」当成面板外按压，面板开了又被关——实机追踪 panel.open=true → 1ms 后 false。 */
+  tip.listeners.get('click')[0]({ target: onCfg, stopPropagation: noOp });
+  assert.equal(tip.style.display, 'none', '点击后收起悬停卡');
+  const panel = h.panelEl();
+  assert.ok(panel && panel.classList.contains('open'), '设置面板从整卡打开');
+  assert.equal(gear.getAttribute('aria-expanded'), 'true');
+  // 源码锁：cfgBtn 只在精简速率 chip 的调用点传入
+  // cfgBtn 只在精简速率 chip 的调用点传入。两道锁（review 两轮抓回：只读 11 分片的字面锁挡不住 07 分片的条面调用点，
+  // 按字面量 "cfgBtn: true" 数数也挡不住 "cfgBtn:true"、"cfgBtn: 1" 与对象简写等价写法）：
+  // ① 标识符锁：除读它的 04 视图分片、只在台账注释里提到它的 06 分片、唯一传入它的 11 分片外，任何分片
+  //   不得出现标识符 cfgBtn（条面/药丸速度卡的两个调用点在 07 分片）；11 分片里恰好出现 1 次，且写成 cfgBtn\s*:\s*true
+  const dir = path.join(__dirname, '..', 'src', 'overlay');
+  const shards = fs.readdirSync(dir).filter(f => f.endsWith('.js')).map(f => [f, fs.readFileSync(path.join(dir, f), 'utf8')]);
+  const withIdent = shards.filter(([, s]) => /\bcfgBtn\b/.test(s)).map(([f, s]) => [f, s.split('\n').filter(l => /\bcfgBtn\b/.test(l))]);
+  assert.deepEqual(withIdent.map(([f]) => f).sort(), ['04-speed-v3-view.js', '06-instance-dom-and-styles.js', '11-instance-toolbar-chips.js'],
+    '标识符 cfgBtn 只出现在读它的 04 视图分片、台账注释所在的 06 分片与唯一传入它的 11 分片');
+  for (const l of withIdent.find(([f]) => f === '06-instance-dom-and-styles.js')[1]) assert.ok(/^\s*\*/.test(l), '06 分片里的 cfgBtn 只在台账注释行：' + l.trim().slice(0, 40));
+  assert.equal(withIdent.find(([f]) => f === '11-instance-toolbar-chips.js')[1].length, 1, '11 分片里恰一处');
+  assert.match(shards.find(([f]) => f === '11-instance-toolbar-chips.js')[1], /\bcfgBtn\s*:\s*true\b/, '11 分片那一处是 cfgBtn: true');
+  // ② 行为锁：把 07 分片两个条面调用点的实参表达式原样求值，断言 options 对象没有 cfgBtn 键
+  const src07 = shards.find(([f]) => f === '07-instance-render-and-tips.js')[1];
+  const splitArgs = text => {   // 顶层逗号切分（跳过字符串与嵌套括号）
+    const out = []; let depth = 0, start = 0, quote = null;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (quote) { if (c === '\\') i++; else if (c === quote) quote = null; continue; }
+      if (c === '"' || c === "'") quote = c;
+      else if (c === '(' || c === '[' || c === '{') depth++;
+      else if (c === ')' || c === ']' || c === '}') depth--;
+      else if (c === ',' && depth === 0) { out.push(text.slice(start, i)); start = i + 1; }
+    }
+    out.push(text.slice(start)); return out;
+  };
+  const callArgs = [...src07.matchAll(/spd3RebuildOr\(/g)].map(m => m.index + 'spd3RebuildOr('.length).map(from => {
+    let depth = 0, quote = null;
+    for (let i = from; i < src07.length; i++) {
+      const c = src07[i];
+      if (quote) { if (c === '\\') i++; else if (c === quote) quote = null; continue; }
+      if (c === '"' || c === "'") quote = c;
+      else if (c === '(' || c === '[' || c === '{') depth++;
+      else if (c === ')' && depth === 0) return splitArgs(src07.slice(from, i));
+      else if (c === ')' || c === ']' || c === '}') depth--;
+    }
+    throw new Error('spd3RebuildOr 调用未闭合');
+  });
+  assert.equal(callArgs.length, 2, '07 分片恰两处 spd3RebuildOr 调用（条面与药丸速度卡）');
+  callArgs.forEach((args, i) => {
+    assert.ok(args.length >= 6, `调用点 ${i + 1} 实参个数（options 是第 6 个）`);
+    const o = vm.runInNewContext('(' + args[5] + ')', { fmt: String, countFmt: String, fmtMoney: null, state: { cost: 0 } });
+    assert.equal(Object.prototype.hasOwnProperty.call(o, 'cfgBtn'), false, `条面调用点 ${i + 1} 的 options 不带 cfgBtn 键`);
+  });
+});
+
+// v469（issue #474 跟进）：用户先点 chip（焦点落 chip）再点卡里的齿轮——mousedown 移走焦点，chip 的 blur
+// 若在此时收卡，click 就落到页面内容上。锁定：指针停在卡上时失焦不收、随后点齿轮开面板；指针不在卡上
+// （键盘 Tab 离开）时失焦照旧收卡。
+test('v469: chip focused by a click → blur while the pointer is over the speed card does not hide it; gear click then opens the panel', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ tps: 87.3 }));
+  const chip = h.chipOf(ui.row), tip = h.tipEl();
+  chip.listeners.get('mouseenter')[0].call(chip);
+  assert.equal(tip.style.display, 'block', 'tip shown');
+  // 指针停在卡上（真实浏览器里 tpsTip.matches(':hover') 为 true）
+  tip.matches = sel => sel === ':hover';
+  chip.listeners.get('blur')[0].call(chip, { relatedTarget: null });
+  assert.equal(tip.style.display, 'block', 'blur with the pointer over the card keeps it open');
+  const gear = h.barEl().querySelector('.zu-gear');
+  tip.listeners.get('click')[0]({ target: { closest: sel => (sel === '.tps-cfg' ? {} : null) }, stopPropagation() {} });
+  assert.equal(tip.style.display, 'none', 'gear click hides the card');
+  assert.ok(h.panelEl().classList.contains('open'), 'gear click opens the settings panel');
+  assert.equal(gear.getAttribute('aria-expanded'), 'true');
+  // 对照：指针不在卡上（键盘路径）——失焦照旧收卡
+  tip.matches = () => false;
+  chip.listeners.get('mouseenter')[0].call(chip);
+  assert.equal(tip.style.display, 'block', 'tip shown again');
+  chip.listeners.get('blur')[0].call(chip, { relatedTarget: null });
+  assert.equal(tip.style.display, 'none', 'blur away from the card still hides it (keyboard path)');
+});
+
 test('dispose removes the chip; switching theme to default via setBarTheme removes it too', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();

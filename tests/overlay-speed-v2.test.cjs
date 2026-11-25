@@ -161,6 +161,7 @@ test('all 20 range × period combinations rebuild through the wire without zero-
       const html = card(ctx, { range, period }, { h });
       assert.equal(html.charCodeAt(0), 1, range + '×' + period + ' sentinel');
       assert.ok(html.includes('zu-sv3-root'), range + '×' + period + ' V3 root');
+      assert.ok(!/class="tps-cfg/.test(html), range + '×' + period + ' wire 层不传 cfgBtn 的产物没有设置按钮（条面调用点的实参守护在 overlay-tps-chip）');
       assert.ok(!/[>，]0 t\/s/.test(dom(html)), range + '×' + period + ' no fake 0 t/s');
     }
   }

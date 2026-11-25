@@ -1791,7 +1791,7 @@
             "plan conversation key unavailable": L("当前套餐暂不支持增强（无可用的对话凭据）。", "This plan has no usable conversation credential; enhancement is unavailable.")
           };
           epTest.failed = true;
-          var teamText = res && res.kind === "team_auth" ? enhanceTeamAuthText(res) : "";   // v469：团队凭据换发失败带环节文案（issue #481）
+          var teamText = res && res.kind === "team_auth" ? enhanceTeamAuthText(res) : "";   // v473：团队凭据换发失败带环节文案（issue #481）
           if (teamText) epTest.status = teamText + L("。", ".");
           else if (internal[raw]) epTest.status = internal[raw] + (detail ? "：" + detail : "");
           else if (detail || /^HTTP /.test(raw)) epTest.status = L("增强失败：", "Enhancement failed: ") + (detail || raw);
@@ -1803,7 +1803,7 @@
       epTest.timer = setTimeout(function () { if (epTest && epTest.id === id) epTestStop(L("测试超时，请重试。", "Test timed out; retry."), true); }, 75000);
       epTestRender();
     }
-    /* v469（issue #481）：团队套餐凭据换发失败的环节文案，工具栏增强与设置页测试区共用。主进程
+    /* v473（issue #481）：团队套餐凭据换发失败的环节文案，工具栏增强与设置页测试区共用。主进程
      * 回执 kind "team_auth" + reason 环节码（固定枚举，只含环节与性质）+ 可选 HTTP status。只认
      * 表内 reason，表外码回空串：工具栏回落 error 短语、设置页测试区回落通用失败文案（主进程比渲染端
      * 新时不致空白）；文案=「团队凭据换发失败（…）」。 */
