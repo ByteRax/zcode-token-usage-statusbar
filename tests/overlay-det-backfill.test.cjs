@@ -54,6 +54,7 @@ test('v467 非亲历零输出轮（活跃轮）：不插占位但按 --current �
   const { c, line, scan } = setup({ stats: backfilled });
   scan();
   assert.ok(!line(), '富文本到达前不插行（含占位在内）');
+  assert.equal(c.FATAL.det.turns[0].line, 'backwait', 'diag 标注已入队等回执（仅真正入队时）');
   assert.ok(c.window.__zusagePluginRequests.length >= 1, 'flush 已发出 turn-text 请求');
   assert.equal(c.window.__zusagePluginRequests[0].sid, 'sid');
   assert.equal(c.window.__zusagePluginRequests[0].turnRef, undefined, '主会话请求不带 turnRef（走 --current）');
@@ -68,6 +69,7 @@ test('v467 非亲历零输出轮（被更新轮顶替）：不入队不插行（
   scan();
   assert.ok(!line(), '不插行');
   assert.equal(c.window.__zusagePluginRequests.length, 0, '无请求发出');
+  assert.equal(c.FATAL.det.turns[0].line, 'none', 'diag 不标 backwait（收集端 isCurrentTurn 门在场，R2 变异 b 判别）');
 });
 
 test('v467 非亲历零输出轮：空回执不插行不写缓存，非空回执到达后插行', () => {
@@ -96,4 +98,16 @@ test('v467 亲历的真实零输出轮：维持 v86 明示「不可用」（回�
   scan();
   assert.ok(line(), '亲历零输出仍插行');
   assert.equal(line().querySelector('p').textContent, 'unavailable');
+});
+
+test('v467 空回执重试有界：至多 RICH_TEXT_MAX_ATTEMPTS 次实发后自然停发（不插占位、不无界查询）', () => {
+  const { c, line, scan } = setup({ stats: backfilled });
+  scan();   // 首拍入队实发 attempts=1
+  assert.ok(!line(), '空回执路径不插行');
+  for (let i = 0; i < 40; i++) scan();   // 远超 24 次上限的持续扫描
+  const requests = c.window.__zusagePluginRequests.length;
+  assert.ok(requests > 0 && requests <= 24, `实发次数有界（实际 ${requests}）`);
+  for (let i = 0; i < 6; i++) scan();
+  assert.equal(c.window.__zusagePluginRequests.length, requests, '尝试耗尽后停发（每拍不再入队）');
+  assert.ok(!line(), '耗尽后仍不插占位（diag 如实、不伪造行）');
 });

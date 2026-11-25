@@ -447,8 +447,7 @@
            * 用户新提问后 promptTs 前移、旧轮回执为空自然放弃。被顶替/压缩轮维持 v86/v230
            * 静默（flush notCur 门兜底；rec.line 停在 none）。 */
           if (!stats.isCompact && owner.isCurrentTurn && owner.isCurrentTurn(tid)) {
-            zuRequestTurnText(owner, tid, { sessionId: owner.getSid() });   // noSid 门只读 sessionId
-            if (rec) rec.line = "backwait";
+            if (zuRequestTurnText(owner, tid, { sessionId: owner.getSid() }) && rec) rec.line = "backwait";   // noSid 门只读 sessionId；未入队（尝试耗尽/身份拒绝）不标等回执
           }
           continue;
         }

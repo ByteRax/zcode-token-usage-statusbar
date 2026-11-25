@@ -20,7 +20,7 @@
 ## 实现与边界
 
 - 仅改 03 分片主实例新箱分支（`scanDeterministicLines`）的收集门；flush 门、`--current`、promptTs 守卫、v458 子代理链全部不动；零冷文件，`overlay.js` 热文件热生效。
-- 请求与既有轮共用单槽（`richTextWants` 按 sid）与重试上限（`RICH_TEXT_MAX_ATTEMPTS`），不新增定时器与查询量级：仅「切回后仍活跃的补捞轮」会发一次查询，缓存命中后不再发。
+- 请求与既有轮共用单槽（`richTextWants` 按 sid）与重试上限（`RICH_TEXT_MAX_ATTEMPTS`）：仅「切回后仍活跃的补捞轮」会发起查询，每次实发 `richTextAttempts` +1，至多 24 次实发（0.5s/拍 ≈ 12s 窗口）后自然停发；空回执不重置计数，缓存命中后不再发。`zuRequestTurnText` 返回是否真正入队，`backwait` 只在入队时标注（尝试耗尽/身份拒绝不标，diag 如实反映放弃态）。
 
 ## 验收
 
