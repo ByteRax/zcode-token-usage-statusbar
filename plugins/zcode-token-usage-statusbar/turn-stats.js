@@ -43,7 +43,7 @@
     let epoch = null;
     let session = null;
     let sequence = -1;
-    let bornAt = null;   // 首个成功入库的快照时刻：稳窗从这里起算（clear() 与换会话/纪元时重置）
+    let bornAt = null;   // 首个成功入库的快照时刻：稳窗从这里起算（换会话/纪元时重置；clear() 把纪元置空，下一帧走同一分支）
     let mergeSettled = false;   // 稳窗内已为合并入库重取过基线：只做一次，不给昂贵会话的读数叠加延迟
     let disposed = false;
 
@@ -70,12 +70,14 @@
         let turn = turns.get(key);
         if (!turn) {
           turn = { sessionId: snapshot.sessionId, turnId: key, rows: new Map(), samples: [], observedAt: at, counts: new Map(),
-            hist: new Set(), maxRowId: null, allCharacters: 0, built: false, hold: null };
+            hist: new Map(), maxRowId: null, allCharacters: 0, hold: null, prevChars: null };
           turns.set(key, turn);
         }
-        // 历史回填（issue #483）：tracker 首个快照之后才出现、行号又小于本轮已知最大行号的行，是宿主往前
-        // 补拉的旧行（loadOlder、尾 60 行截断后的补拉），不是新生成——登记进 hist，不进速率分子。
-        if (turn.built && turn.maxRowId !== null && row.rowId < turn.maxRowId && !turn.rows.has(row.rowId)) turn.hist.add(row.rowId);
+        // 历史回填（issue #483）：此前没见过、行号又小于本轮已知最大行号的行，是宿主往前补拉的旧行（loadOlder、
+        // 尾窗截断后的补拉），不是新生成——登记进 hist，长度在计数时填，不进速率分子。首个快照里行号乱序的行
+        // 也照此处理：速率只看增量，等同于全部计入。
+        // hist 记的是「这一行不算新生成的字符数」：前插的旧行按出现时的长度不算，出窗后回来的行按出窗时的长度不算。
+        if (turn.maxRowId !== null && row.rowId < turn.maxRowId && !turn.rows.has(row.rowId)) turn.hist.set(row.rowId, -1);
         turn.rows.set(row.rowId, row);
         if (turn.maxRowId === null || row.rowId > turn.maxRowId) turn.maxRowId = row.rowId;
       }
@@ -83,7 +85,9 @@
         let characters = 0, allCharacters = 0;
         for (const id of turn.rows.keys()) {
           if (currentIds.has(id)) continue;
-          turn.rows.delete(id); turn.counts.delete(id); turn.hist.delete(id);
+          const gone = turn.counts.get(id);
+          turn.rows.delete(id); turn.counts.delete(id);
+          if (gone && !turn.hist.has(id)) turn.hist.set(id, gone.n);   // 出窗时记住长度：回来时这么多不算新生成
           if (id === turn.maxRowId) turn.maxRowId = null;
         }
         if (turn.rows.size === 0) { turns.delete(turn.turnId); continue; }
@@ -97,7 +101,9 @@
             let c = turn.counts.get(row.rowId);
             if (!c || c.text !== text) { c = { text, n: countCodePoints(text) }; turn.counts.set(row.rowId, c); }
             allCharacters += c.n;
-            if (!turn.hist.has(row.rowId)) characters += c.n;
+            let old = turn.hist.get(row.rowId);
+            if (old === -1) { old = c.n; turn.hist.set(row.rowId, old); }   // 前插的旧行：整行不算新生成
+            characters += Math.max(0, c.n - (old || 0));
           }
           // 只要曾经见过这一轮处于未完成状态，就记作"亲历过"：区分"实时追踪到的完成"
           // 与"刚绑定/重绑时一步到位捞到的历史存量已完成轮次"（后者可能缺详细字段，
@@ -108,16 +114,17 @@
           }
         }
         turn.allCharacters = allCharacters;
-        turn.built = true;
         // 保持窗结束 400ms 后才来的首个快照（尚无新基线）：保持作废，只作新基线——长时间停更后再回显旧速率
         // 像一次闪烁。新基线已落的，沿用只看新基线自己的年龄（见 get）。
         if (turn.hold && at - turn.hold.until >= 400 && turn.samples.length === 0) turn.hold = null;
         const cur = turn.samples[turn.samples.length - 1];
-        if (cur && cur.characters > characters) {
-          // 字符数下降（行文本被替换得更短、行被移除、快照整体替换）：清样本，沿用它下降前的窗口速率
-          // 一个采样窗，窗内不采样，窗过后的首个快照再作新基线（issue #483）。此前立即从新的低基线
-          // 起算，文本随即回填时回填量被算成 200ms 内新生成。
-          const held = windowRate(turn.samples, at);
+        if (turn.prevChars !== null && characters < turn.prevChars) {
+          // 字符数比上一条快照少（行文本被替换得更短、行被移除、快照整体替换）：清样本，保持窗从这一条重新
+          // 计时，窗内不采样——窗内再次下降照样续期，它随后的回填也不会被采样。沿用的下降前速率取到末样本
+          // 时刻；新基线还不满 200ms 时取不到，就沿用上一段保持的速率。此前立即从新的低基线起算，文本随即
+          // 回填时回填量被算成 200ms 内新生成（issue #483）。
+          let held = cur ? windowRate(turn.samples, cur.at) : null;
+          if (held === null && turn.hold && at - turn.hold.until < 400) held = turn.hold.rate;
           turn.samples.length = 0;
           turn.hold = { rate: held, until: at + 2000 };
         } else if (cur && characters > cur.characters && at - bornAt < SETTLE_MS && at - cur.at < BURST_DT_MS) {
@@ -129,6 +136,7 @@
           turn.samples.length = 0;
           mergeSettled = true;
         }
+        turn.prevChars = characters;
         const base = turn.samples[turn.samples.length - 1];
         if (!(turn.hold && at < turn.hold.until) && (!base || base.characters !== characters)) turn.samples.push({ at, characters });
         while (turn.samples.length > 2 && turn.samples[1].at < at - 2000) turn.samples.shift();
@@ -228,7 +236,7 @@
       };
     }
 
-    return { ingest, get, clear() { turns.clear(); epoch = null; sequence = -1; bornAt = null; mergeSettled = false; }, dispose() { disposed = true; turns.clear(); } };
+    return { ingest, get, clear() { turns.clear(); epoch = null; sequence = -1; }, dispose() { disposed = true; turns.clear(); } };
   }
 
   // ---------- 工具组近似（v181 特性，v187 补回——PR #161 合并时遗漏本块）：宿主把当前运行段尾部

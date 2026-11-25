@@ -229,9 +229,9 @@ test('removed rows re-base the live rate: the pre-drop rate is held for one wind
   tracker.ingest(snapshot(2, [header(), text('abcdef')]));
   assert.equal(tracker.get('t').characterRate, 3);
   now = 1500;
-  tracker.ingest(snapshot(3, [header(), text('a')]));   // 字符数下降：保持窗（2 秒）内沿用下降前的窗口速率
-  assert.equal(tracker.get('t').characterRate, 2);
-  now = 5000;                                           // 保持窗结束 1800ms 后才有下一条通知：保持已作废，不回显旧速率
+  tracker.ingest(snapshot(3, [header(), text('a')]));   // 字符数下降：保持窗（2 秒）内沿用下降前采样之间的速率
+  assert.equal(tracker.get('t').characterRate, 3);      // （不是按下降时刻摊算的 2）
+  now = 5000;                                           // 保持窗结束 1500ms 后才有下一条通知：保持已作废，不回显旧速率
   tracker.ingest(snapshot(4, [header(), text('a')]));
   assert.equal(tracker.get('t').characterRate, null);
   now = 5300;                                           // 新基线已过 200ms 仍无增长：读 0，不再沿用下降前的旧速率
@@ -304,9 +304,9 @@ test('issue #483: the burst re-baseline only covers the tracker\'s first 300ms, 
 });
 
 /* 通知预算两头的 store：整窗拷贝每次耗时 costMs。≥8ms 进预算（间隔 cost×9，上限 1 秒），间隔内的通知合并成
- * 一次入库，补齐突发凑不出 15ms 的间隔条件；<8ms 每次通知同步处理。字符数与会话由用例给定。 */
-function rateStore(costMs) {
-  const f = { now: 0, chars: 600, session: 's', timers: [], listener: null };
+ * 一次入库，补齐突发凑不出 15ms 的间隔条件；<8ms 每次通知同步处理。字符数与会话由用例给定，时钟从 start 起。 */
+function rateStore(costMs, start = 0) {
+  const f = { now: start, chars: 600, session: 's', timers: [], listener: null };
   let seq = 0;
   f.store = {
     getState() { f.now += costMs; return { snapshot: snapshot(++seq, [header(), text('a'.repeat(f.chars))], f.session) }; },
@@ -357,14 +357,15 @@ test('issue #483: a coalesced ingest only re-baselines within the tracker\'s fir
 });
 
 test('issue #483: on a very expensive session the first coalesced ingest lands over a second after bind, still inside the settle window', () => {
-  const f = rateStore(150);                                // 预算间隔 min(1000, 150×9)，即上限 1000ms
+  const S = 5000000;                                        // 时钟不从 0 起：真机的 performance.now() 早就过了稳窗
+  const f = rateStore(150, S);                              // 预算间隔 min(1000, 150×9)，即上限 1000ms
   const tracker = createTracker({ now: () => f.now });
-  subscribeStore(f.store, tracker, () => {}, f.options);   // t=150，600 字符
-  f.now = 160; f.chars = 900; f.listener();                // 间隔内：只置 pending
-  f.now = 1140; f.chars = 1460; f.listener();
-  f.now = 1150; f.timers[0].fire();                        // 合并入库：t=1300（建立后 1150ms），1460 字符
-  f.now = 1301; f.chars = 1552; f.listener();              // 之后 200ms 生成 92 字符；仍在间隔内，合并
-  f.now = 2300; f.timers[1].fire();                        // t=2450
+  subscribeStore(f.store, tracker, () => {}, f.options);   // t=S+150，600 字符
+  f.now = S + 160; f.chars = 900; f.listener();             // 间隔内：只置 pending
+  f.now = S + 1140; f.chars = 1460; f.listener();
+  f.now = S + 1150; f.timers[0].fire();                     // 合并入库：t=S+1300（建立后 1150ms），1460 字符
+  f.now = S + 1301; f.chars = 1552; f.listener();           // 之后 200ms 生成 92 字符；仍在间隔内，合并
+  f.now = S + 2300; f.timers[1].fire();                     // t=S+2450
   assert.equal(tracker.get('t').characterRate, 92 * 1000 / 1150, '1.2 秒 = 预算间隔上限 1 秒加一次读取：这种会话也在稳窗内');
 });
 
@@ -409,16 +410,16 @@ test('issue #483: a character drop holds the pre-drop rate instead of re-basing 
   tracker.ingest(snapshot(3, [header(), text('a'.repeat(600))]));   // 缩水 300：行文本被替换得更短或行被移除
   now = 1600;
   tracker.ingest(snapshot(4, [header(), text('a'.repeat(1080))]));  // 100ms 后回填：旧实现读 4800
-  assert.equal(tracker.get('t').characterRate, 200, '保持窗内沿用下降前的窗口速率');
+  assert.equal(tracker.get('t').characterRate, 300, '保持窗内沿用下降前的窗口速率');
   now = 2500;
   tracker.ingest(snapshot(5, [header(), text('a'.repeat(1350))]));
-  assert.equal(tracker.get('t').characterRate, 200);
+  assert.equal(tracker.get('t').characterRate, 300);
   now = 3500;
   tracker.ingest(snapshot(6, [header(), text('a'.repeat(1650))]));  // 窗过后的新基线未满 200ms：仍沿用
-  assert.equal(tracker.get('t').characterRate, 200);
+  assert.equal(tracker.get('t').characterRate, 300);
   now = 3700;
-  tracker.ingest(snapshot(7, [header(), text('a'.repeat(1710))]));
-  assert.equal(tracker.get('t').characterRate, 300, '之后只按新基线以来的增长计算');
+  tracker.ingest(snapshot(7, [header(), text('a'.repeat(1680))]));  // 之后 150 字符/s
+  assert.equal(tracker.get('t').characterRate, 150, '只按新基线以来的增长计算，不再是沿用的 300');
 });
 
 test('issue #483: a drop before any valid rate leaves the estimate empty for the hold window', () => {
@@ -447,12 +448,12 @@ test('issue #483: a baseline that lands after the hold window still bridges, wit
   tracker.ingest(snapshot(3, [header(), text('a'.repeat(600))]));   // 缩水，保持窗到 3500
   now = 3800;                                                       // 窗结束 300ms 后才有下一条通知
   tracker.ingest(snapshot(4, [header(), text('a'.repeat(1650))]));
-  assert.equal(tracker.get('t').characterRate, 200);
+  assert.equal(tracker.get('t').characterRate, 300);
   now = 3900;
-  tracker.ingest(snapshot(5, [header(), text('a'.repeat(1710))]));
-  assert.equal(tracker.get('t').characterRate, 200, '新基线未满 200ms：仍沿用');
+  tracker.ingest(snapshot(5, [header(), text('a'.repeat(1740))]));  // 之后 900 字符/s
+  assert.equal(tracker.get('t').characterRate, 300, '新基线未满 200ms：仍沿用');
   now = 4000;
-  assert.equal(tracker.get('t').characterRate, 300);                 // 新窗口接上：200ms 增 60 字符
+  assert.equal(tracker.get('t').characterRate, 450);                 // 新窗口接上：200ms 增 90 字符
 });
 
 test('issue #483: a baseline half a second after the hold window does not echo the pre-drop rate', () => {
@@ -469,6 +470,155 @@ test('issue #483: a baseline half a second after the hold window does not echo t
   now = 4150;
   tracker.ingest(snapshot(5, [header(), text('a'.repeat(1710))]));
   assert.equal(tracker.get('t').characterRate, 300);
+});
+
+test('issue #483: a drop landing on the first snapshot after the hold window restarts it, so the refill is not sampled', () => {
+  let now = 0, seq = 0;
+  const tracker = createTracker({ now: () => now });
+  const at = (t, n) => { now = t; tracker.ingest(snapshot(++seq, [header(), text('a'.repeat(n))])); };
+  at(0, 0); at(1000, 300); at(4900, 1470);                        // 300 字符/s
+  at(5000, 1200);                                                // 缩水，保持窗到 7000
+  at(6000, 1200);                                                // 窗内：增长 300、又缩水 300
+  at(6900, 1470);
+  at(7000, 1200);                                                // 恰好在保持窗结束的那条快照上又一次缩水
+  at(7100, 1530);                                                // 100ms 后回填：不续期的话这条被采成 3000 字符/s
+  assert.equal(tracker.get('t').characterRate, 300, '回填没有被采样');
+  at(7200, 1560); at(7300, 1590);
+  assert.equal(tracker.get('t').characterRate, 300);
+});
+
+test('issue #483: a drop during the hold window restarts it, so a slow refill is not sampled either', () => {
+  let now = 0, seq = 0;
+  const tracker = createTracker({ now: () => now });
+  const at = (t, n) => { now = t; tracker.ingest(snapshot(++seq, [header(), text('a'.repeat(n))])); };
+  at(0, 0); at(1000, 300); at(4900, 1470);
+  at(5000, 1200);                                                // 缩水，保持窗到 7000
+  at(6900, 1770);
+  at(6950, 1485);                                                // 窗结束前 50ms 又缩水：保持窗重新计时到 8950
+  at(7000, 1500);                                                // 还没有回填
+  at(7100, 1830);                                                // 150ms 后才回填
+  assert.equal(tracker.get('t').characterRate, 300, '回填没有被采样');
+  at(7200, 1860);
+  assert.equal(tracker.get('t').characterRate, 300);
+});
+
+test('issue #483: a drop on a baseline younger than 200ms carries the rate the previous hold showed', () => {
+  let now = 0, seq = 0;
+  const tracker = createTracker({ now: () => now });
+  const at = (t, n) => { now = t; tracker.ingest(snapshot(++seq, [header(), text('a'.repeat(n))])); };
+  at(0, 0); at(1000, 300); at(4900, 1470);
+  at(5000, 1200);                                                // 缩水，保持窗到 7000
+  at(7000, 1800);                                                // 窗结束：新基线刚落
+  at(7100, 1530);                                                // 100ms 后又缩水：新基线不满 200ms，取不到下降前的窗口速率
+  assert.equal(tracker.get('t').characterRate, 300, '沿用上一段保持的速率，不空读数');
+  at(8000, 1800);
+  assert.equal(tracker.get('t').characterRate, 300);
+});
+
+test('issue #483: a row that left the window and comes back is not counted as new output', () => {
+  let now = 0;
+  const tracker = createTracker({ now: () => now });
+  const a = n => ({ rowId: 2, turnId: 't', kind: 'assistantText', text: 'a'.repeat(n) });
+  const b = { rowId: 3, turnId: 't', kind: 'assistantText', text: 'b'.repeat(5000) };
+  tracker.ingest(snapshot(1, [header(), a(6)]));
+  now = 1500;
+  tracker.ingest(snapshot(2, [header(), a(6), b]));              // 新出现的行：全文计入
+  now = 1600;
+  tracker.ingest(snapshot(3, [header(), a(6)]));                 // b 出窗：字符数下降，保持窗开始
+  now = 4000;                                                     // 保持窗早已结束（已作废）
+  tracker.ingest(snapshot(4, [header(), a(6)]));
+  now = 4200;
+  tracker.ingest(snapshot(5, [header(), a(7)]));
+  now = 4300;
+  tracker.ingest(snapshot(6, [header(), a(7), b]));              // b 原样回来
+  assert.equal(tracker.get('t').characterRate, 1000 / 300, '回来的是见过的内容，不算这 300ms 里生成的');
+  assert.equal(tracker.get('t').totalCharacters, 5007, '校准分子照常含它');
+});
+
+test('issue #483: a row that left before a later row also stays old when it comes back on a fallen max row id', () => {
+  let now = 0;
+  const tracker = createTracker({ now: () => now });
+  const a = n => ({ rowId: 2, turnId: 't', kind: 'assistantText', text: 'a'.repeat(n) });
+  const c = { rowId: 4, turnId: 't', kind: 'assistantText', text: 'c'.repeat(5000) };
+  const b = { rowId: 5, turnId: 't', kind: 'assistantText', text: 'b'.repeat(5) };
+  tracker.ingest(snapshot(1, [header(), a(6)]));
+  now = 1000;
+  tracker.ingest(snapshot(2, [header(), a(6), c]));
+  now = 1100;
+  tracker.ingest(snapshot(3, [header(), a(6), c, b]));
+  now = 1200;
+  tracker.ingest(snapshot(4, [header(), a(6), c]));              // b 出窗：最大行号回落到 4
+  now = 1300;
+  tracker.ingest(snapshot(5, [header(), a(6)]));                 // c 出窗：最大行号回落到 1
+  now = 4000;
+  tracker.ingest(snapshot(6, [header(), a(6)]));
+  now = 4200;
+  tracker.ingest(snapshot(7, [header(), a(7)]));
+  now = 4300;
+  tracker.ingest(snapshot(8, [header(), a(7), c]));              // c 回来时行号不小于最大行号，单看行号不像旧行
+  assert.equal(tracker.get('t').characterRate, 1000 / 300);
+});
+
+test('issue #483: a row that comes back shorter than it left adds nothing and never counts as another drop', () => {
+  let now = 0, seq = 0;
+  const tracker = createTracker({ now: () => now });
+  const a = n => ({ rowId: 2, turnId: 't', kind: 'assistantText', text: 'a'.repeat(n) });
+  const b = n => ({ rowId: 3, turnId: 't', kind: 'assistantText', text: 'b'.repeat(n) });
+  const at = (t, rows) => { now = t; tracker.ingest(snapshot(++seq, [header(), ...rows])); };
+  at(0, [a(6), b(5000)]);
+  at(1000, [a(306), b(5000)]);
+  at(1100, [a(336), b(5000)]);
+  assert.equal(tracker.get('t').characterRate, 300);
+  at(1200, [a(366)]);                        // b 出窗：字符数下降，保持窗到 3200
+  at(1300, [a(396), b(4000)]);               // b 回来时比出窗时短：不该倒扣，也不该再算一次下降
+  at(3200, [a(966), b(4000)]);
+  at(3400, [a(1086), b(4000)]);              // 之后 600 字符/s
+  assert.equal(tracker.get('t').characterRate, 600, '保持窗没有被那次回来续期');
+});
+
+test('issue #483: the settle window counts from the tracker\'s birth, not from time zero', () => {
+  let now = 5000000;                                             // 真机的 performance.now() 早就过了 300ms
+  const tracker = createTracker({ now: () => now });
+  tracker.ingest(snapshot(1, [header(), text('a'.repeat(600))]));
+  now += 10;
+  tracker.ingest(snapshot(2, [header(), text('a'.repeat(900))]));
+  now += 10;
+  tracker.ingest(snapshot(3, [header(), text('a'.repeat(1200))]));
+  now += 378;
+  tracker.ingest(snapshot(4, [header(), text('a'.repeat(1260))]));
+  assert.equal(tracker.get('t').characterRate, 60 * 1000 / 378, '稳窗锚在建立时刻');
+});
+
+test('issue #483: frames at a normal cadence inside the settle window do not re-baseline', () => {
+  let now = 0, seq = 0;
+  const tracker = createTracker({ now: () => now });
+  const at = n => { tracker.ingest(snapshot(++seq, [header(), text('a'.repeat(n))])); };
+  at(600); now = 100; at(630); now = 200; at(660); now = 250; at(675);   // 稳态通知：间隔远大于 15ms
+  now = 450;
+  at(720);
+  assert.equal(tracker.get('t').characterRate, 120 * 1000 / 450, '只有成批涌入的帧才重取基线');
+});
+
+test('issue #483: a completed turn never shows an estimate, whether or not the completing snapshot drops characters', () => {
+  let now = 0, seq = 0;
+  const tracker = createTracker({ now: () => now });
+  const at = (t, turn, state, n) => {
+    now = t;
+    tracker.ingest(snapshot(++seq, [
+      { rowId: 1, turnId: turn, kind: 'turnHeader', state, outputTokens: 100, modelDurationMs: 1000 },
+      { rowId: 2, turnId: turn, kind: 'assistantText', text: 'a'.repeat(n) },
+    ]));
+  };
+  at(0, 't', 'running', 600);
+  at(1000, 't', 'running', 900);
+  assert.equal(tracker.get('t').characterRate, 300);
+  at(1500, 't', 'completedSuccess', 1350);                       // 正常完成：窗口里还有样本
+  assert.equal(tracker.get('t').characterRate, null);
+  assert.equal(tracker.get('t').tokenRate, 100);
+  at(3000, 'u', 'running', 600);
+  at(4000, 'u', 'running', 900);
+  at(4500, 'u', 'completedSuccess', 600);                        // 完成的同一条快照里字符数下降
+  assert.equal(tracker.get('u').characterRate, null, '保持窗不越过完成态');
 });
 
 test('live speed does not stay stale indefinitely when output stops', () => {
