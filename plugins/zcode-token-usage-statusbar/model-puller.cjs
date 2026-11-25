@@ -845,11 +845,15 @@ function agreedCapabilities(entries, id) {
     const token = typeof data.accessToken === "string" && data.accessToken.trim() ? data.accessToken.trim()
       : typeof data.token === "string" ? data.token.trim() : "";
     if (!token) return null;
-    /* issue #481：线上 expiresAt 是 10 位秒级时间戳（与 expiresIn 同单位，团队 PAT 实测）——
-     * 统一换成毫秒再交给 memo 与 Date.now() 比较；< 1e12 视为秒（额度链 reset 秒/毫秒自适应同款判定）。 */
-    const rawExpiresAt = typeof data.expiresAt === "number" && data.expiresAt > 0 ? data.expiresAt : 0;
+    /* issue #481（线上样本来自报告者抓包，维护者未用真实团队账号复核）：expiresAt 是 10 位秒级
+     * 时间戳（与 expiresIn 同单位）——统一换成毫秒再交给 memo 与 Date.now() 比较；< 1e12 视为秒
+     * （额度链 reset 秒/毫秒自适应同款判定）。非有限值或 ≥ 1e14 的离谱值按缺失处理，否则 PAT
+     * 会被永久缓存。 */
+    const at = typeof data.expiresAt === "number" ? data.expiresAt : 0;
+    const rawExpiresAt = Number.isFinite(at) && at > 0 && at < 1e14 ? at : 0;
+    const ttlSec = typeof data.expiresIn === "number" && Number.isFinite(data.expiresIn) && data.expiresIn > 0 ? data.expiresIn : 0;
     const expiresAt = rawExpiresAt ? (rawExpiresAt < 1e12 ? rawExpiresAt * 1000 : rawExpiresAt)
-      : typeof data.expiresIn === "number" && data.expiresIn > 0 ? Date.now() + data.expiresIn * 1000 : 0;
+      : ttlSec ? Date.now() + ttlSec * 1000 : 0;
     return { token: token, expiresAt: expiresAt };
   }
 
@@ -1327,6 +1331,7 @@ function createModelPuller(opts) {
       : sharedInflight(teamInflight, "team|" + providerId, () => planTeamPatOfSolo(providerId, null));
   }
   async function planTeamPatOfSolo(providerId, externalSignal) {
+    if (externalSignal && externalSignal.aborted) return teamPatResult("", "cancelled", 0);   // 进门前已取消：不算失败、不落日志
     const src = PLAN_SOURCES[String(providerId || "")];
     if (!src || src.fam !== "bigmodel" || !src.teamPat || !credentialsPath || !decryptValue) return teamPatFail("token");
     const oauth = planTokenOf(providerId);
@@ -1370,7 +1375,8 @@ function createModelPuller(opts) {
       /* 密钥 ID 就是条目的 apiKey（线上无 apiKeyId 字段，issue #481）——URL 段经 encodeURIComponent */
       const teamKeyId = keyList.filter((k) => k && k.name === "zcode-team-api-key" &&
         k.keyType === 2 && typeof k.apiKey === "string" && k.apiKey.trim()).map((k) => k.apiKey.trim())[0] || "";
-      if (!teamKeyId) return teamPatFail("keys_missing");
+      /* `.` 与 `..` 是路径段保留写法：URL 规范化会吃掉上一级路径段（同源内，仍不该发）——按没有团队密钥处理 */
+      if (!teamKeyId || teamKeyId === "." || teamKeyId === "..") return teamPatFail("keys_missing");
       const patRes = await fetchImpl(keysUrl + "/" + encodeURIComponent(teamKeyId) + "/access_tokens", {
         method: "POST",
         headers: { "Authorization": "Bearer " + oauth, "Content-Type": "application/json", "User-Agent": "ZCode" },

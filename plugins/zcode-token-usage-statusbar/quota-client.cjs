@@ -946,7 +946,10 @@ async function ensureTeamPat(j, fam, sel, loginToken, ctl) {
   const teamKey = keyList.find((k) => k && k.name === "zcode-team-api-key" &&
     k.keyType === 2 && typeof k.apiKey === "string" && k.apiKey.trim());
   if (!teamKey) throw qErr("unsupported", "team api key missing");
-  const teamKeyId = teamKey.apiKey.trim();   // 密钥 ID 就是条目的 apiKey（issue #481）
+  /* 密钥 ID 就是条目的 apiKey（issue #481）；`.` 与 `..` 是路径段保留写法——URL 规范化会吃掉上一级
+   * 路径段（同源内，仍不该发），按没有团队密钥处理 */
+  const teamKeyId = teamKey.apiKey.trim();
+  if (teamKeyId === "." || teamKeyId === "..") throw qErr("unsupported", "team api key missing");
   /* ③ PAT 签发（Bearer 业务 token；429/5xx 一次重试，与宿主 MAX_TOKEN_ISSUE_ATTEMPTS 对齐） */
   let raw = null, lastErr = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -968,12 +971,13 @@ async function ensureTeamPat(j, fam, sel, loginToken, ctl) {
   const pat = patData && patData.enable !== false && typeof patData.accessToken === "string" &&
     patData.accessToken.trim() ? patData.accessToken.trim() : null;
   if (!pat) throw qErr("unsupported", "team pat missing");
-  /* issue #481：线上 expiresAt 是秒级时间戳（与 expiresIn 同单位）——< 1e12 视为秒换成毫秒，
-   * 再与毫秒时钟比较（此前秒级值直接比较，缓存永不命中、每轮都重签 PAT） */
-  const rawExpiresAt = typeof patData.expiresAt === "number" && patData.expiresAt > 0 ? patData.expiresAt : 0;
-  const expiresAt = rawExpiresAt ? (rawExpiresAt < 1e12 ? rawExpiresAt * 1000 : rawExpiresAt)
-    : (typeof patData.expiresIn === "number" && patData.expiresIn > 0
-      ? now + patData.expiresIn * 1000 : now + 3600 * 1000);
+  /* issue #481（线上样本来自报告者抓包）：expiresAt 是秒级时间戳（与 expiresIn 同单位）——< 1e12
+   * 视为秒换成毫秒，再与毫秒时钟比较（此前秒级值直接比较，缓存永不命中、每轮都重签 PAT）。
+   * 非有限值或 ≥ 1e14 的离谱值按缺失处理，否则 PAT 会被永久缓存。 */
+  const at = typeof patData.expiresAt === "number" ? patData.expiresAt : 0;
+  const rawExpiresAt = Number.isFinite(at) && at > 0 && at < 1e14 ? at : 0;
+  const ttlSec = typeof patData.expiresIn === "number" && Number.isFinite(patData.expiresIn) && patData.expiresIn > 0 ? patData.expiresIn : 3600;
+  const expiresAt = rawExpiresAt ? (rawExpiresAt < 1e12 ? rawExpiresAt * 1000 : rawExpiresAt) : now + ttlSec * 1000;
   const cachedEntry = { pat, expiresAt, apiKey: teamKeyId };
   teamPatCache.set(cacheKey, cachedEntry);
   return cachedEntry.pat;

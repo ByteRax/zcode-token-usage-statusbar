@@ -41,7 +41,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-function makeTeamClient(t, { setting = SETTING, fam = "bigmodel", creds, calls, monitor = null, patTtlSec = 3600, patExpiresUnit = "s" } = {}) {
+function makeTeamClient(t, { setting = SETTING, fam = "bigmodel", creds, calls, monitor = null, patTtlSec = 3600, patExpiresAtSec, patExpiresUnit = "s", keyIdRaw, patExpiresRaw } = {}) {
   const credsPath = "/virtual/team/credentials.json";
   const clock = { t: T0 };
   const client = Q.createQuotaClient({
@@ -67,11 +67,19 @@ function makeTeamClient(t, { setting = SETTING, fam = "bigmodel", creds, calls, 
           { organizationId: org, projects: [{ projectId: proj }] },
         ] } })));
       }
-      if (url.indexOf("/api_keys") >= 0 && init.method === "GET") return Promise.resolve(fakeRes(200, JSON.stringify({ code: 200, data: [teamKeyEntry()] })));
-      if (url.indexOf("/access_tokens") >= 0) return Promise.resolve(fakeRes(200, JSON.stringify({ code: 200, data: {
-        enabled: true, accessToken: "pat.team.token", tokenType: "Bearer", expiresIn: patTtlSec,
-        expiresAt: patExpiresUnit === "ms" ? T0 + patTtlSec * 1000 : Math.floor(T0 / 1000) + patTtlSec,
-      } })));
+      if (url.indexOf("/api_keys") >= 0 && init.method === "GET") return Promise.resolve(fakeRes(200, JSON.stringify({ code: 200, data: [
+        /* 诱饵排在团队密钥前面：同为 keyType=2、名字不同的条目不得被当成团队密钥 */
+        Object.assign(teamKeyEntry(), { name: "other-key", apiKey: "decoy-key-id" }),
+        Object.assign(teamKeyEntry(), keyIdRaw === undefined ? {} : { apiKey: keyIdRaw }),   // keyIdRaw：可带首尾空白与需编码字符的原始值
+      ] })));
+      if (url.indexOf("/access_tokens") >= 0) {
+        const expiresAt = patExpiresUnit === "ms" ? T0 + (patExpiresAtSec || patTtlSec) * 1000 : Math.floor(T0 / 1000) + (patExpiresAtSec || patTtlSec);   // patExpiresAtSec：让 expiresAt 与 expiresIn 不一致
+        const payload = JSON.stringify({ code: 200, data: { enabled: true, accessToken: "pat.team.token", tokenType: "Bearer", expiresIn: patTtlSec, expiresAt } });
+        /* patExpiresRaw：把 expiresAt 的 JSON 文本换成任意字面量（1e400 这类解析后非有限、或离谱大的值） */
+        const text = patExpiresRaw === undefined ? payload : payload.replace('"expiresAt":' + expiresAt, '"expiresAt":' + patExpiresRaw);
+        if (patExpiresRaw !== undefined && text === payload) throw new Error("fixture: expiresAt splice failed");
+        return Promise.resolve(fakeRes(200, text));
+      }
       if (url === TEAM_MONITOR[fam]) {   // monitor 可变应答（{status}，换发解冻用例先 401 后 200）；缺省 200+OK_BODY
         const st = (monitor && monitor.status) || 200;
         return Promise.resolve(fakeRes(st, st === 200 ? OK_BODY : "{}"));
@@ -284,25 +292,58 @@ test("team: 指纹跟随回退信封——401 冻结后宿主换发解冻重查�
   assert.equal(client.view().sources["bigmodel-team"].status, "ok");
 });
 
-test("team: access_tokens 换发 URL 带的是条目 apiKey，不是 undefined（issue #481）", async (t) => {
-  /* 旧代码查找用 k.apiKey、拼 URL 却用 teamKey.apiKeyId——线上拼成 …/api_keys/undefined/access_tokens。
-   * 上面的桩按「URL 含 /access_tokens」匹配，undefined 路径同样命中，此前没暴露；这里断言真实 URL。 */
-  const tc = TEAM_CREDS(Q, "plan.team.key");
-  const calls = [];
-  const { client, clock } = makeTeamClient(t, { setting: teamSel("org-kid", "proj-kid"), fam: "bigmodel", creds: { "oauth:bigmodel:access_token": tc.entry }, calls });
-  Q.setDefaultDecryptCtx({ credsPath: "/virtual/team/credentials.json", credsDir: "/virtual/team", env: { ZCODE_CREDENTIAL_SECRET: tc.env } });
+/* 预热→解密→首轮查询的标准三拍：返回后 monitor 已查过一轮 */
+async function teamFirstRound(client, clock) {
   client.noteProvider("account:bigmodel-team-coding-plan");
   client.tick();                       // 预热启动（异步），本轮团队解密失败
   await Q.ensureDefaultV2Key();
   clock.t += 1100;                     // pending 的 1 秒短重试
   client.tick();
   await sleep(10);
+}
+
+test("team: access_tokens 换发 URL 带的是条目 apiKey，不是 undefined（issue #481）", async (t) => {
+  /* 旧代码查找用 k.apiKey、拼 URL 却用 teamKey.apiKeyId——线上拼成 …/api_keys/undefined/access_tokens。
+   * 上面的桩按「URL 含 /access_tokens」匹配，undefined 路径同样命中，此前没暴露；这里断言真实 URL。
+   * 列表里另有一条同名族、同 keyType 的诱饵排在前面：必须选到 zcode-team-api-key 那一条。 */
+  const tc = TEAM_CREDS(Q, "plan.team.key");
+  const calls = [];
+  const { client, clock } = makeTeamClient(t, { setting: teamSel("org-kid", "proj-kid"), fam: "bigmodel", creds: { "oauth:bigmodel:access_token": tc.entry }, calls });
+  Q.setDefaultDecryptCtx({ credsPath: "/virtual/team/credentials.json", credsDir: "/virtual/team", env: { ZCODE_CREDENTIAL_SECRET: tc.env } });
+  await teamFirstRound(client, clock);
   assert.deepEqual(teamPatCalls(calls).map((c) => [c.method, c.url]), [
     ["POST", "https://bigmodel.cn/api/biz/v1/organization/org-kid/projects/proj-kid/api_keys/" + TEAM_KEY_ID + "/access_tokens"],
   ]);
   assert.equal(calls.some((c) => c.url.indexOf("/undefined/") >= 0), false, "任何请求 URL 都不得带 undefined 路径段");
   assert.equal(calls.filter((c) => c.url === TEAM_MONITOR.bigmodel)[0].headers.authorization, "pat.team.token");
   assert.equal(client.view().sources["bigmodel-team"].status, "ok");
+});
+
+test("team: 密钥 ID trim 后经 encodeURIComponent 拼进换发 URL", async (t) => {
+  const raw = "  id/with?reserved#chars &more  ";
+  const tc = TEAM_CREDS(Q, "plan.team.key");
+  const calls = [];
+  const { client, clock } = makeTeamClient(t, { setting: teamSel("org-enc", "proj-enc"), fam: "bigmodel", creds: { "oauth:bigmodel:access_token": tc.entry }, calls, keyIdRaw: raw });
+  Q.setDefaultDecryptCtx({ credsPath: "/virtual/team/credentials.json", credsDir: "/virtual/team", env: { ZCODE_CREDENTIAL_SECRET: tc.env } });
+  await teamFirstRound(client, clock);
+  assert.deepEqual(teamPatCalls(calls).map((c) => c.url), [
+    "https://bigmodel.cn/api/biz/v1/organization/org-enc/projects/proj-enc/api_keys/" + encodeURIComponent(raw.trim()) + "/access_tokens",
+  ], "去空白并编码后的密钥 ID：路径里不得出现原始斜杠、空格或井号");
+});
+
+test("team: 密钥 ID 是路径段保留写法（. 或 ..）时按没有团队密钥处理，不发换发请求", async (t) => {
+  /* `.` 与 `..` 经 encodeURIComponent 原样保留，URL 规范化会吃掉上一级路径段 */
+  for (const [i, id] of [".", ".."].entries()) {
+    const tc = TEAM_CREDS(Q, "plan.team.key");
+    const calls = [];
+    const org = "org-dots" + i;
+    const { client, clock } = makeTeamClient(t, { setting: teamSel(org, "proj-" + org), fam: "bigmodel", creds: { "oauth:bigmodel:access_token": tc.entry }, calls, keyIdRaw: "  " + id + "  " });
+    Q.setDefaultDecryptCtx({ credsPath: "/virtual/team/credentials.json", credsDir: "/virtual/team", env: { ZCODE_CREDENTIAL_SECRET: tc.env } });
+    await teamFirstRound(client, clock);
+    assert.equal(teamPatCalls(calls).length, 0, "不发换发请求：" + id);
+    assert.equal(calls.some((c) => c.url === TEAM_MONITOR.bigmodel), false, "没有 PAT 就不查 monitor：" + id);
+    assert.equal(client.view().sources["bigmodel-team"].status, "unsupported", id);
+  }
 });
 
 test("team: 秒级 expiresAt 的 PAT 在有效期内复用——三步链只跑一轮（issue #481）", async (t) => {
@@ -326,23 +367,62 @@ test("team: 秒级 expiresAt 的 PAT 在有效期内复用——三步链只跑�
   }
 });
 
-test("team: PAT 落在到期前 2 分钟内即重签——缓存带到期检查，秒级与毫秒 expiresAt 各验一遍", async (t) => {
-  /* 毫秒短 TTL 同时锁死「不分单位一律乘 1000」：放大后过期时间落到遥远未来，缓存永不失效。 */
+test("team: PAT 落在到期前 2 分钟内即重签，未进提前量则复用——秒级与毫秒 expiresAt 各验一遍", async (t) => {
+  /* 时钟每轮跳一个套餐 TTL（10 分钟）。PAT 有效期取 1290 秒：第二轮在签发后约 600 秒（未进提前量）
+   * 复用，第三轮约 1200 秒（只剩约 90 秒，落入 2 分钟提前量）重签——提前量改成 0 或 60 秒都会红。
+   * 毫秒口径同时锁死「不分单位一律乘 1000」：放大后过期时间落到遥远未来，缓存永不失效。 */
   for (const [unit, org] of [["s", "org-lead"], ["ms", "org-leadms"]]) {
     const tc = TEAM_CREDS(Q, "plan.team.key");
     const calls = [];
-    const { client, clock } = makeTeamClient(t, { setting: teamSel(org, "proj-" + org), fam: "bigmodel", creds: { "oauth:bigmodel:access_token": tc.entry }, calls, patTtlSec: 60, patExpiresUnit: unit });
+    const { client, clock } = makeTeamClient(t, { setting: teamSel(org, "proj-" + org), fam: "bigmodel", creds: { "oauth:bigmodel:access_token": tc.entry }, calls, patTtlSec: 1290, patExpiresUnit: unit });
     Q.setDefaultDecryptCtx({ credsPath: "/virtual/team/credentials.json", credsDir: "/virtual/team", env: { ZCODE_CREDENTIAL_SECRET: tc.env } });
-    client.noteProvider("account:bigmodel-team-coding-plan");
-    client.tick(); await Q.ensureDefaultV2Key(); clock.t += 1100; client.tick();
-    await sleep(10);
+    await teamFirstRound(client, clock);
     assert.equal(teamPatCalls(calls).length, 1, unit);
-    clock.t += Q.TTL_MS + 1;             // 第二轮时 60 秒的 PAT 早已过期
+    const monitors = () => calls.filter((c) => c.url === TEAM_MONITOR.bigmodel).length;
+    clock.t += Q.TTL_MS + 1;             // 签发后约 600 秒：距到期还有约 690 秒
     client.tick();
     await sleep(10);
-    assert.equal(calls.filter((c) => c.url === TEAM_MONITOR.bigmodel).length, 2, unit);
-    assert.equal(teamPatCalls(calls).length, 2, "到期（或落入刷新提前量）的 PAT 不复用：" + unit);
+    assert.equal(monitors(), 2, unit);
+    assert.equal(teamPatCalls(calls).length, 1, "未进提前量的 PAT 复用：" + unit);
+    clock.t += Q.TTL_MS + 1;             // 签发后约 1200 秒：只剩约 90 秒，落入 2 分钟提前量
+    client.tick();
+    await sleep(10);
+    assert.equal(monitors(), 3, unit);
+    assert.equal(teamPatCalls(calls).length, 2, "落入刷新提前量的 PAT 重签：" + unit);
     assert.equal(client.view().sources["bigmodel-team"].status, "ok", unit);
+  }
+});
+
+test("team: expiresAt 与 expiresIn 不一致时以 expiresAt 为准（秒级与毫秒各验一遍）", async (t) => {
+  for (const [unit, org] of [["s", "org-atwin"], ["ms", "org-atwinms"]]) {
+    const tc = TEAM_CREDS(Q, "plan.team.key");
+    const calls = [];
+    const { client, clock } = makeTeamClient(t, { setting: teamSel(org, "proj-" + org), fam: "bigmodel", creds: { "oauth:bigmodel:access_token": tc.entry }, calls, patTtlSec: 60, patExpiresAtSec: 3600, patExpiresUnit: unit });
+    Q.setDefaultDecryptCtx({ credsPath: "/virtual/team/credentials.json", credsDir: "/virtual/team", env: { ZCODE_CREDENTIAL_SECRET: tc.env } });
+    await teamFirstRound(client, clock);
+    clock.t += Q.TTL_MS + 1;
+    client.tick();
+    await sleep(10);
+    assert.equal(teamPatCalls(calls).length, 1, "合理的 expiresAt 照常生效，不回落到 60 秒的 expiresIn：" + unit);
+  }
+});
+
+test("team: 离谱的 expiresAt（非有限或远超任何合理时钟）不会把 PAT 永久缓存", async (t) => {
+  /* JSON 文本里直接写 1e400（解析成 Infinity）、1e308、1e15；配合 60 秒的 expiresIn，下一轮必须重签 */
+  for (const [i, raw] of ["1e400", "1e308", "1e15"].entries()) {
+    const tc = TEAM_CREDS(Q, "plan.team.key");
+    const calls = [];
+    const org = "org-absurd" + i;
+    const { client, clock } = makeTeamClient(t, { setting: teamSel(org, "proj-" + org), fam: "bigmodel", creds: { "oauth:bigmodel:access_token": tc.entry }, calls, patTtlSec: 60, patExpiresRaw: raw });
+    Q.setDefaultDecryptCtx({ credsPath: "/virtual/team/credentials.json", credsDir: "/virtual/team", env: { ZCODE_CREDENTIAL_SECRET: tc.env } });
+    await teamFirstRound(client, clock);
+    assert.equal(teamPatCalls(calls).length, 1, raw);
+    clock.t += Q.TTL_MS + 1;
+    client.tick();
+    await sleep(10);
+    assert.equal(teamPatCalls(calls).length, 2, "离谱值按缺失处理，回落到 60 秒的 expiresIn，早已过期：" + raw);
+    assert.equal(calls.filter((c) => c.url === TEAM_MONITOR.bigmodel).length, 2, raw);
+    assert.equal(client.view().sources["bigmodel-team"].status, "ok", raw);
   }
 });
 

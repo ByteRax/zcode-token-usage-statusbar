@@ -473,6 +473,7 @@ function createModelPuller(opts) {
       : sharedInflight(teamInflight, "team|" + providerId, () => planTeamPatOfSolo(providerId, null));
   }
   async function planTeamPatOfSolo(providerId, externalSignal) {
+    if (externalSignal && externalSignal.aborted) return teamPatResult("", "cancelled", 0);   // 进门前已取消：不算失败、不落日志
     const src = PLAN_SOURCES[String(providerId || "")];
     if (!src || src.fam !== "bigmodel" || !src.teamPat || !credentialsPath || !decryptValue) return teamPatFail("token");
     const oauth = planTokenOf(providerId);
@@ -516,7 +517,8 @@ function createModelPuller(opts) {
       /* 密钥 ID 就是条目的 apiKey（线上无 apiKeyId 字段，issue #481）——URL 段经 encodeURIComponent */
       const teamKeyId = keyList.filter((k) => k && k.name === "zcode-team-api-key" &&
         k.keyType === 2 && typeof k.apiKey === "string" && k.apiKey.trim()).map((k) => k.apiKey.trim())[0] || "";
-      if (!teamKeyId) return teamPatFail("keys_missing");
+      /* `.` 与 `..` 是路径段保留写法：URL 规范化会吃掉上一级路径段（同源内，仍不该发）——按没有团队密钥处理 */
+      if (!teamKeyId || teamKeyId === "." || teamKeyId === "..") return teamPatFail("keys_missing");
       const patRes = await fetchImpl(keysUrl + "/" + encodeURIComponent(teamKeyId) + "/access_tokens", {
         method: "POST",
         headers: { "Authorization": "Bearer " + oauth, "Content-Type": "application/json", "User-Agent": "ZCode" },

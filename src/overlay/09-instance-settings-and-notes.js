@@ -1805,8 +1805,8 @@
     }
     /* v469（issue #481）：团队套餐凭据换发失败的环节文案，工具栏增强与设置页测试区共用。主进程
      * 回执 kind "team_auth" + reason 环节码（固定枚举，只含环节与性质）+ 可选 HTTP status。只认
-     * 表内 reason，表外码回空串由调用方回落 error 短语（主进程比渲染端新时不致空白）；
-     * 文案=「团队凭据换发失败（…）」。 */
+     * 表内 reason，表外码回空串：工具栏回落 error 短语、设置页测试区回落通用失败文案（主进程比渲染端
+     * 新时不致空白）；文案=「团队凭据换发失败（…）」。 */
     function enhanceTeamAuthText(res) {
       var why = {
         token: L("登录凭据不可用", "login credential unavailable"),

@@ -119,6 +119,12 @@ test('a team_auth reason outside the local table falls back to the generic failu
   assert.equal(h.fields['.zu-ep-test-status'].textContent, '增强失败，请检查已保存的供应商、模型与网络。');
   assert.equal(h.api.state.failed, true);
 });
+test('names inherited from Object.prototype are not treated as known team_auth reasons (issue #481)', () => {
+  // 分片里的表查找必须看自有属性：真值查找会把 constructor 当成表内文案
+  const h = harness(); h.api.state.draft = 'draft'; h.api.start();
+  h.callbacks.r1({ ok: false, kind: 'team_auth', reason: 'constructor', error: 'team credential exchange failed (constructor)' });
+  assert.equal(h.fields['.zu-ep-test-status'].textContent, '增强失败，请检查已保存的供应商、模型与网络。');
+});
 test('cancel sends existing abort action and ignores a stale callback', () => {
   const h = harness(); h.api.state.draft = 'draft'; h.api.start(); const stale = h.callbacks.r1;
   h.api.stop('cancelled'); assert.equal(h.requests[1].action, 'prompt-enhance-cancel'); assert.equal(h.requests[1].opts.requestId, 'r1');

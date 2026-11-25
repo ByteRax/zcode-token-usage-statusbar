@@ -374,10 +374,14 @@ function agreedCapabilities(entries, id) {
     const token = typeof data.accessToken === "string" && data.accessToken.trim() ? data.accessToken.trim()
       : typeof data.token === "string" ? data.token.trim() : "";
     if (!token) return null;
-    /* issue #481：线上 expiresAt 是 10 位秒级时间戳（与 expiresIn 同单位，团队 PAT 实测）——
-     * 统一换成毫秒再交给 memo 与 Date.now() 比较；< 1e12 视为秒（额度链 reset 秒/毫秒自适应同款判定）。 */
-    const rawExpiresAt = typeof data.expiresAt === "number" && data.expiresAt > 0 ? data.expiresAt : 0;
+    /* issue #481（线上样本来自报告者抓包，维护者未用真实团队账号复核）：expiresAt 是 10 位秒级
+     * 时间戳（与 expiresIn 同单位）——统一换成毫秒再交给 memo 与 Date.now() 比较；< 1e12 视为秒
+     * （额度链 reset 秒/毫秒自适应同款判定）。非有限值或 ≥ 1e14 的离谱值按缺失处理，否则 PAT
+     * 会被永久缓存。 */
+    const at = typeof data.expiresAt === "number" ? data.expiresAt : 0;
+    const rawExpiresAt = Number.isFinite(at) && at > 0 && at < 1e14 ? at : 0;
+    const ttlSec = typeof data.expiresIn === "number" && Number.isFinite(data.expiresIn) && data.expiresIn > 0 ? data.expiresIn : 0;
     const expiresAt = rawExpiresAt ? (rawExpiresAt < 1e12 ? rawExpiresAt * 1000 : rawExpiresAt)
-      : typeof data.expiresIn === "number" && data.expiresIn > 0 ? Date.now() + data.expiresIn * 1000 : 0;
+      : ttlSec ? Date.now() + ttlSec * 1000 : 0;
     return { token: token, expiresAt: expiresAt };
   }
