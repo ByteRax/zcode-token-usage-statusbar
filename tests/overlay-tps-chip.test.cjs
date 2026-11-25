@@ -313,6 +313,7 @@ test('v466: 带轮表的速度整卡带「打开设置」并打开面板（精�
   assert.ok(open >= 0 && close > open, '标题行在前、筛选组在后');
   const head = tip.innerHTML.slice(open, close);
   assert.ok(head.includes('class="tps-cfg zu-sv-cfg" aria-label="打开设置"') && head.includes('aria-haspopup="dialog"'), '标题行内是带无障碍名称的设置图标按钮');
+  assert.ok(head.includes('title="打开设置"'), '图标按钮带悬停提示');
   assert.ok(head.includes('<circle cx="12" cy="12" r="3.5"/></svg>'), '按钮内容是齿轮图标');
   const cfgOpen = head.lastIndexOf('<button', head.indexOf('class="tps-cfg zu-sv-cfg"'));
   assert.equal(cfgOpen >= 0 && head.slice(cfgOpen, head.indexOf('</button>', cfgOpen)).replace(/<[^>]+>/g, ''), '', '按钮不带「打开设置」文字（v466：图标同状态条齿轮）');
@@ -335,8 +336,11 @@ test('v466: 带轮表的速度整卡带「打开设置」并打开面板（精�
   assert.ok(panel && panel.classList.contains('open'), '设置面板从整卡打开');
   assert.equal(gear.getAttribute('aria-expanded'), 'true');
   // 源码锁：cfgBtn 只在精简速率 chip 的调用点传入
-  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay', '11-instance-toolbar-chips.js'), 'utf8');
-  assert.equal(src.split('cfgBtn: true').length - 1, 1, '条面/药丸的速度卡调用不传 cfgBtn');
+  // 扫全部分片：默认/药丸速度卡的调用点在 07 分片（review 抓回——只读 11 分片的锁挡不住它们带上 cfgBtn）
+  const dir = path.join(__dirname, '..', 'src', 'overlay');
+  const hits = fs.readdirSync(dir).filter(f => f.endsWith('.js'))
+    .map(f => [f, fs.readFileSync(path.join(dir, f), 'utf8').split('cfgBtn: true').length - 1]).filter(([, n]) => n > 0);
+  assert.deepEqual(hits, [['11-instance-toolbar-chips.js', 1]], 'cfgBtn 只在精简速率 chip 的调用点传入（扫全部分片）');
 });
 
 // v466（issue #474 跟进）：用户先点 chip（焦点落 chip）再点卡里的齿轮——mousedown 移走焦点，chip 的 blur

@@ -2915,6 +2915,8 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
     const gap0 = r2(g.think.git[0] - g.think.chip[0] - g.think.chip[2]);
     assert.ok(new Set(all.map(s => s.chip[2])).size > 1, `${label}: chip width follows the content (v466) — ${all.map(s => s.chip[2])}`);
     for (const snap of all) {
+      /* 兜底断言：本数据链的面都不顶到上限（中等/紧张档删掉上限后这里不会红，靠 overlay-speed-slot 字面锁
+       * 与下面的 live width probe 宽裕档用例守上限本身） */
       assert.ok(snap.chip[2] <= CAP[tier] + 0.05, `${label}: chip no wider than the ${tier} cap (${snap.chip[2]}; ${snap.label}|${snap.value})`);
       assert.ok(snap.slack <= 1.5, `${label}: no room reserved past the content (v466; slack ${snap.slack}; ${snap.label}|${snap.value})`);
       assert.deepEqual([snap.chip[0], snap.chip[1], snap.chip[3]], [g.think.chip[0], g.think.chip[1], g.think.chip[3]], `${label}: chip left edge and height unchanged across ${snap.label}|${snap.value}`);
@@ -3013,6 +3015,43 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
     const seen = [];
     for (let i = 0; i < 10; i++) { await delay(500); const s = await geo(); seen.push([s.tier, s.hostCompact]); }
     assert.ok(seen.every(([x, c]) => x === 'mid' && !c), `stays at mid with host controls expanded for 5s, past the 2s dwell (${JSON.stringify(seen)})`);
+  });
+
+  /* v466（issue #474 跟进，用户实报「点设置只关了速度卡」）：先点 chip（焦点落在 chip 上）再点卡里的设置图标——mousedown 把焦点
+   * 移到图标，chip 的 blur 若在此时收卡，click 就落到页面内容上。blur 门读的是 tpsTip.matches(':hover')，VM 夹具只能塞桩、测不到
+   * 读错信号，所以这里用真实 DOM + 真实指针事件：按下图标后卡仍在，松开后设置面板已打开。 */
+  await t.test('settings gear in the speed card after clicking the chip first: the card survives the press and the settings panel opens (issue #474)', async () => {
+    await setup(275);
+    const now = Date.now(), HOUR = 3600000;
+    const row = (at, out, ms) => ({ s: 0, t: at, b: at - 60000, out, ms, i: 2000, o: out, n: 1, msl: [[0, out, 2000, 1]] });
+    const hist = { sid: 'sid_a', source: 'local', truncated: false, sids: ['sid_a'], snames: ['本会话'], pids: [['p', 'P']], mnames: ['M'], mkeys: ['prov\u0001m'],
+      turns: [row(now - 2 * HOUR, 600, 6000), row(now - HOUR, 400, 4000)] };
+    await b.evaluate(`(() => { window.__zusageUpdate(Object.assign({}, ${JSON.stringify(noQuota)}, { speed_history: ${JSON.stringify(hist)} })); return true; })()`);
+    const center = sel => b.evaluate(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; const r = e.getBoundingClientRect();
+      return r.width ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null; })()`);
+    const tipShown = `(() => { const t = document.querySelector('.zusage-tps-tip'); return !!t && getComputedStyle(t).display === 'block'; })()`;
+    const mouse = (type, pt, extra) => b.call('Input.dispatchMouseEvent', Object.assign({ type, x: Math.round(pt.x), y: Math.round(pt.y) }, extra || {}));
+    const glide = async (from, to) => { for (let i = 1; i <= 12; i++) { await mouse('mouseMoved', { x: from.x + (to.x - from.x) * i / 12, y: from.y + (to.y - from.y) * i / 12 }); await delay(40); } };
+    const chip = await center('#pane-a .zu-tsb');
+    assert.ok(chip, 'rate chip mounted');
+    await mouse('mouseMoved', chip); await mouse('mouseMoved', { x: chip.x + 1, y: chip.y + 1 });
+    await b.waitFor(tipShown, 'speed card did not open on hover', 120);
+    /* 用户动作一：先点一下 chip（焦点落在 chip 上） */
+    await mouse('mousePressed', chip, { button: 'left', clickCount: 1 }); await delay(60); await mouse('mouseReleased', chip, { button: 'left', clickCount: 1 });
+    await b.waitFor(`document.activeElement === document.querySelector('#pane-a .zu-tsb')`, 'clicking the chip did not focus it', 40);
+    await b.waitFor(tipShown, 'speed card not shown after the chip click', 120);
+    const gear = await center('.zusage-tps-tip .zu-sv-cfg');
+    assert.ok(gear, 'settings gear present in the speed card (history-backed V3 card)');
+    await glide(chip, gear); await delay(300);
+    assert.ok(await b.evaluate(tipShown), 'card still shown with the pointer over the gear');
+    /* 用户动作二：在齿轮上按下——焦点从 chip 移到齿轮，卡不得被 blur 收走 */
+    await mouse('mousePressed', gear, { button: 'left', clickCount: 1 }); await delay(120);
+    assert.ok(await b.evaluate(tipShown), 'card survives the press (blur gate: pointer is over the card)');
+    assert.equal(await b.evaluate(`document.activeElement === document.querySelector('.zusage-tps-tip .zu-sv-cfg')`), true, 'the press moved focus to the gear');
+    assert.equal(await b.evaluate(`!!document.querySelector('.zu-settings.open')`), false, 'panel not open before release (click-only, never pointerdown)');
+    await mouse('mouseReleased', gear, { button: 'left', clickCount: 1 });
+    await b.waitFor(`!!document.querySelector('.zu-settings.open')`, 'settings panel did not open on release', 80);
+    await b.waitFor(`!${tipShown}`, 'speed card not hidden after opening the panel', 80);
   });
 
   await t.test('the live width probe (tests/speed-slot-live-probe.js) measures the three compact chip tiers here and restores the chip', async () => {

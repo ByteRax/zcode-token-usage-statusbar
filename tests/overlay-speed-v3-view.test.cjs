@@ -449,6 +449,10 @@ test('i18n: lang=en 关键文案切英文（SPD_L 桩实现真实 L 逻辑）', 
   const an = analyze(ctx, h, sel);
   const dom = stripStyle(cardHTML(ctx, an, sel));
   assert.match(dom, /Generation speed/, '标题');
+  // v466：精简速率 chip 专属的设置图标按钮（o.cfgBtn）——英文无障碍名称与悬停提示
+  const domCfg = stripStyle(cardHTML(ctx, analyze(ctx, h, sel), sel, { o: { cfgBtn: true } }));
+  assert.match(domCfg, /class="tps-cfg zu-sv-cfg" aria-label="Open settings" title="Open settings" aria-haspopup="dialog"/, '设置按钮英文 aria-label / title');
+  assert.ok(!/class="tps-cfg/.test(dom), '不传 cfgBtn 的卡没有设置按钮');
   assert.match(dom, /zu-sv-flabel">Scope</, '范围标签');
   assert.match(dom, /zu-sv-flabel">Time</, '时间标签');
   assert.match(dom, /Model filter/, '筛选标签');

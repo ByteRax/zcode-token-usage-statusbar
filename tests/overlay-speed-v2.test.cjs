@@ -161,6 +161,7 @@ test('all 20 range × period combinations rebuild through the wire without zero-
       const html = card(ctx, { range, period }, { h });
       assert.equal(html.charCodeAt(0), 1, range + '×' + period + ' sentinel');
       assert.ok(html.includes('zu-sv3-root'), range + '×' + period + ' V3 root');
+      assert.ok(!/class="tps-cfg/.test(html), range + '×' + period + ' 条面速度卡不出设置按钮（v466：cfgBtn 只由精简 chip 传）');
       assert.ok(!/[>，]0 t\/s/.test(dom(html)), range + '×' + period + ' no fake 0 t/s');
     }
   }
