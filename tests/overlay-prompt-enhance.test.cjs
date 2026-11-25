@@ -55,6 +55,8 @@ test('contract: inject-main whitelist routes prompt-enhance with fail-closed gat
 });
 
 /* ---------- 行为夹具 ---------- */
+const INPUT_SEL = '[data-testid="v4-composer-input"]';
+const CONTENTEDITABLE_SEL = '[contenteditable="true"]';
 class Element {
   constructor(tag = 'div') {
     this.tagName = tag.toUpperCase(); this.children = []; this.dataset = {}; this.style = {};
@@ -104,10 +106,12 @@ class Element {
       return this.children.filter(e => e.getAttribute('data-testid') === 'v4-model-config').concat(
         ...this.children.map(e => e.querySelectorAll(sel)));
     }
-    if (sel === '[data-testid="v4-composer-input"]') {   // issue #477：卡内选框的后代枚举——先序深度优先，与真实 DOM 文档序一致
+    if (sel === INPUT_SEL || sel === CONTENTEDITABLE_SEL) {   // issue #477：卡内选框的后代枚举——先序深度优先，与真实 DOM 文档序一致；两种输入框选择器写法都认
+      const byTestid = sel === INPUT_SEL;
+      const matches = c => c.getAttribute && (byTestid ? c.getAttribute('data-testid') === 'v4-composer-input' : c.getAttribute('contenteditable') === 'true');
       const out = [];
       for (const c of this.children) {
-        if (c.getAttribute && c.getAttribute('data-testid') === 'v4-composer-input') out.push(c);
+        if (matches(c)) out.push(c);
         if (c.querySelectorAll) out.push(...c.querySelectorAll(sel));
       }
       return out;
@@ -128,7 +132,7 @@ function harness({ enhanceOn = true } = {}) {
   Object.assign(window, { innerWidth: 1000, innerHeight: 800 });
   window.__zusagePluginState = { enhanceEnabled: enhanceOn ? true : false };
   let panes = [];
-  const isInputSelector = selector => selector.includes('v4-composer-input');   // issue #477：输入框选择器不论写法
+  const isInputSelector = selector => selector.includes('v4-composer-input') || selector.includes('contenteditable');   // issue #477：输入框选择器不论写法
   const document = new Element();
   Object.assign(document, { body, documentElement: root, createElement: tag => new Element(tag),
     getElementById: id => body.children.find(e => e.id === id),
@@ -192,6 +196,7 @@ function harness({ enhanceOn = true } = {}) {
     modelChip.setAttribute('data-testid', 'chat-model-select-trigger');
     const editor = card.appendChild(new Element());
     editor.setAttribute('data-testid', 'v4-composer-input');
+    editor.setAttribute('contenteditable', 'true');   // 真实 Lexical 根节点带 contenteditable
     editor.setAttribute('data-e2e-lexical-bridge', 'ready');
     editor.setAttribute('data-zusage-scope-version', '1');
     editor.setAttribute('data-zusage-workspace-path', '/fixture');
@@ -328,7 +333,7 @@ test('empty draft rejects without a request; failure shows warn phase', () => {
   assert.match(enh.getAttribute('aria-label'), /增强失败/);
 });
 
-/* ---------- issue #477：本卡内选框 + 读取失败分流（v469） ----------
+/* ---------- issue #477：本卡内选框 + 读取失败分流（v472） ----------
  * 报告：输入框里有可见文字，点增强却提示「先输入内容再增强」。旧实现只取卡内第一个输入节点，
  * 且「找不到节点 / 桥未就绪 / 读取抛错 / 桥读空 / 真空草稿」并成同一句提示。
  * 选框只在卡内进行：首轮审查用夹具实证过「按几何就近取页面内输入框」会读写相邻分栏的草稿；
@@ -337,10 +342,10 @@ const ZERO_RECT = { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 };
 const FLAT_NO_HEIGHT = { top: 600, bottom: 600, left: 20, right: 520, width: 500, height: 0 };   // 有宽无高：扁平节点按隐藏处理
 const FLAT_NO_WIDTH = { top: 600, bottom: 650, left: 20, right: 20, width: 0, height: 50 };     // 有高无宽
 const SAME_AS_BUTTON = { top: 600, bottom: 650, left: 20, right: 520, width: 500, height: 50 };   // 夹具默认矩形：与增强按钮同位
-const INPUT_SEL = '[data-testid="v4-composer-input"]';
 function mkInput(draft, rect) {   // 候选输入节点：桥就绪、几何可控
   const el = new Element();
   el.setAttribute('data-testid', 'v4-composer-input');
+  el.setAttribute('contenteditable', 'true');   // 真实 Lexical 根节点带 contenteditable
   el.setAttribute('data-e2e-lexical-bridge', 'ready');
   el.__zcodeLexicalInputE2E = {
     getText: () => el.__zuDraft,
@@ -496,6 +501,9 @@ test('issue477: no input inside the card never reads or writes a visible input i
   mountNeighbourPane(h, elsewhere);
   assert.equal(h.document.querySelectorAll(INPUT_SEL).filter(e => e === elsewhere).length, 1, 'page enumeration must see the neighbour');
   assert.equal(h.document.querySelector(INPUT_SEL), elsewhere, 'page-level single lookup must see the neighbour');
+  assert.equal(h.document.querySelector('[data-testid=v4-composer-input]'), elsewhere, 'unquoted attribute selector must resolve');
+  assert.equal(h.document.querySelector('[contenteditable="true"]'), elsewhere, 'contenteditable lookup must see the neighbour');
+  assert.equal(h.body.querySelector(INPUT_SEL), elsewhere, 'tree-scoped lookup must see the neighbour');
   clickButton(enh);
   assert.equal(enhanceRequests(h).length, 0);
   assert.match(enh.getAttribute('aria-label'), /未找到当前输入框/);
