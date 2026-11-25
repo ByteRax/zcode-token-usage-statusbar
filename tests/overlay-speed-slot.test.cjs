@@ -977,6 +977,7 @@ test('接线锁：tooltip 读真实视图、探针剥离、菜单读全称、折
   assert.ok(source.includes('buildLiveTip(speedRaw), "zu-speed", zuSpeedCellAttrs(speedView.text, speedRaw && speedRaw.text))'), '整条渲染：tooltip 真实视图 + 面展示视图 + aria-label 取展示视图 / data-zu-full 取真实视图');
   assert.ok(source.includes('zuSpeedCellSync(liveCell, view.text, rview && rview.text);'), '原地更新：aria-label 取展示视图（不随 10Hz 速度更新反复播报）、菜单全称取真实视图（保持最新）');
   assert.ok(source.includes('probeMain.querySelectorAll("[data-zu-speed-min]")'), '探针剥速度格极窄档（防正反馈震荡环）');
+  assert.ok(source.includes('el.removeAttribute("data-zu-speed-min")'), '探针剥的是极窄档属性本身（删错属性时震荡环修复失效）');
   assert.ok(source.includes('if (probeSpLabel && !probeSpLabel.textContent) probeSpLabel.textContent = "占位";'), '探针给完成态的空标签填占位：整条选档恒按有状态词的档位占位量，不随完成态升降档');
   /* 窄档真实空位：只在默认样式的窄档、既有 250ms 检查里判定；空位不含速度格自身；升档带 FOLD_HYS、保持只需装得下；切主题摘除 */
   const roomyAt = source.indexOf('var speedRoomy = false;');
