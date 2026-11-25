@@ -221,7 +221,7 @@ test('a store that throws during the trailing run neither escapes the timer nor 
   assert.equal(f.log.changed, changed + 1, 'the subscription survives a failed run');
 });
 
-test('removed rows reset the live rate instead of retaining old characters', () => {
+test('removed rows re-base the live rate: the pre-drop rate is held for one window, then only fresh growth counts', () => {
   let now = 0;
   const tracker = createTracker({ now: () => now });
   tracker.ingest(snapshot(1, [header(), text('abc')]));
@@ -229,10 +229,115 @@ test('removed rows reset the live rate instead of retaining old characters', () 
   tracker.ingest(snapshot(2, [header(), text('abcdef')]));
   assert.equal(tracker.get('t').characterRate, 3);
   now = 1500;
-  tracker.ingest(snapshot(3, [header(), text('a')]));
+  tracker.ingest(snapshot(3, [header(), text('a')]));   // 字符数下降：保持窗（2 秒）内沿用下降前的窗口速率
+  assert.equal(tracker.get('t').characterRate, 2);
+  now = 5000;                                           // 保持窗过后没有新增长：不保留已消失内容的旧速率
+  tracker.ingest(snapshot(4, [header(), text('a')]));
   assert.equal(tracker.get('t').characterRate, null);
-  tracker.ingest(snapshot(4, []));
+  now = 6000;
+  tracker.ingest(snapshot(5, [header(), text('abcd')]));
+  assert.equal(tracker.get('t').characterRate, 3);      // 只按新基线之后的增长计算
+  tracker.ingest(snapshot(6, []));
   assert.equal(tracker.get('t'), null);
+});
+
+/* ---------- issue #483：估算只计真实生成（specs/live-rate-estimate-robustness.md） ---------- */
+
+test('issue #483: prepended history rows are not counted as new output, but still count for calibration', () => {
+  let now = 0;
+  const tracker = createTracker({ now: () => now });
+  const body = (value) => ({ rowId: 3, turnId: 't', kind: 'assistantText', text: value });
+  const earlier = { rowId: 2, turnId: 't', kind: 'reasoning', text: 'x'.repeat(5000) };
+  tracker.ingest(snapshot(1, [header(), body('abcdef')]));
+  now = 1000;
+  tracker.ingest(snapshot(2, [header(), body('abcdefghi')]));
+  assert.equal(tracker.get('t').characterRate, 3);
+  // 宿主往前补拉历史：行号 2 的旧行在 tracker 首个快照之后才出现（尾 60 行把它截在了窗外）
+  now = 2000;
+  tracker.ingest(snapshot(3, [header(), earlier, body('abcdefghijkl')]));
+  assert.equal(tracker.get('t').characterRate, 3, '一次前插 5000 字符不能算成 2 秒内生成');
+  assert.equal(tracker.get('t').totalCharacters, 5012, '校准分子仍含回填的旧行');
+  // 末尾新增的行照常计入
+  now = 3000;
+  tracker.ingest(snapshot(4, [header(), earlier, body('abcdefghijkl'),
+    { rowId: 4, turnId: 't', kind: 'assistantText', text: 'pqr' }]));
+  assert.equal(tracker.get('t').characterRate, 3);
+  assert.equal(tracker.get('t').totalCharacters, 5015);
+});
+
+test('issue #483: rows present in the tracker\'s first snapshot all count, whatever their order', () => {
+  let now = 0;
+  const tracker = createTracker({ now: () => now });
+  const later = { rowId: 5, turnId: 't', kind: 'assistantText', text: 'bbb' };
+  const earlier = { rowId: 3, turnId: 't', kind: 'reasoning', text: 'aaa' };
+  tracker.ingest(snapshot(1, [header(), later, earlier]));
+  now = 1000;
+  tracker.ingest(snapshot(2, [header(), later, { ...earlier, text: 'aaaa' }]));
+  assert.equal(tracker.get('t').characterRate, 1);
+  assert.equal(tracker.get('t').totalCharacters, 7);
+});
+
+test('issue #483: a frame burst right after the tracker binds re-baselines instead of counting the catch-up', () => {
+  let now = 0;
+  const tracker = createTracker({ now: () => now });
+  tracker.ingest(snapshot(1, [header(), text('a'.repeat(600))]));   // 重绑后的首个快照（订阅那一刻的整份快照）
+  now = 10;
+  tracker.ingest(snapshot(2, [header(), text('a'.repeat(900))]));  // 被压住的增量帧成批涌入
+  now = 22;
+  tracker.ingest(snapshot(3, [header(), text('a'.repeat(1200))]));
+  now = 400;
+  tracker.ingest(snapshot(4, [header(), text('a'.repeat(1260))])); // 之后 300 字符/s
+  assert.equal(tracker.get('t').characterRate, 60 * 1000 / 378, '按 22ms 处的新基线算，不把补齐的 600 算进去');
+});
+
+test('issue #483: the burst re-baseline only covers the tracker\'s first 300ms, never a later backlog', () => {
+  let now = 0;
+  const tracker = createTracker({ now: () => now });
+  tracker.ingest(snapshot(1, [header(), text('a'.repeat(600))]));
+  now = 3000;
+  tracker.ingest(snapshot(2, [header(), text('a'.repeat(1500))]));  // 卡顿 3 秒后的合并快照
+  now = 3010;
+  tracker.ingest(snapshot(3, [header(), text('a'.repeat(1800))]));  // 积压帧紧接着涌入
+  assert.equal(tracker.get('t').characterRate, 1200 * 1000 / 3010, '真实生成的迟到投递仍按窗口平均');
+});
+
+test('issue #483: a character drop holds the pre-drop rate instead of re-basing low ahead of a refill', () => {
+  let now = 0;
+  const tracker = createTracker({ now: () => now });
+  tracker.ingest(snapshot(1, [header(), text('a'.repeat(600))]));
+  now = 1000;
+  tracker.ingest(snapshot(2, [header(), text('a'.repeat(900))]));
+  assert.equal(tracker.get('t').characterRate, 300);
+  now = 1500;
+  tracker.ingest(snapshot(3, [header(), text('a'.repeat(600))]));   // 缩水 300：行文本被替换得更短或行被移除
+  now = 1600;
+  tracker.ingest(snapshot(4, [header(), text('a'.repeat(1080))]));  // 100ms 后回填：旧实现读 4800
+  assert.equal(tracker.get('t').characterRate, 200, '保持窗内沿用下降前的窗口速率');
+  now = 2500;
+  tracker.ingest(snapshot(5, [header(), text('a'.repeat(1350))]));
+  assert.equal(tracker.get('t').characterRate, 200);
+  now = 3500;
+  tracker.ingest(snapshot(6, [header(), text('a'.repeat(1650))]));  // 窗过后的新基线未满 200ms：仍沿用
+  assert.equal(tracker.get('t').characterRate, 200);
+  now = 3700;
+  tracker.ingest(snapshot(7, [header(), text('a'.repeat(1710))]));
+  assert.equal(tracker.get('t').characterRate, 300, '之后只按新基线以来的增长计算');
+});
+
+test('issue #483: a drop before any valid rate leaves the estimate empty for the hold window', () => {
+  let now = 0;
+  const tracker = createTracker({ now: () => now });
+  tracker.ingest(snapshot(1, [header(), text('abc')]));
+  now = 100;
+  tracker.ingest(snapshot(2, [header(), text('a')]));
+  now = 1000;
+  tracker.ingest(snapshot(3, [header(), text('a'.repeat(300))]));   // 回填
+  assert.equal(tracker.get('t').characterRate, null, '保持窗内不采样，也不把回填算成生成');
+  now = 2300;
+  tracker.ingest(snapshot(4, [header(), text('a'.repeat(300))]));
+  now = 2500;
+  tracker.ingest(snapshot(5, [header(), text('a'.repeat(360))]));
+  assert.equal(tracker.get('t').characterRate, 300);
 });
 
 test('live speed does not stay stale indefinitely when output stops', () => {

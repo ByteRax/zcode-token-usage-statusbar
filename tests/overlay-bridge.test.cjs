@@ -718,6 +718,28 @@ test('⑤ store generation change detaches and the next probe rebinds the replac
   assert.equal(instanceOf(h).statsFor('pt1').characterRate, 2);
 });
 
+test('issue #483: c2t calibration survives a rebind to the same session instead of falling back to the default ratio', () => {
+  const h = harness();
+  const store = driveStreaming(h);   // pt1 生成中，尚无校准样本
+  h.clock.now = 2000;
+  // pt1 完成：6 字符 ÷ 2 tokens = 3 字符/token（区别于默认值 2，便于断言区分）
+  store.set(snap(3, [header('completedSuccess', { outputTokens: 2, modelDurationMs: 1000, activeMs: 1000 }), text('abcdef')]));
+  // 切走再切回：store 换代触发重绑（⑤ 同款）。新 handle 须沿用 3，不回默认 2（specs/live-rate-estimate-robustness.md 规则 4）
+  store.set(snap(5, [header('running')], 'sid_other'));
+  const next = [
+    { rowId: 3, turnId: 't2', productTurnId: 'pt2', kind: 'turnHeader', state: 'running' },
+    { rowId: 4, turnId: 't2', productTurnId: 'pt2', kind: 'assistantText', text: 'x' },
+  ];
+  const fresh = makeStore(snap(1, next));
+  h.diagSessions.length = 0;
+  h.diagSessions.push({ key: '__base__ /fixture/ws', topic: 'conversation/sid_a', store: fresh });
+  h.runTimers(100);   // 心跳：重绑到新 store
+  h.clock.now = 3000;
+  fresh.set(snap(2, [next[0], { ...next[1], text: 'xxxxxxxxxx' }]));
+  assert.equal(instanceOf(h).statsFor('pt2').characterRate, 9);
+  assert.equal(instanceOf(h).liveEl().textContent, '3.0t/s');   // 9 ÷ 沿用的 3；回默认 2 会读 4.5
+});
+
 test('⑥ dispose releases store subscriptions, removes deterministic nodes and clears timers', () => {
   const h = harness();
   const store = driveStreaming(h);

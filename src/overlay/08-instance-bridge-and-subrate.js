@@ -2,6 +2,10 @@
      * 低频（2s）能力检测：API 在 + diagnostics 里有本 pane 会话的 topic → 绑定 store；
      * 绑定后 tracker.ingest 由订阅推送驱动（实时），store 关闭/换代（getState null /
      * 快照 sessionId 变）→ off 释放，下轮 tick 重绑。全链路失败 = 降级 DB 路径。 */
+    /* 会话 sid → 最近一次校准出的字符/token 比例（issue #483，specs/live-rate-estimate-robustness.md）：
+     * 每次重挂都新建 handle，此前比例随之回到 null、估算改用默认 2——切会话回来英文或代码流会高出
+     * 约两倍，到本轮完成才恢复。模块级按会话记住，重挂沿用；没有记录才用默认值。 */
+    var ZU_C2T_MEMO = Object.create(null);   // 无原型：按任意会话 sid 取值不会撞上 constructor 之类的继承属性
     function bridgeDetach(handle) {
       if (!handle || handle.dead) return;
       handle.dead = true;
@@ -682,7 +686,7 @@
       });
       if (!store) { updateLive(); return; }   // 无桥 / 无匹配 session：降级（DB 路径不变），下轮再探
       var tracker = TURN_STATS.createTracker();
-      var handle = { dead: false, sid: sid, sideKey: sideKey, store: store, tracker: tracker, alias: {}, off: null, charsPerToken: null, bornAt: Date.now(), snap: null, snapAt: null };
+      var handle = { dead: false, sid: sid, sideKey: sideKey, store: store, tracker: tracker, alias: {}, off: null, charsPerToken: (typeof ZU_C2T_MEMO !== "undefined" && ZU_C2T_MEMO[sid]) || null, bornAt: Date.now(), snap: null, snapAt: null };
       var off = TURN_STATS.subscribeStore(store, tracker, function (st) {
         if (inactive() || handle.dead) return;
         if (!sideHandleValid(handle)) { bridgeDetach(handle); updateLive(); return; }
@@ -754,6 +758,7 @@
       }
       if (h && stats && stats.complete && stats.outputTokens > 0 && stats.totalCharacters > 0) {
         h.charsPerToken = stats.totalCharacters / stats.outputTokens;   // c2t 自校准：本轮真实比例供下一轮估算用
+        if (typeof ZU_C2T_MEMO !== "undefined") ZU_C2T_MEMO[h.sid] = h.charsPerToken;   // 重挂后沿用（issue #483）
       }
       subRateTick(subRunningList(stats));   // 运行中子代理逐个绑/解速率桥（v333：∪ backgroundWorks 补给，窗口滚出不丢）
       stats = synthesizeBackgroundStats(stats);   // v336：主会话无实时轮而后台槽位在跑——合成子代理运行态（速度格不再静态）
