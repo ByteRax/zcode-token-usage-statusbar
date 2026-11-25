@@ -181,7 +181,7 @@ python3 sync_plugin.py --check
 
 - 只经宿主官方 acknowledged relay 推送（`relayProtocol.protocol.send`，seq/ack 归宿主），不自建 socket、不裸写 relay；目标唯一来源是可信唯一桌面窗口的 preload `getWebRemoteControlStatus()` + 唯一 ready live 桥，禁止用 DOM chips、目录/标题或最近会话猜测。`mobile_relay.enabled` 仅对象内显式 `true` 开启；新旧 loader 混载必须同时满足 `strictOptIn:true` 与能力回调。
 - wire 下发实际目标会话 ID、统计投影、匿名 `binding` 与所属主机今日/项目聚合（可能含其他会话贡献），真实工作区身份/路径/标题/正文/凭据不得进入 wire；上行仅带显示偏好与代际。旧宿主 chips-only 帧只显示升级提示，不复活独立状态条。
-- `patch_install.py` 的 `install`、`remove`、`check` 是唯一手机归档补丁入口；独立安装、插件显式安装与 SessionStart 补装均与 loader 共用当前归档变换和既有待替换流程，不再调用独立手机脚本。已有 loader 时 SessionStart 先处理 renderer bridge，再补手机钩子；任一既有 pending/sidecar 均让位，不改写待替换文件或重定向 loader。`mobile_relay.enabled` 只门控中继功能与 SessionStart 手机提示，不门控归档写入或重启标记。持久钩子需完全重启后生效。安装/卸载与提示边界见 [app.asar 手机补丁合并规格](specs/asar-install.md) 与[手机中继规格](specs/mobile-relay.md)。
+- `patch_install.py` 的 `install`、`remove`、`check` 是唯一手机归档补丁入口；独立安装、插件显式安装与 SessionStart 补装均与 loader 共用当前归档变换和既有待替换流程，不再调用独立手机脚本。已有 loader 时 SessionStart 先处理 renderer bridge，再补手机钩子；任一既有 pending/sidecar 均让位，不改写待替换文件或重定向 loader。`mobile_relay.enabled` 只门控中继功能与 SessionStart 手机提示，不门控归档写入或重启标记。持久钩子需完全重启后生效。SessionStart 补装遵循**锁窗口纪律**：读档、重打包与整包校验在共享目标锁外，目标锁只包「pending 复查 + 身份复验 + 替换」；构建锁→目标锁→marker 锁均零等待，hook 仅对锁竞争退避重试一次（首轮耗时达到 15s 不再重试，防顶破 SessionStart 60s 预算）。安装/卸载与提示边界见 [app.asar 手机补丁合并规格](specs/asar-install.md) 与[手机中继规格](specs/mobile-relay.md)。
 - 完整契约见 [specs/mobile-relay.md](specs/mobile-relay.md)、[app.asar 手机补丁合并规格](specs/asar-install.md)、[mobile-unified-overlay.md](specs/mobile-unified-overlay.md)、[mobile-userscript-build.md](specs/mobile-userscript-build.md)。
 
 ### 安装、数据保护与网络
