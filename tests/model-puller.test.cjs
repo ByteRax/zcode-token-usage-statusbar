@@ -89,6 +89,13 @@ const PLAN_CFG = {
     },
   },
 };
+/* 套餐模型列表候选端点（specs/plan-model-list.md）：首选 OpenAI 形态 Coding Plan 列表，
+ * Anthropic 形态降为次候选——后者对 OAuth 回 HTTP 200 + 错误信封（2026-11-24 实测）。 */
+const PLAN_CODING_LIST_URL = "https://open.bigmodel.cn/api/coding/paas/v4/models";
+const PLAN_ANTHROPIC_LIST_URL = "https://open.bigmodel.cn/api/anthropic/v1/models";
+const ZAI_CODING_LIST_URL = "https://api.z.ai/api/coding/paas/v4/models";
+const ZAI_ANTHROPIC_LIST_URL = "https://api.z.ai/api/anthropic/v1/models";
+const EXPIRED_ENVELOPE = { code: 401, msg: "登录状态已过期", success: false };
 
 function createPlanPuller(file, routes, opts) {
   let cancelled = 0;
@@ -180,7 +187,7 @@ test("plan source: enc:v2 credential is decrypted through the dispatcher and req
   await Q_FOR_PULLER.ensureDefaultV2Key();
   assert.equal((await mp.listProviders()).providers.length, 1);
   assert.equal((await mp.fetchModels(PLAN_ID)).ok, true);
-  assert.deepEqual(requests, [{ url: "https://open.bigmodel.cn/api/anthropic/v1/models", auth: "Bearer plan.v2.token" }]);
+  assert.deepEqual(requests, [{ url: PLAN_CODING_LIST_URL, auth: "Bearer plan.v2.token" }]);
   assert.deepEqual(redirects, ["error"], "套餐列表带凭据：不跟随重定向（行为锁，不只是结构锁）");
 });
 
@@ -228,12 +235,12 @@ test("plan source: enc:v2:os credential — the first list starts the keyring re
   await Q_FOR_PULLER.ensureDefaultV2Key();
   assert.equal((await mp.listProviders()).providers.length, 1);
   assert.equal((await mp.fetchModels(PLAN_ID)).ok, true);
-  assert.deepEqual(requests, [{ url: "https://open.bigmodel.cn/api/anthropic/v1/models", auth: "Bearer plan.os.token" }]);
+  assert.deepEqual(requests, [{ url: PLAN_CODING_LIST_URL, auth: "Bearer plan.os.token" }]);
 });
 
 /* ---------- 新式登录态键回退（issue #393）：planTokenOf 与额度链同走 hostCredDecrypt 单一实现 ---------- */
 const LINKED_JSON = JSON.stringify({ userId: "u1", customerId: "c1", accessToken: "plan.alt.token" });
-const BIGMODEL_MODELS_REQ = { url: "https://open.bigmodel.cn/api/anthropic/v1/models", auth: "Bearer plan.alt.token" };
+const BIGMODEL_MODELS_REQ = { url: PLAN_CODING_LIST_URL, auth: "Bearer plan.alt.token" };
 
 test("plan source: 新式登录态（仅 linked_bigmodel）回退解 JSON 取 accessToken", async (t) => {
   /* stub 按信封区分结果：证明取的确实是回退信封，且 token 来自 JSON 字段而非信封本体 */
@@ -263,7 +270,7 @@ test("plan source: 新旧键并存时旧键优先，行为不变", async (t) => 
     (enc) => (enc === "enc:flat" ? "plan.old.token" : "SHOULD-NOT-BE-USED"));
   assert.equal((await mp.listProviders()).providers.length, 1);
   assert.equal((await mp.fetchModels(PLAN_ID)).ok, true);
-  assert.deepEqual(requests, [{ url: "https://open.bigmodel.cn/api/anthropic/v1/models", auth: "Bearer plan.old.token" }]);
+  assert.deepEqual(requests, [{ url: PLAN_CODING_LIST_URL, auth: "Bearer plan.old.token" }]);
 });
 
 test("plan source: 回退信封取不出可用 token 按未配置降级，零请求不外发密文", async (t) => {
@@ -286,7 +293,7 @@ test("plan source: zai 家族 oauth:zai_cn:access_token 回退同构", async (t)
   const { mp, requests } = planPullerWithCreds(t, { "oauth:zai_cn:access_token": "zai.cn.alt.tok" }, (enc) => enc, {}, zaiCfg);
   assert.equal((await mp.listProviders()).providers.length, 1);
   assert.equal((await mp.fetchModels(zaiId)).ok, true);
-  assert.deepEqual(requests, [{ url: "https://api.z.ai/api/anthropic/v1/models", auth: "Bearer zai.cn.alt.tok" }]);
+  assert.deepEqual(requests, [{ url: ZAI_CODING_LIST_URL, auth: "Bearer zai.cn.alt.tok" }]);
 });
 
 test("plan source: 热换竞窗旧 quota-client 无 hostCredDecrypt 导出——回退旧平铺键直读，联动热换后自愈", async (t) => {
@@ -304,30 +311,381 @@ test("plan source: 热换竞窗旧 quota-client 无 hostCredDecrypt 导出——
   assert.equal((await healed.mp.listProviders()).providers.length, 1, "联动热换后同一实现生效（自愈半边）");
 });
 
-test("plan source: fetches anthropic models endpoint with oauth bearer and normalizes case", async () => {
+test("plan source: fetches the coding-plan models endpoint with oauth bearer and normalizes case", async () => {
   const file = tmpCfgPath();
   writeCfg(file, PLAN_CFG);
   fs.writeFileSync(CREDS, JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
   let seenAuth = "";
   const routes = [{
-    url: "https://open.bigmodel.cn/api/anthropic/v1/models",
+    url: PLAN_CODING_LIST_URL,
     get body() {
-      return { data: [{ id: "glm-5.3-flashx" }, { id: "glm-4.7" }, { id: "glm-5.2" }] };
+      return { data: [{ id: "glm-5.3-flashx" }, { id: "glm-4.7" }, { id: "glm-5.2" }, { id: "glm-5.4" }, { id: "glm-5.3-flashx-legal" }] };
     },
   }];
   const { mp } = createPlanPuller(file, routes);
   const origImpl = (await (async () => null)()) ;
   const r = await mp.fetchModels(PLAN_ID);
   assert.equal(r.ok, true);
-  assert.deepEqual(r.models, ["GLM-4.7", "GLM-5.2", "GLM-5.3-FlashX"]);   // 小写端点 → 宿主官方规范大小写，排序去重
+  /* 小写端点 → 宿主官方规范大小写，排序去重；GLM-5.4 / GLM-5.3-FlashX-Legal 是端点新出现而宿主
+   * 规范表没有的条目（拼写取厂商 display_name），不补表就会以小写写入、与宿主内置的 GLM-5.4
+   * 成两套写法 */
+  assert.deepEqual(r.models, ["GLM-4.7", "GLM-5.2", "GLM-5.3-FlashX", "GLM-5.3-FlashX-Legal", "GLM-5.4"]);
   assert.equal(r.metaById["GLM-5.3-FlashX"], undefined);   // 套餐无元数据，纯 id 追加
 
-  const r2 = await mp.applyModels(PLAN_ID, ["GLM-5.3-FlashX", "glm-4.7"]);
-  assert.deepEqual(r2, { ok: true, added: 1 });   // FlashX 归一后命中已配置项；仅 glm-4.7→GLM-4.7 新增
+  const r2 = await mp.applyModels(PLAN_ID, ["GLM-5.3-FlashX", "glm-4.7", "glm-5.4"]);
+  assert.deepEqual(r2, { ok: true, added: 2 });   // FlashX 归一后命中已配置项；glm-4.7→GLM-4.7、glm-5.4→GLM-5.4 新增
   const after = JSON.parse(fs.readFileSync(file, "utf8"));
   const rule = after.config.providerConfigRules.providerRules[0].config;
   assert.ok(rule.personalModelIds.includes("GLM-4.7"));
+  assert.ok(rule.personalModelIds.includes("GLM-5.4"));
   assert.ok(!rule.personalModelIds.includes("glm-4.7"));   // 不写小写重复项
+  assert.ok(!rule.personalModelIds.includes("glm-5.4"));
+});
+
+/* ---------- 套餐模型列表候选链（specs/plan-model-list.md）----------
+ * 2026-11-24 实测：Anthropic 形态列表端点对 OAuth 登录令牌回 HTTP 200 + 错误信封
+ * {"code":401,"msg":"登录状态已过期","success":false}；旧实现单端点且只看 res.ok，把信封当
+ * 空列表报「no models in response」。同令牌打 OpenAI 形态 Coding Plan 列表正常出列表。 */
+
+/* 候选链夹具：按 URL 分派响应（status=非 2xx、throws=读体抛错、timeout=超时异常），记录请求序 */
+function planListPuller(t, byUrl, opts) {
+  const o = opts || {};
+  const file = tmpCfgPath();
+  writeCfg(file, PLAN_CFG);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-mp-planlist-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const credentialsPath = path.join(dir, "credentials.json");
+  fs.writeFileSync(credentialsPath, JSON.stringify(o.creds || { "oauth:bigmodel:access_token": "enc:xxx" }));
+  const requests = [], cancels = [];   // cancels：非 2xx 响应体被显式取消的 URL（undici 连接卫生）
+  const mp = M.createModelPuller({
+    customCfgPath: file, modelsDevUrl: "", modelsDevApiUrl: "", credentialsPath,
+    decryptValue: () => "plan-oauth-token",
+    fetchImpl: async (url, init) => {
+      requests.push({ url, auth: init.headers.Authorization, redirect: init.redirect });
+      const hit = byUrl[url];
+      if (!hit) throw new Error("unexpected url " + url);
+      if (hit.timeout) throw Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
+      if (hit.status && hit.status !== 200) return { ok: false, status: hit.status, body: { cancel() { cancels.push(url); } } };
+      return { ok: true, status: 200, json: async () => { if (hit.throws) throw new SyntaxError("Unexpected token <"); return hit.body; }, body: null };
+    },
+  });
+  t.after(() => mp.dispose());
+  return { mp, requests, cancels };
+}
+const urls = (requests) => requests.map((q) => q.url);
+
+test("plan list: primary coding-plan endpoint answers in place — one request, legacy endpoint untouched", async (t) => {
+  const { mp, requests } = planListPuller(t, {
+    [PLAN_CODING_LIST_URL]: { body: { object: "list", data: [
+      { id: "glm-5.3", object: "model", created: 1786636800, owned_by: "z-ai" },
+      { id: "glm-5.4", object: "model", created: 1795406400, owned_by: "z-ai" },
+    ] } },
+    [PLAN_ANTHROPIC_LIST_URL]: { body: EXPIRED_ENVELOPE },
+  });
+  const r = await mp.fetchModels(PLAN_ID);
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.models, ["GLM-5.3", "GLM-5.4"]);
+  assert.equal(r.via, PLAN_CODING_LIST_URL);
+  assert.deepEqual(urls(requests), [PLAN_CODING_LIST_URL]);
+});
+
+test("plan list: reported symptom — an HTTP 200 error envelope is a candidate failure, never an empty list", async (t) => {
+  const { mp, requests } = planListPuller(t, {
+    [PLAN_CODING_LIST_URL]: { body: EXPIRED_ENVELOPE },
+    [PLAN_ANTHROPIC_LIST_URL]: { body: EXPIRED_ENVELOPE },
+  });
+  const r = await mp.fetchModels(PLAN_ID);
+  assert.equal(r.ok, false);
+  assert.equal(r.error, "HTTP 401");
+  assert.deepEqual(urls(requests), [PLAN_CODING_LIST_URL, PLAN_ANTHROPIC_LIST_URL]);
+});
+
+test("plan list: every primary failure shape falls through to the legacy candidate", async (t) => {
+  const anthropicList = { data: [{ created_at: "2026-08-14T00:00:00Z", display_name: "GLM-5.3-FlashX", id: "glm-5.3-flashx", type: "model" }],
+    firstId: "glm-5.3-flashx", hasMore: false, lastId: "glm-5.3-flashx" };   // GLr 凭据下 Anthropic 端点的真实形状
+  const shapes = [
+    ["non-2xx", { status: 404 }],
+    ["HTTP 200 error envelope", { body: EXPIRED_ENVELOPE }],
+    ["object without a list array", { body: { foo: 1 } }],
+    ["empty list", { body: { data: [] } }],
+    ["unparseable payload", { throws: true }],
+    ["timeout", { timeout: true }],
+  ];
+  for (const [what, primary] of shapes) {
+    const { mp, requests } = planListPuller(t, { [PLAN_CODING_LIST_URL]: primary, [PLAN_ANTHROPIC_LIST_URL]: { body: anthropicList } });
+    const r = await mp.fetchModels(PLAN_ID);
+    assert.equal(r.ok, true, what);
+    assert.deepEqual(r.models, ["GLM-5.3-FlashX"], what);
+    assert.equal(r.via, PLAN_ANTHROPIC_LIST_URL, what);
+    assert.deepEqual(urls(requests), [PLAN_CODING_LIST_URL, PLAN_ANTHROPIC_LIST_URL], what + "：先首选后次候选，各一次");
+  }
+});
+
+test("plan list: reports the last candidate's reason when every candidate fails", async (t) => {
+  const cases = [
+    ["非 2xx 后接错误信封", { status: 500 }, { body: EXPIRED_ENVELOPE }, "HTTP 401"],
+    ["两个非 2xx", { status: 500 }, { status: 429 }, "HTTP 429"],
+    ["信封 code 非 HTTP 语义（z.ai 形态）", { body: { code: 1001, msg: "Authentication parameter not received in Header", success: false } },
+      { body: { code: 1001, success: false } }, "upstream error 1001"],
+    ["信封无合法 code", { body: { success: false } }, { body: { success: false, code: "abc" } }, "upstream error"],
+    ["候选全超时", { timeout: true }, { timeout: true }, "timeout"],
+    ["候选全空列表", { body: { data: [] } }, { body: [] }, "no models in response"],
+    /* 首选空列表后次候选的任何真实失败原因都必须保留（review MAJOR：残留的空列表曾把原因盖成 no models） */
+    ["首选空列表 + 次候选错误信封", { body: { data: [] } }, { body: EXPIRED_ENVELOPE }, "HTTP 401"],
+    ["首选空列表 + 次候选非 2xx", { body: { data: [] } }, { status: 401 }, "HTTP 401"],
+    ["首选空列表 + 次候选读体抛错", { body: { data: [] } }, { throws: true }, "request failed"],
+    ["顶层数组为空 + 次候选超时", { body: [] }, { timeout: true }, "timeout"],
+  ];
+  for (const [what, primary, legacy, expected] of cases) {
+    const { mp, requests } = planListPuller(t, { [PLAN_CODING_LIST_URL]: primary, [PLAN_ANTHROPIC_LIST_URL]: legacy });
+    const r = await mp.fetchModels(PLAN_ID);
+    assert.equal(r.ok, false, what);
+    assert.equal(r.error, expected, what);
+    assert.equal(requests.length, 2, what + "：两个候选都试过");
+  }
+});
+
+test("plan list: every candidate carries the bearer token and never follows redirects", async (t) => {
+  const { mp, requests } = planListPuller(t, { [PLAN_CODING_LIST_URL]: { status: 404 }, [PLAN_ANTHROPIC_LIST_URL]: { body: EXPIRED_ENVELOPE } });
+  await mp.fetchModels(PLAN_ID);
+  assert.deepEqual(requests, [
+    { url: PLAN_CODING_LIST_URL, auth: "Bearer plan-oauth-token", redirect: "error" },
+    { url: PLAN_ANTHROPIC_LIST_URL, auth: "Bearer plan-oauth-token", redirect: "error" },
+  ]);
+});
+
+test("plan list: a non-empty list whose ids are all rejected reports the legacy reason", async (t) => {
+  const { mp } = planListPuller(t, { [PLAN_CODING_LIST_URL]: { body: { data: [{ id: "x".repeat(400) }, { foo: 1 }, " "] } } });
+  assert.deepEqual(await mp.fetchModels(PLAN_ID), { ok: false, error: "no models in response" });
+});
+
+test("plan list: non-2xx candidate bodies are cancelled, not left to pool-leak", async (t) => {
+  const { mp, cancels } = planListPuller(t, { [PLAN_CODING_LIST_URL]: { status: 404 }, [PLAN_ANTHROPIC_LIST_URL]: { status: 500 } });
+  assert.equal((await mp.fetchModels(PLAN_ID)).ok, false);
+  assert.deepEqual(cancels, [PLAN_CODING_LIST_URL, PLAN_ANTHROPIC_LIST_URL]);
+});
+
+test("plan list: ids that differ only by case collapse to one canonical entry", async (t) => {
+  const { mp } = planListPuller(t, { [PLAN_CODING_LIST_URL]: { body: { data: [{ id: "glm-5.3" }, { id: "GLM-5.3" }, { id: "glm-5.4" }] } } });
+  assert.deepEqual((await mp.fetchModels(PLAN_ID)).models, ["GLM-5.3", "GLM-5.4"]);
+});
+
+test("plan list: a disposed instance does not send the next candidate", async (t) => {
+  const { mp, requests } = planListPuller(t, { [PLAN_CODING_LIST_URL]: { body: EXPIRED_ENVELOPE }, [PLAN_ANTHROPIC_LIST_URL]: { body: { data: [{ id: "glm-5.3" }] } } });
+  const pending = mp.fetchModels(PLAN_ID);
+  mp.dispose();
+  assert.equal((await pending).ok, false);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(urls(requests), [PLAN_CODING_LIST_URL]);
+});
+
+test("plan list: zai family rides the same candidate chain on api.z.ai", async (t) => {
+  const { mp, requests } = planListPuller(t, {
+    [ZAI_CODING_LIST_URL]: { status: 404 },
+    [ZAI_ANTHROPIC_LIST_URL]: { body: { data: [{ id: "glm-5.3" }] } },
+  }, { creds: { "oauth:zai:access_token": "enc:xxx" } });
+  const r = await mp.fetchModels("account:zai-individual-coding-plan");
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.models, ["GLM-5.3"]);
+  assert.equal(r.via, ZAI_ANTHROPIC_LIST_URL);
+  assert.deepEqual(urls(requests), [ZAI_CODING_LIST_URL, ZAI_ANTHROPIC_LIST_URL]);
+});
+
+test("planEnvelopeError: classifies HTTP 200 error envelopes without echoing server text", () => {
+  assert.equal(M.planEnvelopeError(EXPIRED_ENVELOPE), "HTTP 401");
+  assert.equal(M.planEnvelopeError({ code: "401", msg: "x", success: false }), "HTTP 401");
+  assert.equal(M.planEnvelopeError({ code: 1001, success: false }), "upstream error 1001");
+  assert.equal(M.planEnvelopeError({ success: false }), "upstream error");
+  assert.equal(M.planEnvelopeError({ success: false, code: { nested: 1 } }), "upstream error");
+  assert.equal(M.planEnvelopeError({ success: false, code: "<script>alert(1)</script>" }), "upstream error");   // 服务端文本不进错误串
+  assert.equal(M.planEnvelopeError({ success: false, code: 99 }), "upstream error 99");   // 三位数以下不是 HTTP 语义
+  assert.equal(M.planEnvelopeError({ success: false, code: 600 }), "upstream error 600");
+  assert.equal(M.planEnvelopeError({ success: false, code: 100 }), "HTTP 100");   // 边界含
+  assert.equal(M.planEnvelopeError({ success: false, code: 599 }), "HTTP 599");
+  assert.equal(M.planEnvelopeError({ success: false, code: 401.5 }), "upstream error");   // 非整数不进错误串
+  assert.equal(M.planEnvelopeError({ success: false, code: 200 }), "upstream error 200");   // 成功码不冒充 HTTP 状态
+  assert.equal(M.planEnvelopeError({ success: false, code: 0 }), "upstream error 0");
+  assert.equal(M.planEnvelopeError({ success: false, code: 199 }), "HTTP 199");
+  assert.equal(M.planEnvelopeError({ success: false, code: 300 }), "HTTP 300");
+  assert.equal(M.planEnvelopeError({ success: false, code: 299 }), "upstream error 299");
+  /* 成功形状一律不是信封 */
+  assert.equal(M.planEnvelopeError({ data: [{ id: "glm-5.3" }], firstId: "glm-5.3", hasMore: false, lastId: "glm-5.3" }), "");
+  assert.equal(M.planEnvelopeError({ object: "list", data: [] }), "");
+  assert.equal(M.planEnvelopeError({ code: 0, success: true, data: [] }), "");
+  assert.equal(M.planEnvelopeError([{ id: "glm-5.3" }]), "");
+  assert.equal(M.planEnvelopeError(null), "");
+  assert.equal(M.planEnvelopeError("string"), "");
+});
+
+/* ---------- 套餐探测凭据序（specs/plan-model-list.md）----------
+ * 2026-11-24 实测：/api/anthropic/v1/messages 对 OAuth 登录令牌回 HTTP 401「登录状态已过期」，
+ * GLr 项目令牌 200。探测凭据与增强链同序：bigmodel 家族先取运行时同款凭据，拿不到才回 OAuth。 */
+const PROBE_LOC_KEY = "project-key-location:v1:" + encodeURIComponent(JSON.stringify(["https://bigmodel.cn", "bigmodel", "acct-1", null, 1, "non-team"]));
+const PROBE_LOC_JSON = JSON.stringify({ organizationId: "org-9", projectId: "proj-8", apiKeyId: "key-7" });
+const PROBE_EXCHANGE_URL = "https://bigmodel.cn/api/biz/v1/organization/org-9/projects/proj-8/api_keys/key-7/access_tokens";
+const PLAN_MESSAGES_URL = "https://open.bigmodel.cn/api/anthropic/v1/messages";
+
+/* 探测夹具：credentials / setting / v2 config 都落临时目录（不读本机真实 ~/.zcode/v2），按 URL 分派响应 */
+function planProbePuller(t, opts) {
+  const o = opts || {};
+  const file = tmpCfgPath();
+  writeCfg(file, PLAN_CFG);
+  const dir = path.dirname(file);
+  const credentialsPath = path.join(dir, "credentials.json");
+  fs.writeFileSync(credentialsPath, JSON.stringify(o.creds || { "oauth:bigmodel:access_token": "enc:oauth-1" }));
+  fs.writeFileSync(path.join(dir, "setting.json"), JSON.stringify(o.setting || {}));
+  /* v2Entry.zaiKey：写到 zai 家族条目键（zai 个人与团队共用），默认写 bigmodel 条目键 */
+  if (o.v2Entry) fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ provider: { [o.v2Entry.zaiKey ? "builtin:zai-coding-plan" : "builtin:bigmodel-coding-plan"]: o.v2Entry } }));
+  const requests = [];
+  const mp = M.createModelPuller({
+    customCfgPath: file, modelsDevUrl: "", modelsDevApiUrl: "", credentialsPath,
+    settingPath: path.join(dir, "setting.json"),
+    decryptValue: (enc) => (enc === "enc:loc-1" ? PROBE_LOC_JSON : enc === "enc:oauth-1" ? "oauth-tok-1" : null),
+    fetchImpl: async (url, init) => {
+      requests.push({ url, auth: init.headers.Authorization, xApiKey: init.headers["x-api-key"] });
+      const hit = o.byUrl[url];
+      if (!hit) throw new Error("unexpected url " + url);
+      if (hit.status && hit.status !== 200) return { ok: false, status: hit.status, text: async () => "", body: { cancel() { } } };
+      return { ok: true, status: 200, text: async () => JSON.stringify(hit.body || {}) };
+    },
+  });
+  t.after(() => mp.dispose());
+  return { mp, requests, dir };
+}
+
+test("plan probe: rides the exchanged GLr token on messages when a project location exists — OAuth never reaches messages", async (t) => {
+  const { mp, requests } = planProbePuller(t, {
+    creds: { "oauth:bigmodel:access_token": "enc:oauth-1", [PROBE_LOC_KEY]: "enc:loc-1" },
+    byUrl: {
+      [PROBE_EXCHANGE_URL]: { body: { code: 200, msg: "操作成功", data: { enabled: true, accessToken: "glr-tok-1", tokenType: "Bearer", expiresIn: 3634 } } },
+      [PLAN_MESSAGES_URL]: { body: {} },
+    },
+  });
+  const r = await mp.probeModel(PLAN_ID, "GLM-5.3-FlashX");
+  assert.equal(r.ok, true, JSON.stringify(r).slice(0, 200));
+  const exchanges = requests.filter((q) => q.url === PROBE_EXCHANGE_URL);
+  assert.equal(exchanges.length, 1);
+  assert.equal(exchanges[0].auth, "Bearer oauth-tok-1", "OAuth 只用于换发");
+  const messages = requests.filter((q) => q.url === PLAN_MESSAGES_URL);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].auth, "Bearer glr-tok-1");
+  assert.equal(messages[0].xApiKey, "glr-tok-1", "鉴权双头都是 GLr token");
+  await mp.probeModel(PLAN_ID, "GLM-5.3");
+  assert.equal(requests.filter((q) => q.url === PROBE_EXCHANGE_URL).length, 1, "memo：第二次探测复用 token，不再换发");
+  assert.equal(requests.filter((q) => q.url === PLAN_MESSAGES_URL)[1].auth, "Bearer glr-tok-1");
+});
+
+test("plan probe: concurrent probes share one exchange instead of minting a token each", async (t) => {
+  const { mp, requests } = planProbePuller(t, {
+    creds: { "oauth:bigmodel:access_token": "enc:oauth-1", [PROBE_LOC_KEY]: "enc:loc-1" },
+    byUrl: {
+      [PROBE_EXCHANGE_URL]: { body: { code: 200, data: { enabled: true, accessToken: "glr-tok-1" } } },
+      [PLAN_MESSAGES_URL]: { body: {} },
+    },
+  });
+  const results = await Promise.all([1, 2, 3, 4].map(() => mp.probeModel(PLAN_ID, "GLM-5.3")));
+  assert.ok(results.every((r) => r.ok), JSON.stringify(results));
+  assert.equal(requests.filter((q) => q.url === PROBE_EXCHANGE_URL).length, 1, "渲染端并发 4：换发只发一次");
+  assert.deepEqual(requests.filter((q) => q.url === PLAN_MESSAGES_URL).map((q) => q.auth), ["Bearer glr-tok-1", "Bearer glr-tok-1", "Bearer glr-tok-1", "Bearer glr-tok-1"]);
+  assert.equal(requests.filter((q) => q.url === PROBE_EXCHANGE_URL).length + 3, 4);
+});
+
+test("plan probe: the shared exchange is keyed on the credential file — a credential change mid-flight is not shared", async (t) => {
+  const creds = { "oauth:bigmodel:access_token": "enc:oauth-1", [PROBE_LOC_KEY]: "enc:loc-1" };
+  const { mp, requests, dir } = planProbePuller(t, {
+    creds,
+    byUrl: {
+      [PROBE_EXCHANGE_URL]: { body: { code: 200, data: { enabled: true, accessToken: "glr-tok-1" } } },
+      [PLAN_MESSAGES_URL]: { body: {} },
+    },
+  });
+  const first = mp.probeModel(PLAN_ID, "GLM-5.3");
+  /* 两次调用之间凭据文件被宿主重写（内容变化）：第二个调用不得搭上按旧凭据发起的换发 */
+  fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify(creds) + "\n");
+  const second = mp.probeModel(PLAN_ID, "GLM-5.4");
+  assert.ok((await first).ok && (await second).ok);
+  assert.equal(requests.filter((q) => q.url === PROBE_EXCHANGE_URL).length, 2);
+});
+
+test("plan probe: zai family keeps OAuth even when a v2 entry key exists (unmeasured family, behaviour unchanged)", async (t) => {
+  const { mp, requests } = planProbePuller(t, {
+    creds: { "oauth:zai:access_token": "enc:oauth-1" },
+    v2Entry: { options: { apiKey: "entry-key-1", baseURL: "https://api.z.ai/api/anthropic" }, zaiKey: true },
+    byUrl: { ["https://api.z.ai/api/anthropic/v1/messages"]: { body: {} } },
+  });
+  assert.equal((await mp.probeModel("account:zai-individual-coding-plan", "GLM-5.3")).ok, true);
+  assert.deepEqual(requests.map((q) => q.auth), ["Bearer oauth-tok-1"]);
+});
+
+test("plan probe: a v2 entry key (3.18 hosts) wins and no exchange fires", async (t) => {
+  const { mp, requests } = planProbePuller(t, {
+    creds: { "oauth:bigmodel:access_token": "enc:oauth-1", [PROBE_LOC_KEY]: "enc:loc-1" },
+    v2Entry: { options: { apiKey: "entry-key-1", baseURL: "https://open.bigmodel.cn/api/anthropic" } },
+    byUrl: { [PLAN_MESSAGES_URL]: { body: {} } },
+  });
+  const r = await mp.probeModel(PLAN_ID, "GLM-5.3");
+  assert.equal(r.ok, true);
+  assert.deepEqual(requests.map((q) => [q.url, q.auth]), [[PLAN_MESSAGES_URL, "Bearer entry-key-1"]]);
+});
+
+test("plan probe: falls back to OAuth only when the runtime credential is unavailable (previous behaviour)", async (t) => {
+  const shapes = [
+    ["no project location", { creds: { "oauth:bigmodel:access_token": "enc:oauth-1" }, byUrl: { [PLAN_MESSAGES_URL]: { body: {} } } }, 0],
+    ["exchange answers enabled:false", { creds: { "oauth:bigmodel:access_token": "enc:oauth-1", [PROBE_LOC_KEY]: "enc:loc-1" },
+      byUrl: { [PROBE_EXCHANGE_URL]: { body: { code: 200, data: { enabled: false, accessToken: "glr-tok-1" } } }, [PLAN_MESSAGES_URL]: { body: {} } } }, 1],
+    ["exchange is 404 (location stale)", { creds: { "oauth:bigmodel:access_token": "enc:oauth-1", [PROBE_LOC_KEY]: "enc:loc-1" },
+      byUrl: { [PROBE_EXCHANGE_URL]: { status: 404 }, [PLAN_MESSAGES_URL]: { body: {} } } }, 1],
+  ];
+  for (const [what, opts, exchanges] of shapes) {
+    const { mp, requests } = planProbePuller(t, opts);
+    const r = await mp.probeModel(PLAN_ID, "GLM-5.3");
+    assert.equal(r.ok, true, what);
+    assert.equal(requests.filter((q) => q.url === PROBE_EXCHANGE_URL).length, exchanges, what);
+    assert.deepEqual(requests.filter((q) => q.url === PLAN_MESSAGES_URL).map((q) => q.auth), ["Bearer oauth-tok-1"], what);
+  }
+});
+
+test("plan probe: team source rides the team PAT, never personal credentials — and fails closed without it", async (t) => {
+  const keysUrl = "https://bigmodel.cn/api/biz/v1/organization/org-team-9/projects/proj-team-8/api_keys";
+  const creds = { "oauth:bigmodel:access_token": "enc:oauth-1", [PROBE_LOC_KEY]: "enc:loc-1" };   // 个人 location 在盘：团队源绝不能拿它换发
+  const withTeam = planProbePuller(t, {
+    creds,
+    setting: { providerFamilyConnectionSelections: { bigmodel: { kind: "team-coding-plan", organizationId: "org-team-9", projectId: "proj-team-8" } } },
+    byUrl: {
+      "https://bigmodel.cn/api/biz/customer/getCustomerInfo": { body: { code: 200, data: { organizations: [{ organizationId: "org-team-9", projects: [{ projectId: "proj-team-8" }] }] } } },
+      [keysUrl]: { body: { code: 200, data: [{ name: "zcode-team-api-key", keyType: 2, apiKeyId: "tk-1", apiKey: "id.secret" }] } },
+      [keysUrl + "/tk-1/access_tokens"]: { body: { code: 200, msg: "操作成功", data: { enabled: true, accessToken: "team-pat-1", expiresAt: Date.now() + 3600 * 1000 } } },
+      [PLAN_MESSAGES_URL]: { body: {} },
+    },
+  });
+  assert.equal((await withTeam.mp.probeModel("account:bigmodel-team-coding-plan", "GLM-5.3")).ok, true);
+  assert.equal(withTeam.requests.some((q) => q.url === PROBE_EXCHANGE_URL), false, "个人 location 没有被拿去换发");
+  assert.deepEqual(withTeam.requests.filter((q) => q.url === PLAN_MESSAGES_URL).map((q) => q.auth), ["Bearer team-pat-1"]);
+
+  /* 并发探测共享同一次 PAT 三步换发 */
+  const patUrl = keysUrl + "/tk-1/access_tokens";
+  const burst = planProbePuller(t, {
+    creds,
+    setting: { providerFamilyConnectionSelections: { bigmodel: { kind: "team-coding-plan", organizationId: "org-team-9", projectId: "proj-team-8" } } },
+    byUrl: {
+      "https://bigmodel.cn/api/biz/customer/getCustomerInfo": { body: { code: 200, data: { organizations: [{ organizationId: "org-team-9", projects: [{ projectId: "proj-team-8" }] }] } } },
+      [keysUrl]: { body: { code: 200, data: [{ name: "zcode-team-api-key", keyType: 2, apiKeyId: "tk-1" }] } },
+      [patUrl]: { body: { code: 200, data: { enabled: true, accessToken: "team-pat-1", expiresAt: Date.now() + 3600 * 1000 } } },
+      [PLAN_MESSAGES_URL]: { body: {} },
+    },
+  });
+  const four = await Promise.all([1, 2, 3, 4].map(() => burst.mp.probeModel("account:bigmodel-team-coding-plan", "GLM-5.3")));
+  assert.ok(four.every((r) => r.ok), JSON.stringify(four).slice(0, 200));
+  assert.equal(burst.requests.filter((q) => q.url === patUrl).length, 1, "并发 4：PAT 换发只发一次");
+  assert.equal(burst.requests.some((q) => q.url === PROBE_EXCHANGE_URL), false, "团队源不碰个人 location");
+
+  /* 未切团队：PAT 拿不到即 fail-closed——账号级 OAuth 令牌属个人池，团队源绝不拿它打 messages
+   * （issue #442 同门；review MAJOR：回退 OAuth 曾把个人令牌发到团队源的探测） */
+  const noTeam = planProbePuller(t, { creds, byUrl: { [PLAN_MESSAGES_URL]: { body: {} } } });
+  const denied = await noTeam.mp.probeModel("account:bigmodel-team-coding-plan", "GLM-5.3");
+  assert.equal(denied.ok, false);
+  assert.equal(denied.kind, "auth");
+  assert.deepEqual(noTeam.requests, [], "零请求：不换发、不打 messages");
 });
 
 test("plan source: applyModels bootstraps personal rule on fresh env (issue #226)", async () => {
@@ -1037,7 +1395,7 @@ test("plan source: catalog fills GLM meta within grace; apply writes evidenced f
   });
   fs.writeFileSync(CREDS, JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
   const impl = async (url) => {
-    if (url === "https://open.bigmodel.cn/api/anthropic/v1/models") {
+    if (url === PLAN_CODING_LIST_URL) {
       return { ok: true, status: 200, body: null, json: async () => ({ data: [{ id: "glm-5.2" }] }) };
     }
     if (url === MODELS_DEV_TEST_URL) {

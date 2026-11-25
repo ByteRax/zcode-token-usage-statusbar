@@ -2263,7 +2263,7 @@ function handleAutoCompactConfig(req, wc) {
  * v343（issue #321）：空交付带原因标签（第 4 参："spawn"=解释器拉不起、"timeout"=15s
  * 超时、"pyerr"=Python 非零退出、"empty"=exit 0 空输出即「库没追上」），渲染端据此把
  * 失败层细分进 diag（旧渲染端忽略第 4 参，双向兼容）。 */
-function queryTurnText(sid, wc, plainUnits, forceKmb, unitEpoch, noCost) {
+function queryTurnText(sid, wc, plainUnits, forceKmb, unitEpoch, noCost, turnRef) {
   const deliver = (text, reason) => {
     if (!wc || wc.isDestroyed() || !isLocalHostPage(wc)) return;
     wc.executeJavaScript("window.__zusageDeliverTurnText && window.__zusageDeliverTurnText(" +
@@ -2275,9 +2275,23 @@ function queryTurnText(sid, wc, plainUnits, forceKmb, unitEpoch, noCost) {
     /* --no-cn-units：渲染端万/亿开关（localStorage，主进程无真值）显式关闭时才传；
        缺省（含旧渲染端不带 cn 字段）与产品默认一致，Python 侧自行用万/亿。
        --no-cost：v376 预估费用开关（localStorage zusage3.cost）显式关闭时才传；
-       缺省（含旧渲染端不带 cost 字段）保持产品默认开启，统计行带费用段。 */
+       缺省（含旧渲染端不带 cost 字段）保持产品默认开启，统计行带费用段。
+       v458（specs/subagent-turn-stats-line.md）：子代理窗格按页面轮号精确定位。prompt-submit
+       hook 只给用户提问记提问时刻，子会话带 --current 必然空输出；而按会话取「最新一轮」
+       又会把别的轮的富文本挂到窗格里这一轮下面（该轮还在进行或库还没追上时，最新一轮
+       是上一轮），进行中的轮还会取到半截统计。所以子代理 sid 且渲染端传来 turnRef
+       （窗格里这一轮的 data-turn-id，即用量行上的 parent_user_message_id）时改走 --turn-ref：
+       token_rate 只认该会话内该轮号对应的唯一一轮，且该轮已结束（turn_usage 有行：完成、
+       取消或出错都算结束）才出数，否则空输出、渲染端按既有节奏重试。轮号缺席或不合法的子代理
+       sid（旧渲染端不发子代理请求，所以没有轮号）与 sess_dwf-* 等其余 sid 一律维持 --current。
+       轮号首字符不许 -：命令行按「--名字 值」解析，以 - 开头的值会被当成另一个开关（--json
+       还会同时被当成输出开关）。后缀上界 72 与渲染端 zuSubDetEnsure 是同一条形状规则；主桥另加外层 80 字符总长门，所以后缀实际
+       不超过 66——更长的 sid 渲染端照发请求，主桥整单拒绝、不回推，该轮不出行。 */
+    const subAgentTurn = /^sess_subagent_[A-Za-z0-9_-]{1,72}$/.test(sid);
+    const ref = subAgentTurn && typeof turnRef === "string" && /^[A-Za-z0-9_][A-Za-z0-9_-]{0,79}$/.test(turnRef) ? turnRef : "";
     py = spawn(readCfgCached().python_path,
-      [TOKEN_RATE, "--turn", "--current", "--session", sid].concat(plainUnits ? ["--no-cn-units"] : [], forceKmb ? ["--force-kmb"] : [], noCost ? ["--no-cost"] : []), { windowsHide: true });
+      [TOKEN_RATE, "--turn"].concat(ref ? ["--turn-ref", ref] : ["--current"], ["--session", sid],
+        plainUnits ? ["--no-cn-units"] : [], forceKmb ? ["--force-kmb"] : [], noCost ? ["--no-cost"] : []), { windowsHide: true });
   } catch (e) { LOG("turn text spawn failed:", e.message); deliver("", "spawn"); return; }
   let finished = false;
   const finish = (text, reason) => {
@@ -2791,7 +2805,8 @@ async function pollPluginRequests() {
           const poked = quotaClient ? quotaClient.pokeReset() : 0;
           deliverPluginRequest(wc, req.requestId, { ok: true, poked });
         } else if (req && req.action === "turn-text" && typeof req.sid === "string") {
-          queryTurnText(req.sid, wc, req.cn === 0, req.forceKmb === true, req.unitEpoch, req.cost === 0);
+          queryTurnText(req.sid, wc, req.cn === 0, req.forceKmb === true, req.unitEpoch, req.cost === 0,
+            typeof req.turnRef === "string" ? req.turnRef : "");   // v458：子代理窗格按页面轮号定位（其它 sid 忽略）
         } else if (req && req.action === "git-refresh") {   // v96：Git chip 点击 / 快照后节流：立即重查全部已关注路径
           gitTick(true, req.requestId, wc, req.path).catch(() => { });
         } else if (req && req.action === "sysmon-sub") {   // v356：系统状态订阅（want+cfg+projectPath 合一）

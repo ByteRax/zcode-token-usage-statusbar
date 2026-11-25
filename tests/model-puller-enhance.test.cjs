@@ -619,7 +619,7 @@ test("plan alias covers probe/fetch/apply and unknown ids stay rejected (issue #
   const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: creds, decryptValue: () => "tok" });
   const fetchRes = await mp.fetchModels("builtin:bigmodel-team-coding-plan");
   assert.equal(fetchRes.ok, true);
-  assert.equal(seen[seen.length - 1], "https://open.bigmodel.cn/api/anthropic/v1/models");
+  assert.deepEqual(seen, ["https://open.bigmodel.cn/api/coding/paas/v4/models"], "套餐列表走首选 Coding Plan 候选，成功即止（specs/plan-model-list.md）");
   const probeRes = await mp.probeModel("builtin:bigmodel-coding-plan", "GLM-5.3-Flash");
   assert.equal(probeRes.model, "GLM-5.3-Flash");
   assert.equal(seen[seen.length - 1], "https://open.bigmodel.cn/api/anthropic/v1/messages");
@@ -1711,13 +1711,67 @@ test("Team: fail-closed matrix — no selection/bad org/missing team key/pat fai
   }
 });
 
+test("GLr: a signalled enhance never rides a shared exchange — a cancelled enhance does not sink its concurrent peer (R2 MAJOR)", async () => {
+  /* 换发在途共享只服务不带 signal 的探测；带 signal 的增强各自换发。否则首个增强中途取消会把
+   * 共享的换发一起取消，未取消的另一个拿到 null 误报 plan_auth。 */
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+  const dir = path.dirname(file);
+  fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify({ "oauth:bigmodel:access_token": "enc:oauth-1", [GLR_LOC_KEY]: "enc:loc-1" }));
+  let exchanges = 0;
+  const messages = [];
+  const mp = M.createModelPuller({
+    customCfgPath: file, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "",
+    credentialsPath: path.join(dir, "credentials.json"),
+    decryptValue: (enc) => (enc === "enc:loc-1" ? GLR_LOC_JSON : enc === "enc:oauth-1" ? "oauth-1" : null),
+    fetchImpl: async (url, o) => {
+      if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
+      if (url === GLR_EXCHANGE_URL) {
+        exchanges++;
+        await new Promise((resolve, reject) => {   // 换发挂起到 60ms 后，途中可被 signal 取消
+          const t = setTimeout(resolve, 60);
+          o.signal.addEventListener("abort", () => { clearTimeout(t); reject(Object.assign(new Error("aborted"), { name: "AbortError" })); }, { once: true });
+        });
+        return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: { enabled: true, accessToken: "glr-tok-" + exchanges } }) };
+      }
+      messages.push(o.headers.Authorization);
+      return sseRes(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']);
+    },
+  });
+  const ctl = new AbortController();
+  const first = mp.enhanceText(PLAN_ID, "GLM-5.3-Flash", "第一个", { signal: ctl.signal });
+  await new Promise((r) => setTimeout(r, 10));
+  const second = mp.enhanceText(PLAN_ID, "GLM-5.3-Flash", "第二个");
+  await new Promise((r) => setTimeout(r, 10));
+  ctl.abort();
+  const [ra, rb] = await Promise.all([first, second]);
+  assert.equal(ra.ok, false, "cancelled caller fails");
+  assert.equal(rb.ok, true, "the peer that was never cancelled must still succeed: " + JSON.stringify(rb).slice(0, 160));
+  assert.equal(exchanges, 2, "each signalled caller runs its own exchange");
+  assert.ok(messages.length >= 1 && messages.every((a) => a === "Bearer glr-tok-2"), "peer rides its own token");
+});
+
 test("Team: planGLrTokenOf hard-guards teamPat sources (defense-in-depth anchor)", () => {
   /* review B-B7：守卫行是闭包私有、公共面不可观测——用源码锚点锁「未来新增第二调用方
    * 也不会对团队源拿个人 location 换发」（构建产物是提交物，build_puller --check 保证分片一致）。 */
   const built = fs.readFileSync(path.join(__dirname, "..", "model-puller.cjs"), "utf8");
-  const i = built.indexOf("async function planGLrTokenOf");
-  assert.ok(i > 0, "planGLrTokenOf anchor");
-  assert.match(built.slice(i, i + 400), /src\.teamPat/, "teamPat guard inside planGLrTokenOf");
+  /* planGLrTokenOf 现为在途共享外壳（换发在并发探测下只发一次），守卫在它唯一委托的
+   * planGLrTokenOfSolo 里——两处都锁：外壳只委托、守卫仍在换发本体入口。 */
+  const w = built.indexOf("async function planGLrTokenOf(");
+  assert.ok(w > 0, "planGLrTokenOf anchor");
+  assert.match(built.slice(w, w + 260), /externalSignal \? planGLrTokenOfSolo\(providerId, externalSignal\)\s*: sharedInflight\(glrInflight[^\n]*planGLrTokenOfSolo\(providerId, null\)/, "planGLrTokenOf only delegates: signalled callers go solo, probes share");
+  const i = built.indexOf("async function planGLrTokenOfSolo(");
+  assert.ok(i > 0, "planGLrTokenOfSolo anchor");
+  assert.match(built.slice(i, i + 400), /src\.teamPat/, "teamPat guard inside planGLrTokenOfSolo");
+});
+test("Team: planTeamPatOf delegates to the solo chain and keeps its own guards (defense-in-depth anchor)", () => {
+  const built = fs.readFileSync(path.join(__dirname, "..", "model-puller.cjs"), "utf8");
+  const w = built.indexOf("async function planTeamPatOf(");
+  assert.ok(w > 0, "planTeamPatOf anchor");
+  assert.match(built.slice(w, w + 260), /externalSignal \? planTeamPatOfSolo\([\s\S]*?sharedInflight\(teamInflight[^\n]*planTeamPatOfSolo\(providerId, null\)/, "team wrapper: signalled callers go solo, probes share");
+  const i = built.indexOf("async function planTeamPatOfSolo(");
+  assert.ok(i > 0, "planTeamPatOfSolo anchor");
+  assert.match(built.slice(i, i + 400), /!src\.teamPat/, "team chain only for teamPat sources");
 });
 
 test("Team: individual coding plan still rides its own GLr location on the same fixture", async () => {

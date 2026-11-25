@@ -42,10 +42,21 @@ const PROBE_SNIPPET_MAX = 200;    // 错误摘录回渲染端的长度上限（�
  * （oauth:bigmodel:access_token），运行端点默认 Anthropic（宿主
  * legacyZCodeConfigProviderReader 的 BIGMODEL_CODING_PLAN_ANTHROPIC_BASE_URL）。
  * cc-switch#3471 实证：OpenAI 普通端点（/api/paas/v4）与 Coding Plan（/api/coding/paas/v4）
- * 分离，套餐误用普通端点会 429——列模型三端点对套餐 token 均放行（实测），此处固定用与
- * 运行协议同源的 Anthropic models 端点。写入目标=套餐 personal 规则的
+ * 分离，套餐误用普通端点跑请求会 429。列模型按候选端点链取（listUrls，凭据同为 Bearer
+ * OAuth access_token）：2026-11-24 实测 Anthropic 形态 /api/anthropic/v1/models 已收紧为只认
+ * 项目域凭据，对 OAuth 回 HTTP 200 + 错误信封 {"code":401,"msg":"登录状态已过期"}；同令牌打
+ * OpenAI 形态 Coding Plan 列表正常出列表——故后者在先、前者降为次候选（完整契约与证据见
+ * specs/plan-model-list.md）。写入目标=套餐 personal 规则的
  * personalModelIds/modelOrder（宿主自身也写这两键，实测）；全新环境宿主尚未创建该规则时
  * （首次官方保存才隐式创建）按同构骨架自建（issue #226），id 按宿主官方规范大小写归一。 */
+const BIGMODEL_PLAN_LIST_URLS = [
+  "https://open.bigmodel.cn/api/coding/paas/v4/models",   // OpenAI 形态 Coding Plan 列表：{object:"list",data:[{id,…}]}
+  "https://open.bigmodel.cn/api/anthropic/v1/models",     // Anthropic 形态（v134 原端点）：{data:[{id,display_name,…}],hasMore}
+];
+const ZAI_PLAN_LIST_URLS = [
+  "https://api.z.ai/api/coding/paas/v4/models",
+  "https://api.z.ai/api/anthropic/v1/models",
+];
 var PLAN_SOURCES = {
   /* fam 对齐 quota-client 的 HOST_ALT_CRED_KEYS（issue #393）：宿主 3.18+ 新式登录态下
    * credKey 旧平铺键整键缺席时按家族回退新式键（bigmodel→oauth:linked_bigmodel、
@@ -53,7 +64,7 @@ var PLAN_SOURCES = {
    * 共用同一 credKey（planListable 家族去重按 credKey，两划分当前恒重合）。 */
   "account:bigmodel-individual-coding-plan": {
     name: "BigModel Coding Plan",
-    endpoint: "https://open.bigmodel.cn/api/anthropic/v1/models",
+    listUrls: BIGMODEL_PLAN_LIST_URLS,
     baseUrl: "https://open.bigmodel.cn/api/anthropic",
     fam: "bigmodel",
     credKey: "oauth:bigmodel:access_token",
@@ -62,8 +73,9 @@ var PLAN_SOURCES = {
      * credentials.json 的 OAuth access_token 直连 messages 端点被网关以 500「网络错误 code 1234」
      * 拒绝（stream 真/假、有无 UA 均复现）——bigmodel 增强鉴权用宿主同款 key，不再以 OAuth
      * access_token 作直连兜底（GLr 时代经 location 换发短时 token）。范围之外照旧走 OAuth：
-     * zai 家族增强（planKeyOf：v2 key 优先、OAuth 兜底）与套餐模型列表/探测
-     * （planTokenOf）仍用 OAuth access_token 直连。 */
+     * zai 家族增强（planKeyOf：v2 key 优先、OAuth 兜底）与套餐模型列表（planTokenOf）仍用
+     * OAuth access_token 直连；确认流探测的 bigmodel 家族已与增强链同序取运行时凭据
+     * （planProbeKeyOf，specs/plan-model-list.md）。 */
     v2ConfigKey: "builtin:bigmodel-coding-plan",
   },
   /* issue #336（v345）：接入宿主其余 5 个套餐 id——增强链此前只认 bigmodel individual，
@@ -73,7 +85,7 @@ var PLAN_SOURCES = {
    * start-plan 两条走 zcode.z.ai 网关（baseURL 取自宿主 config.json 实测值）。 */
   "account:zai-individual-coding-plan": {
     name: "Z.ai Coding Plan",
-    endpoint: "https://api.z.ai/api/anthropic/v1/models",
+    listUrls: ZAI_PLAN_LIST_URLS,
     baseUrl: "https://api.z.ai/api/anthropic",
     fam: "zai",
     credKey: "oauth:zai:access_token",
@@ -81,7 +93,7 @@ var PLAN_SOURCES = {
   },
   "account:zai-team-coding-plan": {
     name: "Z.ai Coding Plan (team)",
-    endpoint: "https://api.z.ai/api/anthropic/v1/models",
+    listUrls: ZAI_PLAN_LIST_URLS,
     baseUrl: "https://api.z.ai/api/anthropic",
     fam: "zai",
     credKey: "oauth:zai:access_token",
@@ -89,7 +101,7 @@ var PLAN_SOURCES = {
   },
   "account:zai-start-plan": {
     name: "Z.ai Start Plan",
-    endpoint: "https://api.z.ai/api/anthropic/v1/models",
+    listUrls: ZAI_PLAN_LIST_URLS,
     baseUrl: "https://api.z.ai/api/anthropic",
     fam: "zai",
     credKey: "oauth:zai:access_token",
@@ -99,7 +111,7 @@ var PLAN_SOURCES = {
   },
   "account:bigmodel-team-coding-plan": {
     name: "BigModel Coding Plan (team)",
-    endpoint: "https://open.bigmodel.cn/api/anthropic/v1/models",
+    listUrls: BIGMODEL_PLAN_LIST_URLS,
     baseUrl: "https://open.bigmodel.cn/api/anthropic",
     fam: "bigmodel",
     credKey: "oauth:bigmodel:access_token",
@@ -111,7 +123,7 @@ var PLAN_SOURCES = {
   },
   "account:bigmodel-start-plan": {
     name: "BigModel Start Plan",
-    endpoint: "https://open.bigmodel.cn/api/anthropic/v1/models",
+    listUrls: BIGMODEL_PLAN_LIST_URLS,
     baseUrl: "https://open.bigmodel.cn/api/anthropic",
     fam: "bigmodel",
     credKey: "oauth:bigmodel:access_token",
@@ -142,8 +154,12 @@ var PLAN_ID_ALIASES = {
 function planAliasId(v) { return PLAN_ID_ALIASES[String(v || "")] || String(v || ""); }
 
 /* 宿主官方 GLM 模型规范 id（packages/shared/src/official-glm-model-id.ts）：套餐 models
- * 端点返回小写，personal 规则用规范大小写——写入前归一，防止同模型两套写法 */
+ * 端点返回小写，personal 规则用规范大小写——写入前归一，防止同模型两套写法。宿主只对官方
+ * 名单与单向迁移入口做归一、不比较 Registry，表外 id 写进 personalModelIds 就是另一套写法，
+ * 所以端点出现宿主表没有的模型时在此补齐（拼写取厂商 display_name）：GLM-5.3-FlashX、
+ * GLM-5.4（宿主 runtime builtinModelIds 同拼写）、GLM-5.3-FlashX-Legal。 */
 var OFFICIAL_GLM_MODEL_IDS = [
+  "GLM-5.4", "GLM-5.3-FlashX-Legal",
   "GLM-5.3", "GLM-5.3-Flash", "GLM-5.3-FlashX", "GLM-5V-Turbo", "GLM-5.2", "GLM-5.1", "GLM-5.1-Highspeed",
   "GLM-5", "GLM-5-Turbo", "GLM-4.7", "GLM-4.7-FlashX", "GLM-4.7-Flash", "GLM-4.6",
   "GLM-4.5-Air", "GLM-4.5", "GLM-4.6V", "GLM-4.6V-Flash", "GLM-4.6V-FlashX",

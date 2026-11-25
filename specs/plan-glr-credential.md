@@ -17,7 +17,7 @@
 
 ## 插件实现契约（model-puller）
 
-1. **作用面**：仅 `fam==="bigmodel"` 的 PLAN_SOURCES 源（individual/team/start-plan）。zai 家族端点未实测，维持现状（OAuth 诚实尝试）。
+1. **作用面**：仅 `fam==="bigmodel"` 的 PLAN_SOURCES 源（individual/team/start-plan）。zai 家族端点未实测，维持现状（OAuth 诚实尝试）。套餐模型列表与确认流探测的端点/凭据契约另见 [plan-model-list.md](plan-model-list.md)（2026-11-24 实测 Anthropic 网关拒 OAuth 登录令牌后，探测凭据序与本节对齐）。
 2. **凭据解析序**（enhanceText 内，bigmodel 源）：v2 条目明文 key（`planEntryKeyOf`，兼容 3.18 宿主/报告者机器）→ GLr 换发 token（新）→ 均失败回 `plan_auth`（零网络 fail-fast 语义不变）。**OAuth 直连兜底从 bigmodel 源移除**（v344 起实测必败，#429 报告者机器的 1234 即此路径）。**团队源例外（issue #442）**：条目 key 与 GLr location 都属个人项目，团队源（PLAN_SOURCES `teamPat:true`）绝不用——凭据只走团队 PAT 三步换发（`planTeamPatOf`），未切团队/换发失败诚实 plan_auth。
 3. **location 读取**：扫 credentials.json 键名（前缀 `project-key-location:v1:`），URL-decode 取 JSON 数组，匹配 `family==="bigmodel" && team==null && usageScene===1` 的首条；值过 `decryptValue` 解密（`enc:` 前缀结果一律作废，同 planTokenOf 纪律），`{organizationId, projectId, apiKeyId}` 三键非空字符串才可用。
 4. **换发请求**：origin 取 location 键名还原值（校验限定 `bigmodel.cn` 及其子域）；`clientVersion` 取宿主 appVersion（本文件运行于 Electron 主进程，`require("electron").app.getVersion()` 直取，异常/测试环境省略该字段）；UA `ZCode`（同 enhance 既有头）；15s 超时、跟随 enhance 的外部 signal；**不重试**（enhance 自身已有二次尝试，换发失败直接 plan_auth，避免叠退避）。
@@ -38,3 +38,4 @@
 - memo：同 fingerprint 10 分钟内第二次 enhance 不再换发；fingerprint 变化即重换。
 - runtime 配置缺失/损坏 → 回退 PLAN_SOURCES.baseUrl。
 - OAuth 不再作为 bigmodel 兜底（无 location 且无 v2 key → 零网络 plan_auth）。
+- 换发在途共享的边界（tests/model-puller-enhance.test.cjs 与 tests/model-puller.test.cjs）：带外部 signal 的增强调用各自换发，并发增强里首个中途取消不牵连另一个；不带 signal 的确认流探测共享同一次换发，键含凭据文件原文；团队链外壳与两条 Solo 守卫（个人 location 不用于团队源、团队三步不用于非团队源）有源码锚点。换发接入探测的契约见 [plan-model-list.md](plan-model-list.md)。
