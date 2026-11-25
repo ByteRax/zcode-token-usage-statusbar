@@ -445,6 +445,16 @@ test('issue #483: synchronous ingests are never taken for a coalesced catch-up',
   assert.equal(tracker.get('t').characterRate, 125 * 1000 / 750, '一帧没丢：按窗口平均，不重取基线');
 });
 
+test('issue #483: when the trailing timer is late, the synchronous ingest that skipped notifications still counts as coalesced', () => {
+  const f = rateStore(8);
+  const tracker = createTracker({ now: () => f.now });
+  subscribeStore(f.store, tracker, () => {}, f.options);   // t=8，600 字符
+  f.now = 58; f.chars = 620; f.listener();                 // 被压住的帧：间隔内只置 pending
+  f.now = 358; f.chars = 1220; f.listener();               // 尾部定时器迟迟没触发，间隔早已过去：同步处理（t=366），带着补齐的 600 字符
+  f.now = 966; f.chars = 1400; f.listener();               // 之后 300 字符/s（间隔已过，同步处理：t=974）
+  assert.equal(tracker.get('t').characterRate, 180 * 1000 / 608, '中间确实跳过了通知，这一条按合并入库重取基线');
+});
+
 test('issue #483: the settle window restarts when the tracker is cleared or the session / epoch changes', () => {
   const burst = restart => {
     let now = 0;
@@ -645,6 +655,25 @@ test('issue #483: a row that left before a later row also stays old when it come
   now = 4300;
   tracker.ingest(snapshot(8, [header(), a(7), c]));              // c 回来时行号不小于最大行号，单看行号不像旧行
   assert.equal(tracker.get('t').characterRate, 1000 / 300);
+  assert.equal(tracker.get('t').totalCharacters, 5007, '校准分子照常含它');
+});
+
+test('issue #483: a row that comes back longer than it left is excluded at the length it comes back with', () => {
+  let now = 0, seq = 0;
+  const tracker = createTracker({ now: () => now });
+  const a = n => ({ rowId: 2, turnId: 't', kind: 'assistantText', text: 'a'.repeat(n) });
+  const b = n => ({ rowId: 3, turnId: 't', kind: 'assistantText', text: 'b'.repeat(n) });
+  const c = { rowId: 4, turnId: 't', kind: 'assistantText', text: 'c'.repeat(5) };
+  const at = (t, rows) => { now = t; tracker.ingest(snapshot(++seq, [header(), ...rows])); };
+  at(0, [a(6), b(100), c]);
+  at(1000, [a(306), b(100), c]);
+  at(1100, [a(336), b(100), c]);
+  assert.equal(tracker.get('t').characterRate, 300);
+  at(1200, [a(366), c]);                        // b 出窗：字符数下降，保持窗到 3200
+  at(3300, [a(1026), c]);                       // 窗结束 100ms 后：新基线
+  at(3400, [a(1086), b(160), c]);               // 100ms 后 b 长了 60 回来：出窗期间长出来的不算刚生成的
+  at(3500, [a(1146), b(160), c]);               // 之后只有 a 在涨：600 字符/s
+  assert.equal(tracker.get('t').characterRate, 600, '只有 a 的增长被算进去');
 });
 
 test('issue #483: a row that comes back shorter than it left adds nothing and never counts as another drop', () => {

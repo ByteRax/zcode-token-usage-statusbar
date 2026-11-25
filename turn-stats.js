@@ -81,7 +81,8 @@
         // 历史回填（issue #483）：此前没见过、行号又小于本轮已知最大行号的行，是宿主往前补拉的旧行（loadOlder、
         // 尾窗截断后的补拉），不是新生成——登记进 hist，长度在计数时填，不进速率分子。首个快照里行号乱序的行
         // 也照此处理：速率只看增量，等同于全部计入。
-        // hist 记的是「这一行不算新生成的字符数」：前插的旧行按出现时的长度不算，出窗后回来的行按出窗时的长度不算。
+        // hist 记的是「这一行不算新生成的字符数」：此前没见过的旧行按出现时的长度不算；出窗后回来的行，回来时
+        // 行号仍小于最大行号的按回来时的长度不算（会盖掉出窗时记的长度，更保守），否则按出窗时记的长度不算。
         if (turn.maxRowId !== null && row.rowId < turn.maxRowId && !turn.rows.has(row.rowId)) turn.hist.set(row.rowId, -1);
         turn.rows.set(row.rowId, row);
         if (turn.maxRowId === null || row.rowId > turn.maxRowId) turn.maxRowId = row.rowId;
@@ -366,10 +367,12 @@
         }
       }
       // 同步处理（廉价会话 / 间隔已过 / 无法排定时器）：先作废待冲刷的尾部定时器——它被后台节流而迟到时，
-      // 新通知已处理了最新状态，再让它读一次整窗只是白拷贝。
+      // 新通知已处理了最新状态，再让它读一次整窗只是白拷贝。定时器迟到期间的通知确实被跳过了，这一条按
+      // 合并入库告知 tracker（issue #483）；无法排定时器的回退没有跳过任何通知，仍是逐条入库。
+      const skipped = pending;
       if (timer !== null) { try { disarm(timer); } catch (e) { } timer = null; }
       pending = false;
-      run(false);
+      run(skipped);
     };
     const off = store.subscribe(update);
     if (typeof off !== 'function') { closed = true; return null; }
