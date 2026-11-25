@@ -312,6 +312,11 @@ if __name__ == "__main__":
         # （宿主直接拉起本脚本、按行分帧；\r 虽是合法 JSON 空白，统一 LF 不给分帧实现留歧义）
         sys.stdout.reconfigure(encoding="utf-8", errors="replace", newline="\n")
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        # 入站同样钉 UTF-8：宿主按 UTF-8 写帧，而 MCP 子进程的环境是宿主白名单（拿不到
+        # PYTHONUTF8），中文 Windows 的管道 stdin 默认按区域代码页（GBK）解码——非 ASCII 的
+        # scope 会被静默解成乱码，workspace:<中文关键词> 返回「未找到」。errors="replace"：
+        # 畸形帧换成 U+FFFD 走 parse error/未知工具名分支，不击穿读循环。
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
     revive_finalize_monitor()
