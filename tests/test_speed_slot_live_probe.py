@@ -110,7 +110,7 @@ class ReportTest(unittest.TestCase):
         self.assertIn("极窄档应恒为 33.0px（2.75em×12px）", problems[0])
 
     def test_compact_chip_rows_are_exempt_from_the_band(self):
-        # 精简 chip 的三档只是上限（12.4/9.7/6.6em，v468 起按内容定宽），不参与条面固定宽核对，只查越界
+        # 精简 chip 的三档只是上限（12.4/9.7/6.6em，v469 起按内容定宽），不参与条面固定宽核对，只查越界
         rows = {"14px 精简 宽裕": self.row([161.2], fs="13px"), "14px 精简 中等": self.row([126.1], fs="13px"),
                 "14px 精简 紧张": self.row([85.8], fs="13px")}
         problems, _, checked = run_report(default_mode(rows))

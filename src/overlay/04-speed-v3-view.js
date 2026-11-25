@@ -44,7 +44,7 @@
   /* v403（§24 用户追加裁定）：SPD3_SVG_CUBE 随 count 图标删除（唯一消费者退役） */
   /* v387 §11.5：标题 📈 emoji 换自包含 SVG（16×16 轴+折线，stroke currentColor 随主题） */
   var SPD3_SVG_TREND = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4v16h18"/><path d="m7 14 4-5 3 3 5-7"/></svg>';
-  /* v468：精简速率 chip 整卡的设置图标——与 06 分片状态条 .zu-gear 同款齿轮（路径串由 overlay-tps-chip 锁两处一致） */
+  /* v469：精简速率 chip 整卡的设置图标——与 06 分片状态条 .zu-gear 同款齿轮（路径串由 overlay-tps-chip 锁两处一致） */
   var SPD3_SVG_GEAR = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 2h5l.6 2.5 1.7 1 2.5-.7 2.5 4.4-1.9 1.8v2l1.9 1.8-2.5 4.4-2.5-.7-1.7 1-.6 2.5h-5l-.6-2.5-1.7-1-2.5.7-2.5-4.4L4.1 13v-2L2.2 9.2l2.5-4.4 2.5.7 1.7-1z"/><circle cx="12" cy="12" r="3.5"/></svg>';
   /* 数值格式沿用 V2 口径：整数直显、小数留 1 位、空值 em dash（绝不显 0 t/s） */
   function spd3FmtV(x) { return x == null ? "—" : (x % 1 ? x.toFixed(1) : String(x)); }
@@ -102,7 +102,7 @@
   }
   function spd3HeadHTML(an, o) {
     an = an || {};
-    /* v468（issue #474）：精简样式的速率 chip 悬停卡没有「打开设置」就回不到设置——调用方
+    /* v469（issue #474）：精简样式的速率 chip 悬停卡没有「打开设置」就回不到设置——调用方
      * 传 o.cfgBtn 时在标题后补一枚图标按钮 .tps-cfg（齿轮同状态条 ⚙，点击走 01 分片 tpsTip 委托 →
      * chip.__zuOpen）；
      * 默认/药丸条面的速度卡不传、不出按钮。 */
@@ -474,7 +474,7 @@
       ".zu-sv3-root .zu-sv-title{display:inline-flex;align-items:center;gap:6px;font-weight:700;" +
         "font-size:calc(var(--ui-font-size,14px) + 6px);letter-spacing:.2px;min-width:0}" +
       ".zu-sv3-root .zu-sv-title svg{flex:0 0 auto}" +
-      /* v468：精简速率 chip 专属的设置图标（见 spd3HeadHTML）——外观同状态条 .zu-gear（26px 盒、字号尺寸的
+      /* v469：精简速率 chip 专属的设置图标（见 spd3HeadHTML）——外观同状态条 .zu-gear（26px 盒、字号尺寸的
        * 齿轮、次要色、悬停提亮；不沿用 .zu-gear>svg 的 translateY(-.5px)——这里齿轮与标题同行，
        * 实测偏上 0.5px，去掉后与标题文字中心线重合）；覆盖旧摘要卡 .tps-cfg 的边框/内边距/margin-left:auto */
       ".zu-sv3-root .zu-sv-title .zu-sv-cfg{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;" +
