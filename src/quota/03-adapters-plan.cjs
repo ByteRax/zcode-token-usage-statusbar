@@ -161,10 +161,13 @@ async function ensureTeamPat(j, fam, sel, loginToken, ctl) {
    * 离谱值按缺失处理，否则 PAT 会被永久缓存：非有限值，换算后距今超过 7 天的 expiresAt，以及
    * 折算超过 7 天的 expiresIn；已过期的 expiresAt 原样保留。 */
   const maxTtlMs = 7 * 24 * 3600 * 1000;
+  /* 时钟在三步往返之后重取（函数开头的 now 只服务缓存命中判断）：有效期恰好 7 天的 PAT 不因往返
+   * 耗时被判成离谱值；增强链同样是在响应之后才取时钟 */
+  const settledAt = typeof j.now === "function" ? j.now() : Date.now();
   const at = typeof patData.expiresAt === "number" ? patData.expiresAt : 0;
   const atMs = at > 0 ? (at < 1e12 ? at * 1000 : at) : 0;
   const ttlSec = typeof patData.expiresIn === "number" && patData.expiresIn > 0 && patData.expiresIn * 1000 <= maxTtlMs ? patData.expiresIn : 3600;
-  const expiresAt = atMs && atMs - now <= maxTtlMs ? atMs : now + ttlSec * 1000;
+  const expiresAt = atMs && atMs - settledAt <= maxTtlMs ? atMs : settledAt + ttlSec * 1000;
   const cachedEntry = { pat, expiresAt, apiKey: teamKeyId };
   teamPatCache.set(cacheKey, cachedEntry);
   return cachedEntry.pat;

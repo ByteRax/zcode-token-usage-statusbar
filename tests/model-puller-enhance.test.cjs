@@ -1851,13 +1851,27 @@ test("Team: an absurd expiresAt (non-finite or beyond any sane clock) never cach
 });
 
 test("Team: a sane expiresAt is honoured even when it disagrees with expiresIn (seconds and milliseconds)", async () => {
-  /* memo 的过期时间取 expiresAt：把合理的值误判成无效（回落到 60 秒的 expiresIn）时第二次会多换发一次 */
-  for (const unit of ["s", "ms"]) {
-    const f = teamFixture({ ttlSec: 60, expiresAtSec: 3600, expiresUnit: unit });
+  /* memo 的过期时间取 expiresAt：把合理的值误判成无效（回落到 60 秒的 expiresIn）时第二次会多换发一次。
+   * 1 小时与 2 小时各验一遍——上界若被收紧到 1 小时，2 小时那一点会多换发一次。 */
+  for (const [unit, atSec] of [["s", 3600], ["ms", 3600], ["s", 7200], ["ms", 7200]]) {
+    const f = teamFixture({ ttlSec: 60, expiresAtSec: atSec, expiresUnit: unit });
     assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "第一次")).ok, true, unit);
     assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "第二次")).ok, true, unit);
-    assert.equal(f.calls.filter((c) => c.url === f.patUrl).length, 1, "expiresAt wins over expiresIn: " + unit);
+    assert.equal(f.calls.filter((c) => c.url === f.patUrl).length, 1, "expiresAt wins over expiresIn: " + unit + " +" + atSec + "s");
   }
+});
+
+test("Team: the expiry bound is exactly 7 days — 7 days is honoured, 7 days and 2 seconds is treated as absent", async () => {
+  /* expiresAt 配 60 秒的 expiresIn：被判为合理值时 memo 复用（1 次换发），被判为离谱值时回落到 60 秒
+   * 的 expiresIn 并立刻重换（2 次）。上界被收紧（7 小时、6 天 23 小时）或放宽（70 天）都有一边变红。 */
+  const patCalls = async (atSec) => {
+    const f = teamFixture({ ttlSec: 60, expiresAtSec: atSec });
+    assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "一")).ok, true, String(atSec));
+    assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "二")).ok, true, String(atSec));
+    return f.calls.filter((c) => c.url === f.patUrl).length;
+  };
+  assert.equal(await patCalls(7 * 86400), 1, "exactly 7 days out is honoured");
+  assert.equal(await patCalls(7 * 86400 + 2), 2, "7 days and 2 seconds out is treated as absent");
 });
 
 test("Team: an absurd expiresIn falls back to the default 1-hour TTL, not years (issue #481 review)", async () => {
