@@ -55,6 +55,8 @@ test('contract: inject-main whitelist routes prompt-enhance with fail-closed gat
 });
 
 /* ---------- 行为夹具 ---------- */
+const INPUT_SEL = '[data-testid="v4-composer-input"]';
+const CONTENTEDITABLE_SEL = '[contenteditable="true"]';
 class Element {
   constructor(tag = 'div') {
     this.tagName = tag.toUpperCase(); this.children = []; this.dataset = {}; this.style = {};
@@ -104,6 +106,16 @@ class Element {
       return this.children.filter(e => e.getAttribute('data-testid') === 'v4-model-config').concat(
         ...this.children.map(e => e.querySelectorAll(sel)));
     }
+    if (sel === INPUT_SEL || sel === CONTENTEDITABLE_SEL) {   // issue #477：卡内选框的后代枚举——先序深度优先，与真实 DOM 文档序一致；两种输入框选择器写法都认
+      const byTestid = sel === INPUT_SEL;
+      const matches = c => c.getAttribute && (byTestid ? c.getAttribute('data-testid') === 'v4-composer-input' : c.getAttribute('contenteditable') === 'true');
+      const out = [];
+      for (const c of this.children) {
+        if (matches(c)) out.push(c);
+        if (c.querySelectorAll) out.push(...c.querySelectorAll(sel));
+      }
+      return out;
+    }
     return [];
   }
   contains(el) { return el === this || this.children.some(e => e.contains(el)); }
@@ -120,10 +132,14 @@ function harness({ enhanceOn = true } = {}) {
   Object.assign(window, { innerWidth: 1000, innerHeight: 800 });
   window.__zusagePluginState = { enhanceEnabled: enhanceOn ? true : false };
   let panes = [];
+  const isInputSelector = selector => selector.includes('v4-composer-input') || selector.includes('contenteditable');   // issue #477：输入框选择器不论写法
   const document = new Element();
   Object.assign(document, { body, documentElement: root, createElement: tag => new Element(tag),
     getElementById: id => body.children.find(e => e.id === id),
-    querySelectorAll: selector => (selector.startsWith('textarea,') || selector === '[data-testid="v4-composer-input"]') ? panes : [],
+    querySelectorAll: selector => (selector.startsWith('textarea,') || isInputSelector(selector)) ? panes : [],
+    /* issue #477：页面级单节点查找也要能命中输入框——否则「只在卡内选框」的回归锁对
+     * document.querySelector 形态的页面级兜底失效（第 2 轮变异审查实证） */
+    querySelector: selector => isInputSelector(selector) ? (panes[0] || null) : Element.prototype.querySelector.call(document, selector),
     elementFromPoint: () => panes[0] || body });
   const timers = new Map(), frames = new Map(), observers = []; let id = 0;
   const lsStore = new Map();
@@ -180,6 +196,7 @@ function harness({ enhanceOn = true } = {}) {
     modelChip.setAttribute('data-testid', 'chat-model-select-trigger');
     const editor = card.appendChild(new Element());
     editor.setAttribute('data-testid', 'v4-composer-input');
+    editor.setAttribute('contenteditable', 'true');   // 真实 Lexical 根节点带 contenteditable
     editor.setAttribute('data-e2e-lexical-bridge', 'ready');
     editor.setAttribute('data-zusage-scope-version', '1');
     editor.setAttribute('data-zusage-workspace-path', '/fixture');
@@ -218,7 +235,7 @@ function harness({ enhanceOn = true } = {}) {
     if (inst) { el.parentElement.parentElement.setAttribute('data-zusage-pane-id', inst.pid); el.setAttribute('data-zusage-pane-id', inst.pid); inst.attach(el, sid); }
   }
   const enhOf = wrap => wrap.children.find(e => e.classList.contains('zu-enhance'));
-  return { window, body, inject, boot, tick, buildComposer, payload, takeRequests, respond, enhOf, coordAttach, lsStore, timers };
+  return { window, body, inject, boot, tick, buildComposer, payload, takeRequests, respond, enhOf, coordAttach, lsStore, timers, candidates: panes, document };
 }
 
 function runPending(timers, ms) {
@@ -316,6 +333,299 @@ test('empty draft rejects without a request; failure shows warn phase', () => {
   assert.match(enh.getAttribute('aria-label'), /增强失败/);
 });
 
+/* ---------- issue #477：本卡内选框 + 读取失败分流（v472） ----------
+ * 报告：输入框里有可见文字，点增强却提示「先输入内容再增强」。旧实现只取卡内第一个输入节点，
+ * 且「找不到节点 / 桥未就绪 / 读取抛错 / 桥读空 / 真空草稿」并成同一句提示。
+ * 选框只在卡内进行：首轮审查用夹具实证过「按几何就近取页面内输入框」会读写相邻分栏的草稿；
+ * 相邻分栏的输入框必须真挂进文档树，页面级查找才找得到它（第 2 轮变异审查实证）。 */
+const ZERO_RECT = { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 };
+const FLAT_NO_HEIGHT = { top: 600, bottom: 600, left: 20, right: 520, width: 500, height: 0 };   // 有宽无高：扁平节点按隐藏处理
+const FLAT_NO_WIDTH = { top: 600, bottom: 650, left: 20, right: 20, width: 0, height: 50 };     // 有高无宽
+const SAME_AS_BUTTON = { top: 600, bottom: 650, left: 20, right: 520, width: 500, height: 50 };   // 夹具默认矩形：与增强按钮同位
+function mkInput(draft, rect) {   // 候选输入节点：桥就绪、几何可控
+  const el = new Element();
+  el.setAttribute('data-testid', 'v4-composer-input');
+  el.setAttribute('contenteditable', 'true');   // 真实 Lexical 根节点带 contenteditable
+  el.setAttribute('data-e2e-lexical-bridge', 'ready');
+  el.__zcodeLexicalInputE2E = {
+    getText: () => el.__zuDraft,
+    setText: t => { el.__zuDraft = String(t); el.setTextCalls = (el.setTextCalls || 0) + 1; },
+  };
+  el.__zuDraft = draft;
+  el.getBoundingClientRect = () => ({ ...rect });
+  return el;
+}
+function mountEnh(h, ui) {   // 建实例到按钮就绪（不点击）；用例随后再制造故障现场
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  assert.ok(enh, 'enhance button should mount');
+  return enh;
+}
+const ENH_PROVIDER = { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX' };
+const enhanceRequests = h => h.takeRequests().filter(r => r.action === 'prompt-enhance');
+const clickButton = enh => enh.listeners.get('click')[0]();
+/* 把实例绑定的输入框挪出卡片（仍留在页面里）：此后卡内候选不再含 composer，用例据此锁定②④的次序 */
+const moveOwnInputOutOfCard = ui => { ui.editor.remove(); ui.pane.appendChild(ui.editor); };
+/* 把候选输入框挂进文档树，做成相邻分栏的样子：页面级查找（不论写法）都找得到它 */
+function mountNeighbourPane(h, el) {
+  const pane = h.body.appendChild(new Element());
+  pane.setAttribute('data-pane-id', 'workspace-right');
+  pane.setAttribute('data-session-id', 'sid_right');
+  pane.appendChild(el);
+  h.candidates.push(el);
+}
+
+test('issue477: the visible bound composer wins over an earlier leftover in the same card, hidden or visible', () => {
+  for (const [name, rect] of Object.entries({ 'hidden leftover': ZERO_RECT, 'visible leftover': SAME_AS_BUTTON })) {
+    const h = harness();
+    const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '本卡草稿' });
+    const enh = mountEnh(h, ui);
+    const stale = mkInput('', rect);   // 卡内更靠前的残留节点：隐藏的空编辑器 / 可见的空编辑器
+    ui.card.insertBefore(stale, ui.editor);
+    clickButton(enh);
+    const reqs = enhanceRequests(h);
+    assert.equal(reqs.length, 1, name + ': ' + enh.getAttribute('aria-label'));
+    assert.equal(reqs[0].text, '本卡草稿', name);
+    h.respond(reqs[0].requestId, { ok: true, text: '增强结果' });
+    assert.equal(ui.editor.__zuDraft, '增强结果', name + ': write-back lands on the bound node');
+    assert.equal(stale.setTextCalls || 0, 0, name);
+    assert.equal(enh.getAttribute('aria-label'), '增强提示词', name);   // 回填链在选中节点上闭环
+  }
+});
+
+test('issue477: a folded bound input keeps its draft ahead of hidden leftovers', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '本卡草稿' });
+  const enh = mountEnh(h, ui);
+  ui.editor.getBoundingClientRect = () => ({ ...ZERO_RECT });   // 绑定输入框被折叠：隐藏但草稿仍在
+  const stale = mkInput('', ZERO_RECT);   // 卡内更靠前的隐藏残留节点（空编辑器）
+  ui.card.insertBefore(stale, ui.editor);
+  clickButton(enh);
+  const reqs = enhanceRequests(h);
+  assert.equal(reqs.length, 1, enh.getAttribute('aria-label'));
+  assert.equal(reqs[0].text, '本卡草稿');
+  h.respond(reqs[0].requestId, { ok: true, text: '增强结果' });
+  assert.equal(ui.editor.__zuDraft, '增强结果', 'write-back lands on the bound node');
+  assert.equal(stale.setTextCalls || 0, 0, 'the leftover node is never written');
+  assert.equal(enh.getAttribute('aria-label'), '增强提示词');
+});
+
+test('issue477: right after a layout switch the folded empty bound input yields to the visible new input', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '' });
+  const enh = mountEnh(h, ui);
+  ui.editor.getBoundingClientRect = () => ({ ...ZERO_RECT });   // 旧输入框已折叠且为空（协调器重绑前的窗口）
+  const fresh = mkInput('新输入框的草稿', SAME_AS_BUTTON);      // 新输入框已可见
+  ui.card.appendChild(fresh);
+  clickButton(enh);
+  const reqs = enhanceRequests(h);
+  assert.equal(reqs.length, 1, enh.getAttribute('aria-label'));   // 不再提示「先输入内容再增强」
+  assert.equal(reqs[0].text, '新输入框的草稿');
+  h.respond(reqs[0].requestId, { ok: true, text: '增强结果' });
+  assert.equal(fresh.__zuDraft, '增强结果');
+  assert.equal(ui.editor.setTextCalls || 0, 0, 'the folded old input is never written');
+  assert.equal(enh.getAttribute('aria-label'), '增强提示词');
+});
+
+test('issue477: with the bound input gone from the card the first visible node in the card is used, hidden nodes skipped', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '' });
+  const enh = mountEnh(h, ui);
+  moveOwnInputOutOfCard(ui);
+  const hidden = mkInput('', ZERO_RECT);            // 更靠前的隐藏节点：不选
+  const first = mkInput('首份草稿', SAME_AS_BUTTON);   // 期望命中：文档序首个可见节点，且是卡的孙节点
+  const second = mkInput('末份草稿', SAME_AS_BUTTON);  // 文档序靠后的可见节点：不选
+  const wrapper = ui.card.appendChild(new Element());
+  wrapper.appendChild(first);
+  ui.card.insertBefore(hidden, wrapper);
+  ui.card.appendChild(second);
+  clickButton(enh);
+  const reqs = enhanceRequests(h);
+  assert.equal(reqs.length, 1, enh.getAttribute('aria-label'));
+  assert.equal(reqs[0].text, '首份草稿');
+  h.respond(reqs[0].requestId, { ok: true, text: '增强结果' });
+  assert.equal(first.__zuDraft, '增强结果', 'write-back lands on the selected node');
+  assert.equal(second.__zuDraft, '末份草稿');
+  assert.equal(enh.getAttribute('aria-label'), '增强提示词');
+});
+
+test('issue477: a flat node (width or height zero) counts as hidden', () => {
+  for (const [name, rect] of Object.entries({ 'no height': FLAT_NO_HEIGHT, 'no width': FLAT_NO_WIDTH })) {
+    const h = harness();
+    const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '' });
+    const enh = mountEnh(h, ui);
+    moveOwnInputOutOfCard(ui);
+    const flat = mkInput('', rect);   // 扁平节点排在前面：有宽无高 / 有高无宽
+    const live = mkInput('可见草稿', SAME_AS_BUTTON);
+    ui.card.appendChild(flat);
+    ui.card.appendChild(live);
+    clickButton(enh);
+    const reqs = enhanceRequests(h);
+    assert.equal(reqs.length, 1, name + ': ' + enh.getAttribute('aria-label'));
+    assert.equal(reqs[0].text, '可见草稿', name);
+    assert.equal(flat.setTextCalls || 0, 0, name);
+  }
+});
+
+test('issue477: hidden in-card inputs keep ownership over a visible input in the neighbouring pane; document order picks the first', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '' });
+  const enh = mountEnh(h, ui);
+  moveOwnInputOutOfCard(ui);
+  const own = mkInput('本卡草稿', ZERO_RECT);   // 卡内只剩隐藏节点（编辑器被按设计折叠）
+  const later = mkInput('另一份', ZERO_RECT);
+  ui.card.appendChild(own);
+  ui.card.appendChild(later);
+  const elsewhere = mkInput('别处的草稿', SAME_AS_BUTTON);   // 与按钮同位：几何上最近
+  mountNeighbourPane(h, elsewhere);
+  assert.equal(h.document.querySelectorAll(INPUT_SEL).filter(e => e === elsewhere).length, 1, 'page enumeration must see the neighbour');
+  clickButton(enh);
+  const reqs = enhanceRequests(h);
+  assert.equal(reqs.length, 1, enh.getAttribute('aria-label'));
+  assert.equal(reqs[0].text, '本卡草稿');
+  h.respond(reqs[0].requestId, { ok: true, text: '增强结果' });
+  assert.equal(own.__zuDraft, '增强结果');
+  assert.equal(later.__zuDraft, '另一份');
+  assert.equal(elsewhere.__zuDraft, '别处的草稿', 'another pane draft is never touched');
+});
+
+test('issue477: no input inside the card never reads or writes a visible input in the neighbouring pane', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '' });
+  const enh = mountEnh(h, ui);
+  ui.editor.remove();
+  h.candidates.splice(h.candidates.indexOf(ui.editor), 1);   // 本卡、本窗格都没有输入节点
+  const elsewhere = mkInput('别栏草稿', SAME_AS_BUTTON);   // 相邻分栏的输入框：与按钮几何同位，离得最近
+  mountNeighbourPane(h, elsewhere);
+  assert.equal(h.document.querySelectorAll(INPUT_SEL).filter(e => e === elsewhere).length, 1, 'page enumeration must see the neighbour');
+  assert.equal(h.document.querySelector(INPUT_SEL), elsewhere, 'page-level single lookup must see the neighbour');
+  assert.equal(h.document.querySelector('[data-testid=v4-composer-input]'), elsewhere, 'unquoted attribute selector must resolve');
+  assert.equal(h.document.querySelector('[contenteditable="true"]'), elsewhere, 'contenteditable lookup must see the neighbour');
+  assert.equal(h.body.querySelector(INPUT_SEL), elsewhere, 'tree-scoped lookup must see the neighbour');
+  clickButton(enh);
+  assert.equal(enhanceRequests(h).length, 0);
+  assert.match(enh.getAttribute('aria-label'), /未找到当前输入框/);
+  assert.equal(enh.getAttribute('aria-busy'), 'false');
+  assert.equal(elsewhere.setTextCalls || 0, 0, 'another pane draft is never written');
+  assert.equal(elsewhere.__zuDraft, '别栏草稿');
+});
+
+test('issue477: a detached card cache reports "not found" instead of using its stale nodes', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '陈旧草稿' });
+  const enh = mountEnh(h, ui);
+  ui.card.isConnected = false;   // 卡片缓存已 detach（输入节点仍挂在缓存节点下）
+  clickButton(enh);
+  assert.equal(enhanceRequests(h).length, 0);
+  assert.match(enh.getAttribute('aria-label'), /未找到当前输入框/);
+  assert.equal(ui.editor.setTextCalls || 0, 0);
+});
+
+test('issue477: no input node anywhere reports the real reason, not "type a prompt"', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '草稿' });
+  const enh = mountEnh(h, ui);
+  ui.editor.remove();
+  h.candidates.splice(h.candidates.indexOf(ui.editor), 1);
+  clickButton(enh);
+  assert.equal(enhanceRequests(h).length, 0);
+  assert.match(enh.getAttribute('aria-label'), /未找到当前输入框/);
+  assert.equal(enh.getAttribute('aria-busy'), 'false');
+});
+
+test('issue477: an input without a ready bridge reports "not readable", not "type a prompt"', () => {
+  const strips = {
+    'bridge attribute missing': ed => ed.removeAttribute('data-e2e-lexical-bridge'),
+    'bridge object removed': ed => { delete ed.__zcodeLexicalInputE2E; },   // 宿主桥被别的编辑器摘除后的现场
+  };
+  for (const [name, strip] of Object.entries(strips)) {
+    const h = harness();
+    const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '看得见的草稿' });
+    const enh = mountEnh(h, ui);
+    strip(ui.editor);
+    clickButton(enh);
+    assert.equal(enhanceRequests(h).length, 0, name);
+    assert.match(enh.getAttribute('aria-label'), /输入框暂不可读/, name);
+    assert.doesNotMatch(enh.getAttribute('aria-label'), /先输入内容/, name);
+    assert.equal(ui.editor.__zuDraft, '看得见的草稿', name);
+  }
+});
+
+test('issue477: a throwing getText reports a read failure and sends nothing', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '草稿' });
+  const enh = mountEnh(h, ui);
+  ui.editor.__zcodeLexicalInputE2E.getText = () => { throw new Error('editor detached'); };
+  clickButton(enh);
+  assert.equal(enhanceRequests(h).length, 0);
+  assert.match(enh.getAttribute('aria-label'), /读取草稿失败/);
+});
+
+test('issue477: bridge reads empty while the input visibly has text — unreadable draft, not "type a prompt"', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '' });
+  const enh = mountEnh(h, ui);
+  ui.editor.textContent = '看得见的草稿';   // 桥读到别的（空）编辑器，本节点 DOM 仍有文字
+  clickButton(enh);
+  assert.equal(enhanceRequests(h).length, 0);
+  assert.match(enh.getAttribute('aria-label'), /未能读取输入框里的草稿/);
+  assert.match(enh.getAttribute('aria-label'), /重启/);
+  assert.doesNotMatch(enh.getAttribute('aria-label'), /先输入内容/);
+  assert.equal(ui.editor.setTextCalls || 0, 0);
+});
+
+test('issue477: a genuinely empty draft keeps the original "type a prompt" wording', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '' });
+  const enh = mountEnh(h, ui);
+  ui.editor.textContent = ' \n';   // 只有空白：与空草稿等价
+  clickButton(enh);
+  assert.equal(enhanceRequests(h).length, 0);
+  assert.match(enh.getAttribute('aria-label'), /先输入内容再增强/);
+});
+
+/* 回包路径：在途期间输入框变得读不了，回包不写入并如实提示，不说成草稿变了 */
+const replyNotApplied = {
+  'bridge removed mid-flight': ui => ui.editor.removeAttribute('data-e2e-lexical-bridge'),
+  'bridge throws on read mid-flight': ui => { ui.editor.__zcodeLexicalInputE2E.getText = () => { throw new Error('editor detached'); }; },
+  'bound input left the card mid-flight': ui => moveOwnInputOutOfCard(ui),
+};
+for (const [name, breakIt] of Object.entries(replyNotApplied)) {
+  test(`issue477: a reply arriving after the input became unreadable is not applied — ${name}`, () => {
+    const h = harness();
+    const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '原草稿' });
+    const enh = mountEnh(h, ui);
+    clickButton(enh);
+    const req = enhanceRequests(h)[0];
+    assert.ok(req, 'request was fired before the input broke');
+    breakIt(ui);
+    h.respond(req.requestId, { ok: true, text: '增强结果' });
+    assert.equal(ui.editor.__zuDraft, '原草稿', name);
+    assert.equal(ui.editor.setTextCalls || 0, 0, name);
+    assert.match(enh.getAttribute('aria-label'), /输入框暂不可读，本次结果未应用/, name);
+    assert.doesNotMatch(enh.getAttribute('aria-label'), /草稿已变化/, name);
+    assert.equal(enh.getAttribute('aria-busy'), 'false', name);
+  });
+}
+
+test('issue477: after the bound input is back in the card a new click issues a fresh request', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '原草稿' });
+  const enh = mountEnh(h, ui);
+  clickButton(enh);
+  const first = enhanceRequests(h)[0];
+  moveOwnInputOutOfCard(ui);
+  h.respond(first.requestId, { ok: true, text: '增强结果' });
+  assert.equal(ui.editor.setTextCalls || 0, 0);
+  ui.card.appendChild(ui.editor);   // 输入框回到卡内
+  clickButton(enh);
+  const second = enhanceRequests(h)[0];
+  assert.ok(second, 'a fresh request is issued once the input is readable again');
+  assert.equal(second.text, '原草稿');
+});
+
 test('enhance disabled: button not mounted even when payload present', () => {
   const h = harness({ enhanceOn: false });
   const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '草稿' });
@@ -380,6 +690,149 @@ test('hover shows self-drawn tooltip with phase text; leave hides it', () => {
   enh.listeners.get('mouseleave')[0]();
   runPending(h.timers, 220);   // mouseleave 延迟收起（给移入历史面板留时间）
   assert.equal(tip.style.display, 'none');
+});
+
+/* v468（issue #476）：用户点过增强按钮（焦点落在按钮上）再去点面板里的「设置」——mousedown 把焦点移到面板内
+ * 按钮，按钮的 blur 若在此时收面板，click 就落到下方页面。无头 Chrome 真实指针三样式实证（修复前）：blur 后
+ * 面板 display:none，mouseup/click 的目标变成 body，设置面板不打开。浏览器顺序固定为 mousedown→blur→mouseup→click，
+ * 这里按同一顺序驱动监听器。 */
+test('v468: button focused by a click → blur while the pointer is over the history panel keeps it open; settings click then opens the panel on the enhance section', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '   ' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  const tip = h.body.children.find(e => e.classList.contains('zusage-enhance-tip'));
+  const settingsPanel = () => h.body.children.find(e => e.classList.contains('panel') && e.classList.contains('zu-settings'));
+  enh.listeners.get('focus')[0].call(enh);   // 点击的 mousedown 阶段：按钮获得焦点，面板显示
+  assert.equal(tip.style.display, 'flex');
+  enh.listeners.get('click')[0]();   // 空草稿：警示相位（感叹号），不发请求
+  assert.ok(enh.classList.contains('zu-ewarn'), 'button enters the warn (exclamation) phase');
+  assert.equal(tip.style.display, 'flex', 'history panel stays open in the warn phase');
+  // 指针停在面板上时按下「设置」：mousedown 先把焦点移走
+  tip.matches = sel => sel === ':hover';   // 真实浏览器里指针停在面板上时 enhanceTip.matches(':hover') 为 true
+  enh.listeners.get('blur')[0].call(enh, { relatedTarget: null });
+  runPending(h.timers, 220);
+  assert.equal(tip.style.display, 'flex', 'blur with the pointer over the panel keeps it open (not a delayed hide)');
+  // click 到达面板的委托
+  const setBtn = new Element('button');
+  setBtn.setAttribute('data-ehset', '');
+  setBtn.closest = sel => sel === 'button' ? setBtn : null;
+  tip.listeners.get('click')[0]({ target: setBtn });
+  assert.equal(tip.style.display, 'none', 'the settings entry hides the panel');
+  assert.ok(settingsPanel() && settingsPanel().classList.contains('open'), 'settings panel opens');
+  assert.equal(h.window.enhanceTest.state().settingsSec, 'enhance-provider', 'opens the enhance-provider section');
+});
+
+test('v468: blur while the pointer is not over the history panel still hides it (keyboard path)', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '草稿' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  const tip = h.body.children.find(e => e.classList.contains('zusage-enhance-tip'));
+  enh.listeners.get('focus')[0].call(enh);
+  assert.equal(tip.style.display, 'flex');
+  enh.listeners.get('blur')[0].call(enh, { relatedTarget: null });   // 键盘 Tab 离开：指针不在面板上
+  assert.equal(tip.style.display, 'none', 'blur away from the panel hides it (keyboard path)');
+});
+
+/* v468 接管路径（审查补）：守卫放过 blur 之后，「按钮已失焦但面板仍显示」这个新状态完全靠面板自身的
+ * mouseleave 延迟收起来收。锁定：离开按钮的延迟收起被进入面板取消；守卫放过的 blur 不会变成延迟收起
+ * （离开延迟到期面板仍在）；指针离开面板后按延迟收起。 */
+test('v468: after a guarded blur the panel still hides when the pointer leaves it (mouseleave delayed hide takes over)', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '草稿' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  const tip = h.body.children.find(e => e.classList.contains('zusage-enhance-tip'));
+  enh.listeners.get('focus')[0].call(enh);
+  assert.equal(tip.style.display, 'flex');
+  tip.matches = sel => sel === ':hover';   // 指针在面板上
+  enh.listeners.get('mouseleave')[0]();   // 指针离开按钮：排一个延迟收起
+  tip.listeners.get('mouseenter')[0]();   // 进入面板：取消
+  runPending(h.timers, 220);
+  assert.equal(tip.style.display, 'flex', 'entering the panel cancels the leave delay');
+  enh.listeners.get('blur')[0].call(enh, { relatedTarget: null });   // 按下面板内按钮：mousedown 先移走焦点
+  runPending(h.timers, 220);
+  assert.equal(tip.style.display, 'flex', 'a guarded blur never turns into a delayed hide');
+  tip.listeners.get('mouseleave')[0]();   // 指针离开面板
+  assert.equal(tip.style.display, 'flex', 'leaving the panel hides it only after the delay');
+  runPending(h.timers, 220);
+  assert.equal(tip.style.display, 'none', 'mouseleave delayed hide takes over');
+});
+
+/* v468（审查补）：验收 11——同一状态下 footer 的「查看全部历史」「清空记录」同样要能点。修复前整排失效
+ * （无头 Chrome 真实指针实证：main v467 上两者的 click 均落到 body）。 */
+test('v468: after a guarded blur the other footer buttons still act — view-all opens the full panel, clear asks for confirmation', () => {
+  const cases = [
+    ['data-all', h => h.body.children.find(e => e.classList.contains('zusage-enhance-full') && e.style.display !== 'none'), 'view-all opens the full history panel'],
+    ['data-clear', h => h.body.children.find(e => e.classList.contains('zu-compact-dlg')), 'clear asks for confirmation'],
+  ];
+  for (const [attr, pick, what] of cases) {
+    const h = harness();
+    const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '   ' });
+    h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+    h.window.__zusageUpdate(h.payload());
+    h.tick();
+    const enh = h.enhOf(ui.wrap);
+    const tip = h.body.children.find(e => e.classList.contains('zusage-enhance-tip'));
+    enh.listeners.get('focus')[0].call(enh);
+    enh.listeners.get('click')[0]();   // 空草稿：警示相位（感叹号），不发请求
+    assert.ok(enh.classList.contains('zu-ewarn'));
+    tip.matches = sel => sel === ':hover';
+    enh.listeners.get('blur')[0].call(enh, { relatedTarget: null });
+    assert.equal(tip.style.display, 'flex', attr + ': panel survives the blur');
+    const footerBtn = new Element('button');
+    footerBtn.setAttribute(attr, '');
+    footerBtn.closest = sel => sel === 'button' ? footerBtn : null;
+    tip.listeners.get('click')[0]({ target: footerBtn });
+    assert.ok(pick(h), attr + ': ' + what + ' after a guarded blur');
+  }
+});
+
+/* v468（审查补）：降级环境——没有 matches 或 matches 抛错时 blur 照旧即收（规格「降级环境照旧即收」）。 */
+test('v468: without a usable matches() the blur handler still hides the panel (degraded environments keep the old behavior)', () => {
+  const variants = [['missing', undefined], ['throwing', () => { throw new Error('matches unavailable'); }]];
+  for (const [label, matches] of variants) {
+    const h = harness();
+    const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '草稿' });
+    h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+    h.window.__zusageUpdate(h.payload());
+    h.tick();
+    const enh = h.enhOf(ui.wrap);
+    const tip = h.body.children.find(e => e.classList.contains('zusage-enhance-tip'));
+    enh.listeners.get('focus')[0].call(enh);
+    assert.equal(tip.style.display, 'flex');
+    tip.matches = matches;
+    enh.listeners.get('blur')[0].call(enh, { relatedTarget: null });
+    assert.equal(tip.style.display, 'none', 'blur still hides when matches is ' + label);
+  }
+});
+
+/* v468（变异检查补）：壳层 openEnhanceSettings 先收面板这一步被实例侧 openEnhSettings 的同一动作遮住——
+ * 只有入口钩子缺席时才单独可见。锁定：钩子缺席时点「设置」，设置面板不开，但面板照样收起（不悬空）。 */
+test('v468: the settings entry still closes the panel when the entry hook is missing', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '草稿' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  const tip = h.body.children.find(e => e.classList.contains('zusage-enhance-tip'));
+  enh.listeners.get('focus')[0].call(enh);
+  assert.equal(tip.style.display, 'flex');
+  enh.__zuOpenEnhSettings = undefined;   // 入口钩子缺席：壳层无处分发
+  const setBtn = new Element('button');
+  setBtn.setAttribute('data-ehset', '');
+  setBtn.closest = sel => sel === 'button' ? setBtn : null;
+  tip.listeners.get('click')[0]({ target: setBtn });
+  assert.equal(tip.style.display, 'none', 'the panel closes even though nothing can be opened');
+  assert.equal(h.window.enhanceTest.state().settingsSec, 'display', 'nothing was opened');
 });
 
 test('click during enhance cancels: cancel request fired, phase resets, late reply ignored', () => {

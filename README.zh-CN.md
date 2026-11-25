@@ -27,6 +27,7 @@ A community toolkit for ZCode desktop: generation speed, token usage, context tr
 - **ZCode 桌面客户端**：主要支持 Windows / macOS；Linux 有路径与权限适配，但未覆盖所有发行版的实机验证。
 - **Python 3.8+**，需包含标准库 `sqlite3`，不用安装第三方 Python 包。
 - 无需另外安装 Node.js 或 npm，桌面状态栏使用 ZCode 自带的 Node 环境。
+- `token_usage` MCP 工具需要 **ZCode 桌面 3.19.0 及以上**（由客户端内置的 `zcode-python` 启动，预装工具下载完成后可用）；更旧的桌面版仍可用状态条、`/usage` 命令与 CLI。
 
 ### 安装方法
 

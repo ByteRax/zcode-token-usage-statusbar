@@ -960,10 +960,14 @@ test('速度格占位 CSS：全部格面固定宽 6.6em、右内边距 0、右�
   assert.ok(!source.includes('.zu-sp-label:not(:empty)::after'), '全文件不再有速度格标签的 ::after 间隔点规则（含窄档/药丸中等的去分隔符规则）');
   const tsbStart = source.indexOf('".zu-tsb{display:inline-flex;');
   const tsbCss = source.slice(tsbStart, source.indexOf('.zu-tsb:hover', tsbStart));
-  const tsbEm = (rule) => { const m = /width:([\d.]+)em/.exec(rule); assert.ok(tsbCss.includes(rule) && m, rule); return Number(m[1]); };
-  const tsbWide = tsbEm('"box-sizing:border-box;width:12.4em;"'), tsbMid = tsbEm('.zu-tsb.zu-speed-mid{width:9.7em}'), tsbTight = tsbEm('.zu-tsb.zu-speed-tight{width:6.6em}');
-  assert.deepEqual([tsbWide, tsbMid, tsbTight], TSB_EM, '精简 chip 三档（固定宽）与判定常量 ZU_TSB_TIERS 同源');
-  assert.deepEqual([tsbWide, tsbMid, tsbTight].map(e => Math.round(e * 13 * 10) / 10), [161.2, 126.1, 85.8], '精简 chip 三档不随本次改动（工具行场景仍是固定档）');
+  const tsbEm = (rule) => { const m = /max-width:([\d.]+)em/.exec(rule); assert.ok(tsbCss.includes(rule) && m, rule); return Number(m[1]); };
+  const tsbWide = tsbEm('"box-sizing:border-box;max-width:12.4em;"'), tsbMid = tsbEm('.zu-tsb.zu-speed-mid{max-width:9.7em}'), tsbTight = tsbEm('.zu-tsb.zu-speed-tight{max-width:6.6em}');
+  assert.deepEqual([tsbWide, tsbMid, tsbTight], TSB_EM, '精简 chip 三档上限与判定常量 ZU_TSB_TIERS 同源');
+  assert.deepEqual([tsbWide, tsbMid, tsbTight].map(e => Math.round(e * 13 * 10) / 10), [161.2, 126.1, 85.8], '精简 chip 三档上限不随本次改动（工具行场景的上限档）');
+  // v469（用户截图「现在的太宽了」）：三档是上限不是固定宽——chip 按内容定宽，完成态不给状态词留空位；
+  // 任何 .zu-tsb 规则不得再写 width/min-width（写回固定宽即回退本裁定）
+  assert.equal((tsbCss.match(/max-width:/g) || []).length, 3, '精简 chip 恰三条上限规则');
+  assert.ok(!/[;{](?:min-)?width:/.test(tsbCss), '精简 chip 不写 width/min-width（按内容定宽，v469）');
   assert.ok(!tsbCss.includes('.zu-tsb.zu-speed-tight>.zu-live{justify-content:flex-end}'), '精简紧张档数值不再靠右（成组靠左）');
   assert.ok(!/\.zusage-root[^{]*\.zu-tsb\.zu-speed-(mid|tight)/.test(source), '精简档位类不作用于状态条');
   assert.ok(!css.includes('transition'), '不得用 width transition 掩盖跳动');

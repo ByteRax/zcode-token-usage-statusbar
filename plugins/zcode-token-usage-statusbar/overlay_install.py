@@ -90,8 +90,8 @@ def default_runtime():
 
 
 # 独立安装器（仓库根 install.py）把 MCP 服务注册在宿主 CLI 配置的 mcp.servers 里；插件渠道
-# 另由 .mcp.json 注册同一工具。两条渠道并存时宿主每个会话会各拉起一份 usage_mcp.py
-# （插件侧还多一个 node mcp-launch 包装），内存占用翻倍；运行目录里的副本还可能停在旧版本。
+# 另由 .mcp.json 注册同一工具。两条渠道并存时宿主每个会话会各拉起一份 usage_mcp.py，
+# 内存占用翻倍；运行目录里的副本还可能停在旧版本。
 # 插件渠道已经提供 MCP，这里只清指向本插件脚本的遗留条目，绝不改用户其它 MCP 服务。
 LEGACY_MCP_NAMES = ("zcode-token-usage-statusbar", "token-usage", "zusage")
 LEGACY_MCP_ENTRY_KEYS = frozenset(("command", "args", "type", "enabled"))
