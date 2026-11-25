@@ -1622,7 +1622,11 @@ def _install(finalize=False, before_publish=None):
     try:
         mobile_entry = _mobile_for_archive(ASAR, entry, "apply")
         mobile_status = "patched" if mobile_entry != entry else "present"
-    except (KeyError, ValueError, TypeError, OverflowError, struct.error) as error:
+    except (OSError, KeyError, ValueError, TypeError, OverflowError, struct.error) as error:
+        # OSError：entry_bytes_of 之后的这次读档也会撞上瞬时占用（Windows 上杀软/索引器正开着
+        # app.asar，WinError 32）。穿出去会被 install() 的 except OSError 报成「安装锁获取
+        # 失败」；按布局无法验证处理——手机补丁留原样，状态条照常安装，之后的 SessionStart
+        # 手机补装再补。
         mobile_entry = entry
         mobile_status = "skipped-unknown"
         print(L(f"手机中继补丁未更改（{error}）", f"Mobile relay patch left unchanged ({error})"))
@@ -1772,7 +1776,9 @@ def _remove():
     if (_STASH_MARKER in old or _UPLINK_MARKER in old or _UPLINK_GENERATION_MARKER in old):
         try:
             old = _mobile_for_archive(ASAR, old, "remove")
-        except (KeyError, ValueError, TypeError, OverflowError, struct.error) as e:
+        except (OSError, KeyError, ValueError, TypeError, OverflowError, struct.error) as e:
+            # OSError 同 _install：读不到归档（含 Windows 瞬时占用）就无法安全剥离手机注入，
+            # 按原语义失败并说明原因，不穿成 remove() 的「卸载锁获取失败」。
             print(L(f"无法安全移除手机中继补丁：{e}", f"Cannot safely remove the mobile relay patch: {e}"))
             return False
     stripped = ZUSAGE_LINE_RE.sub(b"", old)

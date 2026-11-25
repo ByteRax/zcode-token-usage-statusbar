@@ -206,6 +206,51 @@ class MobileInstallTests(unittest.TestCase):
         self.assert_installed(self.target)
         self.assert_no_pending_or_stage()
 
+    def sharing_violation(self):
+        """Windows 上另一句柄正开着 app.asar（不带 FILE_SHARE_DELETE）时读档的形态。"""
+        return PermissionError(13, "The process cannot access the file because it is being used"
+                                   " by another process", str(self.target), 32)
+
+    def test_full_install_leaves_mobile_patch_when_second_archive_read_is_refused(self):
+        """完整安装在读完入口后再读一次归档来变换手机补丁。这次读档撞上瞬时占用
+        （杀软/索引器）时按「布局无法验证」处理：状态条照常装上、手机补丁留给之后的
+        SessionStart 补装——不能穿成「安装锁获取失败」让整轮安装失败。"""
+        self.write_archive()
+
+        def refused_snapshot(path, **kwargs):
+            raise self.sharing_violation()
+
+        out = io.StringIO()
+        with mock.patch.object(self.pi, "_archive_snapshot", side_effect=refused_snapshot), \
+                contextlib.redirect_stdout(out):
+            result = self.pi.install()
+
+        self.assertTrue(result, out.getvalue())
+        self.assertEqual(self.pi.entry_bytes_of(self.target), self.with_loader(BODY))
+        self.assertEqual(self.pi.mobile_status(), {"status": "skipped-unknown"})
+        self.assertIn("Mobile relay patch left unchanged", out.getvalue())
+        self.assertNotIn("Cannot acquire install lock", out.getvalue())
+        self.assert_no_pending_or_stage()
+
+    def test_remove_reports_refused_second_archive_read_as_mobile_patch_not_lock(self):
+        """卸载同理：读不到归档就无法安全剥离手机注入，按原语义失败并说明原因，
+        归档不动；不能报成「卸载锁获取失败」。"""
+        self.write_archive(self.installed_entry())
+        before = self.target.read_bytes()
+
+        def refused_snapshot(path, **kwargs):
+            raise self.sharing_violation()
+
+        out = io.StringIO()
+        with mock.patch.object(self.pi, "_archive_snapshot", side_effect=refused_snapshot), \
+                contextlib.redirect_stdout(out):
+            result = self.pi.remove()
+
+        self.assertFalse(result)
+        self.assertEqual(self.target.read_bytes(), before)
+        self.assertIn("Cannot safely remove the mobile relay patch", out.getvalue())
+        self.assertNotIn("Cannot acquire remove lock", out.getvalue())
+
     def test_mobile_only_repack_preserves_current_loader_and_reports_status(self):
         self.write_archive(self.with_loader(BODY))
         before_assets = self.assets(self.target)
