@@ -231,9 +231,9 @@ test('removed rows re-base the live rate: the pre-drop rate is held for one wind
   now = 1500;
   tracker.ingest(snapshot(3, [header(), text('a')]));   // 字符数下降：保持窗（2 秒）内沿用下降前的窗口速率
   assert.equal(tracker.get('t').characterRate, 2);
-  now = 5000;                                           // 保持窗过后才有下一条通知：新基线刚落，仍沿用
+  now = 5000;                                           // 保持窗结束 1800ms 后才有下一条通知：保持已作废，不回显旧速率
   tracker.ingest(snapshot(4, [header(), text('a')]));
-  assert.equal(tracker.get('t').characterRate, 2);
+  assert.equal(tracker.get('t').characterRate, null);
   now = 5300;                                           // 新基线已过 200ms 仍无增长：读 0，不再沿用下降前的旧速率
   assert.equal(tracker.get('t').characterRate, 0);
   now = 6000;
@@ -301,6 +301,89 @@ test('issue #483: the burst re-baseline only covers the tracker\'s first 300ms, 
   now = 3010;
   tracker.ingest(snapshot(3, [header(), text('a'.repeat(1800))]));  // 积压帧紧接着涌入
   assert.equal(tracker.get('t').characterRate, 1200 * 1000 / 3010, '真实生成的迟到投递仍按窗口平均');
+});
+
+/* 通知预算两头的 store：整窗拷贝每次耗时 costMs。≥8ms 进预算（间隔 cost×9，上限 1 秒），间隔内的通知合并成
+ * 一次入库，补齐突发凑不出 15ms 的间隔条件；<8ms 每次通知同步处理。字符数与会话由用例给定。 */
+function rateStore(costMs) {
+  const f = { now: 0, chars: 600, session: 's', timers: [], listener: null };
+  let seq = 0;
+  f.store = {
+    getState() { f.now += costMs; return { snapshot: snapshot(++seq, [header(), text('a'.repeat(f.chars))], f.session) }; },
+    subscribe: cb => { f.listener = cb; return () => {}; },
+  };
+  f.options = {
+    now: () => f.now,
+    setTimeout: fn => { const t = { fire() { fn(); } }; f.timers.push(t); return t; },
+    clearTimeout: () => {},
+  };
+  return f;
+}
+
+test('issue #483: an expensive session gets the catch-up burst as one coalesced ingest, which re-baselines too, once per bind', () => {
+  const f = rateStore(8);                                  // 预算间隔 72ms
+  const tracker = createTracker({ now: () => f.now });
+  subscribeStore(f.store, tracker, () => {}, f.options);   // 初次同步处理：t=8，600 字符
+  f.now = 10; f.chars = 900; f.listener();                 // 被压住的帧开始涌入：间隔内只置 pending
+  f.now = 40; f.chars = 1200; f.listener();
+  f.now = 60; f.chars = 1460; f.listener();
+  f.now = 80; f.timers[0].fire();                          // 合并成一次入库：t=88，1460 字符
+  f.now = 288; f.chars = 1520; f.listener();               // 之后 300 字符/s（间隔已过，同步处理）
+  f.now = 488; f.chars = 1580; f.listener();
+  assert.equal(tracker.get('t').characterRate, 120 * 1000 / 408, '合并入库带着订阅快照之后攒下的 860 字符：改作新基线');
+  f.now = 497; f.listener();                               // 间隔内再合并一次
+  f.now = 560; f.chars = 1605; f.listener();
+  f.now = 569; f.timers[1].fire();                         // t=577
+  assert.equal(tracker.get('t').characterRate, 145 * 1000 / 489, '稳窗内只重取一次基线，之后的合并入库照常计入');
+  f.session = 's2'; f.now = 60000; f.chars = 600; f.listener();   // 一分钟后切到另一个会话（同步处理，t=60008）
+  f.now = 60009; f.chars = 900; f.listener();              // 同样的补齐突发
+  f.now = 60070; f.chars = 1460; f.listener();
+  f.now = 60080; f.timers[2].fire();                       // t=60088
+  f.now = 60288; f.chars = 1520; f.listener();
+  f.now = 60488; f.chars = 1580; f.listener();
+  assert.equal(tracker.get('t').characterRate, 120 * 1000 / 408, '换会话视同新建：这一次的合并入库照样重取基线');
+});
+
+test('issue #483: a coalesced ingest only re-baselines within the tracker\'s first 1.2s', () => {
+  const f = rateStore(8);
+  const tracker = createTracker({ now: () => f.now });
+  subscribeStore(f.store, tracker, () => {}, f.options);   // t=8，600 字符
+  f.now = 5000; f.listener();                              // 会话停了 5 秒：间隔早过，同步处理（t=5008），仍是 600 字符
+  f.now = 5009; f.chars = 1500; f.listener();              // 间隔内：只置 pending
+  f.now = 5070; f.chars = 1521; f.listener();
+  f.now = 5080; f.timers[0].fire();                        // 合并入库：t=5088，1521 字符
+  f.now = 5288; f.chars = 1581; f.listener();              // 之后 300 字符/s（同步处理，t=5296）
+  assert.equal(tracker.get('t').characterRate, 981 * 1000 / 5288, '建立 1.2 秒之后的合并入库是真实生成的迟到投递，仍按窗口平均');
+});
+
+test('issue #483: synchronous ingests are never taken for a coalesced catch-up', () => {
+  const f = rateStore(2);
+  const tracker = createTracker({ now: () => f.now });
+  subscribeStore(f.store, tracker, () => {}, f.options);   // t=2，600 字符
+  f.now = 500; f.chars = 650; f.listener();                // 廉价会话：逐条同步入库，先慢后快（200 → 300 字符/s）
+  f.now = 750; f.chars = 725; f.listener();
+  assert.equal(tracker.get('t').characterRate, 125 * 1000 / 750, '一帧没丢：按窗口平均，不重取基线');
+});
+
+test('issue #483: the settle window restarts when the tracker is cleared or the session / epoch changes', () => {
+  const burst = restart => {
+    let now = 0;
+    const tracker = createTracker({ now: () => now });
+    tracker.ingest(snapshot(1, [header(), text('a'.repeat(600))], 's1', 'e1'));
+    now = 5000;                                            // 建立已 5 秒：平时的补齐突发早已出稳窗
+    const first = restart(tracker);                        // 视同新建后的首个快照
+    tracker.ingest(first);
+    now = 5010;
+    tracker.ingest(snapshot(3, [header(), text('a'.repeat(1500))], first.sessionId, first.logEpoch));   // 补齐突发
+    now = 5310;
+    tracker.ingest(snapshot(4, [header(), text('a'.repeat(1590))], first.sessionId, first.logEpoch));   // 之后 300 字符/s
+    return tracker.get('t').characterRate;
+  };
+  assert.equal(burst(() => snapshot(2, [header(), text('a'.repeat(600))], 's2', 'e1')), 300, '换会话');
+  assert.equal(burst(() => snapshot(2, [header(), text('a'.repeat(600))], 's1', 'e2')), 300, '换纪元');
+  assert.equal(burst(tracker => { tracker.clear(); return snapshot(1, [header(), text('a'.repeat(600))], 's1', 'e1'); }), 300, 'clear()');
+  assert.equal(burst(() => snapshot(2, [header(), text('a'.repeat(600))], 's1', 'e1')), 990 * 1000 / 5310,
+    '对照：同一会话同一纪元没有重挂，5 秒后的突发仍按窗口平均');
 });
 
 test('issue #483: a character drop holds the pre-drop rate instead of re-basing low ahead of a refill', () => {

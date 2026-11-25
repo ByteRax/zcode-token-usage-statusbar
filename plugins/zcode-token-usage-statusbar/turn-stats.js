@@ -21,10 +21,12 @@
     return n;
   }
 
-  /* 重挂后的稳窗（issue #483，specs/live-rate-estimate-robustness.md）：tracker 建立后 SETTLE_MS 内、与上一
-   * 采样间隔不足 BURST_DT_MS 的快照，是订阅时被压住的增量帧成批涌入（真机 71ms 内 43 个 seq），稳态通知
-   * 间隔实测不小于 17ms。 */
-  const SETTLE_MS = 300, BURST_DT_MS = 15;
+  /* 重挂后的稳窗（issue #483，specs/live-rate-estimate-robustness.md）。重挂时 tracker 的首个快照是订阅那一刻的
+   * 整份快照，被压住的增量帧随后涌入，两者之间的输出会被算成瞬间生成。廉价会话里这些帧逐条入库，与上一
+   * 采样间隔不足 BURST_DT_MS（真机 71ms 内 43 个 seq；稳态间隔实测 17ms 以上）；昂贵会话里通知被下方预算
+   * 合并成一次入库，凑不出间隔条件，改认 tracker 建立后 MERGE_SETTLE_MS 内的第一个合并入库（预算间隔上限
+   * 1 秒）。两种都只发生在 tracker 刚建立这一小段。 */
+  const SETTLE_MS = 300, BURST_DT_MS = 15, MERGE_SETTLE_MS = 1200;
 
   /* 滑动窗速率：窗口首样本到采样时刻的字符增量 ÷ 跨度。跨度不足 200ms、或末样本已停更 2 秒 → null。 */
   function windowRate(samples, sampledAt) {
@@ -41,10 +43,12 @@
     let epoch = null;
     let session = null;
     let sequence = -1;
-    let bornAt = null;   // 首个成功入库的快照时刻：稳窗从这里起算
+    let bornAt = null;   // 首个成功入库的快照时刻：稳窗从这里起算（clear() 与换会话/纪元时重置）
+    let mergeSettled = false;   // 稳窗内已为合并入库重取过基线：只做一次，不给昂贵会话的读数叠加延迟
     let disposed = false;
 
-    function ingest(snapshot) {
+    /* merged=true：subscribeStore 把预算间隔内的通知合并后的入库（中间帧被跳过） */
+    function ingest(snapshot, merged) {
       if (disposed || !snapshot || typeof snapshot.sessionId !== 'string' ||
           typeof snapshot.logEpoch !== 'string' || !Number.isSafeInteger(snapshot.seq) ||
           !snapshot.rows || !Array.isArray(snapshot.rows.window)) return false;
@@ -53,6 +57,7 @@
         epoch = snapshot.logEpoch;
         session = snapshot.sessionId;
         sequence = -1;
+        bornAt = null; mergeSettled = false;   // 换会话/纪元：tracker 视同新建
       }
       if (snapshot.seq <= sequence) return false;
       sequence = snapshot.seq;
@@ -104,6 +109,9 @@
         }
         turn.allCharacters = allCharacters;
         turn.built = true;
+        // 保持窗结束 400ms 后才来的首个快照（尚无新基线）：保持作废，只作新基线——长时间停更后再回显旧速率
+        // 像一次闪烁。新基线已落的，沿用只看新基线自己的年龄（见 get）。
+        if (turn.hold && at - turn.hold.until >= 400 && turn.samples.length === 0) turn.hold = null;
         const cur = turn.samples[turn.samples.length - 1];
         if (cur && cur.characters > characters) {
           // 字符数下降（行文本被替换得更短、行被移除、快照整体替换）：清样本，沿用它下降前的窗口速率
@@ -112,11 +120,14 @@
           const held = windowRate(turn.samples, at);
           turn.samples.length = 0;
           turn.hold = { rate: held, until: at + 2000 };
-        } else if (cur && at - bornAt < SETTLE_MS && at - cur.at < BURST_DT_MS && characters > cur.characters) {
-          // 重挂后的补齐突发：首个快照是订阅那一刻的整份快照，被压住的增量帧随后成批涌入，两者之间的
-          // 输出会被算成几十毫秒内生成——改作新基线。只管 tracker 刚建立这一小段，之后的积压是真实生成
-          // 的迟到投递，仍按窗口平均。
+        } else if (cur && characters > cur.characters && at - bornAt < SETTLE_MS && at - cur.at < BURST_DT_MS) {
+          // 重挂后的补齐突发（廉价会话）：改作新基线。只管 tracker 刚建立这一小段，之后的积压是真实生成的
+          // 迟到投递，仍按窗口平均。
           turn.samples.length = 0;
+        } else if (cur && merged && !mergeSettled && characters > cur.characters && at - bornAt < MERGE_SETTLE_MS) {
+          // 同一个补齐突发落在昂贵会话：首个合并入库带着订阅快照之后攒下的全部输出，同样改作新基线，只做一次。
+          turn.samples.length = 0;
+          mergeSettled = true;
         }
         const base = turn.samples[turn.samples.length - 1];
         if (!(turn.hold && at < turn.hold.until) && (!base || base.characters !== characters)) turn.samples.push({ at, characters });
@@ -217,7 +228,7 @@
       };
     }
 
-    return { ingest, get, clear() { turns.clear(); epoch = null; sequence = -1; }, dispose() { disposed = true; turns.clear(); } };
+    return { ingest, get, clear() { turns.clear(); epoch = null; sequence = -1; bornAt = null; mergeSettled = false; }, dispose() { disposed = true; turns.clear(); } };
   }
 
   // ---------- 工具组近似（v181 特性，v187 补回——PR #161 合并时遗漏本块）：宿主把当前运行段尾部
@@ -288,8 +299,9 @@
    * 长会话（数千行）里「读 store + ingest + 回调」一次就几十毫秒，流式期间每秒数次通知就把主线程占满。
    * 上一次处理实测 ≥ MIN_COST 时，下一次处理至少间隔 min(MAX_GAP, cost × GAP_RATIO)（插件占比 ≤ ~10%）；
    * 间隔内的通知只置 pending，由唯一的尾部定时器在间隔届满时处理**最新**状态（中间快照不读不 ingest，
-   * ingest 以 seq 单调，丢中间帧无副作用）。廉价会话（cost < MIN_COST）与此前逐字一致：每次通知同步
-   * 处理，不排任何定时器（规则 5：测试与语义依赖通知后同步更新状态条）。 */
+   * ingest 以 seq 单调，丢中间帧无副作用）；合并入库以 ingest 第二参 merged=true 告知 tracker，供其识别
+   * 重挂后的补齐突发（issue #483）。廉价会话（cost < MIN_COST）与此前逐字一致：每次通知同步处理，不排
+   * 任何定时器（规则 5：测试与语义依赖通知后同步更新状态条）。 */
   const BUDGET_MIN_COST_MS = 8;
   const BUDGET_GAP_RATIO = 9;
   const BUDGET_MAX_GAP_MS = 1000;
@@ -304,13 +316,13 @@
     const arm = options.setTimeout || ((fn, ms) => (typeof setTimeout === 'function' ? setTimeout(fn, ms) : null));
     const disarm = options.clearTimeout || (t => { if (typeof clearTimeout === 'function') clearTimeout(t); });
     let closed = false, timer = null, pending = false, lastEnd = 0, lastCost = 0;
-    const run = () => {
+    const run = merged => {
       const started = now();
       /* changed() 跑在宿主 store 的通知分发链上，异常会冒进宿主其它订阅者——统一兜住
        * （调用方 overlay 侧另有 try 记录诊断，这里是不让异常出模块的最后闸）。 */
       try {
         const state = store.getState();
-        if (tracker.ingest(state && state.snapshot)) changed(state);
+        if (tracker.ingest(state && state.snapshot, merged)) changed(state);
       } catch (e) { /* 单次通知失败不影响后续订阅 */ }
       lastEnd = now();
       lastCost = lastEnd - started;
@@ -319,7 +331,7 @@
       timer = null;
       if (closed || !pending) return;
       pending = false;
-      run();
+      run(true);   // 合并入库：间隔内的中间帧被跳过
     };
     const update = () => {
       if (closed) return;
@@ -345,7 +357,7 @@
       // 新通知已处理了最新状态，再让它读一次整窗只是白拷贝。
       if (timer !== null) { try { disarm(timer); } catch (e) { } timer = null; }
       pending = false;
-      run();
+      run(false);
     };
     const off = store.subscribe(update);
     if (typeof off !== 'function') { closed = true; return null; }
