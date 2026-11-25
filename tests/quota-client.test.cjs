@@ -2080,23 +2080,26 @@ test("reset client: 旧平铺键缺席回退新式登录态键（issue #391）�
   assert.equal(listCall.headers.authorization, "linked.oauth.tok");   // 列表子链同样用回退 token（裸头）
 });
 
-test("reset list enrichment: independent 10min TTL (status refetch alone), force still fetches, failed attempt also counts", async () => {
+test("reset list enrichment: list follows the status cadence (TTL round refetches both, poke round refetches status alone), force still fetches, failed attempt also counts", async () => {
   const on = makeResetClient({ resetList: true });
   on.clock.t = Date.parse("2026-10-28T12:00:00+08:00");
   on.client.tick();
   await flush();
   const listCalls = () => on.calls.filter((c) => c.url === RESET_LIST_URL).length;
+  const statusCalls = () => on.calls.filter((c) => c.url === RESET_URL).length;
+  assert.equal(statusCalls(), 2);   // 两族 status
   assert.equal(listCalls(), 1);
-  on.clock.t += Q.RESET_TTL_MS + 1;   // status 到期重查，list 子 TTL 未到
-  on.client.tick();
+  on.clock.t += Q.RESET_POKE_GAP_MS;
+  on.client.pokeReset();   // TTL 内的事件唤醒：列表上次尝试未满 TTL
   await flush();
-  assert.equal(on.calls.filter((c) => c.url === RESET_URL).length, 4);   // 两族 status 照常重查
-  assert.equal(listCalls(), 1, "list 子 TTL 内不重打");
+  assert.equal(statusCalls(), 4);
+  assert.equal(listCalls(), 1, "TTL 内 poke 轮不打列表");
   assert.equal(on.client.view().resets.bigmodel.list.fiveHour.length, 2);   // 保留上次成功列表
-  on.clock.t += Q.RESET_LIST_TTL_MS;
+  on.clock.t += Q.RESET_TTL_MS;   // 恰等 status 下一次刷新时刻
   on.client.tick();
   await flush();
-  assert.equal(listCalls(), 2, "list 子 TTL 到期重打");
+  assert.equal(statusCalls(), 6, "两族 status 照常重查");
+  assert.equal(listCalls(), 2, "status 到期重查的同一轮重打列表（徽标张数与 tooltip 明细同轮落库）");
   on.client.refresh();   // force 绕过子 TTL
   await flush();
   assert.equal(listCalls(), 3, "force 强制打列表");
@@ -2105,11 +2108,16 @@ test("reset list enrichment: independent 10min TTL (status refetch alone), force
   fail.client.tick();
   await flush();
   assert.equal(fail.calls.filter((c) => c.url === RESET_LIST_URL).length, 1);
-  fail.clock.t += Q.RESET_TTL_MS + 1;   // 失败尝试也计时：status 重查但列表等下个窗口
-  fail.client.tick();
+  fail.clock.t += Q.RESET_POKE_GAP_MS;   // 失败尝试也计时：TTL 内 poke 轮不重试
+  fail.client.pokeReset();
   await flush();
   assert.equal(fail.calls.filter((c) => c.url === RESET_URL).length, 4);
   assert.equal(fail.calls.filter((c) => c.url === RESET_LIST_URL).length, 1, "列表失败静默降级且按尝试计时");
+  fail.clock.t += Q.RESET_TTL_MS;
+  fail.client.tick();
+  await flush();
+  assert.equal(fail.calls.filter((c) => c.url === RESET_LIST_URL).length, 2, "下一个 status 轮再试");
+  assert.equal(Q.RESET_LIST_TTL_MS, Q.RESET_TTL_MS, "列表与 status 同节奏");
 });
 
 test("reset client: pokeReset soft-refreshes after 30s gap only; gate off no-ops", async () => {
@@ -2216,34 +2224,115 @@ test("reset client: pokeReset counts only families with usable credentials", asy
   assert.equal(calls.filter((c) => c.url === RESET_URL).length, 2, "首查 1 次 + poke 拉新 1 次；无凭据的 zai 族零请求");
 });
 
-test("reset list enrichment: HTTP-level failure also counts as attempt (no retry within list TTL)", async () => {
+test("reset list enrichment: HTTP-level failure also counts as attempt (no retry on a poke round, retry on the next status round)", async () => {
   const on = makeResetClient({ resetList: true, listOk: "http503" });
   on.clock.t = Date.parse("2026-10-28T12:00:00+08:00");
   on.client.tick();
   await flush();
-  assert.equal(on.calls.filter((c) => c.url === RESET_LIST_URL).length, 1);
+  const listCalls = () => on.calls.filter((c) => c.url === RESET_LIST_URL).length;
+  assert.equal(listCalls(), 1);
   assert.equal(on.client.view().resets.bigmodel.status, "ok");   // 列表失败不拖累 status 主链
-  on.clock.t += Q.RESET_TTL_MS + 1;
+  on.clock.t += Q.RESET_POKE_GAP_MS;
+  on.client.pokeReset();
+  await flush();
+  assert.equal(on.calls.filter((c) => c.url === RESET_URL).length, 4, "poke 轮两族 status 照常重查");
+  assert.equal(listCalls(), 1,
+    "HTTP 层失败同样按尝试计时，TTL 内不重试");
+  on.clock.t += Q.RESET_TTL_MS;   // 下一次 status 刷新
   on.client.tick();
   await flush();
-  assert.equal(on.calls.filter((c) => c.url === RESET_LIST_URL).length, 1,
-    "HTTP 层失败同样按尝试计时，子 TTL 内不重试");
-  on.clock.t += Q.RESET_LIST_TTL_MS;
-  on.client.tick();
-  await flush();
-  assert.equal(on.calls.filter((c) => c.url === RESET_LIST_URL).length, 2, "子 TTL 到期后恢复重试");
+  assert.equal(listCalls(), 2, "下一个 status 轮恢复重试");
 });
 
-test("reset list enrichment: list refetches exactly at the RESET_LIST_TTL_MS boundary", async () => {
+test("reset list enrichment: at the exact RESET_TTL_MS boundary status and list refetch in the same round", async () => {
   const on = makeResetClient({ resetList: true });
   on.clock.t = Date.parse("2026-10-28T12:00:00+08:00");
   on.client.tick();
   await flush();
   const t0 = on.clock.t;
-  on.clock.t = t0 + Q.RESET_LIST_TTL_MS;   // 恰等边界：t - listFetchedAt === RESET_LIST_TTL_MS
+  on.clock.t = t0 + Q.RESET_TTL_MS;   // 恰等 status 到期边界：t === nextAt
   on.client.tick();
   await flush();
-  assert.equal(on.calls.filter((c) => c.url === RESET_LIST_URL).length, 2, "恰等边界即重打（>= 语义）");
+  assert.equal(on.calls.filter((c) => c.url === RESET_URL).length, 4, "恰等边界 status 重查");
+  assert.equal(on.calls.filter((c) => c.url === RESET_LIST_URL).length, 2, "同一轮列表重打（>= 语义）");
+});
+
+test("reset list enrichment: the next refresh and the list stamp share the visible fetchedAt when the clock advances between calls", async () => {
+  /* 回归形态=结算段分两次取时钟：listFetchedAt 比 nextAt 的基准晚，tick 恰等于 nextAt 的那一轮
+   * t - listFetchedAt < TTL，列表隔一轮才重打；可见 fetchedAt 与下一次刷新的基准也差 1ms。 */
+  const clock = { t: T0 };
+  const rc = RESET_CREDS();
+  const calls = [];
+  const client = Q.createQuotaClient({
+    env: Object.assign({}, ENV), now: () => clock.t++,   // 每次取值递增 1ms
+    credsPath: "/virtual/credentials.json", readFile: () => rc,
+    quotaEnabled: () => false, resetEnabled: () => true, resetList: true,
+    fetchImpl: (url) => {
+      const d = deferred();
+      calls.push(url);
+      if (url.indexOf("/api/v1/coding-plan/reset/status") >= 0) d.resolve(fakeRes(200, RESET_BODY));
+      else if (url.indexOf(RESET_LIST_URL) >= 0) d.resolve(fakeRes(200, RESET_LIST_BODY));
+      return d.promise;
+    },
+  });
+  const listCalls = () => calls.filter((u) => u === RESET_LIST_URL).length;
+  client.tick();
+  await flush();
+  assert.equal(listCalls(), 1);
+  const due = client.view().resets.bigmodel.fetchedAt + Q.RESET_TTL_MS;   // 可见更新时刻 + TTL = 下一次刷新时刻
+  clock.t = due;
+  client.tick();
+  await flush();
+  assert.ok(client.view().resets.bigmodel.fetchedAt > due, "恰等 nextAt 即重查 status");
+  assert.equal(listCalls(), 2, "status 到期的同一轮列表到期重打，不隔轮");
+});
+
+test("reset list enrichment: a newly issued card reaches status and list in the same TTL round, so badge count matches tooltip rows", async () => {
+  /* 2026-11-25 实报：徽标 3、tooltip 未到期 2 行——新发的卡只在 status 里，列表还停在上一轮 */
+  const clock = { t: Date.parse("2026-11-25T18:00:50+08:00") };
+  const base = clock.t;
+  const far = base + 26 * 86400000, soon = base + 2 * 3600000;
+  const server = { issued: false };
+  const rc = RESET_CREDS();
+  const statusBody = () => JSON.stringify({ code: 0, data: {
+    available_five_hour_resets: [far, far].concat(server.issued ? [soon] : []).map((ms) => ({ expire_at: ms / 1000 })),
+    available_week_resets: [] } });
+  const listBody = () => JSON.stringify({ code: 200, success: true, data: {
+    lastFiveHourResetTime: null, lastWeekResetTime: null, weekResets: [],
+    fiveHourResets: [
+      { grantType: "DIRECT", expireTime: "2026-11-24 20:04:20", available: false },   // 近 7 天过期：进列表、不计未到期
+      { grantType: "GLOBAL", expireTime: "2026-12-22 23:59:59", available: true },
+      { grantType: "GLOBAL", expireTime: "2026-12-22 23:59:59", available: true },
+    ].concat(server.issued ? [{ grantType: "DIRECT", expireTime: "2026-11-25 20:00:54", available: true }] : []) } });
+  const client = Q.createQuotaClient({
+    env: Object.assign({}, ENV), now: () => clock.t,
+    credsPath: "/virtual/credentials.json", readFile: () => rc,
+    quotaEnabled: () => false, resetEnabled: () => true, resetList: true,
+    fetchImpl: (url) => {
+      const d = deferred();
+      if (url.indexOf(RESET_URL) >= 0) d.resolve(fakeRes(200, statusBody()));
+      else if (url.indexOf(RESET_LIST_URL) >= 0) d.resolve(fakeRes(200, listBody()));
+      return d.promise;
+    },
+  });
+  const live = (cards) => cards.filter((c) => c.expireAt > clock.t);
+  const badgeVsRows = () => {
+    const e = client.view().resets.bigmodel;   // 渲染端：徽标张数读 fiveHour/week，tooltip 行读 list
+    return { badge: live(e.fiveHour.concat(e.week)).length, rows: live(e.list.fiveHour.concat(e.list.week)).length };
+  };
+  client.tick();
+  await flush();
+  assert.deepEqual(badgeVsRows(), { badge: 2, rows: 2 });
+  server.issued = true;   // 两个接口都多了一张 20:00:54 到期的直发卡
+  clock.t = base + Q.RESET_POKE_GAP_MS;
+  client.pokeReset();
+  await flush();
+  assert.deepEqual(badgeVsRows(), { badge: 3, rows: 2 },
+    "TTL 内 poke 只刷 status：徽标先于明细（已知残余，specs/reset-card-refresh.md）");
+  clock.t += Q.RESET_TTL_MS;   // 下一次 status 刷新：列表若还按更长的独立周期，这一轮就对不上
+  client.tick();
+  await flush();
+  assert.deepEqual(badgeVsRows(), { badge: 3, rows: 3 }, "status 到期轮同轮重打列表，两边对齐");
 });
 
 test("reset client: pokeReset skips an in-flight refresh of an ok family", async () => {
@@ -2303,7 +2392,7 @@ test("reset list enrichment: transport failure after a good round keeps the last
   await flush();
   assert.ok(client.view().resets.bigmodel.list, "首轮 list 成功落库");
   const t0 = clock.t;
-  clock.t = t0 + Q.RESET_LIST_TTL_MS;   // 恰等到期，这轮 list 传输失败
+  clock.t = t0 + Q.RESET_TTL_MS;   // 恰等 status 到期，这轮 list 传输失败
   client.tick();
   await flush();
   assert.equal(calls.filter((c) => c.url === RESET_LIST_URL).length, 2);
