@@ -918,11 +918,17 @@ test('v457 §25 样式: 数值贴右、token 行、两个尺寸容器（日卡�
     '隐藏条件不得用 max- 写法（留缝或误藏 N 本身）');
   assert.match(style, /\.zu-sv3-root \.zu3-vwrap \.zu3-v\{font-size:8px\}/, '缩速度只作用于值组内');
   assert.match(style, /\.zu-sv3-root \.zu3-cal \.zu3-vwrap \.zu3-cv\{font-size:10px\}/);
+  /* v465 放大档「不得带上界」守卫放在块提取/整块锁之前：文本锁先红会吞掉本守卫的
+   * 专属报错（N2 复审 MINOR），提前让靶变异（给放大档加 max-/区间上界）直接命中本断言 */
+  assert.doesNotMatch(style, /@container zu3hc \(min-width:56px\)[^{}]*max-/, '放大档条件不得带上界');
   const blocks = style.match(/@container[^{}]*\{(?:[^{}]*\{[^{}]*\})+\}/g) || [];
-  assert.equal(blocks.length, 11, '7 个缩字档 + 4 条隐藏规则');
-  // 整块锁定：条件、块体里的字号、源序一起锁。源序即层叠：宽度档排在比它字号大的高度档之后，
-  // 日历矮格的高度档二（6.5px）排在宽度档之后；隐藏规则最后
+  assert.equal(blocks.length, 12, '1 个放大档 + 7 个缩字档 + 4 条隐藏规则');
+  // 整块锁定：条件、块体里的字号、源序一起锁。源序即层叠：放大档（v465，只有 min- 下限）
+  // 排最前只是可读性；宽度档排在比它字号大的高度档之后，日历矮格的高度档二（6.5px）排在
+  // 宽度档之后；隐藏规则最后
   assert.deepEqual(blocks, [
+    '@container zu3hc (min-width:56px) and (min-height:39px){.zu-sv3-root .zu3-v,.zu-sv3-root .zu3-cal .zu3-cv{font-size:14px}' +
+      '.zu-sv3-root .zu3-tk,.zu-sv3-root .zu3-cal .zu3-tk{font-size:10px}}',
     '@container zu3hc (max-height:39px) and (min-height:26.5px) and (min-width:36.8px){.zu-sv3-root .zu3-tk,.zu-sv3-root .zu3-cal .zu3-tk{font-size:7px}}',
     '@container zu3hw (max-height:25px) and (min-height:21.5px) and (min-width:26px){.zu-sv3-root .zu3-vwrap .zu3-v{font-size:8px}' +
       '.zu-sv3-root .zu3-hh-grid .zu3-tk{font-size:6.5px}}',
@@ -941,13 +947,19 @@ test('v457 §25 样式: 数值贴右、token 行、两个尺寸容器（日卡�
     'token 行基础字号 8px（日卡与高格）；max-width:100% 是省略号裁切的前提');
   assert.doesNotMatch(style, /zu3hw \(width < 30px\)\{\.zu-sv3-root \.zu3-tk\{display:none/, '周列/月列格不得沿用 30px 隐藏线');
   assert.doesNotMatch(style, /zu3hc \(width < 30px\)\{\.zu-sv3-root \.zu3-tk\{display:none/, '日历格隐藏线不得回到 30px（全文写法 6.5px 下就要 35.3px）');
-  for (const blk of blocks.slice(0, 7)) {
+  for (const blk of blocks.slice(1, 8)) {   /* 首项是 v465 放大档（有意放大裸速度），不进缩字档循环 */
     assert.match(blk, /min-width:(36\.8|26)px|width >= (39\.5|36\.8|28|26)px/, '缩字档带宽度下限（窄格 token 已隐藏，不得缩速度）');
     // 选择器须以 {.zu-sv3-root 开头才算「裸速度」缩字（.zu3-vwrap 内的不算）
     assert.doesNotMatch(blk, /\{\.zu-sv3-root \.zu3-v\{font-size|\{\.zu-sv3-root \.zu3-cal \.zu3-cv\{font-size/,
       '不得缩裸速度（无 token 的格观感不变）');
     assert.ok(!/padding|height:\d|width:\d/.test(blk.replace(/max-height:\d|min-height:\d|max-width:\d|min-width:\d/g, '')), '档位不得改容器自身盒');
   }
+  /* v465 放大档（spec §26）：只有 min- 下限（与缩字/隐藏范围不交，带上界会互相覆盖）、
+   * 排在全部缩字档之前；两形态高特异性基础规则（.zu3-cal .zu3-cv / .zu3-cal .zu3-tk）必须重述 */
+  const roomy = style.indexOf('@container zu3hc (min-width:56px)');
+  assert.ok(roomy >= 0 && roomy < hcTier1, '放大档排在全部缩字档之前');
+  assert.match(style, /@container zu3hc \(min-width:56px\) and \(min-height:39px\)\{\.zu-sv3-root \.zu3-v,\.zu-sv3-root \.zu3-cal \.zu3-cv\{font-size:14px\}\.zu-sv3-root \.zu3-tk,\.zu-sv3-root \.zu3-cal \.zu3-tk\{font-size:10px\}\}/,
+    '放大档整块：速度两形态 14px、token 10px');
   assert.match(style, /\.zu-sv-portal \.zu-sv3-ctok\{white-space:nowrap;font-variant-numeric:tabular-nums\}/, '悬停卡数值一行');
   assert.match(style, /\.zu-sv-portal \.zu-sv3-ctok small\{display:block;font-size:9px;font-weight:400;/, '拆分为次行小字');
 });

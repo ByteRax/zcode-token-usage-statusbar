@@ -395,6 +395,18 @@
        * 1/64px 的容差，`max-width:25.9999px` 会连 26px 的格一起隐藏。 */
       ".zu-sv3-root .zu3-hm-grid .zu-hm-cell{container-type:size;container-name:zu3hc}" +
       ".zu-sv3-root .zu3-hh-grid .zu-hm-cell{container-type:size;container-name:zu3hw}" +
+      /* v465（spec §26）：宽裕格放大档——本月/全部日历格数字四周有多余间隙时适当放大
+       * 速度与 token（用户截图：5 行月历格 84.2/2.53亿 的 9px/8px 小字与大块留白）。
+       * 只有 min- 下限：除 39.0px 共享端点外与缩字档（带上界）和隐藏线（<N）范围
+       * 不交，不存在「放大档把矮格抬回去」的源序问题；39px 下界取最高缩字带
+       * （26.5~39px）的上界衔接，恰在 39.0px 两档同命中时 token 靠源序落缩字档 7px、
+       * 速度仍取放大档 14px（混合态仅 1/64px 容差窗口，竖直可容纳）。
+       * 速度两形态选择器都重述（.zu3-cal .zu3-cv 特异性更高）、token 同理；6 行月历
+       * （内容高 35.8px）留在缩字带不放大；周列/月列（zu3hw）与日卡不参与。阈值与
+       * 自然宽实测见 spec §26。 */
+      "@container zu3hc (min-width:56px) and (min-height:39px){" +
+        ".zu-sv3-root .zu3-v,.zu-sv3-root .zu3-cal .zu3-cv{font-size:14px}" +
+        ".zu-sv3-root .zu3-tk,.zu-sv3-root .zu3-cal .zu3-tk{font-size:10px}}" +
       "@container zu3hc (max-height:39px) and (min-height:26.5px) and (min-width:36.8px){" +
         ".zu-sv3-root .zu3-tk,.zu-sv3-root .zu3-cal .zu3-tk{font-size:7px}}" +
       "@container zu3hw (max-height:25px) and (min-height:21.5px) and (min-width:26px){" +
