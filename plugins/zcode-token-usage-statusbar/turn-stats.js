@@ -137,8 +137,9 @@
       const hold = turn.hold;
       if (!complete && hold && characterRate === null) {
         // 缩水保持窗（issue #483）：窗内沿用下降前的速率；窗过后新基线未满 200ms 时继续沿用，不闪「思考中」。
+        // 以新基线自身的年龄为准：窗结束后新基线来得多晚都接得上；没有新基线（不再有通知）或基线已陈旧则不沿用。
         const fresh = samples.length && sampledAt - samples[samples.length - 1].at <= 2000 && sampledAt - samples[0].at < 200;
-        if (sampledAt < hold.until || (fresh && sampledAt - hold.until < 400)) characterRate = hold.rate;
+        if (sampledAt < hold.until || fresh) characterRate = hold.rate;
       }
       const outputTokens = Number.isFinite(header.outputTokens) && header.outputTokens >= 0 ? header.outputTokens : null;
       const modelMs = Number.isFinite(header.modelDurationMs) && header.modelDurationMs >= 0 ? header.modelDurationMs : null;

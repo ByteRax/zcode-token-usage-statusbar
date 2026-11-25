@@ -231,9 +231,11 @@ test('removed rows re-base the live rate: the pre-drop rate is held for one wind
   now = 1500;
   tracker.ingest(snapshot(3, [header(), text('a')]));   // 字符数下降：保持窗（2 秒）内沿用下降前的窗口速率
   assert.equal(tracker.get('t').characterRate, 2);
-  now = 5000;                                           // 保持窗过后没有新增长：不保留已消失内容的旧速率
+  now = 5000;                                           // 保持窗过后才有下一条通知：新基线刚落，仍沿用
   tracker.ingest(snapshot(4, [header(), text('a')]));
-  assert.equal(tracker.get('t').characterRate, null);
+  assert.equal(tracker.get('t').characterRate, 2);
+  now = 5300;                                           // 新基线已过 200ms 仍无增长：读 0，不再沿用下降前的旧速率
+  assert.equal(tracker.get('t').characterRate, 0);
   now = 6000;
   tracker.ingest(snapshot(5, [header(), text('abcd')]));
   assert.equal(tracker.get('t').characterRate, 3);      // 只按新基线之后的增长计算
@@ -283,11 +285,11 @@ test('issue #483: a frame burst right after the tracker binds re-baselines inste
   tracker.ingest(snapshot(1, [header(), text('a'.repeat(600))]));   // 重绑后的首个快照（订阅那一刻的整份快照）
   now = 10;
   tracker.ingest(snapshot(2, [header(), text('a'.repeat(900))]));  // 被压住的增量帧成批涌入
-  now = 22;
+  now = 20;
   tracker.ingest(snapshot(3, [header(), text('a'.repeat(1200))]));
-  now = 400;
-  tracker.ingest(snapshot(4, [header(), text('a'.repeat(1260))])); // 之后 300 字符/s
-  assert.equal(tracker.get('t').characterRate, 60 * 1000 / 378, '按 22ms 处的新基线算，不把补齐的 600 算进去');
+  now = 420;
+  tracker.ingest(snapshot(4, [header(), text('a'.repeat(1320))])); // 之后 300 字符/s
+  assert.equal(tracker.get('t').characterRate, 300, '按 20ms 处的新基线算，不把补齐的 600 算进去');
 });
 
 test('issue #483: the burst re-baseline only covers the tracker\'s first 300ms, never a later backlog', () => {
@@ -338,6 +340,24 @@ test('issue #483: a drop before any valid rate leaves the estimate empty for the
   now = 2500;
   tracker.ingest(snapshot(5, [header(), text('a'.repeat(360))]));
   assert.equal(tracker.get('t').characterRate, 300);
+});
+
+test('issue #483: a baseline that lands after the hold window still bridges, with no empty reading in between', () => {
+  let now = 0;
+  const tracker = createTracker({ now: () => now });
+  tracker.ingest(snapshot(1, [header(), text('a'.repeat(600))]));
+  now = 1000;
+  tracker.ingest(snapshot(2, [header(), text('a'.repeat(900))]));
+  now = 1500;
+  tracker.ingest(snapshot(3, [header(), text('a'.repeat(600))]));   // 缩水，保持窗到 3500
+  now = 3800;                                                       // 窗结束 300ms 后才有下一条通知
+  tracker.ingest(snapshot(4, [header(), text('a'.repeat(1650))]));
+  assert.equal(tracker.get('t').characterRate, 200);
+  now = 3900;
+  tracker.ingest(snapshot(5, [header(), text('a'.repeat(1710))]));
+  assert.equal(tracker.get('t').characterRate, 200, '新基线未满 200ms：仍沿用');
+  now = 4000;
+  assert.equal(tracker.get('t').characterRate, 300);                 // 新窗口接上：200ms 增 60 字符
 });
 
 test('live speed does not stay stale indefinitely when output stops', () => {
