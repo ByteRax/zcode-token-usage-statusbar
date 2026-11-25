@@ -84,15 +84,15 @@ class PluginContractTests(unittest.TestCase):
     def test_mcp_declaration_uses_short_service_key_and_same_script(self):
         servers = json.loads((PLUGIN / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]
         self.assertEqual(list(servers), ["zusage"])
-        # 宿主对 stdio MCP 按 shell:false 直接 spawn，单命令没有 hooks 那样的回退通道，
-        # 而 Windows 无 python3、macOS CLT 无 python。command 固定为 node（宿主给 MCP
-        # 子进程 PATH 末尾追加 Electron Node fallback shim，未装 Node 也能解析），
-        # 由 mcp-launch.cjs 按 hooks 同款顺序 python3 → python → py -3 探测解释器
-        # 并透传 stdio（issue #234）。
-        self.assertEqual(servers["zusage"]["command"], "node")
+        # ZCode 3.19.0 起内置预装工具，宿主把其 bin 放在 MCP 子进程 PATH 首位；
+        # zcode-python 是宿主自带的 Python（含 sqlite3）。直接启动 usage_mcp.py，不再经
+        # node 中转：Windows 上每个会话白占 119–153MB（issue #486；issue #234 的解释器
+        # 回退链由宿主入口取代）。ZCode 3.18.2 及以下 MCP 工具不可用，状态条与 CLI 不受影响。
+        # 真拉起的端到端用例在 tests/test_usage_mcp_stdio.py。
+        self.assertEqual(servers["zusage"]["command"], "zcode-python")
         self.assertEqual(
             servers["zusage"]["args"],
-            ["${ZCODE_PLUGIN_ROOT}/mcp-launch.cjs", "${ZCODE_PLUGIN_ROOT}/usage_mcp.py"],
+            ["${ZCODE_PLUGIN_ROOT}/usage_mcp.py"],
         )
         self.assertEqual(servers["zusage"]["type"], "stdio")
         self.assertIs(servers["zusage"]["enabled"], True)

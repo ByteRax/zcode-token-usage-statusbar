@@ -49,7 +49,7 @@ Node 查询泵回归还覆盖首个成功/SSH 失败/error/null 响应后的实�
 
 **验收边界**：夹具结果不等于 Windows/macOS 桌面、多服务器或各种 SSH 认证方式的实机验收。源码 `main` 尚未发正式 Release；真实使用需更新本机安装副本、完全退出重启，并手工在 SSH 远端部署同版本查询脚本。插件不会自动登录、解密复用宿主密码/加密私钥、安装远端脚本或替宿主自动重连 SSH；自恢复仅指统计查询链持续重试及宿主重连后续查。partial 远端 IPC 不等于当前主 pane 归属；身份未知或归属歧义时不推断，主标签页路由未经实机验收前不能宣称生效。桌面 JSON 链支持不代表 MCP/回答速率自动跨机，纯 CLI 无状态条 UI。
 
-另覆盖宿主插件契约：市场条目的中英本地化及 Release 渠道保留、统计命令路径/会话的 POSIX 参数引用、Windows PowerShell 编码调用的字面参数、短 MCP 服务键与钩子 matcher/超时；SessionStart 两层异常路径、卸载豁免和探测权限失败、安装未完成和正常重启提示均检查有效的 `additionalContext` 通道（`test_plugin_contract.py`、`test_session_start_channels.py`）。Windows 原生 CMD/Git Bash 执行测试仅在相应环境运行，macOS 会明确跳过；编码结构校验不代表 Windows 实机验收。
+另覆盖宿主插件契约：市场条目的中英本地化及 Release 渠道保留、统计命令路径/会话的 POSIX 参数引用、Windows PowerShell 编码调用的字面参数、短 MCP 服务键与钩子 matcher/超时；`usage_mcp.py` 真子进程的 stdio 帧契约——帧尾 LF、stdout 不含 CR，POSIX 上给子进程换上开着换行翻译的文本 stdout 来模拟 Windows 文本模式（`test_usage_mcp_stdio.py`）；SessionStart 两层异常路径、卸载豁免和探测权限失败、安装未完成和正常重启提示均检查有效的 `additionalContext` 通道（`test_plugin_contract.py`、`test_session_start_channels.py`）。Windows 原生 CMD/Git Bash 执行测试仅在相应环境运行，macOS 会明确跳过；编码结构校验不代表 Windows 实机验收。
 
 ## 宿主真实 CLI 集成（macOS）
 
