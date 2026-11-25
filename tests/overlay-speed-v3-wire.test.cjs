@@ -122,6 +122,20 @@ test('spd3RebuildOr 契约: 无轮表→null；有轮表→闭包；闭包产物
   assert.ok(!html.includes('<!--CHART-->'), '占位符必须被图表产物替换（wire 装配职责）');
 });
 
+// v469（issue #474）：o.cfgBtn 只由精简速率 chip 传入——整卡标题后出「打开设置」；不传不出。
+test('v469: spd3RebuildOr 传 o.cfgBtn 时标题行带 .tps-cfg，不传时整卡没有任何设置按钮', () => {
+  const ctx = makeCtx(), h = fixture();
+  const sel = { range: 'recent', period: 'recent', sid: 'sess_main' };
+  for (const p of ['recent', 'today', 'week', 'month', 'all']) {
+    const withBtn = stripStyle(cardOf(ctx, rebuild(ctx, h, { ...sel, period: p }, -1, { ...O, cfgBtn: true })));
+    const plain = stripStyle(cardOf(ctx, rebuild(ctx, h, { ...sel, period: p }, -1, O)));
+    const title = s => s.slice(s.indexOf('class="zu-sv-title"'), s.indexOf('class="zu-sv-filter"'));
+    assert.equal(title(withBtn).split('tps-cfg').length - 1, 1, p + '：标题行恰一枚');
+    assert.ok(title(withBtn).includes('aria-label="打开设置"') && title(withBtn).includes('zu-sv-cfg"') && !title(withBtn).includes('>打开设置<'), p + '：图标按钮（无障碍名称，不带文字）');
+    assert.ok(!/tps-cfg|打开设置/.test(plain), p + '：不传 cfgBtn 时整卡无设置按钮');
+  }
+});
+
 // v415 live 徽标移除后的行为锁：live 视图（估算/思考 statusText）绝不影响卡片产物——
 // 防将来把 live 消费重新引入卡片 HTML 却漏改 memo 键时产生状态词陈旧渲染
 // （视图层「不渲染」由 overlay-speed-v3-view.test.cjs 的 absence 断言锁定，本条锁装配层）。

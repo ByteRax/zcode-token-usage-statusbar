@@ -44,6 +44,8 @@
   /* v403（§24 用户追加裁定）：SPD3_SVG_CUBE 随 count 图标删除（唯一消费者退役） */
   /* v387 §11.5：标题 📈 emoji 换自包含 SVG（16×16 轴+折线，stroke currentColor 随主题） */
   var SPD3_SVG_TREND = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4v16h18"/><path d="m7 14 4-5 3 3 5-7"/></svg>';
+  /* v469：精简速率 chip 整卡的设置图标——与 06 分片状态条 .zu-gear 同款齿轮（路径串由 overlay-tps-chip 锁两处一致） */
+  var SPD3_SVG_GEAR = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 2h5l.6 2.5 1.7 1 2.5-.7 2.5 4.4-1.9 1.8v2l1.9 1.8-2.5 4.4-2.5-.7-1.7 1-.6 2.5h-5l-.6-2.5-1.7-1-2.5.7-2.5-4.4L4.1 13v-2L2.2 9.2l2.5-4.4 2.5.7 1.7-1z"/><circle cx="12" cy="12" r="3.5"/></svg>';
   /* 数值格式沿用 V2 口径：整数直显、小数留 1 位、空值 em dash（绝不显 0 t/s） */
   function spd3FmtV(x) { return x == null ? "—" : (x % 1 ? x.toFixed(1) : String(x)); }
   /* §14.2 占比文本：share<0.001（即 <0.1%）显「<0.1%」不显 0%——分布表占比列与
@@ -98,14 +100,21 @@
     }
     return out + "</div>";
   }
-  function spd3HeadHTML(an) {
+  function spd3HeadHTML(an, o) {
     an = an || {};
+    /* v469（issue #474）：精简样式的速率 chip 悬停卡没有「打开设置」就回不到设置——调用方
+     * 传 o.cfgBtn 时在标题后补一枚图标按钮 .tps-cfg（齿轮同状态条 ⚙，点击走 01 分片 tpsTip 委托 →
+     * chip.__zuOpen）；
+     * 默认/药丸条面的速度卡不传、不出按钮。 */
+    var cfg = (o && o.cfgBtn) ? '<button type="button" class="tps-cfg zu-sv-cfg" aria-label="' +
+      spdEsc(SPD_L("打开设置", "Open settings")) + '" title="' + spdEsc(SPD_L("打开设置", "Open settings")) +
+      '" aria-haspopup="dialog">' + SPD3_SVG_GEAR + "</button>" : "";
     var rl = { recent: SPD_L("最近", "Recent"), session: SPD_L("会话", "Session"),
       project: SPD_L("项目", "Project"), all: SPD_L("全部", "All") };
     var pl = { recent: SPD_L("最近", "Recent"), today: SPD_L("今天", "Today"),
       week: SPD_L("近 7 天", "7 days"), month: SPD_L("本月", "Month"), all: SPD_L("全部", "All") };
     return '<div class="zu-sv-head"><div class="zu-sv-title">' + SPD3_SVG_TREND +
-      "<span>" + spdEsc(SPD_L("生成速度", "Generation speed")) + "</span></div>" +
+      "<span>" + spdEsc(SPD_L("生成速度", "Generation speed")) + "</span>" + cfg + "</div>" +
       '<div class="zu-sv-filter"><span class="zu-sv-flabel">' + spdEsc(SPD_L("范围", "Scope")) + "</span>" +
       spd3TabRow("range", SPD_RANGES, an.range, rl) +
       '<span class="zu-sv-time"><span class="zu-sv-flabel">' + spdEsc(SPD_L("时间", "Time")) + "</span>" +
@@ -465,6 +474,15 @@
       ".zu-sv3-root .zu-sv-title{display:inline-flex;align-items:center;gap:6px;font-weight:700;" +
         "font-size:calc(var(--ui-font-size,14px) + 6px);letter-spacing:.2px;min-width:0}" +
       ".zu-sv3-root .zu-sv-title svg{flex:0 0 auto}" +
+      /* v469：精简速率 chip 专属的设置图标（见 spd3HeadHTML）——外观同状态条 .zu-gear（26px 盒、字号尺寸的
+       * 齿轮、次要色、悬停提亮；不沿用 .zu-gear>svg 的 translateY(-.5px)——这里齿轮与标题同行，
+       * 实测偏上 0.5px，去掉后与标题文字中心线重合）；覆盖旧摘要卡 .tps-cfg 的边框/内边距/margin-left:auto */
+      ".zu-sv3-root .zu-sv-title .zu-sv-cfg{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;" +
+        "width:26px;height:26px;margin-left:2px;padding:0;border:0;border-radius:.5rem;background:transparent;" +
+        "color:var(--color-foreground-subtle,#a1a1a1);cursor:pointer}" +
+      ".zu-sv3-root .zu-sv-title .zu-sv-cfg>svg{width:var(--ui-font-size,14px);height:var(--ui-font-size,14px);display:block}" +
+      ".zu-sv3-root .zu-sv-title .zu-sv-cfg:hover,.zu-sv3-root .zu-sv-title .zu-sv-cfg:focus-visible{" +
+        "color:var(--color-foreground,#e9edf4);background:var(--color-hover,rgba(255,255,255,.07));outline:none}" +
       ".zu-sv3-root .zu-sv-filter{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-left:auto;justify-content:flex-end}" +
       ".zu-sv3-root .zu-sv-flabel{font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6);flex:0 0 auto}" +
       ".zu-sv3-root .zu-sv-time{display:flex;align-items:center;gap:6px;margin-left:14px}" +
@@ -777,7 +795,7 @@
     var ht = spd3HeightTier(an);
     return '<div class="zu-sv3-root" data-sv-key="' + key + '" data-h-tier="' + ht.tier +
       '" style="height:' + ht.px + 'px">' + spd3StylesHTML() +
-      spd3HeadHTML(an) +
+      spd3HeadHTML(an, ctx.o) +
       spd3FilterBarHTML(pool, filt, { selMissing: an.selMissing, pop: ctx.pop,
         active: an.perModel ? an.perModel.length : 0 }) +
       '<div class="zu-sv3-main">' + spd3LeftHTML(an, ctx.live, poolSingle,

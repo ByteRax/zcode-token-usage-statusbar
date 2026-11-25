@@ -342,8 +342,9 @@
      * → v465 热力日历格宽裕放大档（用户截图：本月格数字四周大块留白，指示「有多余的间隙时适当调整速度和消耗数字的大小」）：zu3hc 容器（本月/全部日历格，spec §26）加只有 min- 下限的放大档 (min-width:56px) and (min-height:39px)，速度 .zu3-v 与全部日历 .zu3-cv 统一 9/12 到 14px、token .zu3-tk 两形态选择器重述 8/9 到 10px——两形态高特异性基础规则都要重述才放大得动；放大档与缩字档（带上界）和隐藏线（<N）范围不交、排在全部缩字档之前，39px 下界取最高缩字带 26.5~39px 的上界衔接；4/5 行月历（内容高 59.7/45.4px）与 5 行全部日历（40.4px）命中，6 行月历（35.8px）留在缩字带不放大，宽下界折算视口约 858px 以下不放大；自然宽真机 CDP 实测 14px 速度最长 46.7px、10px token「9999.99万」52.3px，距 56px 各余 9.3/3.7px；周列/月列（zu3hw）与日卡（.zu3-dcv 18px）不参与
      * → v467 回答末尾统计行补捞最新完成轮（用户实证：任务完成时不在会话，切回后回答尾末没有统计行）：主会话实例每次换绑（切会话/新标签）都新建 tracker（08 分片 createTracker），切回时从快照窗口补捞的完成轮恒非亲历（observedLive=false），且窗口头部行只有最近完成轮带真实 outputTokens、更早的恒 0——v86「非亲历+无有效输出静默不插」让这类轮永远无行（真机 diag 实证缺失轮清一色 line:none/live:0/out:0，亲历轮正常出行）。修法=该类轮在仍是实例活跃轮（isCurrentTurn，无更新轮顶替，--current 语义正确定位这一轮）且非压缩轮时，按既有 --current 通道发富文本查询（最小替身只带 sessionId），到达后下一拍经缓存穿越插入、不插占位——空回执不写缓存即永不插行（v458 存量轮同契约），用户新提问后 promptTs 前移、旧轮回执为空自然放弃；被顶替的轮仍由 flush notCur 门静默丢弃。只救「最新完成轮」，更早的缺失轮维持 v86 既有限制（turnRef 泛化属 inject-main 冷文件方案，用户裁定不做）；diag 行状态新增 backwait。规则「重启后历史轮」条同步改写，spec det-backfill-line.md 新建
      * → v468 增强记录面板失焦不与面板内点击抢跑（issue #476：点提示词增强出感叹号后，「最近增强记录」面板里的「设置」点不动）：增强按钮的 blur 原先直接 hideEnhanceTip——点过按钮后焦点留在按钮上，再按面板内任意按钮时 mousedown 先移走焦点，blur 抢在 click 之前把面板收成 display:none，click 落到下方页面，Footer「设置／查看全部历史／清空记录」整排失效，失败与警示相位同现（精简/默认/药丸同现，与样式无关；无头 Chrome 真实指针三样式实证）。修法同 issue #474 的速度 chip 齿轮：指针仍停在面板上（enhanceTip.matches(":hover")）时失焦不收，移开由面板 mouseleave 延迟收起接管；指针不在面板上（键盘 Tab 离开）照旧即收，无 matches 的降级环境不变。规格 specs/prompt-enhance.md 增强历史记录条与验收 11
+     * → v469 精简样式设置入口补回（issue #474：精简下速率图标悬停卡是速度整卡，「打开设置」只在无轮表的回退卡里，正常用过一轮后设置面板打不开）：精简速率 chip 调 spd3RebuildOr 时传 cfgBtn，整卡标题「生成速度」后出一枚齿轮图标按钮 .tps-cfg（图标同状态条 ⚙，用户裁定「改为设置图标，和底部状态栏的一样」；点击走 tpsTip 既有委托开面板，同 chip 右键）；默认/药丸条面的速度卡不传不出；面板说明与用户指南改述。chip 的 blur 收卡加「指针仍在卡上不收」门（用户实报：先点 chip 再点齿轮，mousedown 移走焦点，blur 抢在 click 前收卡，面板打不开；实机追踪证实）。同代（用户截图「现在的太宽了」）：精简 chip 三档宽度由固定宽改为上限 max-width——按内容定宽、不超过当前档位（12.4/9.7/6.6em），完成态不再给状态词留空位；档位判定与窄窗让位不变
      */
-    var VERSION = "v468";
+    var VERSION = "v469";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -598,7 +599,7 @@
        * 边框，留白不可见；v446 的「标签吃剩余空间、数值靠右」让图标贴最左、数字贴最右（宿主实测宽裕档图标到数字
        * 空 56~124px），用户实报「图标和文字分开了」。overflow:hidden 兜底裁切，任何情况下不推邻格。流光沿用包装层
        * .zu-live.zu-shimmer 既有规则（flex 子项与标签 overflow 下宿主实测可正常渲染）。精简 chip
-       * .zu-tsb 同样不随状态文字变：它挂在宿主工具行、没有窄宽状态机，三档由 11 分片 zuTsbTierSync
+       * .zu-tsb 按内容定宽、不超过档位上限（v469）：它挂在宿主工具行、没有窄宽状态机，三档由 11 分片 zuTsbTierSync
        * 按宿主工具行的真实空位选（规则与标定见 .zu-tsb 规则处的注释）。
        * 占位=全部格面固定宽（v459，用户第六轮实报四张截图「上述状态变化时，宽度不一致，还是有抖动」，并指示
        * 「去除右侧的 padding」「右侧空隙再增加 10px」）：v455/v456 让宽度随内容在 [6.6em, calc(38px + 4.8em)] 里
@@ -841,18 +842,20 @@
        * 速率色档复用全局 .ok/.warm/.hot 与 TPS 十档类（含 Ultra 渐变 ✦）；浅色组靠 chip
        * 自身的 .zu-light 类补链（条隐藏后 .zu-light 祖先缺失）。 */
       ".zu-tsb{display:inline-flex;align-items:center;gap:5px;height:1.75rem;padding:0 6px;border-radius:.5rem;cursor:pointer;user-select:none;flex:0 0 auto;" +
-      /* 稳定占位（specs/speed-chip-stable-slot.md）：chip 外宽只随布局档位变，标签+数值+单位随状态换而不推 git chip。
+      /* 稳定占位（specs/speed-chip-stable-slot.md）：三档是宽度上限，chip 外宽随内容变、不超过当前档位（v469 起不再固定宽），标签+数值+单位随状态换时右侧 git chip 跟随。
        * 三档类名与药丸档位同名，规则只作用于 .zu-tsb；档位由 11 分片 zuTsbTierSync 按宿主工具行的真实空位选
        * （chip 先让位，不拿宿主自己的按钮换宽度）。宽裕 12.4em=标签+数值+单位，按最宽的无省略面
        * 「代理×12 1286.5 t/s」标定（13px 粗体，六种字体栈下自然宽最大 157.8px；旧单一宽 10.5em 对它越界 7.3px）；
        * 中等 9.7em=去单位（「Think 23:59:59」123.5px）；紧张 6.6em=仅数值（「23:59:59」82.9px）。
-       * 面内排布与条面同规则（v448）：标签+数值+单位紧凑成组靠左，剩余空间留在 chip 右侧。
-       * chip 无图标，故没有「仅图标」的最窄档。 */
-      "box-sizing:border-box;width:12.4em;" +
+       * 面内排布与条面同规则（v448）：标签+数值+单位紧凑成组靠左（v469 起按内容定宽，内容之后不再留空位）。
+       * chip 无图标，故没有「仅图标」的最窄档。
+       * v469（用户截图裁定「现在的太宽了」）：三档宽度由固定宽改为上限（max-width）——chip 按内容定宽、
+       * 不超过当前档位；完成态（无状态词）不再给状态词留空位。超上限时 .zu-live 收缩、标签照旧省略。 */
+      "box-sizing:border-box;max-width:12.4em;" +
       "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--text-ui-base,var(--ui-font-size,14px)) - 1px);font-weight:700;font-variant-numeric:tabular-nums}" +
-      ".zu-tsb.zu-speed-mid{width:9.7em}" +
+      ".zu-tsb.zu-speed-mid{max-width:9.7em}" +
       ".zu-tsb.zu-speed-mid>.zu-live>.zu-sp-unit{display:none}" +
-      ".zu-tsb.zu-speed-tight{width:6.6em}" +
+      ".zu-tsb.zu-speed-tight{max-width:6.6em}" +
       ".zu-tsb.zu-speed-tight>.zu-live>.zu-sp-label,.zu-tsb.zu-speed-tight>.zu-live>.zu-sp-unit{display:none}" +
       ".zu-tsb:hover,.zu-tsb:focus-visible{background:var(--color-hover,rgba(255,255,255,.08));outline:none}" +
       /* v356 系统状态（issue #338）：格面值/标签继承 .it .v/.dim 基础样式，zu-sys-* 只承载
@@ -2431,7 +2434,7 @@
       '<label><input type="radio" class="zu-theme-choice" name="zu-theme-' + slot + '" value="default"><span>' + L("默认", "Default") + '</span></label>' +
       '<label><input type="radio" class="zu-theme-choice" name="zu-theme-' + slot + '" value="pill"><span>' + L("药丸", "Pill") + '</span></label>' +
       '<label><input type="radio" class="zu-theme-choice" name="zu-theme-' + slot + '" value="compact"><span>' + L("精简", "Compact") + '</span></label></div>' +
-      '<div class="pnote">' + L("精简：隐藏悬浮条，生成速度移到输入框工具行前导区（Git 状态左侧），悬停它可看各格摘要并打开本设置。六个格全部关闭时自动转为精简，重新打开任一格即恢复原样式。", "Compact: hides the floating bar; the generation speed moves into the composer toolbar's leading group (left of the Git status chip) — hover it for cell summaries and a shortcut to these settings. With all six cells off the style switches to Compact automatically, and restores once any cell is turned back on.") + '</div>' +
+      '<div class="pnote">' + L("精简：隐藏悬浮条，生成速度移到输入框工具行前导区（Git 状态左侧），悬停它可看速度卡，点卡内标题旁的设置图标（没有历史轮次数据时——首轮对话完成前或远程分栏——是卡底的「打开设置」按钮）或右键它可打开本设置。六个格全部关闭时自动转为精简，重新打开任一格即恢复原样式。", "Compact: hides the floating bar; the generation speed moves into the composer toolbar's leading group (left of the Git status chip) — hover it for the speed card, then click the settings icon next to the card title (when there is no turn history yet — before the first turn completes or in a remote split — use the Open settings button at the bottom of the card) or right-click it to open these settings. With all six cells off the style switches to Compact automatically, and restores once any cell is turned back on.") + '</div>' +
       '<div class="zu-just-block"' + (state.theme === "default" ? '' : ' style="display:none"') + '>' +
       '<div class="zu-theme-title">' + L("水平对齐", "Horizontal alignment") + '</div>' +
       '<div class="zu-theme-options" role="radiogroup" aria-label="' + L("水平对齐", "Horizontal alignment") + '">' +
