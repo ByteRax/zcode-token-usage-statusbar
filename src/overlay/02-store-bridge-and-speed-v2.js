@@ -934,16 +934,19 @@
    * 占位（overlay-sidechat-turn 测试锁定该契约）。按实例键拆分可让双方各自补发（查询
    * 返回同一轮文本），代价是旁路查询次数随实例数翻倍，出现真实需求再改。 */
   var richTextWants = {};
+  /* 返回是否真正入队（v467）：调用方（03 分片 backwait 标注）据此区分「等回执」与
+   * 「已静默放弃」（缓存命中/尝试耗尽/身份拒绝），diag 不再恒显等回执。既有调用点忽略返回值。 */
   function zuRequestTurnText(owner, tid, stats) {
     var key = zuRichKey(owner, tid);
     if (!tid || !key || richTextCache[key] || (richTextAttempts[key] || 0) >= RICH_TEXT_MAX_ATTEMPTS) {
       /* v360：!key 即零入队（rt.sent 不动）——占位每轮常驻且 rt 全 0 的头号静默落点。 */
       if (!key && tid) zuBlockOnce(owner && owner.pid ? owner.pid + "|" + tid : "", "noKey");
-      return;
+      return false;
     }
     var sid = stats && typeof stats.sessionId === "string" ? stats.sessionId : "";
-    if (!sid || owner.getSid() !== sid) { zuBlockOnce(owner.pid + "|" + tid, "noSid"); return; }
+    if (!sid || owner.getSid() !== sid) { zuBlockOnce(owner.pid + "|" + tid, "noSid"); return false; }
     richTextWants[sid] = { owner: owner, tid: tid, key: key };
+    return true;
   }
   /* #321 诊断：入队后 RICH_TEXT_MISS_MS 内无任何回执记 miss（旧主进程无此动作处理器、
    * 通道断、主进程丢请求）。迟到回执若 pending 仍匹配则照常入缓存，只是不再计数（miss

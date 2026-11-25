@@ -291,10 +291,10 @@ test('tooltip: speed rows + bar summary gated by per-cell toggles + legend + set
 
 const src04Gear = () => /var SPD3_SVG_GEAR = '([^']*)'/.exec(
   fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay', '04-speed-v3-view.js'), 'utf8'))[1];
-// v466（issue #474）：带轮表时精简速率 chip 的悬停卡是速度整卡（spd3RebuildOr 闭包产物），
+// v468（issue #474）：带轮表时精简速率 chip 的悬停卡是速度整卡（spd3RebuildOr 闭包产物），
 // 此前「打开设置」只在无轮表的回退卡里——正常用过一轮后整卡里没有任何设置入口。锁定：整卡标题后
 // 带 .tps-cfg 且点击开面板；按钮只由精简 chip 这条调用链传 cfgBtn（条面速度卡不传、纯装配层测试另锁）。
-test('v466: 带轮表的速度整卡带「打开设置」并打开面板（精简速率 chip，issue #474）', () => {
+test('v468: 带轮表的速度整卡带「打开设置」并打开面板（精简速率 chip，issue #474）', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
   const now = Date.now(), HOUR = 3600000;
@@ -316,7 +316,7 @@ test('v466: 带轮表的速度整卡带「打开设置」并打开面板（精�
   assert.ok(head.includes('title="打开设置"'), '图标按钮带悬停提示');
   assert.ok(head.includes('<circle cx="12" cy="12" r="3.5"/></svg>'), '按钮内容是齿轮图标');
   const cfgOpen = head.lastIndexOf('<button', head.indexOf('class="tps-cfg zu-sv-cfg"'));
-  assert.equal(cfgOpen >= 0 && head.slice(cfgOpen, head.indexOf('</button>', cfgOpen)).replace(/<[^>]+>/g, ''), '', '按钮不带「打开设置」文字（v466：图标同状态条齿轮）');
+  assert.equal(cfgOpen >= 0 && head.slice(cfgOpen, head.indexOf('</button>', cfgOpen)).replace(/<[^>]+>/g, ''), '', '按钮不带「打开设置」文字（v468：图标同状态条齿轮）');
   // 图标与状态条 ⚙ 同款：04 分片 SPD3_SVG_GEAR 与 06 分片 .zu-gear 的 SVG 串逐字一致
   const src06 = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay', '06-instance-dom-and-styles.js'), 'utf8');
   // 06 分片里这枚 SVG 跨两行字符串拼接，按「开头标签」与「path…</svg>」两段分别比对
@@ -328,7 +328,7 @@ test('v466: 带轮表的速度整卡带「打开设置」并打开面板（精�
   assert.equal(tip.innerHTML.split('tps-cfg zu-sv-cfg').length - 1, 1, '整卡只有一枚设置按钮');
   const bar = h.barEl(), gear = bar.querySelector('.zu-gear');
   const onCfg = { closest: sel => (sel === '.tps-cfg' ? {} : null) }, noOp = () => {};
-  /* 只走 click、不走 pointerdown（v466 实机教训）：pointerdown 开面板后，同一次按压的 mousedown 会被
+  /* 只走 click、不走 pointerdown（v468 实机教训）：pointerdown 开面板后，同一次按压的 mousedown 会被
    * 文档级「点面板外即关」当成面板外按压，面板开了又被关——实机追踪 panel.open=true → 1ms 后 false。 */
   tip.listeners.get('click')[0]({ target: onCfg, stopPropagation: noOp });
   assert.equal(tip.style.display, 'none', '点击后收起悬停卡');
@@ -343,10 +343,10 @@ test('v466: 带轮表的速度整卡带「打开设置」并打开面板（精�
   assert.deepEqual(hits, [['11-instance-toolbar-chips.js', 1]], 'cfgBtn 只在精简速率 chip 的调用点传入（扫全部分片）');
 });
 
-// v466（issue #474 跟进）：用户先点 chip（焦点落 chip）再点卡里的齿轮——mousedown 移走焦点，chip 的 blur
+// v468（issue #474 跟进）：用户先点 chip（焦点落 chip）再点卡里的齿轮——mousedown 移走焦点，chip 的 blur
 // 若在此时收卡，click 就落到页面内容上。锁定：指针停在卡上时失焦不收、随后点齿轮开面板；指针不在卡上
 // （键盘 Tab 离开）时失焦照旧收卡。
-test('v466: chip focused by a click → blur while the pointer is over the speed card does not hide it; gear click then opens the panel', () => {
+test('v468: chip focused by a click → blur while the pointer is over the speed card does not hide it; gear click then opens the panel', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
   h.window.__zusageUpdate(h.payload({ tps: 87.3 }));

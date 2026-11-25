@@ -122,8 +122,8 @@ test('spd3RebuildOr 契约: 无轮表→null；有轮表→闭包；闭包产物
   assert.ok(!html.includes('<!--CHART-->'), '占位符必须被图表产物替换（wire 装配职责）');
 });
 
-// v466（issue #474）：o.cfgBtn 只由精简速率 chip 传入——整卡标题后出「打开设置」；不传不出。
-test('v466: spd3RebuildOr 传 o.cfgBtn 时标题行带 .tps-cfg，不传时整卡没有任何设置按钮', () => {
+// v468（issue #474）：o.cfgBtn 只由精简速率 chip 传入——整卡标题后出「打开设置」；不传不出。
+test('v468: spd3RebuildOr 传 o.cfgBtn 时标题行带 .tps-cfg，不传时整卡没有任何设置按钮', () => {
   const ctx = makeCtx(), h = fixture();
   const sel = { range: 'recent', period: 'recent', sid: 'sess_main' };
   for (const p of ['recent', 'today', 'week', 'month', 'all']) {

@@ -579,12 +579,12 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 - 不变项：周列/月列格（`zu3hw`）不参与（列帽 64px、内容高 ≤36.4px 本就够不着 39px 线）；日卡 `.zu3-dcv` 18px 不变；§25.2 缩字档与隐藏线全部不变；速度口径、档位色不变。
 - 验收：VM 样式串断言（`overlay-speed-v3-heat`：整块列表 11 条改 12 条、缩字档循环改 slice(1,8)、放大档专用锁——整块文本、只准 min- 条件、块位置在全部缩字档之前）。真机（2026-11-25 部署后 CDP 实证）：运行目录热重载 gen 28 / ver v465；悬停速度格切本月（5 行），有数据格内容盒 77.1×45.4px 落放大档——computed 速度 14px、token 10px、日号 8px 不变，速度/token 均 scrollWidth ≤ clientWidth 无裁切，速度右缘到格内容右缘 0（贴右保持）；截图目检 124.0/398.26万 占格比例协调。
 
-## 27. v466 精简速率 chip 的整卡「打开设置」（2026-11-25，issue #474，用户裁定）
+## 27. v468 精简速率 chip 的整卡「打开设置」（2026-11-25，issue #474，用户裁定）
 
 - 问题：精简样式隐藏整条与 ⚙，唯一常驻入口是工具行速率 chip；轮表非空时 chip 悬停卡是本规格的速度整卡，而「打开设置」只存在于无轮表的旧回退卡——正常完成一轮后即打不开设置（六个格全关自动转精简的用户同样受困）。
 - 实现：`spd3HeadHTML(an, o)` 在调用方传 `o.cfgBtn` 时，于标题 `.zu-sv-title` 的「生成速度」之后输出一枚图标按钮 `<button class="tps-cfg zu-sv-cfg" aria-label="打开设置" aria-haspopup="dialog">`（内容是与状态条 `.zu-gear` 逐字相同的齿轮 SVG，`SPD3_SVG_GEAR`；不带文字——用户裁定「改为设置图标，和底部状态栏的一样」，两处 SVG 串由 `overlay-tps-chip` 锁一致）；`spd3RebuildOr` 的 `o` 原样透传到 `spd3CardHTML`。只有 `tpsChipTipHTML`（精简 `.zu-tsb` 专属）传 `cfgBtn:true`；默认/药丸条面速度格、流内子代理等其余调用不传、不出按钮。
-- 交互：复用 01 分片 `tpsTip` 的 click 委托（`.tps-cfg` → 收卡 → `chip.__zuOpen()`），与 chip 右键同一条开启分支（焦点归还 chip）；**不得提前到 pointerdown**（v466 实机教训：按下开面板后，同一次按压的 mousedown 被文档级「点面板外即关」判为面板外按压，面板 1ms 后被关）；`tpsTabActivate`/`tpsSpd3Activate` 不匹配该按钮。
-- **chip 失焦不抢收（v466 跟进，用户实报「点齿轮只关了速度卡、面板没出来」）**：`wireTpsChip` 的 chip `blur` 监听在指针仍停在速度卡上（`tpsTip.matches(":hover")`）时不收卡，移开由 tip 自身的 mouseleave 延迟收起接管；指针不在卡上（键盘 Tab 离开、无 `matches` 的降级环境）照旧收卡。实机追踪（只读记录器）：用户先点 chip（焦点落 chip）→ 移到齿轮按下 → mousedown 把焦点移到齿轮 → chip blur 在 click 之前收卡 → click 落到页面内容、`chip.__zuOpen` 从未被调用；只悬停不点 chip 的路径不触发。五个时间页签、筛选与悬停重建都经同一闭包，按钮恒在。
+- 交互：复用 01 分片 `tpsTip` 的 click 委托（`.tps-cfg` → 收卡 → `chip.__zuOpen()`），与 chip 右键同一条开启分支（焦点归还 chip）；**不得提前到 pointerdown**（v468 实机教训：按下开面板后，同一次按压的 mousedown 被文档级「点面板外即关」判为面板外按压，面板 1ms 后被关）；`tpsTabActivate`/`tpsSpd3Activate` 不匹配该按钮。
+- **chip 失焦不抢收（v468 跟进，用户实报「点齿轮只关了速度卡、面板没出来」）**：`wireTpsChip` 的 chip `blur` 监听在指针仍停在速度卡上（`tpsTip.matches(":hover")`）时不收卡，移开由 tip 自身的 mouseleave 延迟收起接管；指针不在卡上（键盘 Tab 离开、无 `matches` 的降级环境）照旧收卡。实机追踪（只读记录器）：用户先点 chip（焦点落 chip）→ 移到齿轮按下 → mousedown 把焦点移到齿轮 → chip blur 在 click 之前收卡 → click 落到页面内容、`chip.__zuOpen` 从未被调用；只悬停不点 chip 的路径不触发。五个时间页签、筛选与悬停重建都经同一闭包，按钮恒在。
 - 样式：外观同状态条 `.zu-gear`——26px 盒、齿轮取 `ui-font-size`、次要色、悬停/聚焦提亮并出 hover 底色；`.zu-sv3-root .zu-sv-title .zu-sv-cfg` 覆盖旧回退卡 `.tps-cfg` 的边框、内边距与 `margin-left:auto`（改 2px），不参与标题省略。
 - 不变项：无轮表回退卡、条面速度卡、右键入口、速度口径与各视图布局均不变。旧摘要区（各格摘要）不恢复。
 - 验收：`overlay-tps-chip`（带轮表的 chip 悬停卡出整卡、标题行恰一枚按钮、点击收卡并开面板、`cfgBtn: true` 源码仅一处）与 `overlay-speed-v3-wire`（五个页签传/不传 `cfgBtn` 的有无对照）。

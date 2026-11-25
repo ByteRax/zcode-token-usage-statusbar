@@ -526,14 +526,17 @@ for (const delivery of ['before remount', 'after remount']) {
     remounted.dataset.turnId = 'pt1';
     h.runTimers(500);
     if (delivery === 'after remount') {
+      /* v467：重挂的非亲历零输出轮仍是活跃轮时补发请求（原 v86 静默不重发已废，spec
+       * det-backfill-line.md）——交付前不插行，交付后由缓存穿越重建 */
       assert.equal(h.deterministic().length, 0);
+      assert.equal(turnRequests(h).length, 2, 'v467 补捞轮按 --current 通道重发请求');
       h.window.__zusageDeliverTurnText('sid_a', RICH);
     }
     assert.equal(h.deterministic().length, 1);
     assert.equal(h.deterministic()[0].querySelector('p').textContent, RICH);
     h.runTimers(500);
     assert.equal(h.deterministic()[0].querySelector('p').textContent, RICH);
-    assert.equal(turnRequests(h).length, 1);
+    assert.equal(turnRequests(h).length, delivery === 'after remount' ? 2 : 1);
   });
 }
 
