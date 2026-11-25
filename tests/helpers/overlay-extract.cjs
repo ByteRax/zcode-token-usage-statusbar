@@ -95,8 +95,8 @@ const NAMED_SLICES = {
    * 行为测试见 overlay-speed-slot.test.cjs（协调器时间戳显式注入；折叠循环用可控 scrollWidth 桩）。 */
   speedDisp: ['    /* ---------- 展示协调器（specs/speed-chip-stable-slot.md）', '    var liveTipBuiltAt = -Infinity'],
   speedFoldLoop: ['      var candidates = zuBarFoldOrder(rows.map(', '      syncSeparators();\n      var hidden = rows.filter('],
-  /* 精简主题速率 chip 的面/档位色/全称取值段（11 分片 syncTpsChip） */
-  tpsChipFace: ['      var fv = v.kind === "live" ? (v.face || v.sv) : { kind: "real", db: true, speedValue: v.dbTps > 0 ? v.dbTps : null };', '      var prevT = chip.__zuT;'],
+  /* 精简主题速率 chip 的面/档位色/全称取值段（11 分片 syncTpsChip；v476 起首行是会话均兜底面判定 avgFace） */
+  tpsChipFace: ['      var avgFace = v.kind !== "live" && !(v.dbTps > 0) && v.sessAvg > 0;', '      var prevT = chip.__zuT;'],
   /* 折叠判据的内容宽：可见子项 rect 宽度和 + gap（scrollWidth 以 clientWidth 为下限，量不出富余） */
   speedContentWidth: ['    function zuBarContentWidth() {', '    function syncBarOverflow() {'],
   /* 折叠重算开头：清空上一轮折叠集与速度格极窄档（每轮从头重算） */

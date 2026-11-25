@@ -484,10 +484,13 @@
       if (misplaced) host.insertBefore(chip, insBefore ? insBefore : (afterNode ? afterNode.nextElementSibling : null));
       /* v298（用户拍板）：chip=最后一轮真实速度（去「均」前缀与会话均）。格面走展示模型
        * （标签+数值+单位，specs/speed-chip-stable-slot.md）：实时态的数值与档位色取同一展示快照；
-       * 回退态档位色按面上数字（最后一轮）分档——v.band 是会话均的档，只供 tooltip 左卡。 */
-      var fv = v.kind === "live" ? (v.face || v.sv) : { kind: "real", db: true, speedValue: v.dbTps > 0 ? v.dbTps : null };
-      var txt = v.kind === "live" ? v.sv.text : (v.dbTps ? v.dbTps + " t/s" : "");
-      var fbBand = v.dbTps > 0 ? tpsBand(v.dbTps) : null;
+       * 回退态档位色按面上数字（最后一轮）分档——v.band 是会话均的档，只供 tooltip 左卡。
+       * v476（用户裁定）：有会话均而没有最近一段速度时不再留空（chip 无图标，留空即空壳）——面=「均 X t/s」，
+       * 标签「均」与最后一轮真实速度区分，档位色按会话均；有最近一段速度时仍是 v298 的面。 */
+      var avgFace = v.kind !== "live" && !(v.dbTps > 0) && v.sessAvg > 0;
+      var fv = v.kind === "live" ? (v.face || v.sv) : { kind: "real", db: true, speedValue: avgFace ? v.sessAvg : (v.dbTps > 0 ? v.dbTps : null), avgFace: avgFace };
+      var txt = v.kind === "live" ? v.sv.text : (v.dbTps > 0 ? v.dbTps + " t/s" : avgFace ? L("会话均 ", "session average ") + v.sessAvg + " t/s" : "");
+      var fbBand = avgFace ? tpsBand(v.sessAvg) : (v.dbTps > 0 ? tpsBand(v.dbTps) : null);
       var cls = "zu-live " + (v.kind === "live" ? fv.cls + (fv.word ? " zu-shimmer" : "") : (fbBand ? fbBand.cls : "dim"));
       /* v464：chip 按内容定宽，长计时面（≥1h）保留状态词（固定宽的速度格才不出；autoWidth=true） */
       var face = zuSpeedFaceHtml(fv, true);
