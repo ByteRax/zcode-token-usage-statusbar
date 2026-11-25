@@ -291,10 +291,10 @@ test('tooltip: speed rows + bar summary gated by per-cell toggles + legend + set
 
 const src04Gear = () => /var SPD3_SVG_GEAR = '([^']*)'/.exec(
   fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay', '04-speed-v3-view.js'), 'utf8'))[1];
-// v466（issue #474）：带轮表时精简速率 chip 的悬停卡是速度整卡（spd3RebuildOr 闭包产物），
+// v468（issue #474）：带轮表时精简速率 chip 的悬停卡是速度整卡（spd3RebuildOr 闭包产物），
 // 此前「打开设置」只在无轮表的回退卡里——正常用过一轮后整卡里没有任何设置入口。锁定：整卡标题后
 // 带 .tps-cfg 且点击开面板；按钮只由精简 chip 这条调用链传 cfgBtn（条面速度卡不传、纯装配层测试另锁）。
-test('v466: 带轮表的速度整卡带「打开设置」并打开面板（精简速率 chip，issue #474）', () => {
+test('v468: 带轮表的速度整卡带「打开设置」并打开面板（精简速率 chip，issue #474）', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
   const now = Date.now(), HOUR = 3600000;
@@ -316,7 +316,7 @@ test('v466: 带轮表的速度整卡带「打开设置」并打开面板（精�
   assert.ok(head.includes('title="打开设置"'), '图标按钮带悬停提示');
   assert.ok(head.includes('<circle cx="12" cy="12" r="3.5"/></svg>'), '按钮内容是齿轮图标');
   const cfgOpen = head.lastIndexOf('<button', head.indexOf('class="tps-cfg zu-sv-cfg"'));
-  assert.equal(cfgOpen >= 0 && head.slice(cfgOpen, head.indexOf('</button>', cfgOpen)).replace(/<[^>]+>/g, ''), '', '按钮不带「打开设置」文字（v466：图标同状态条齿轮）');
+  assert.equal(cfgOpen >= 0 && head.slice(cfgOpen, head.indexOf('</button>', cfgOpen)).replace(/<[^>]+>/g, ''), '', '按钮不带「打开设置」文字（v468：图标同状态条齿轮）');
   // 图标与状态条 ⚙ 同款：04 分片 SPD3_SVG_GEAR 与 06 分片 .zu-gear 的 SVG 串逐字一致
   const src06 = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay', '06-instance-dom-and-styles.js'), 'utf8');
   // 06 分片里这枚 SVG 跨两行字符串拼接，按「开头标签」与「path…</svg>」两段分别比对
@@ -328,7 +328,7 @@ test('v466: 带轮表的速度整卡带「打开设置」并打开面板（精�
   assert.equal(tip.innerHTML.split('tps-cfg zu-sv-cfg').length - 1, 1, '整卡只有一枚设置按钮');
   const bar = h.barEl(), gear = bar.querySelector('.zu-gear');
   const onCfg = { closest: sel => (sel === '.tps-cfg' ? {} : null) }, noOp = () => {};
-  /* 只走 click、不走 pointerdown（v466 实机教训）：pointerdown 开面板后，同一次按压的 mousedown 会被
+  /* 只走 click、不走 pointerdown（v468 实机教训）：pointerdown 开面板后，同一次按压的 mousedown 会被
    * 文档级「点面板外即关」当成面板外按压，面板开了又被关——实机追踪 panel.open=true → 1ms 后 false。 */
   tip.listeners.get('click')[0]({ target: onCfg, stopPropagation: noOp });
   assert.equal(tip.style.display, 'none', '点击后收起悬停卡');
@@ -336,17 +336,56 @@ test('v466: 带轮表的速度整卡带「打开设置」并打开面板（精�
   assert.ok(panel && panel.classList.contains('open'), '设置面板从整卡打开');
   assert.equal(gear.getAttribute('aria-expanded'), 'true');
   // 源码锁：cfgBtn 只在精简速率 chip 的调用点传入
-  // 扫全部分片：默认/药丸速度卡的调用点在 07 分片（review 抓回——只读 11 分片的锁挡不住它们带上 cfgBtn）
+  // cfgBtn 只在精简速率 chip 的调用点传入。两道锁（review 两轮抓回：只读 11 分片的字面锁挡不住 07 分片的条面调用点，
+  // 按字面量 "cfgBtn: true" 数数也挡不住 "cfgBtn:true"、"cfgBtn: 1" 与对象简写等价写法）：
+  // ① 标识符锁：除读它的 04 视图分片、只在台账注释里提到它的 06 分片、唯一传入它的 11 分片外，任何分片
+  //   不得出现标识符 cfgBtn（条面/药丸速度卡的两个调用点在 07 分片）；11 分片里恰好出现 1 次，且写成 cfgBtn\s*:\s*true
   const dir = path.join(__dirname, '..', 'src', 'overlay');
-  const hits = fs.readdirSync(dir).filter(f => f.endsWith('.js'))
-    .map(f => [f, fs.readFileSync(path.join(dir, f), 'utf8').split('cfgBtn: true').length - 1]).filter(([, n]) => n > 0);
-  assert.deepEqual(hits, [['11-instance-toolbar-chips.js', 1]], 'cfgBtn 只在精简速率 chip 的调用点传入（扫全部分片）');
+  const shards = fs.readdirSync(dir).filter(f => f.endsWith('.js')).map(f => [f, fs.readFileSync(path.join(dir, f), 'utf8')]);
+  const withIdent = shards.filter(([, s]) => /\bcfgBtn\b/.test(s)).map(([f, s]) => [f, s.split('\n').filter(l => /\bcfgBtn\b/.test(l))]);
+  assert.deepEqual(withIdent.map(([f]) => f).sort(), ['04-speed-v3-view.js', '06-instance-dom-and-styles.js', '11-instance-toolbar-chips.js'],
+    '标识符 cfgBtn 只出现在读它的 04 视图分片、台账注释所在的 06 分片与唯一传入它的 11 分片');
+  for (const l of withIdent.find(([f]) => f === '06-instance-dom-and-styles.js')[1]) assert.ok(/^\s*\*/.test(l), '06 分片里的 cfgBtn 只在台账注释行：' + l.trim().slice(0, 40));
+  assert.equal(withIdent.find(([f]) => f === '11-instance-toolbar-chips.js')[1].length, 1, '11 分片里恰一处');
+  assert.match(shards.find(([f]) => f === '11-instance-toolbar-chips.js')[1], /\bcfgBtn\s*:\s*true\b/, '11 分片那一处是 cfgBtn: true');
+  // ② 行为锁：把 07 分片两个条面调用点的实参表达式原样求值，断言 options 对象没有 cfgBtn 键
+  const src07 = shards.find(([f]) => f === '07-instance-render-and-tips.js')[1];
+  const splitArgs = text => {   // 顶层逗号切分（跳过字符串与嵌套括号）
+    const out = []; let depth = 0, start = 0, quote = null;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (quote) { if (c === '\\') i++; else if (c === quote) quote = null; continue; }
+      if (c === '"' || c === "'") quote = c;
+      else if (c === '(' || c === '[' || c === '{') depth++;
+      else if (c === ')' || c === ']' || c === '}') depth--;
+      else if (c === ',' && depth === 0) { out.push(text.slice(start, i)); start = i + 1; }
+    }
+    out.push(text.slice(start)); return out;
+  };
+  const callArgs = [...src07.matchAll(/spd3RebuildOr\(/g)].map(m => m.index + 'spd3RebuildOr('.length).map(from => {
+    let depth = 0, quote = null;
+    for (let i = from; i < src07.length; i++) {
+      const c = src07[i];
+      if (quote) { if (c === '\\') i++; else if (c === quote) quote = null; continue; }
+      if (c === '"' || c === "'") quote = c;
+      else if (c === '(' || c === '[' || c === '{') depth++;
+      else if (c === ')' && depth === 0) return splitArgs(src07.slice(from, i));
+      else if (c === ')' || c === ']' || c === '}') depth--;
+    }
+    throw new Error('spd3RebuildOr 调用未闭合');
+  });
+  assert.equal(callArgs.length, 2, '07 分片恰两处 spd3RebuildOr 调用（条面与药丸速度卡）');
+  callArgs.forEach((args, i) => {
+    assert.ok(args.length >= 6, `调用点 ${i + 1} 实参个数（options 是第 6 个）`);
+    const o = vm.runInNewContext('(' + args[5] + ')', { fmt: String, countFmt: String, fmtMoney: null, state: { cost: 0 } });
+    assert.equal(Object.prototype.hasOwnProperty.call(o, 'cfgBtn'), false, `条面调用点 ${i + 1} 的 options 不带 cfgBtn 键`);
+  });
 });
 
-// v466（issue #474 跟进）：用户先点 chip（焦点落 chip）再点卡里的齿轮——mousedown 移走焦点，chip 的 blur
+// v468（issue #474 跟进）：用户先点 chip（焦点落 chip）再点卡里的齿轮——mousedown 移走焦点，chip 的 blur
 // 若在此时收卡，click 就落到页面内容上。锁定：指针停在卡上时失焦不收、随后点齿轮开面板；指针不在卡上
 // （键盘 Tab 离开）时失焦照旧收卡。
-test('v466: chip focused by a click → blur while the pointer is over the speed card does not hide it; gear click then opens the panel', () => {
+test('v468: chip focused by a click → blur while the pointer is over the speed card does not hide it; gear click then opens the panel', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
   h.window.__zusageUpdate(h.payload({ tps: 87.3 }));

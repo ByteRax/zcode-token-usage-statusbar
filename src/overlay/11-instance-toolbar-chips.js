@@ -287,7 +287,7 @@
               pop: { open: false, query: "" } },
           (t && typeof t.speedHover === "number") ? t.speedHover : -1, t && t.speedLive,
           { fmtTok: fmt, fmtCnt: countFmt, fmtMoney: state.cost ? fmtMoney : null,
-            cfgBtn: true }, sess)   /* v466：精简专属——整卡标题后带「打开设置」（issue #474） */
+            cfgBtn: true }, sess)   /* v468：精简专属——整卡标题后带「打开设置」（issue #474） */
         : null);
       if (cv2) return cv2((t && typeof t.speedHover === "number") ? t.speedHover : -1, t.speedSel);
       try { FATAL.spdTip = { t: Date.now(), src: "fb-chip",
@@ -365,7 +365,7 @@
       chip.addEventListener("mouseenter", function () { cancelTpsHide(); zuChipHoverArm(chip, function () { showTpsTip(chip); }); });   // v440：悬停门槛（路过不弹）
       chip.addEventListener("mouseleave", function () { zuChipHoverDisarm(chip); scheduleTpsHide(); });   // 延迟收起：给指针移入 tooltip 留窗口（同重置卡桥）
       chip.addEventListener("focus", function () { showTpsTip(chip); });
-      /* v466（issue #474 跟进，用户实报「点齿轮只关了速度卡」）：失焦收卡只服务键盘路径。用户先点了 chip
+      /* v468（issue #474 跟进，用户实报「点齿轮只关了速度卡」）：失焦收卡只服务键盘路径。用户先点了 chip
        * （焦点落在 chip 上）再去点卡里的齿轮——mousedown 把焦点移到齿轮，blur 先把卡收走，其后的 click
        * 落到页面内容上，设置面板打不开。指针还停在卡上时失焦不收（移开由 tip 的 mouseleave 延迟收起接管）。 */
       chip.addEventListener("blur", function (e) {
@@ -382,7 +382,7 @@
         if (chip.__zuOpen) chip.__zuOpen();
       });
     }
-    /* 精简速率 chip 的布局档位（specs/speed-chip-stable-slot.md）：外宽只随档位变、不随状态文字变；档位只由宿主
+    /* 精简速率 chip 的布局档位（specs/speed-chip-stable-slot.md）：三档是宽度上限，外宽随内容变、不超过当前档位（v468 起不再固定宽）；档位只由宿主
      * 工具行的真实空间决定，与本 chip 自身宽度无关——空位 = 前导区可用宽度（宿主 flex:1 的
      * [data-composer-leading-actions]）− 同区其它内容（宿主按钮 + 本插件其它 chip）。宿主放不下时会逐级压缩
      * 它自己的按钮（useComposerToolbarFit），所以本 chip 先让位：放不下就在同一次判定里降到装得下的那一档

@@ -2921,17 +2921,17 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
     assert.deepEqual([g.untimed.label, g.untimed.value], ['正在读取', ''], `${label}: untimed tool face carries the status word only`);
     assert.equal(g.untimed.labelShown, true, `${label}: untimed face keeps its status word in the ${tier} tier (v470: never a blank chip)`);
     assert.ok(g.untimed.chip[2] > 24, `${label}: untimed face is not a bare-padding shell (${g.untimed.chip[2]}px)`);
-    /* v466（用户截图裁定「现在的太宽了」）：三档是上限不是固定宽——chip 按内容定宽、不超过当前档位，
+    /* v468（用户截图裁定「现在的太宽了」）：三档是上限不是固定宽——chip 按内容定宽、不超过当前档位，
      * 状态切换时宽度随内容变（此前锁的「一个档位一种宽度」废除）。左邻宿主按钮不动；右邻 Git chip 跟随
      * chip 右缘（间距不变）。 */
     const CAP = { wide: 161.2, mid: 126.1, tight: 85.8 }, r2 = x => Math.round(x * 100) / 100;
     const gap0 = r2(g.think.git[0] - g.think.chip[0] - g.think.chip[2]);
-    assert.ok(new Set(all.map(s => s.chip[2])).size > 1, `${label}: chip width follows the content (v466) — ${all.map(s => s.chip[2])}`);
+    assert.ok(new Set(all.map(s => s.chip[2])).size > 1, `${label}: chip width follows the content (v468) — ${all.map(s => s.chip[2])}`);
     for (const snap of all) {
       /* 兜底断言：本数据链的面都不顶到上限（中等/紧张档删掉上限后这里不会红，靠 overlay-speed-slot 字面锁
        * 与下面的 live width probe 宽裕档用例守上限本身） */
       assert.ok(snap.chip[2] <= CAP[tier] + 0.05, `${label}: chip no wider than the ${tier} cap (${snap.chip[2]}; ${snap.label}|${snap.value})`);
-      assert.ok(snap.slack <= 1.5, `${label}: no room reserved past the content (v466; slack ${snap.slack}; ${snap.label}|${snap.value})`);
+      assert.ok(snap.slack <= 1.5, `${label}: no room reserved past the content (v468; slack ${snap.slack}; ${snap.label}|${snap.value})`);
       assert.deepEqual([snap.chip[0], snap.chip[1], snap.chip[3]], [g.think.chip[0], g.think.chip[1], g.think.chip[3]], `${label}: chip left edge and height unchanged across ${snap.label}|${snap.value}`);
       assert.equal(r2(snap.git[0] - snap.chip[0] - snap.chip[2]), gap0, `${label}: git chip follows the rate chip's right edge (${snap.label}|${snap.value})`);
       assert.equal(snap.git[2], g.think.git[2], `${label}: git chip width unchanged across ${snap.label}|${snap.value}`);
@@ -2952,7 +2952,7 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
     for (const snap of all) assert.equal(snap.hostCompact, g.think.hostCompact, `${label}: host compaction state unchanged across the chain`);
   }
 
-  /* 宽裕 161.2 / 中等 126.1 / 紧张 85.8px（chip 字号 13px，v466 起是各档上限）：空位决定档位；挂载当拍就选对档，
+  /* 宽裕 161.2 / 中等 126.1 / 紧张 85.8px（chip 字号 13px，v468 起是各档上限）：空位决定档位；挂载当拍就选对档，
    * chip 先让位，宿主按钮不被压缩 */
   for (const [name, room, tier] of [['wide tier', 275, 'wide'], ['mid tier', 140, 'mid'], ['tight tier', 100, 'tight'], ['narrower than the tight tier', 20, 'tight']]) {
     await t.test(`${name}: content-sized chip under the ${tier} cap through 思考 → 生成 → 正在读取 → 读取 → 生成 → 完成; left neighbour and host controls stay put`, async () => {
@@ -2971,7 +2971,7 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
   await t.test('control: with the chip pinned at the wide width the host does compact — so "never compacted" above is the chip yielding', async () => {
     await setup(140);
     assert.equal((await geo()).hostCompact, false);
-    /* v466 起三档是 max-width：钉宽要同时压过上限，否则 161px 的 width 被 9.7em 的上限截掉、宿主照样放得下 */
+    /* v468 起三档是 max-width：钉宽要同时压过上限，否则 161px 的 width 被 9.7em 的上限截掉、宿主照样放得下 */
     await b.evaluate(`(() => { const s = document.createElement('style'); s.id = 'pin-wide'; s.textContent = '.zu-tsb{width:12.4em!important;max-width:12.4em!important}'; document.head.appendChild(s); return true; })()`);
     await settle();
     assert.equal((await geo()).hostCompact, true, 'host compacts its own controls when the chip does not yield');
@@ -3001,7 +3001,7 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
       const tail = JSON.stringify(seen.slice(-6));
       assert.equal(new Set(seen.slice(-6).map(x => JSON.stringify(x))).size, 1, `width ${width}, host button ${wide ? 'wide' : 'normal'}: settled for the last 1.5s (${JSON.stringify(seen)})`);
       const [tier, compact, , room] = seen[seen.length - 1];
-      /* v466：档位按上限判定（保守），实际 chip 只会比上限窄——未压缩时锁「实际宽度装得下、且不超过档位上限」 */
+      /* v468：档位按上限判定（保守），实际 chip 只会比上限窄——未压缩时锁「实际宽度装得下、且不超过档位上限」 */
       if (!compact) {
         const chipW = seen[seen.length - 1][4], cap = { wide: 161.2, mid: 126.1, tight: 85.8 }[tier];
         assert.ok(chipW <= room + 0.5, `${tail}: content-sized chip fits the room it settled in`);
@@ -3011,7 +3011,7 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
     }
   });
 
-  /* v466 起芯片按内容定宽：空位 130 远大于实际内容宽，宿主自己的按钮变宽后宿主根本不必压缩——比 v459 的
+  /* v468 起芯片按内容定宽：空位 130 远大于实际内容宽，宿主自己的按钮变宽后宿主根本不必压缩——比 v459 的
    * 「宿主压缩 → chip 让一档 → 宿主展开」更好；档位仍按上限判定降到中等（空位 130 < 宽裕上限 161.2），
    * 且静默期后不回升。 */
   await t.test('host compaction not caused by the chip: chip yields one tier, host never compacts, chip does not climb back (no tug-of-war)', async () => {
@@ -3030,7 +3030,7 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
     assert.ok(seen.every(([x, c]) => x === 'mid' && !c), `stays at mid with host controls expanded for 5s, past the 2s dwell (${JSON.stringify(seen)})`);
   });
 
-  /* v466（issue #474 跟进，用户实报「点设置只关了速度卡」）：先点 chip（焦点落在 chip 上）再点卡里的设置图标——mousedown 把焦点
+  /* v468（issue #474 跟进，用户实报「点设置只关了速度卡」）：先点 chip（焦点落在 chip 上）再点卡里的设置图标——mousedown 把焦点
    * 移到图标，chip 的 blur 若在此时收卡，click 就落到页面内容上。blur 门读的是 tpsTip.matches(':hover')，VM 夹具只能塞桩、测不到
    * 读错信号，所以这里用真实 DOM + 真实指针事件：按下图标后卡仍在，松开后设置面板已打开。 */
   await t.test('settings gear in the speed card after clicking the chip first: the card survives the press and the settings panel opens (issue #474)', async () => {
@@ -3058,9 +3058,10 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
     await glide(chip, gear); await delay(300);
     assert.ok(await b.evaluate(tipShown), 'card still shown with the pointer over the gear');
     /* 用户动作二：在齿轮上按下——焦点从 chip 移到齿轮，卡不得被 blur 收走 */
+    await b.evaluate(`(() => { const c = document.querySelector('#pane-a .zu-tsb'); window.__zuChipBlurs = 0; c.addEventListener('blur', () => { window.__zuChipBlurs++; }); return true; })()`);
     await mouse('mousePressed', gear, { button: 'left', clickCount: 1 }); await delay(120);
     assert.ok(await b.evaluate(tipShown), 'card survives the press (blur gate: pointer is over the card)');
-    assert.equal(await b.evaluate(`document.activeElement === document.querySelector('.zusage-tps-tip .zu-sv-cfg')`), true, 'the press moved focus to the gear');
+    assert.ok(await b.evaluate('window.__zuChipBlurs >= 1'), 'the press did blur the chip — the card survives because of the blur gate, not because focus stayed');
     assert.equal(await b.evaluate(`!!document.querySelector('.zu-settings.open')`), false, 'panel not open before release (click-only, never pointerdown)');
     await mouse('mouseReleased', gear, { button: 'left', clickCount: 1 });
     await b.waitFor(`!!document.querySelector('.zu-settings.open')`, 'settings panel did not open on release', 80);
@@ -3074,7 +3075,7 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
     const out = await b.evaluate(probeSrc);
     const rows = Object.entries(out.tiers).filter(([name]) => name.includes('精简'));
     assert.equal(rows.length, 9, `3 interface font sizes × 3 compact tiers (${Object.keys(out.tiers).join(', ')})`);
-    /* v466：三档是上限——宽度随状态面变（不止一个值），每个面都不超过「档位 em × chip 字号」 */
+    /* v468：三档是上限——宽度随状态面变（不止一个值），每个面都不超过「档位 em × chip 字号」 */
     const TSB_CAP_EM = { 宽裕: 12.4, 中等: 9.7, 紧张: 6.6 };
     for (const [name, r] of rows) {
       const all = [...r.speedW, ...(r.plainW || [])], cap = TSB_CAP_EM[name.split(' ')[2]] * parseFloat(r.fs);
