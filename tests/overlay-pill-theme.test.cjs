@@ -2750,11 +2750,12 @@ function tsbGeo() {
     labelLeft: shown(lab) ? r2(lab.getBoundingClientRect().left) : null, labelRight: shown(lab) ? r2(lab.getBoundingClientRect().right) : null,
     sameNode: chip === window.__tsbRef, aria: chip.getAttribute('aria-label'), icon: !!chip.querySelector('.ico'), focusable: chip.tabIndex };
 }
-/* 逐档 × 逐状态面量精简 chip：数值不越界、标签不被裁。例外只有中等档装不下的长技能名（v461 起子代理面是「子·X」，
+/* 逐档 × 逐状态面量精简 chip：数值不越界、标签不被裁、有状态词而无数值的面不是空壳（v475）。例外只有顶到上限的长标签
+ * （中等档装不下的长技能名；v475 起含原始工具名的无计时面在中等/紧张档顶到上限——v461 起子代理面是「子·X」，
  * 两个「×12 + 四位数」面不再需要豁免）——标签省略号是设计内的降级（完整文字在 tooltip 与 aria-label）。量完还原。 */
 function tsbFaceProbe(faces) {
   const chip = document.querySelector('#pane-a .zu-tsb'), save = { html: chip.innerHTML, cls: chip.className }, bad = [];
-  const clipOk = { mid: ['技能 代码审查与修复 12s'] };
+  const clipOk = { mid: ['技能 代码审查与修复 12s', '无计时 AskUserQuestion'], tight: ['无计时 AskUserQuestion'] };
   const r2 = x => Math.round(x * 100) / 100;
   try {
     for (const [tier, cls] of [['wide', ''], ['mid', 'zu-speed-mid'], ['tight', 'zu-speed-tight']]) {
@@ -2766,7 +2767,12 @@ function tsbFaceProbe(faces) {
         const items = [...live.children].filter(shown);
         const slack = r2((box.right - parseFloat(cs.paddingRight)) - items[items.length - 1].getBoundingClientRect().right);
         const clipped = shown(lab) && lab.scrollWidth > lab.clientWidth + 0.5;
-        if (slack < -0.05 || (clipped && !(clipOk[tier] || []).includes(key))) bad.push([tier, key, slack, clipped]);
+        /* v475：只有状态词、没有数值的面（后台智能体合成的「正在派发」、未开始计时的「正在执行」等）在紧张档去掉状态词后
+         * chip 只剩内边距——chip 没有图标承载状态，这就是用户看到的「速度 chip 被隐藏」。状态词必须可见。 */
+        const blank = !!lab.textContent && !chip.querySelector('.zu-sp-val').textContent && !shown(lab);
+        /* v476：会话均兜底面的「均」字（zu-sp-avg）在任何档位都不得去掉——紧张档去掉后，窄窗里的裸数字会冒充最后一轮真实速度 */
+        const markHidden = !!lab && lab.classList.contains('zu-sp-avg') && !shown(lab);
+        if (slack < -0.05 || blank || markHidden || (clipped && !(clipOk[tier] || []).includes(key))) bad.push([tier, key, slack, clipped, blank, markHidden]);
       }
     }
   } finally { chip.className = save.cls; chip.innerHTML = save.html; }
@@ -2862,7 +2868,7 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
   };
   const bind = () => b.evaluate(`(() => { const P = window.__liveProbe; P.store = P.mkStore(P.snap(1, [P.header('running'), P.text('abc')]));
     P.sessions.push({ key: '__base__ /repo/a', topic: 'conversation/sid_a', store: P.store }); return true; })()`);
-  /* 思考 → 生成（数值换三次）→ 读取 → 生成 → 完成，返回各态上屏后的几何 */
+  /* 思考 → 生成（数值换三次）→ 正在读取（无计时）→ 读取 → 生成 → 完成，返回各态上屏后的几何 */
   async function runChain() {
     await bind();
     await face('思考');
@@ -2879,22 +2885,26 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
       g.estimateTicks.push(await geo());
     }
     await delay(500);
-    await push(6, [H('running'), T('abcdefghijklmnopq'), TOOL('running', '{ startedAt: Date.now() }')]);
+    await push(6, [H('running'), T('abcdefghijklmnopq'), TOOL('inputStreaming', '{}')]);   // v475：工具入参还在输出、没有 startedAt——只有状态词的面
+    await face('正在读取');
+    g.untimed = await geo();
+    await delay(300);
+    await push(7, [H('running'), T('abcdefghijklmnopq'), TOOL('running', '{ startedAt: Date.now() }')]);
     await face('读取');
     g.tool = await geo();
     await delay(500);
-    await push(7, [H('running'), T('abcdefghijklmnopqrstuvwx'), TOOL('completed', '{ startedAt: Date.now() - 1500 }')]);
+    await push(8, [H('running'), T('abcdefghijklmnopqrstuvwx'), TOOL('completed', '{ startedAt: Date.now() - 1500 }')]);
     await face('');   // v454 估算与完成态同为空标签面；完成态此刻尚未推送
     g.estimate2 = await geo();
-    await push(8, [H('completedSuccess', { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), T('abcdefghijklmnopqrstuvwx')]);
+    await push(9, [H('completedSuccess', { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), T('abcdefghijklmnopqrstuvwx')]);
     await face('');
     g.final = await geo();
     return g;
   }
   function assertStableSlot(g, label, tier) {
-    const all = [g.think, g.estimate, ...g.estimateTicks, g.tool, g.estimate2, g.final];
+    const all = [g.think, g.estimate, ...g.estimateTicks, g.untimed, g.tool, g.estimate2, g.final];
     assert.ok(all.every(Boolean), `${label}: rate chip present in every state`);
-    assert.deepEqual([g.think.label, g.estimate.label, g.tool.label, g.final.label], ['思考', '', '读取', ''], `${label}: labels (estimate has no label since v454)`);
+    assert.deepEqual([g.think.label, g.estimate.label, g.untimed.label, g.tool.label, g.final.label], ['思考', '', '正在读取', '读取', ''], `${label}: labels (estimate has no label since v454)`);
     assert.doesNotMatch(g.estimate.value, /≈/, `${label}: estimate value has no ≈ prefix (v452)`);
     assert.doesNotMatch(g.final.value, /≈/, `${label}: final shows the real speed without ≈`);
     for (const snap of all) {
@@ -2906,8 +2916,13 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
       assert.ok(snap.slack >= -0.05, `${label}: value stays inside the chip (${snap.label}|${snap.value} slack ${snap.slack})`);
       assert.equal(snap.labelClipped, false, `${label}: short label not clipped (${snap.label})`);
       assert.equal(snap.unitShown, tier === 'wide' && !!snap.unit, `${label}: unit shown only in the wide tier, and only for faces that have one`);
-      assert.equal(snap.labelShown, tier !== 'tight' && !!snap.label, `${label}: label shown only outside the tight tier and only for faces that have one (the final face has no label box)`);
+      /* v475：状态词只在「紧张档且有数值」时隐藏——没有数值的面去掉状态词后 chip 只剩内边距（完成态无状态词，标签不占位） */
+      assert.equal(snap.labelShown, !!snap.label && (tier !== 'tight' || !snap.value), `${label}: label hidden only in the tight tier and only when the face has a value (${snap.label}|${snap.value})`);
     }
+    /* v475（用户实报截图「空间不够时速度 chip 被隐藏」）：无计时面只有状态词、没有数值，紧张档也必须留着状态词——chip 没有图标承载状态 */
+    assert.deepEqual([g.untimed.label, g.untimed.value], ['正在读取', ''], `${label}: untimed tool face carries the status word only`);
+    assert.equal(g.untimed.labelShown, true, `${label}: untimed face keeps its status word in the ${tier} tier (v475: never a blank chip)`);
+    assert.ok(g.untimed.chip[2] > 24, `${label}: untimed face is not a bare-padding shell (${g.untimed.chip[2]}px)`);
     /* v469（用户截图裁定「现在的太宽了」）：三档是上限不是固定宽——chip 按内容定宽、不超过当前档位，
      * 状态切换时宽度随内容变（此前锁的「一个档位一种宽度」废除）。左邻宿主按钮不动；右邻 Git chip 跟随
      * chip 右缘（间距不变）。 */
@@ -2942,7 +2957,7 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
   /* 宽裕 161.2 / 中等 126.1 / 紧张 85.8px（chip 字号 13px，v469 起是各档上限）：空位决定档位；挂载当拍就选对档，
    * chip 先让位，宿主按钮不被压缩 */
   for (const [name, room, tier] of [['wide tier', 275, 'wide'], ['mid tier', 140, 'mid'], ['tight tier', 100, 'tight'], ['narrower than the tight tier', 20, 'tight']]) {
-    await t.test(`${name}: content-sized chip under the ${tier} cap through 思考 → 生成 → 读取 → 生成 → 完成; left neighbour and host controls stay put`, async () => {
+    await t.test(`${name}: content-sized chip under the ${tier} cap through 思考 → 生成 → 正在读取 → 读取 → 生成 → 完成; left neighbour and host controls stay put`, async () => {
       await setup(room);
       const g0 = await geo();
       assert.equal(g0.tier, tier, `${name}: tier chosen at mount (room ${g0.room}px)`);
@@ -3079,7 +3094,7 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
     assert.deepEqual(await b.evaluate(`(() => { const c = document.querySelector('#pane-a .zu-tsb'); return [c.className, c.innerHTML]; })()`), before, 'chip restored after the probe');
   });
 
-  await t.test('every face fits its tier box under six font stacks; only three long-label faces clip in the mid tier', async () => {
+  await t.test('every face fits its tier box under six font stacks; only capped long-label faces clip; label-only faces never go blank (v475); the 均 marker survives every tier (v476)', async () => {
     await setup(275);
     const F = (label, val, unit) => `<span class="zu-sp-label">${label}</span><span class="zu-sp-val">${val}</span>${unit ? `<span class="zu-sp-unit dim">${unit}</span>` : ''}`;
     const G = (label, val) => `<span class="zu-sp-label zu-sp-glue">${label}</span><span class="zu-sp-val">${val}</span>`;   // v461 子代理面「子·X」
@@ -3091,6 +3106,13 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
       '子· 128.6': G('子·', '128.6'), '子· 28.8': G('子·', '28.8'), '子 1286.5': G('子', '1286.5'),
       'en 201.4': F('', '201.4', 't/s'), 'en Gen 9999.9': F('Gen', '9999.9', 't/s'), 'en Think 23:59:59': F('Think', '23:59:59'),
       'en Ag· 128.6': G('Ag·', '128.6'), 'en A 1286.5': G('A', '1286.5'), 'en Scan 03s': F('Scan', '03s'),
+      /* v475：只有状态词、没有数值的面（后台智能体合成的「正在派发」、未开始计时的「正在执行」等）——三档都不得是空壳；
+       * 原始工具名的无计时面最长，在中等/紧张档顶到上限按省略号降级 */
+      '无计时 正在派发': F('正在派发', ''), '无计时 正在执行': F('正在执行', ''), '无计时 更新待办': F('更新待办', ''), 'en Running': F('Running', ''),
+      '无计时 AskUserQuestion': F('AskUserQuestion', ''),
+      /* v476：会话均兜底面「均 X t/s」——「均」字挂 zu-sp-avg，三档都保留（紧张档显示「均X」，不冒充最后一轮真实速度） */
+      '会话均兜底 均 85.5': '<span class="zu-sp-label zu-sp-avg">均</span><span class="zu-sp-val">85.5</span><span class="zu-sp-unit dim">t/s</span>',
+      'en Avg 85.5': '<span class="zu-sp-label zu-sp-avg">Avg</span><span class="zu-sp-val">85.5</span><span class="zu-sp-unit dim">t/s</span>',
     };
     const stacks = ['', '"Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif', 'Verdana, Tahoma, sans-serif',
       '"PingFang SC", "Hiragino Sans GB", "Heiti SC", sans-serif', '"Songti SC", "STSong", serif', 'Menlo, Consolas, monospace'];

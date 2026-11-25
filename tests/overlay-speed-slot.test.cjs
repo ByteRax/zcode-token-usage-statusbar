@@ -273,6 +273,25 @@ test('精简 chip（DB 回退态）：面数值与档位色都按最后一轮真
   assert.equal(chip['aria-label'], '生成速度 87.3 t/s');
 });
 
+test('精简 chip（DB 回退态，没有最近一段速度）：面=「均 + 会话均」，档位色按会话均，全称写会话均（v476）', () => {
+  const m = faceHtml('zh');
+  const chip = { setAttribute(k, v) { this[k] = v; } };
+  vm.runInNewContext(getNamedSlice('tpsChipFace') + '\n', {
+    v: { kind: 'fallback', dbTps: 0, sessAvg: 85.5 }, chip, L: (zh) => zh,
+    tpsBand: (x) => ({ cls: x >= 70 ? 'ok' : 'warm' }), zuSpeedFaceHtml: m.zuSpeedFaceHtml,
+  });
+  assert.equal(chip.innerHTML, '<span class="zu-live ok"><span class="zu-sp-label zu-sp-avg">均</span><span class="zu-sp-val">85.5</span><span class="zu-sp-unit dim">t/s</span></span>', 'v476：不再留空；「均」字挂 zu-sp-avg，紧张档不去标签');
+  assert.equal(chip['aria-label'], '生成速度 会话均 85.5 t/s');
+  /* 对照：同一会话一旦出现最近一段速度，面回到 v298（最后一轮真实速度、无「均」字、档位按最后一轮） */
+  const chip2 = { setAttribute(k, v) { this[k] = v; } };
+  vm.runInNewContext(getNamedSlice('tpsChipFace') + '\n', {
+    v: { kind: 'fallback', dbTps: 42, sessAvg: 85.5 }, chip: chip2, L: (zh) => zh,
+    tpsBand: (x) => ({ cls: x >= 70 ? 'ok' : 'warm' }), zuSpeedFaceHtml: m.zuSpeedFaceHtml,
+  });
+  assert.equal(chip2.innerHTML, '<span class="zu-live warm"><span class="zu-sp-label"></span><span class="zu-sp-val">42</span><span class="zu-sp-unit dim">t/s</span></span>');
+  assert.equal(chip2['aria-label'], '生成速度 42 t/s');
+});
+
 /* ---------- 展示协调器（08 分片实例级，时间戳显式注入） ---------- */
 function coordinator(ident = 's1|t1') {
   const ctx = {
@@ -969,6 +988,13 @@ test('速度格占位 CSS：全部格面固定宽 6.6em、右内边距 0、右�
   assert.equal((tsbCss.match(/max-width:/g) || []).length, 3, '精简 chip 恰三条上限规则');
   assert.ok(!/[;{](?:min-)?width:/.test(tsbCss), '精简 chip 不写 width/min-width（按内容定宽，v469）');
   assert.ok(!tsbCss.includes('.zu-tsb.zu-speed-tight>.zu-live{justify-content:flex-end}'), '精简紧张档数值不再靠右（成组靠左）');
+  // v475（用户实报截图「空间不够时速度 chip 被隐藏」）：紧张档只在有数值时去标签——只有状态词、没有数值的面
+  // （后台智能体合成的「正在派发」、未开始计时的「正在执行」等）无条件去标签后 chip 只剩内边距，而 chip 无图标承载状态
+  assert.ok(tsbCss.includes('.zu-tsb.zu-speed-tight>.zu-live>.zu-sp-unit{display:none}'), '精简紧张档单位照旧隐藏（v475 拆出的单位规则）');
+  assert.ok(tsbCss.includes('.zu-tsb.zu-speed-tight>.zu-live:has(>.zu-sp-val:not(:empty))>.zu-sp-label:not(.zu-sp-avg){display:none}'), '精简紧张档只在数值非空时隐藏标签，且不含「均」字标记（v475/v476）');
+  assert.ok(!tsbCss.includes('.zu-tsb.zu-speed-tight>.zu-live>.zu-sp-label,'), '精简紧张档不得无条件隐藏标签（v475：无数值的面会变空壳）');
+  // v476（用户裁定）：会话均兜底面「均 X t/s」的「均」字在紧张档保留——去掉 :not(.zu-sp-avg) 后，窄窗里的裸数字会冒充最后一轮速度
+  assert.ok(!tsbCss.includes('>.zu-sp-label{display:none}'), '精简紧张档去标签规则必须排除 zu-sp-avg（v476）');
   assert.ok(!/\.zusage-root[^{]*\.zu-tsb\.zu-speed-(mid|tight)/.test(source), '精简档位类不作用于状态条');
   assert.ok(!css.includes('transition'), '不得用 width transition 掩盖跳动');
   assert.ok(!/\.it\.zu-speed[^{]*\{[^}]*min-width:(?!0)/.test(css), '速度格规则不再有 min-width（固定宽；只剩 .zu-live 的 min-width:0）');
