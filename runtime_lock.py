@@ -112,8 +112,8 @@ def _replace_retrying(source, target):
     """os.replace 短暂重试。Windows 上读者/杀软正打开目标文件时（Python 的 open 不带
     FILE_SHARE_DELETE）替换被拒绝；标记文件的读者都是微秒级短开，重试窗口远大于它。
     静默放弃会丢掉重启待办，手机安装意图的回滚失败还会留下一条永不销账的
-    pending-install。POSIX 的 rename 不受并发读者影响，重试零成本；永久性拒绝只是晚
-    _REPLACE_ATTEMPTS × _REPLACE_WAIT_S 才上抛同一异常。"""
+    pending-install。POSIX 的 rename 不受并发读者影响，重试零成本；永久性拒绝只是多等
+    (_REPLACE_ATTEMPTS − 1) × _REPLACE_WAIT_S（约 190ms）才上抛同一异常。"""
     for attempt in range(_REPLACE_ATTEMPTS):
         try:
             os.replace(source, target)
@@ -136,6 +136,24 @@ def _unlink_retrying(path):
             if attempt == _REPLACE_ATTEMPTS - 1:
                 raise
             time.sleep(_REPLACE_WAIT_S)
+
+
+def _discard_tmp(name):
+    """丢弃没发布的临时文件（尽力清理，不打断已经在传播的异常）。带 preserve 的写入会把
+    临时文件 chmod 成目标的权限位：Windows 上目标只读时它也只读，unlink 被拒——先补回写
+    权限再删，否则每次失败都留下一个 .tmp。"""
+    try:
+        os.unlink(name)
+    except FileNotFoundError:
+        return
+    except PermissionError:
+        try:
+            os.chmod(name, stat.S_IWRITE | stat.S_IREAD)
+            os.unlink(name)
+        except OSError:
+            pass
+    except OSError:
+        pass
 
 
 @contextmanager
@@ -235,10 +253,7 @@ def _write_marker(marker, data, preserve=None):
     finally:
         if fd is not None:
             os.close(fd)
-        try:
-            os.unlink(name)
-        except OSError:
-            pass
+        _discard_tmp(name)
 
 
 def _restore_marker_bytes(marker, previous):
@@ -256,10 +271,7 @@ def _restore_marker_bytes(marker, previous):
     finally:
         if fd is not None:
             os.close(fd)
-        try:
-            os.unlink(name)
-        except OSError:
-            pass
+        _discard_tmp(name)
 
 
 def update_config(runtime, changes, defaults=None, merge=None):
@@ -385,14 +397,11 @@ def update_enhance_provider(runtime, revision, changes):
                 fd = None
                 json.dump(updated, stream, ensure_ascii=False)
                 stream.write("\n")
-            os.replace(name, config)
+            _replace_retrying(name, config)   # 同标记写入：Windows 上并发读者会让替换被拒
         finally:
             if fd is not None:
                 os.close(fd)
-            try:
-                os.unlink(name)
-            except OSError:
-                pass
+            _discard_tmp(name)
         return updated
 
 
@@ -579,7 +588,7 @@ def ack_restart(runtime, loaded):
                 data["hashes"] = remaining
                 _write_marker(marker, data)
                 return {"ok": True, "cleared": False}
-        marker.unlink()
+        _unlink_retrying(marker)   # 同标记替换：Windows 上并发读者会让 unlink 被拒
     return {"ok": True, "cleared": True}
 
 

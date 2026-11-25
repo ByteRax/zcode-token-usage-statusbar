@@ -7,7 +7,8 @@
    不能以 PermissionError 穿出、被当成权限问题报成 skipped-error。
 2. 标记文件的替换与删除遇到并发读者会被拒绝（Python 的 open 不带 FILE_SHARE_DELETE）。
    读者都是短开，短暂重试即可成功；静默放弃会丢掉重启待办，回滚失败还会留下一条
-   永不销账的 pending-install 意图。
+   永不销账的 pending-install 意图；销账末尾的删除被拒则会留下一个已销账的标记。带
+   preserve 的写入遇上只读目标时，只读的临时文件要先补回写权限才删得掉。
 
 读者句柄用 CreateFileW 以 FILE_SHARE_READ 持有；共享模式按句柄生效，同进程的另一
 句柄同样受拒，所以不必起子进程。「读者何时松手」由替身 sleep 决定，不依赖真实时序。
@@ -19,8 +20,11 @@
 """
 import contextlib
 import ctypes
+import errno
+import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -165,10 +169,89 @@ class MarkerReaderTests(unittest.TestCase):
         with ReaderHandle(self.marker), sleep_hook(lambda attempt: None) as waits:
             with self.assertRaises(PermissionError):
                 runtime_lock._write_marker(self.marker, {"state": "acked"})
-        self.assertGreater(len(waits), 1, "读者短开时应当重试，而不是第一次被拒就放弃")
-        self.assertLess(len(waits), 100, "重试必须有界")
+        # 钉字面值而不是引用常量：重试预算（_REPLACE_ATTEMPTS × 10ms）是为「读者短开」留的窗口，
+        # 调小它必须在这里变红。
+        self.assertEqual(len(waits), 19,
+                         "永久性拒绝等满 19 次（约 190ms）才上抛：读者短开时重试，而不是第一次被拒就放弃")
         self.assertEqual(self.marker.read_bytes(), before)
         self.assertEqual(self.leftovers(), [])
+
+    def test_unlink_retrying_treats_a_vanished_file_as_done(self):
+        """中途被别人删掉不算失败（与 missing_ok=True 等价）。"""
+        runtime_lock._unlink_retrying(self.dir / "absent.json")
+
+    def test_replace_retry_only_covers_permission_refusals(self):
+        """其它 OSError（如 I/O 错误）不是「读者短开」：第一次就上抛，不白等。"""
+        with mock.patch.object(runtime_lock.os, "replace", side_effect=OSError(errno.EIO, "i/o error")), \
+                mock.patch.object(runtime_lock.time, "sleep") as sleep:
+            with self.assertRaises(OSError) as ctx:
+                runtime_lock._replace_retrying("source", "target")
+        self.assertEqual(ctx.exception.errno, errno.EIO)
+        sleep.assert_not_called()
+
+    def temp_leftovers(self):
+        return [name for name in self.leftovers() if name.endswith(".tmp")]
+
+    @unittest.skipUnless(os.name == "nt", WINDOWS_ONLY)
+    def test_ack_restart_waits_out_a_concurrent_reader_before_removing_the_marker(self):
+        """销账末尾删除标记时读者正开着它：短暂重试后删掉，不留一个已销账的标记在盘上
+        （plugin-restart.lock 是永久锁文件，不计入残留）。"""
+        payload = b"// fixture overlay\n"
+        (self.dir / "overlay.js").write_bytes(payload)
+        digest = hashlib.sha256(payload).hexdigest()
+        runtime_lock._write_marker(self.marker, {"hashes": {"overlay.js": digest}})
+        reader = ReaderHandle(self.marker)
+        self.addCleanup(reader.release)
+        with sleep_hook(lambda attempt: reader.release()) as waits:
+            result = runtime_lock.ack_restart(self.dir, {"overlay.js": digest})
+        self.assertEqual(result, {"ok": True, "cleared": True})
+        self.assertEqual(len(waits), 1)
+        self.assertFalse(self.marker.exists())
+        self.assertEqual(self.temp_leftovers(), [])
+
+    @unittest.skipUnless(os.name == "nt", WINDOWS_ONLY)
+    def test_enhance_provider_update_waits_out_a_concurrent_reader(self):
+        """增强配置的原子替换同标记写入：读者正开着 enhance-provider.json 时先重试，不丢这次保存。"""
+        config = self.dir / "enhance-provider.json"
+        config.write_text('{"version": 1, "revision": 0, "mode": "default"}', encoding="utf-8")
+        reader = ReaderHandle(config)
+        self.addCleanup(reader.release)
+        with sleep_hook(lambda attempt: reader.release()) as waits:
+            updated = runtime_lock.update_enhance_provider(self.dir, 0, {"mode": "default"})
+        self.assertEqual(updated["revision"], 1)
+        self.assertEqual(len(waits), 1)
+        self.assertEqual(json.loads(config.read_text(encoding="utf-8"))["revision"], 1)
+        self.assertEqual(self.temp_leftovers(), [])
+
+    @unittest.skipUnless(os.name == "nt", WINDOWS_ONLY)
+    def test_failed_write_for_a_read_only_target_leaves_no_temp_file(self):
+        """带 preserve 的写入把临时文件 chmod 成目标的权限位；目标只读时替换被拒后临时文件
+        也只读，清理要先补回写权限，否则每次失败都留一个 .tmp。"""
+        self.marker.write_bytes(b'{"old": true}\n')
+        os.chmod(self.marker, stat.S_IREAD)
+        self.addCleanup(os.chmod, self.marker, stat.S_IWRITE | stat.S_IREAD)
+        preserve = self.marker.stat()
+        with mock.patch.object(runtime_lock.os, "replace", side_effect=PermissionError(5, "denied")), \
+                mock.patch.object(runtime_lock.time, "sleep"):
+            with self.assertRaises(PermissionError):
+                runtime_lock._write_marker(self.marker, {"new": True}, preserve)
+        self.assertEqual(self.marker.read_bytes(), b'{"old": true}\n')
+        self.assertEqual(self.temp_leftovers(), [])
+
+
+class FileLockPaddingTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", WINDOWS_ONLY)
+    def test_padding_write_refused_for_a_non_lock_reason_propagates(self):
+        """补位字节只把「锁被占」的 EACCES/EAGAIN/EDEADLK 当 busy；其它错误（如磁盘满）原样上抛。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "pad.lock"
+            with mock.patch.object(runtime_lock.os, "write", side_effect=OSError(errno.ENOSPC, "no space")), \
+                    mock.patch.object(runtime_lock.time, "sleep") as sleep:
+                with self.assertRaises(OSError) as ctx:
+                    with runtime_lock.file_lock(path, timeout=5.0):
+                        self.fail("不得进入临界区")
+            self.assertEqual(ctx.exception.errno, errno.ENOSPC)
+            sleep.assert_not_called()
 
 
 class RuntimeLockStdinTests(unittest.TestCase):

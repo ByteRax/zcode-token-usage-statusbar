@@ -12,7 +12,7 @@ stdout（与 Windows 文本模式同一个后果），再由脚本自己的 reco
 
 入站是同一个后果的另一面：宿主按 UTF-8 写帧，而宿主只给工具 shell 与 hooks 的执行环境
 注入 PYTHONUTF8，MCP 子进程拿不到这层注入，中文 Windows 的管道 stdin 默认按区域代码页
-（GBK）解码——「项目」被读成「椤垝洰」，workspace:<中文关键词> 落到「未找到」分支，而
+（GBK）解码——「项目」被读成「椤圭洰」，workspace:<中文关键词> 落到「未找到」分支，而
 列出的现有工作区里就有那个目录。UTF-8 环境的机器同样只靠真跑咬不到：LEGACY_STDIN 给
 子进程钉一个传统代码页，再由脚本自己的 reconfigure(encoding="utf-8") 收尾。
 
@@ -209,7 +209,7 @@ class UsageMcpStdioTests(unittest.TestCase):
         return session
 
     def test_non_ascii_scope_survives_legacy_stdio_encoding(self):
-        """入站帧按区域代码页解码时「项目」被读成「椤垝洰」，workspace:<中文关键词> 落到
+        """入站帧按区域代码页解码时「项目」被读成「椤圭洰」，workspace:<中文关键词> 落到
         「未找到」分支——而它列出的现有工作区里就有那个目录。"""
         db = self.home / "db.sqlite"
         directory = str(self.home / "我的项目")

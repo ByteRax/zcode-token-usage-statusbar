@@ -19,6 +19,22 @@ _spec = importlib.util.spec_from_file_location("zusage_remote_test", ROOT / "zus
 zusage = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(zusage)
 
+
+# 进程内 serve 会按 TTL 拉新价表（真实联网，还会把 pricing-cache.json 写进检出目录）：回归不出网。
+_NO_PRICING_REFRESH = None
+
+
+def setUpModule():
+    global _NO_PRICING_REFRESH
+    _NO_PRICING_REFRESH = mock.patch.object(zusage._pricing, "start_refresh", return_value=None)
+    _NO_PRICING_REFRESH.start()
+
+
+def tearDownModule():
+    global _NO_PRICING_REFRESH
+    _NO_PRICING_REFRESH.stop()
+    _NO_PRICING_REFRESH = None
+
 A = "remote:ssh:a:22:u:/p"
 B = "remote:ssh:b:22:u:/p"
 W = "remote:wsl:Ubuntu:dev:/p"
