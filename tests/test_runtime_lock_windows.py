@@ -1,22 +1,22 @@
 # -*- coding: utf-8 -*-
-"""runtime_lock 在 Windows 上的两处竞争面（msvcrt 字节锁、无 FILE_SHARE_DELETE 的读者）。
+"""runtime_lock 在 Windows 上的两处竞争面（msvcrt 字节锁、被打开的目标文件）。
 
 1. file_lock 先给空锁文件补 1 个字节再锁首字节。两个进程同时首次创建同一锁文件时，
    后到者在先到者写入之前看到大小 0，随后的补写撞上对方刚锁定的首字节（EACCES）。
    这只是「锁被占」的另一种形态，必须走 busy（FileLockBusy，调用方按锁竞争退避），
    不能以 PermissionError 穿出、被当成权限问题报成 skipped-error。
-2. 标记文件的替换与删除遇到并发读者会被拒绝（Python 的 open 不带 FILE_SHARE_DELETE）。
-   读者都是短开，短暂重试即可成功；静默放弃会丢掉重启待办，回滚失败还会留下一条
-   永不销账的 pending-install 意图；销账末尾的删除被拒则会留下一个已销账的标记。带
+2. 标记与增强配置文件的替换、标记的删除遇到并发读者会被拒绝——Windows 上目标只要被
+   任何句柄打开（读者、杀软，也包括主进程自己的 fs 句柄）替换都被拒，实测不论共享模式。
+   读者都是短开，短暂重试即可成功；静默放弃会丢掉重启待办或这次保存，回滚失败还会留下
+   一条永不销账的 pending-install 意图；销账末尾的删除被拒则会留下一个已销账的标记。带
    preserve 的写入遇上只读目标时，只读的临时文件要先补回写权限才删得掉。
 
 读者句柄用 CreateFileW 以 FILE_SHARE_READ 持有；共享模式按句柄生效，同进程的另一
 句柄同样受拒，所以不必起子进程。「读者何时松手」由替身 sleep 决定，不依赖真实时序。
 
-另有一条不限于 Windows 的入站用例也放在这里（同属 runtime_lock 的 stdio 面）：
-3. 命令行入口的入站 JSON（--record-restart 的载荷带 installation.asar，安装路径可含
-   非 ASCII）按 UTF-8 解码。主进程与更新器按 JSON.stringify 写 stdin、spawn 时不注入
-   编码变量，中文 Windows 的管道默认按区域代码页解码，路径被解成乱码。
+另有不限于 Windows 的入站用例也放在这里（同属 runtime_lock 的 stdio 面）：
+3. 命令行入口的入站 JSON 按 UTF-8 严格解码。主进程与更新器按 JSON.stringify 写 stdin、
+   spawn 时不注入编码变量，中文 Windows 的管道默认按区域代码页解码。
 """
 import contextlib
 import ctypes
@@ -255,26 +255,48 @@ class FileLockPaddingTests(unittest.TestCase):
 
 
 class RuntimeLockStdinTests(unittest.TestCase):
-    """命令行入口的入站 JSON 按 UTF-8 解码（跨平台：用 PYTHONIOENCODING=gbk:strict 钉出中文
-    Windows 的管道）。未钉 UTF-8 时 UTF-8 的「软件」被按 GBK 读成乱码，标记里记下的安装路径
-    不再是真实路径。"""
+    """命令行入口的入站 JSON 按 UTF-8 严格解码（跨平台：用 PYTHONIOENCODING=gbk:strict 钉出中文
+    Windows 的管道）。经 stdin 的调用方里只有 --update-enhance-provider 的载荷可能含非 ASCII
+    （模型名、密钥）：未钉 UTF-8 时或被读成乱码、或直接 UnicodeDecodeError，这次保存都丢失。
+    一次性命令行没有读循环要保护：畸形字节直接以非零退出失败，不把替换字符写进配置。"""
 
-    def test_record_restart_keeps_non_ascii_installation_path_under_legacy_stdio(self):
+    @staticmethod
+    def legacy_env():
+        env = {name: os.environ[name] for name in ("SystemRoot", "COMSPEC", "PATHEXT")
+               if name in os.environ}
+        env.update(PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="gbk:strict")
+        return env
+
+    @staticmethod
+    def seeded(runtime):
+        config = runtime / "enhance-provider.json"
+        config.write_text('{"version": 1, "revision": 0, "mode": "default"}', encoding="utf-8")
+        return config
+
+    def save(self, runtime, payload):
+        return subprocess.run(
+            [sys.executable, "-B", str(ROOT / "runtime_lock.py"), "--update-enhance-provider", str(runtime)],
+            input=payload, capture_output=True, env=self.legacy_env(), cwd=str(runtime), timeout=30)
+
+    def test_update_enhance_provider_keeps_non_ascii_fields_under_legacy_stdio(self):
         with tempfile.TemporaryDirectory() as tmp:
             runtime = Path(tmp)
-            asar = str(runtime / "软件" / "ZCode" / "resources" / "app.asar")
-            payload = json.dumps({"state": "pending-install",
-                                  "installation": {"asar": asar, "entryHash": "abc"}},
-                                 ensure_ascii=False)
-            env = {name: os.environ[name] for name in ("SystemRoot", "COMSPEC", "PATHEXT")
-                   if name in os.environ}
-            env.update(PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="gbk:strict")
-            process = subprocess.run(
-                [sys.executable, "-B", str(ROOT / "runtime_lock.py"), "--record-restart", str(runtime)],
-                input=payload.encode("utf-8"), capture_output=True, env=env, cwd=str(runtime), timeout=30)
+            config = self.seeded(runtime)
+            model = "软件 模型"
+            payload = json.dumps({"revision": 0, "changes": {"mode": "custom", "model": model}}, ensure_ascii=False)
+            process = self.save(runtime, payload.encode("utf-8"))
             self.assertEqual(process.returncode, 0, process.stderr)
-            marker = runtime_lock._read_marker(runtime / ".plugin-restart-required")
-            self.assertEqual(marker["installation"]["asar"], asar)
+            self.assertEqual(json.loads(config.read_text(encoding="utf-8"))["model"], model)
+
+    def test_malformed_stdin_json_fails_closed_without_writing(self):
+        """字符串里的非法字节不许被替换后照常解析：那会把带 U+FFFD 的值写进配置。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp)
+            config = self.seeded(runtime)
+            before = config.read_bytes()
+            process = self.save(runtime, b'{"revision": 0, "changes": {"mode": "custom", "model": "\xff"}}')
+            self.assertNotEqual(process.returncode, 0)
+            self.assertEqual(config.read_bytes(), before)
 
 
 if __name__ == "__main__":

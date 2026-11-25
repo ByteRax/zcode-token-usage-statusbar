@@ -236,3 +236,7 @@ class WorkBuddyInstallValidationTests(unittest.TestCase):
         self.assertEqual(installer.install(), 0)
         self.write_inputs({"plugins": {installer.KEY: []}}, {})
         self.assertEqual(installer.install(), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

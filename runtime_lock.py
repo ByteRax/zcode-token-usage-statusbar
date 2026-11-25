@@ -109,8 +109,8 @@ _REPLACE_WAIT_S = 0.01
 
 
 def _replace_retrying(source, target):
-    """os.replace 短暂重试。Windows 上读者/杀软正打开目标文件时（Python 的 open 不带
-    FILE_SHARE_DELETE）替换被拒绝；标记文件的读者都是微秒级短开，重试窗口远大于它。
+    """os.replace 短暂重试。Windows 上目标被任何句柄打开时替换都被拒绝——读者、杀软，也包括
+    主进程自己的 fs 句柄（实测不论共享模式）；这些读者都是微秒级短开，重试窗口远大于它。
     静默放弃会丢掉重启待办，手机安装意图的回滚失败还会留下一条永不销账的
     pending-install。POSIX 的 rename 不受并发读者影响，重试零成本；永久性拒绝只是多等
     (_REPLACE_ATTEMPTS − 1) × _REPLACE_WAIT_S（约 190ms）才上抛同一异常。"""
@@ -631,11 +631,13 @@ def main():
 
 if __name__ == "__main__":
     # 入站 JSON（--record-restart / --update-config / --update-enhance-provider 的载荷）按 UTF-8
-    # 解码：主进程与更新器按 JSON.stringify 写 stdin，spawn 时不注入 PYTHONUTF8，中文 Windows 的
-    # 管道默认按区域代码页解码——含非 ASCII 的安装路径会被解成乱码或孤立代理项（后者让标记
-    # 写入失败）。畸形字节换成 U+FFFD，仍按 JSON 解析失败处理。
+    # 严格解码：主进程与更新器按 JSON.stringify 写 stdin、spawn 时不注入 PYTHONUTF8，中文 Windows
+    # 的管道默认按区域代码页解码——含非 ASCII 的载荷（经 stdin 的调用方里只有
+    # --update-enhance-provider 的模型名与密钥可能如此）会被解成乱码或直接 UnicodeDecodeError，
+    # 这次保存都丢失。一次性命令行没有读循环要保护：畸形字节直接以非零退出失败，不把替换
+    # 字符写进配置（字符串内的坏字节若换成 U+FFFD 会照常解析并落盘）。
     try:
-        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+        sys.stdin.reconfigure(encoding="utf-8")
     except Exception:
         pass
     raise SystemExit(main())   # main() 的 return 1（事务失败）必须传播为非零退出码，否则调用方把失败当成功

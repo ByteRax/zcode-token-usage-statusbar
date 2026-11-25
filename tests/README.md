@@ -30,7 +30,7 @@ python3 sync_plugin.py --check
 
 另覆盖 R1–R14 修复：真实 Node 验收器与 SessionStart/sync/install 入口联动、活安装 PID 和错误 Release 拒绝、跨版本部分写入恢复并保护真实热修；语法失败包不能被手工/quiet/可见收尾激活，独有 TMP 暂存与发布中断可重试；所有运行时配置写入口共享锁；仓库大小写、版本化非核心文件增删、字面 argv、重定向总超时取消；实际双语 tooltip 和热更新代际清理、真实并发 hooks、本问开始时间/轮次身份与旧 schema 降级、未完成同步提示不冒称安装成功。
 
-另覆盖 Windows 上的文件竞争面与 stdio 入站编码：空锁文件补位字节的竞争按 busy 处理、标记文件替换与删除遇并发读者短暂重试、只读目标失败后不留临时文件（`test_runtime_lock_windows.py`，用真实句柄，非 Windows 跳过）；`usage_mcp.py` 与 `zusage.py serve` 的入站帧按 UTF-8 解码（`test_usage_mcp_stdio.py`、`test_serve_stdio.py`，给子进程钉 `gbk:strict` 代码页，任何平台都能咬到）；测试文件自身的布局契约——`__main__` 块只能是最后一条语句（`test_test_file_layout.py`）。
+另覆盖 Windows 上的文件竞争面与 stdio 入站编码：空锁文件补位字节的竞争按 busy 处理、标记文件替换与删除遇并发读者短暂重试、只读目标失败后不留临时文件（`test_runtime_lock_windows.py`：Windows 竞争面用真实句柄、非 Windows 跳过，另含跨平台的入站与重试语义用例）；`usage_mcp.py` 与 `zusage.py serve` 的入站帧按 UTF-8 解码（`test_usage_mcp_stdio.py`、`test_serve_stdio.py`，给子进程钉 `gbk:strict` 代码页，任何平台都能咬到）；测试文件自身的布局契约——`__main__` 块只能是最后一条语句（`test_test_file_layout.py`）。
 
 ## 远端路由与恢复回归
 

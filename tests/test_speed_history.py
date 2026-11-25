@@ -23,14 +23,17 @@ _NO_PRICING_REFRESH = None
 
 def setUpModule():
     global _NO_PRICING_REFRESH
+    if zusage._pricing is None:
+        return   # 按脚本直跑时 zusage 导不到 token_pricing，serve 本就不刷新价表
     _NO_PRICING_REFRESH = mock.patch.object(zusage._pricing, "start_refresh", return_value=None)
     _NO_PRICING_REFRESH.start()
 
 
 def tearDownModule():
     global _NO_PRICING_REFRESH
-    _NO_PRICING_REFRESH.stop()
-    _NO_PRICING_REFRESH = None
+    if _NO_PRICING_REFRESH is not None:
+        _NO_PRICING_REFRESH.stop()
+        _NO_PRICING_REFRESH = None
 
 SCHEMA = """
 create table session (id text primary key, title text, parent_id text, time_created integer,

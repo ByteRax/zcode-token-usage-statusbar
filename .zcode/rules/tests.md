@@ -17,6 +17,7 @@
 
 ## 2. 隔离接缝与替身陷阱
 
+- 进程内调用 `zusage.serve()` / `zusage.main(["serve"])` 的测试模块必须在 `setUpModule` 把 `token_pricing.start_refresh` 打成空操作（`zusage._pricing` 为 `None` 时跳过——按脚本直跑时它导不到 `token_pricing`）：serve 启动即按 TTL 拉新价表，否则默认回归会真实请求 models.dev 与汇率，并把未跟踪的 `pricing-cache.json` 写进检出目录（`zusage.CONFIG_PATH` 就是脚本目录的 `config.json`）。真子进程的 serve 用例则把脚本拷进带 `pricing.fetch: false` 配置的临时运行目录（`tests/test_serve_stdio.py`）。
 - `ZCODE_USAGE_DB` 只隔离插件逐问脚本，不是根 `zusage.py` 的通用数据库隔离开关；根实现的新测试沿用夹具替换数据库入口，默认不执行真实查询。插件安装器测试接缝 `ZUSAGE_PLUGIN_RUNTIME` / `ZUSAGE_PLUGIN_ASAR` 可指向临时副本，不碰真机。
 - Python sqlite 替身须同时支持可迭代与 `fetchone` 两种用法（列表子类化游标）。
 - Python 公共测试夹具与单文件独立运行纪律：
@@ -35,7 +36,7 @@
 
 - `assert.match(source, …)` 源码字符串匹配冒充行为验证是假阳性；关键链路要行为级测试（VM 全链路 + fs 写入记录）。
 - 复合判定的负向用例要让目标守卫以外的前置条件全部成立，只改变目标条件；否则用例可能因其他条件失败而假绿。适用时用变异验证确认移除该守卫会使测试变红。
-- Python 用例落在 `if __name__ == "__main__":` 死区时 discover 不执行=假绿灯，跑完用 `-v` 确认测试名出现。反过来的死区同样假绿：中段的 `__main__` 块让 discover 照常收全、按脚本直跑却只执行它之前的用例（`tests/test_test_file_layout.py` 守住「`__main__` 块只能是文件最后一条语句」）。
+- Python 用例落在 `if __name__ == "__main__":` 死区时 discover 不执行=假绿灯，跑完用 `-v` 确认测试名出现。反过来的死区同样假绿：中段的 `__main__` 块让 discover 照常收全、按脚本直跑却只执行它之前的用例（`tests/test_test_file_layout.py` 守住「定义了 TestCase 的测试模块恰好一个 `__main__` 守卫、且是文件最后一条语句」——没有守卫时按脚本跑是退出码 0 的空跑，同样假绿）。
 - 模拟渠道链路不能用插件 `fetchBytes` 拉 raw.githubusercontent（白名单不含；真实链路由宿主 CLI 拉）。
 - asar 资产提取用 `patch_install.read_header/iter_files`，勿手写解包（头 12–16 字节 LE JSON 长度、数据基址 16+json_len 对齐、offset 相对基址）。
 - 长期红的测试等于没有测试；断言按域拆分分开报错，不让一个失配域掩盖另一域的新回归。
