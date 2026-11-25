@@ -341,8 +341,9 @@
      * → v464 长计时面不出文字标签（用户实报截图「思... 1:22:02」，问「为什么展示 思...」）：计时满 1 小时起紧凑时间写法从 59:59 变成 1:22:02 或 N天N时，数值自然宽由 39.7 涨到 45.7~52.8px（14px 格字号）；固定宽 6.6em 里扣掉图标与间隙后标签加数值只有 68.4px，两字状态词要 28px，数值不裁、状态词被省略成「思...」。带计时的四种面（thinking/toolgroup/skill/tool）在 elapsedMs 不小于 3600000 时标签置空（复用 .zu-sp-label:empty 的 display:none），只留图标加时间；格宽不变，aria-label 与全称不变。实现：07 分片 zuSpeedFace 末尾在无计时分支之后加一条 else-if，zuSpeedFace 与 zuSpeedFaceHtml 多一个 autoWidth 入参，精简 chip（11 分片）调用时传 true——chip 按内容定宽、中等档本就按 Think 23:59:59 标定，状态词放得下，不让位。换写法（1h22m 47.2px、N天N时 45.7px）同样放不下，所以不走换写法；英文较长状态词配五位计时的既有裁切不在本条范围
      * → v465 热力日历格宽裕放大档（用户截图：本月格数字四周大块留白，指示「有多余的间隙时适当调整速度和消耗数字的大小」）：zu3hc 容器（本月/全部日历格，spec §26）加只有 min- 下限的放大档 (min-width:56px) and (min-height:39px)，速度 .zu3-v 与全部日历 .zu3-cv 统一 9/12 到 14px、token .zu3-tk 两形态选择器重述 8/9 到 10px——两形态高特异性基础规则都要重述才放大得动；放大档与缩字档（带上界）和隐藏线（<N）范围不交、排在全部缩字档之前，39px 下界取最高缩字带 26.5~39px 的上界衔接；4/5 行月历（内容高 59.7/45.4px）与 5 行全部日历（40.4px）命中，6 行月历（35.8px）留在缩字带不放大，宽下界折算视口约 858px 以下不放大；自然宽真机 CDP 实测 14px 速度最长 46.7px、10px token「9999.99万」52.3px，距 56px 各余 9.3/3.7px；周列/月列（zu3hw）与日卡（.zu3-dcv 18px）不参与
      * → v466 精简样式设置入口补回（issue #474：精简下速率图标悬停卡是速度整卡，「打开设置」只在无轮表的回退卡里，正常用过一轮后设置面板打不开）：精简速率 chip 调 spd3RebuildOr 时传 cfgBtn，整卡标题「生成速度」后出一枚齿轮图标按钮 .tps-cfg（图标同状态条 ⚙，用户裁定「改为设置图标，和底部状态栏的一样」；点击走 tpsTip 既有委托开面板，同 chip 右键）；默认/药丸条面的速度卡不传不出；面板说明与用户指南改述。chip 的 blur 收卡加「指针仍在卡上不收」门（用户实报：先点 chip 再点齿轮，mousedown 移走焦点，blur 抢在 click 前收卡，面板打不开；实机追踪证实）。同代（用户截图「现在的太宽了」）：精简 chip 三档宽度由固定宽改为上限 max-width——按内容定宽、不超过当前档位（12.4/9.7/6.6em），完成态不再给状态词留空位；档位判定与窄窗让位不变
+     * → v470 精简速率 chip 紧张档不空白（用户实报截图「精简模式下，如果空间不够了，可以折叠 git chip、而不是把速度 chip 给隐藏了」；排查证实速度 chip 没有被摘除，窄窗下它落在紧张档，而紧张档无条件去掉状态词与单位：只有状态词、没有数值的面——后台智能体在跑时合成的「正在派发」、工具已启动未开始计时的「正在执行」等——只剩左右内边距，成了约 12px 宽的空壳；截图像素量得「电脑操作」到 Git 图标的空隙 34~37px，等于空壳 chip 的 33px、不等于无 chip 的 17px）：06 分片紧张档拆成两条规则——单位照旧隐藏，状态词只在数值非空时隐藏（.zu-live:has(>.zu-sp-val:not(:empty))），数值为空保留状态词；四字说法整枚 chip 约 69px，在 6.6em 上限内，不多占空间，Git chip 等级与档位判定不变；长标签顶到上限照旧省略。速度 chip 不新增「空间不够就摘除」的路径
      */
-    var VERSION = "v466";
+    var VERSION = "v470";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -844,17 +845,21 @@
        * 三档类名与药丸档位同名，规则只作用于 .zu-tsb；档位由 11 分片 zuTsbTierSync 按宿主工具行的真实空位选
        * （chip 先让位，不拿宿主自己的按钮换宽度）。宽裕 12.4em=标签+数值+单位，按最宽的无省略面
        * 「代理×12 1286.5 t/s」标定（13px 粗体，六种字体栈下自然宽最大 157.8px；旧单一宽 10.5em 对它越界 7.3px）；
-       * 中等 9.7em=去单位（「Think 23:59:59」123.5px）；紧张 6.6em=仅数值（「23:59:59」82.9px）。
+       * 中等 9.7em=去单位（「Think 23:59:59」123.5px）；紧张 6.6em=有数值时仅数值（「23:59:59」82.9px），
+       * 没有数值的面保留状态词（v470）。
        * 面内排布与条面同规则（v448）：标签+数值+单位紧凑成组靠左（v466 起按内容定宽，内容之后不再留空位）。
-       * chip 无图标，故没有「仅图标」的最窄档。
+       * chip 无图标，故没有「仅图标」的最窄档——也正因如此，紧张档不能无条件去标签（去掉就是空壳）。
        * v466（用户截图裁定「现在的太宽了」）：三档宽度由固定宽改为上限（max-width）——chip 按内容定宽、
-       * 不超过当前档位；完成态（无状态词）不再给状态词留空位。超上限时 .zu-live 收缩、标签照旧省略。 */
+       * 不超过当前档位；完成态（无状态词）不再给状态词留空位。超上限时 .zu-live 收缩、标签照旧省略。
+       * v470（用户实报截图「空间不够时速度 chip 被隐藏」）：紧张档只在数值非空时去标签。只有状态词、没有数值的
+       * 面（后台智能体合成的「正在派发」、工具未开始计时的「正在执行」等）去了标签只剩内边距，而 chip 没有图标承载状态。 */
       "box-sizing:border-box;max-width:12.4em;" +
       "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--text-ui-base,var(--ui-font-size,14px)) - 1px);font-weight:700;font-variant-numeric:tabular-nums}" +
       ".zu-tsb.zu-speed-mid{max-width:9.7em}" +
       ".zu-tsb.zu-speed-mid>.zu-live>.zu-sp-unit{display:none}" +
       ".zu-tsb.zu-speed-tight{max-width:6.6em}" +
-      ".zu-tsb.zu-speed-tight>.zu-live>.zu-sp-label,.zu-tsb.zu-speed-tight>.zu-live>.zu-sp-unit{display:none}" +
+      ".zu-tsb.zu-speed-tight>.zu-live>.zu-sp-unit{display:none}" +
+      ".zu-tsb.zu-speed-tight>.zu-live:has(>.zu-sp-val:not(:empty))>.zu-sp-label{display:none}" +
       ".zu-tsb:hover,.zu-tsb:focus-visible{background:var(--color-hover,rgba(255,255,255,.08));outline:none}" +
       /* v356 系统状态（issue #338）：格面值/标签继承 .it .v/.dim 基础样式，zu-sys-* 只承载
        * 结构布局与预警色（柔和黄/红只染数值与图标，浅色档双套同源深化）；stale 整段降

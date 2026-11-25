@@ -969,6 +969,11 @@ test('速度格占位 CSS：全部格面固定宽 6.6em、右内边距 0、右�
   assert.equal((tsbCss.match(/max-width:/g) || []).length, 3, '精简 chip 恰三条上限规则');
   assert.ok(!/[;{](?:min-)?width:/.test(tsbCss), '精简 chip 不写 width/min-width（按内容定宽，v466）');
   assert.ok(!tsbCss.includes('.zu-tsb.zu-speed-tight>.zu-live{justify-content:flex-end}'), '精简紧张档数值不再靠右（成组靠左）');
+  // v470（用户实报截图「空间不够时速度 chip 被隐藏」）：紧张档只在有数值时去标签——只有状态词、没有数值的面
+  // （后台智能体合成的「正在派发」、未开始计时的「正在执行」等）无条件去标签后 chip 只剩内边距，而 chip 无图标承载状态
+  assert.ok(tsbCss.includes('.zu-tsb.zu-speed-tight>.zu-live>.zu-sp-unit{display:none}'), '精简紧张档单位照旧隐藏（v470 拆出的单位规则）');
+  assert.ok(tsbCss.includes('.zu-tsb.zu-speed-tight>.zu-live:has(>.zu-sp-val:not(:empty))>.zu-sp-label{display:none}'), '精简紧张档只在数值非空时隐藏标签（v470）');
+  assert.ok(!tsbCss.includes('.zu-tsb.zu-speed-tight>.zu-live>.zu-sp-label,'), '精简紧张档不得无条件隐藏标签（v470：无数值的面会变空壳）');
   assert.ok(!/\.zusage-root[^{]*\.zu-tsb\.zu-speed-(mid|tight)/.test(source), '精简档位类不作用于状态条');
   assert.ok(!css.includes('transition'), '不得用 width transition 掩盖跳动');
   assert.ok(!/\.it\.zu-speed[^{]*\{[^}]*min-width:(?!0)/.test(css), '速度格规则不再有 min-width（固定宽；只剩 .zu-live 的 min-width:0）');
