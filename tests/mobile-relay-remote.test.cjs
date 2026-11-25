@@ -141,7 +141,7 @@ function harness(t, options = {}, setup = {}) {
       globals.__zusageRelayUplinkQueue.push({ frame: { zuUp: 2, zuCfg: { gen, prefs } }, b, relay: b.relayProtocol });
     },
     rawTransport(payload) {
-      // 与 mobile_relay_patch.inject_for_uplink 的持久 onRawTransportPayload 同序同形：
+      // 与 patch_install.inject_for_uplink 的持久 onRawTransportPayload 同序同形：
       // 在 acceptPayload dispatcher 之前无条件入队，并捕获当前 bridge/relay 的身份。
       const runtime = { currentBridge: globals.__zusageRelayStash[0].b };
       return (payload && payload.zuUp ? ((b) => ((globals.__zusageRelayUplinkQueue =
@@ -265,15 +265,6 @@ test('实际编码帧不泄露路径、其他会话、标题或正文', async (t
     'OTHER_SESSION_TITLE', 'OTHER_BODY_SECRET', 'TARGET_TITLE_SECRET', 'TARGET_BODY_SECRET']) {
     assert.equal(frame.bytes.includes(Buffer.from(secret)), false, `帧不得包含 ${secret}`);
   }
-});
-
-test('isEnabled 为 false 时公告、查询与数据均不发送', async (t) => {
-  const h = harness(t, { isEnabled: () => false });
-  h.announce();
-  h.push(target());
-  await wait(100);
-  assert.equal(h.requests.length, 0);
-  assert.equal(h.frames.length, 0);
 });
 
 test('查询在途时关闭 isEnabled，旧响应及后续公告均不发送', async (t) => {

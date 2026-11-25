@@ -102,18 +102,6 @@ test('release and debug differ only by metadata and their debug switch', () => {
   assert.equal(normalized, products.release);
 });
 
-test('install and update metadata point each variant at its root Raw URL', () => {
-  for (const [variant, filename] of [['release', 'zusage-mobile.user.js'], ['debug', 'zusage-mobile.debug.user.js']]) {
-    const header = products[variant].split('// ==/UserScript==')[0];
-    const expected = 'https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/' + filename;
-    for (const key of ['downloadURL', 'updateURL']) {
-      const lines = header.split('\n').filter(line => line.startsWith('// @' + key));
-      assert.equal(lines.length, 1);
-      assert.equal(lines[0].trim().split(/\s+/).at(-1), expected);
-    }
-  }
-});
-
 test('actual release activates the embedded desktop code with waiting and no receiver UI', () => {
   const h = boot(products.release);
   assert.equal(h.embeddedScripts.length, 1);

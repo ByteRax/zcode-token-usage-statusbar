@@ -169,7 +169,7 @@ function createMobileRelay(options) {
     return live.length === 1 && live[0].p === readyBridge && (!bridge || live[0].p === bridge);
   }
 
-  /* 上行排空：宿主钩子（mobile_relay_patch 的 injection）把带 zuUp 标记的帧推进
+  /* 上行排空：patch_install 注入的宿主钩子把带 zuUp 标记的帧推进
    * globalThis.__zusageRelayUplinkQueue——帧在 acceptPayload 严格 seq 校验前被消费，
    * 官方 ack 水位零接触。载荷 = 手机端 overlay 偏好（zusage3.* 同键），gen 单调幂等。 */
   function drainUplink(schedule) {

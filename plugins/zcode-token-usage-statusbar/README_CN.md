@@ -27,9 +27,9 @@
 
 ## 手机远控页面（当前源码功能）
 
-在桌面状态条 **⚙ → 维护 → 移动端远程控制** 独立分区开启「推送状态栏数据到远控页」。正式脚本链接在此分区单独提供，以只读输入框显示，开关关闭时仍可选择复制；面板不会自动安装或打开外链，请复制到手机浏览器的脚本管理器中安装。用支持脚本管理器的浏览器[安装正式版手机脚本](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js)，再另行开启宿主官方「Web 远程控制」并打开 `https://zcode.z.ai/remote/`；安装脚本不会自动授权推送。此为当前源码功能，正式渠道是否支持以对应 Release 说明为准。
+在打开远控页的浏览器中，通过 Tampermonkey 等用户脚本管理器[安装正式版手机脚本](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js)。在桌面状态条 **⚙ → 维护 → 移动端远程控制** 开启默认关闭的「推送状态栏数据到远控页」，再开启宿主「Web 远程控制」并打开 `https://zcode.z.ai/remote/`。
 
-开关仅合并运行目录 `config.json` 的 `mobile_relay.enabled`，保留其他字段；仅对象内显式布尔 `true` 开启，缺字段、`false`、非布尔值或非对象配置均关闭。旧用户缺键时升级后关闭，已有显式 `true` 保留、显式 `false` 保持关闭。关闭停止插件握手公告、统计查询与快照推送，并丢弃在途结果，不影响宿主官方远控的正常消息；手机仍可能在既有能力有效期内上行显示偏好，桌面忽略、不应用、不回执，无需另行关闭手机上行。手机不能修改桌面开关。旧主进程不支持时，先更新安装副本并将匹配的冷文件 `inject-main.cjs` 安全部署到实际加载目录，再完全退出并重开 ZCode；仅更新浮层或仅重启不能替代部署。
+安装地址提供 `main` 根目录的发布快照，可能落后于桌面源码。请使用支持同一中继协议的桌面插件，正式渠道可用性以对应 Release 说明为准。安装、数据范围与排障见[手机远控指南](https://github.com/ByteRax/zcode-token-usage-statusbar/blob/main/docs/user-guide.md#手机远控页面)。
 
 ## 工作原理与副作用
 
@@ -45,8 +45,6 @@
 | 第三方代码 | 不捆绑任何第三方代码——纯 Python 3.8 标准库 + 原生 JavaScript（Electron 主进程 CommonJS）。MIT 许可证；源码在 [ByteRax/zcode-token-usage-statusbar](https://github.com/ByteRax/zcode-token-usage-statusbar)。 |
 
 SSH/WSL 远端会话需要在每台远端手工部署同版本 `zusage.py`；远端、额度源与多窗口的完整说明见[用户指南](https://github.com/ByteRax/zcode-token-usage-statusbar/blob/main/docs/user-guide.md)。
-
-Web 远控状态条需在打开远控页的浏览器中，通过脚本管理器[安装接收脚本](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js)；排障使用[调试版](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.debug.user.js)，两版只启用其中一版。链接提供最近一次脚本发布快照，随正式插件发版更新而非每次源码提交，请使用支持相同手机中继协议的桌面插件。脚本管理器负责检查更新，桌面插件升级不会替浏览器安装脚本。接收脚本内嵌同一桌面 overlay，本地与 WSL/SSH 共用状态条、tooltip 和设置，不再提供独立 chips 回退 UI。插件推送默认关闭，须在上述桌面独立分区显式开启；中继数据范围见上表。详见[远控页指南](https://github.com/ByteRax/zcode-token-usage-statusbar/blob/main/docs/user-guide.md#web-远程控制页面)。
 
 ## 关闭或移除
 

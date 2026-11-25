@@ -10,7 +10,7 @@ import stat
 import sys
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 _MKSTEMP_ATTEMPTS = 16
@@ -99,6 +99,10 @@ def fixed_drives(letters):
     return [letter for letter in letters if drive_type(f"{letter}:\\") == 3]   # DRIVE_FIXED
 
 
+class FileLockBusy(TimeoutError):
+    """An advisory lock stayed held until its acquisition deadline."""
+
+
 @contextmanager
 def file_lock(path, timeout=10.0):
     """Acquire an advisory lock or raise TimeoutError; never unlink the lock file."""
@@ -126,7 +130,7 @@ def file_lock(path, timeout=10.0):
                     raise
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise TimeoutError("runtime lock is busy: " + os.fspath(path)) from exc
+                    raise FileLockBusy("runtime lock is busy: " + os.fspath(path)) from exc
                 time.sleep(min(0.05, remaining))
         yield
     finally:
@@ -151,7 +155,13 @@ def _read_marker(marker, unreadable=None):
         return {}
     except OSError:
         return {} if unreadable is None else unreadable
+    return _parse_marker(raw)
+
+
+def _parse_marker(raw):
     try:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
         data = json.loads(raw)
     except ValueError:
         return {}
@@ -179,6 +189,27 @@ def _write_marker(marker, data, preserve=None):
             fd = None
             json.dump(data, stream, ensure_ascii=False)
             stream.write("\n")
+        os.replace(name, marker)
+    finally:
+        if fd is not None:
+            os.close(fd)
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
+
+
+def _restore_marker_bytes(marker, previous):
+    if previous is None:
+        marker.unlink(missing_ok=True)
+        return
+    fd, name = bounded_mkstemp(prefix=marker.name + ".", suffix=".tmp", dir=marker.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            fd = None
+            stream.write(previous)
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(name, marker)
     finally:
         if fd is not None:
@@ -323,6 +354,16 @@ def update_enhance_provider(runtime, revision, changes):
         return updated
 
 
+def _merge_restart(previous, data):
+    hashes = _hashes(previous.get("hashes"))
+    hashes.update(_hashes(data.get("hashes")))
+    if data.get("state") == "pending-install":
+        previous.pop("publishedAt", None)  # A retry/new intent cannot inherit an earlier publication.
+    previous.update(data)
+    previous.update(createdAt=time.time(), hashes=hashes)
+    return previous
+
+
 def record_restart(runtime, data):
     """Merge a restart notification while holding the independent marker lock."""
     if not isinstance(data, dict):
@@ -332,17 +373,20 @@ def record_restart(runtime, data):
     with file_lock(runtime / "plugin-restart.lock"):
         previous = _read_marker(marker, unreadable=False)
         if previous is False:
-            # 读不到 ≠ 没有旧通知：按空合并会把读失败那一刻盘上的通知整份覆盖掉（另一条链
-            # 刚写的重启待办随之丢失）。标记不动、原样抛出，调用方按写入失败处理，下次再合并。
+            # 读不到 ≠ 没有旧通知，不能用新记录覆盖无法读取的旧待办。
             raise OSError("restart marker unreadable")
-        hashes = _hashes(previous.get("hashes"))
-        hashes.update(_hashes(data.get("hashes")))
-        if data.get("state") == "pending-install":
-            previous.pop("publishedAt", None)  # A retry/new intent cannot inherit an earlier publication.
-        previous.update(data)
-        previous.update(createdAt=time.time(), hashes=hashes)
-        _write_marker(marker, previous)
+        _write_marker(marker, _merge_restart(previous, data))
     return {"ok": True}
+
+
+def _confirm_publication(marker, data):
+    if marker.is_file() and _read_marker(marker) == data:
+        data["publishedAt"] = time.time() * 1000
+        try:
+            _write_marker(marker, data)
+        except OSError as exc:
+            # ASAR is already published. Leave the intent unconfirmed, not a false success.
+            print("[zusage-plugin] installation publication record failed: " + str(exc), file=sys.stderr)
 
 
 @contextmanager
@@ -357,13 +401,56 @@ def publish_install(runtime, installation):
         data = _read_marker(marker)
         owned = data.get("installation") == installation
         yield
-        if owned and marker.is_file() and _read_marker(marker) == data:
-            data["publishedAt"] = time.time() * 1000
+        if owned:
+            _confirm_publication(marker, data)
+
+
+class RestartMarkerBusy(TimeoutError):
+    """The independent restart-marker advisory lock could not be acquired."""
+
+
+@contextmanager
+def publish_mobile_install(runtime, installation, *, record_intent, committed):
+    """Own the mobile intent through direct replacement or validated pending publication."""
+    runtime = Path(runtime)
+    marker = runtime / ".plugin-restart-required"
+    pending = False
+
+    def keep_pending():
+        nonlocal pending
+        pending = True
+
+    if not record_intent and not marker.is_file():
+        yield keep_pending
+        return
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(file_lock(runtime / "plugin-restart.lock", timeout=0.0))
+        except FileLockBusy as error:
+            raise RestartMarkerBusy("restart marker lock is busy") from error
+        if record_intent:
             try:
+                previous = marker.read_bytes()
+            except FileNotFoundError:
+                previous = None
+            data = _merge_restart(_parse_marker(previous) if previous is not None else {},
+                                  {"state": "pending-install", "installation": installation})
+        else:
+            data = _read_marker(marker)
+        try:
+            if record_intent:
                 _write_marker(marker, data)
-            except OSError as exc:
-                # ASAR is already published. Leave the intent unconfirmed, not a false success.
-                print("[zusage-plugin] installation publication record failed: " + str(exc), file=sys.stderr)
+            yield keep_pending
+        except BaseException:
+            if record_intent and not pending and _read_marker(marker) == data and not committed():
+                try:
+                    _restore_marker_bytes(marker, previous)
+                except OSError as exc:
+                    print("[zusage-plugin] mobile installation intent rollback failed: " + str(exc),
+                          file=sys.stderr)
+            raise
+        if not pending and data.get("installation") == installation:
+            _confirm_publication(marker, data)
 
 
 def ack_restart(runtime, loaded):

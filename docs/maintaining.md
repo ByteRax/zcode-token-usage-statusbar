@@ -51,7 +51,7 @@ python install.py --dev
 
 代码修改后先检查并同步插件副本。`sync_plugin.py` 构建桌面 overlay、额度客户端和模型拉取产物，再同步共享清单；它的普通同步和 `--check` 都不处理油猴脚本。
 
-根目录 `zusage-mobile.user.js` 与 `zusage-mobile.debug.user.js` 是通过上游 `main` 的 Raw HTTPS 链接分发的发布快照，可落后于当前桌面源码。日常功能提交不打包、不暂存、不提交这两份产物，也不升脚本 `@version`。只有明确需要打包油猴脚本或[正式发版](#本地打包与校验)时才单独运行构建器。预览产物不提交；若对外更新，应升号后同时提交版本源与两份产物。管理器更新策略见[用户指南](user-guide.md#web-远程控制页面)。
+根目录 `zusage-mobile.user.js` 与 `zusage-mobile.debug.user.js` 是通过上游 `main` 的 Raw HTTPS 链接分发的发布快照，可落后于当前桌面源码。日常功能提交不打包、不暂存、不提交这两份产物，也不升脚本 `@version`。只有明确需要打包油猴脚本或[正式发版](#本地打包与校验)时才单独运行构建器。预览产物不提交；若对外更新，应升号后同时提交版本源与两份产物。管理器更新策略见[用户指南](user-guide.md#手机远控页面)。
 
 ```bash
 python3 sync_plugin.py
@@ -62,7 +62,7 @@ node --check zusage-mobile.user.js
 node --check zusage-mobile.debug.user.js
 ```
 
-不要通过直接删运行目录来更新文件；同步器用可信 hash 基线保护本地热修、协调并发更新。overlay、查询库与主进程插件模块（八个 .cjs 子模块：六个基础模块 + v356 起的 sysmon-client.cjs + mobile-relay.cjs）可热更新（子模块经 loader 热换循环），仅客户端注入壳 `inject-main.cjs` 仍需完全重启。
+不要通过直接删运行目录来更新文件；同步器用可信 hash 基线保护本地热修、协调并发更新。overlay、查询库与主进程插件模块（八个 .cjs 子模块：六个基础模块 + v356 起的 sysmon-client.cjs + mobile-relay.cjs）可热更新（子模块经 loader 热换循环），`inject-main.cjs` 和 `app.asar` 内的持久手机钩子在完全重启后生效。手机钩子的写入与待替换流程见 [app.asar 安装规格](../specs/asar-install.md)。
 
 ## 渲染端桥与客户端升级
 

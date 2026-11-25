@@ -38,7 +38,6 @@ FILES = [
     "model-puller.cjs",
     "engine-patch.cjs",
     "mobile-relay.cjs",
-    "mobile_relay_patch.py",
     "sysmon-client.cjs",
     "release_unpack.py",
     "runtime_lock.py", "usage_stats.py", "turn-stats.js",
@@ -82,7 +81,7 @@ COLD_FILES = (
 )
 # - restart_notice.py 允许记录 hash 的文件集合（冷文件 + 禁用热重载时的热文件）
 RESTART_HASH_FILES = (*COLD_FILES, "overlay.js", "zusage.py",
-                     "mobile-relay.cjs", "mobile_relay_patch.py")
+                     "mobile-relay.cjs")
 # - Release ZIP 内的插件文件与完整条目
 RELEASE_PLUGIN_FILES = (*FILES, *PLUGIN_ONLY_FILES)
 RELEASE_ZIP_FILES = tuple(sorted((

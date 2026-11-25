@@ -27,7 +27,7 @@ MAX_MANIFEST = 256 * 1024
 MAX_TOTAL = 64 * 1024 * 1024
 SYNC_FILES = ("usage_mcp.py", "mcp-launch.cjs", "zusage.py", "patch_install.py", "install_monitor.py",
               "inject-main.cjs", "plugin-updater.cjs", "runtime_lock.py", "usage_stats.py", "turn-stats.js", "overlay.js",
-              "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "mobile-relay.cjs", "mobile_relay_patch.py", "sysmon-client.cjs", "release_unpack.py", "token_rate.py", "renderer_bridge.py", "token_pricing.py",
+              "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "mobile-relay.cjs", "sysmon-client.cjs", "release_unpack.py", "token_rate.py", "renderer_bridge.py", "token_pricing.py",
               "pending_zip_patch.py")
 # Enumerated source paths, never a recursive glob that could collect local usage data.
 SOURCES = (*SYNC_FILES, "overlay_install.py", "plugin_auto_update.py",
