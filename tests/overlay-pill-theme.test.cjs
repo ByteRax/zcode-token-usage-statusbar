@@ -3045,9 +3045,10 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
     await glide(chip, gear); await delay(300);
     assert.ok(await b.evaluate(tipShown), 'card still shown with the pointer over the gear');
     /* 用户动作二：在齿轮上按下——焦点从 chip 移到齿轮，卡不得被 blur 收走 */
+    await b.evaluate(`(() => { const c = document.querySelector('#pane-a .zu-tsb'); window.__zuChipBlurs = 0; c.addEventListener('blur', () => { window.__zuChipBlurs++; }); return true; })()`);
     await mouse('mousePressed', gear, { button: 'left', clickCount: 1 }); await delay(120);
     assert.ok(await b.evaluate(tipShown), 'card survives the press (blur gate: pointer is over the card)');
-    assert.equal(await b.evaluate(`document.activeElement === document.querySelector('.zusage-tps-tip .zu-sv-cfg')`), true, 'the press moved focus to the gear');
+    assert.ok(await b.evaluate('window.__zuChipBlurs >= 1'), 'the press did blur the chip — the card survives because of the blur gate, not because focus stayed');
     assert.equal(await b.evaluate(`!!document.querySelector('.zu-settings.open')`), false, 'panel not open before release (click-only, never pointerdown)');
     await mouse('mouseReleased', gear, { button: 'left', clickCount: 1 });
     await b.waitFor(`!!document.querySelector('.zu-settings.open')`, 'settings panel did not open on release', 80);

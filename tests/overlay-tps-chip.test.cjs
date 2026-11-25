@@ -336,11 +336,50 @@ test('v468: 带轮表的速度整卡带「打开设置」并打开面板（精�
   assert.ok(panel && panel.classList.contains('open'), '设置面板从整卡打开');
   assert.equal(gear.getAttribute('aria-expanded'), 'true');
   // 源码锁：cfgBtn 只在精简速率 chip 的调用点传入
-  // 扫全部分片：默认/药丸速度卡的调用点在 07 分片（review 抓回——只读 11 分片的锁挡不住它们带上 cfgBtn）
+  // cfgBtn 只在精简速率 chip 的调用点传入。两道锁（review 两轮抓回：只读 11 分片的字面锁挡不住 07 分片的条面调用点，
+  // 按字面量 "cfgBtn: true" 数数也挡不住 "cfgBtn:true"、"cfgBtn: 1" 与对象简写等价写法）：
+  // ① 标识符锁：除读它的 04 视图分片、只在台账注释里提到它的 06 分片、唯一传入它的 11 分片外，任何分片
+  //   不得出现标识符 cfgBtn（条面/药丸速度卡的两个调用点在 07 分片）；11 分片里恰好出现 1 次，且写成 cfgBtn\s*:\s*true
   const dir = path.join(__dirname, '..', 'src', 'overlay');
-  const hits = fs.readdirSync(dir).filter(f => f.endsWith('.js'))
-    .map(f => [f, fs.readFileSync(path.join(dir, f), 'utf8').split('cfgBtn: true').length - 1]).filter(([, n]) => n > 0);
-  assert.deepEqual(hits, [['11-instance-toolbar-chips.js', 1]], 'cfgBtn 只在精简速率 chip 的调用点传入（扫全部分片）');
+  const shards = fs.readdirSync(dir).filter(f => f.endsWith('.js')).map(f => [f, fs.readFileSync(path.join(dir, f), 'utf8')]);
+  const withIdent = shards.filter(([, s]) => /\bcfgBtn\b/.test(s)).map(([f, s]) => [f, s.split('\n').filter(l => /\bcfgBtn\b/.test(l))]);
+  assert.deepEqual(withIdent.map(([f]) => f).sort(), ['04-speed-v3-view.js', '06-instance-dom-and-styles.js', '11-instance-toolbar-chips.js'],
+    '标识符 cfgBtn 只出现在读它的 04 视图分片、台账注释所在的 06 分片与唯一传入它的 11 分片');
+  for (const l of withIdent.find(([f]) => f === '06-instance-dom-and-styles.js')[1]) assert.ok(/^\s*\*/.test(l), '06 分片里的 cfgBtn 只在台账注释行：' + l.trim().slice(0, 40));
+  assert.equal(withIdent.find(([f]) => f === '11-instance-toolbar-chips.js')[1].length, 1, '11 分片里恰一处');
+  assert.match(shards.find(([f]) => f === '11-instance-toolbar-chips.js')[1], /\bcfgBtn\s*:\s*true\b/, '11 分片那一处是 cfgBtn: true');
+  // ② 行为锁：把 07 分片两个条面调用点的实参表达式原样求值，断言 options 对象没有 cfgBtn 键
+  const src07 = shards.find(([f]) => f === '07-instance-render-and-tips.js')[1];
+  const splitArgs = text => {   // 顶层逗号切分（跳过字符串与嵌套括号）
+    const out = []; let depth = 0, start = 0, quote = null;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (quote) { if (c === '\\') i++; else if (c === quote) quote = null; continue; }
+      if (c === '"' || c === "'") quote = c;
+      else if (c === '(' || c === '[' || c === '{') depth++;
+      else if (c === ')' || c === ']' || c === '}') depth--;
+      else if (c === ',' && depth === 0) { out.push(text.slice(start, i)); start = i + 1; }
+    }
+    out.push(text.slice(start)); return out;
+  };
+  const callArgs = [...src07.matchAll(/spd3RebuildOr\(/g)].map(m => m.index + 'spd3RebuildOr('.length).map(from => {
+    let depth = 0, quote = null;
+    for (let i = from; i < src07.length; i++) {
+      const c = src07[i];
+      if (quote) { if (c === '\\') i++; else if (c === quote) quote = null; continue; }
+      if (c === '"' || c === "'") quote = c;
+      else if (c === '(' || c === '[' || c === '{') depth++;
+      else if (c === ')' && depth === 0) return splitArgs(src07.slice(from, i));
+      else if (c === ')' || c === ']' || c === '}') depth--;
+    }
+    throw new Error('spd3RebuildOr 调用未闭合');
+  });
+  assert.equal(callArgs.length, 2, '07 分片恰两处 spd3RebuildOr 调用（条面与药丸速度卡）');
+  callArgs.forEach((args, i) => {
+    assert.ok(args.length >= 6, `调用点 ${i + 1} 实参个数（options 是第 6 个）`);
+    const o = vm.runInNewContext('(' + args[5] + ')', { fmt: String, countFmt: String, fmtMoney: null, state: { cost: 0 } });
+    assert.equal(Object.prototype.hasOwnProperty.call(o, 'cfgBtn'), false, `条面调用点 ${i + 1} 的 options 不带 cfgBtn 键`);
+  });
 });
 
 // v468（issue #474 跟进）：用户先点 chip（焦点落 chip）再点卡里的齿轮——mousedown 移走焦点，chip 的 blur
