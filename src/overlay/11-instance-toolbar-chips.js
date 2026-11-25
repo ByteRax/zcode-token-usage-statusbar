@@ -935,26 +935,26 @@
     var ENH_SVG_STAR = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style="flex:0 0 auto"><path transform="matrix(1 0 0 1 0.524459 0.757238)" d="M6.1838 2.2198C6.6022 1.3093 7.8641 1.2266 8.1057 2.0939L8.84 4.7335C8.992 5.2783 9.3896 5.6893 9.9289 5.8595L12.5431 6.6827C13.4014 6.9536 13.2757 8.2113 12.3517 8.5987L9.9972 9.5861L9.8361 9.6583C9.0366 10.0399 8.3731 10.7089 8.0031 11.5138L6.9377 13.8341L6.8488 13.9943C6.3971 14.7003 5.39 14.7669 5.0734 14.1115L5.0158 13.9601L4.2815 11.3205C4.1485 10.8435 3.8277 10.4679 3.3879 10.2677L3.1916 10.1935L0.5783 9.3712C-0.2801 9.1005 -0.155 7.8418 0.7688 7.4542L3.1242 6.4679C3.9412 6.1253 4.632 5.4846 5.0402 4.6983L5.1184 4.5392L6.1838 2.2198ZM6.2004 4.88C5.652 6.0736 4.6394 7.0538 3.4279 7.5616L1.5295 8.3565L3.719 9.046C4.5745 9.3157 5.2059 9.9689 5.4465 10.8331L6.0608 13.0431L6.9201 11.174C7.4685 9.9802 8.4821 9.0001 9.6935 8.4923L11.591 7.6964L9.4025 7.0069C8.547 6.7373 7.9156 6.085 7.675 5.2208L7.0598 3.0099L6.2004 4.88ZM12.7072 0.214C12.8295 -0.052 13.198 -0.0764 13.2687 0.1769L13.6193 1.4396C13.6415 1.5192 13.7005 1.5797 13.7795 1.6046L15.0285 1.9982C15.2795 2.0772 15.243 2.4445 14.9728 2.5577L13.6281 3.1212C13.5431 3.1568 13.4722 3.226 13.4338 3.3097L12.8254 4.6349C12.703 4.9009 12.3344 4.9245 12.2638 4.671L11.9123 3.4093C11.8901 3.3296 11.8319 3.2691 11.7531 3.2442L10.5031 2.8507C10.2522 2.7715 10.2888 2.4045 10.5588 2.2911L11.9035 1.7267C11.9884 1.6911 12.0593 1.6228 12.0978 1.5392L12.7072 0.214Z"/></svg>';
     var ENH_SVG_BUSY = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-loader-circle size-4 text-foreground-subtle" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>';
     var ENH_SVG_WARN = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex:0 0 auto"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>';
-    /* v469 可见就近选框（issue #477）：旧实现只取卡内第一个输入节点——布局切换后残留的隐藏旧编辑器
-     * 排在前面时读到的是空草稿。选取次序：①卡内首个可见节点（矩形宽高均 >0）→ ②卡内只有隐藏节点时
-     * 仍归本卡（结构归属优先：编辑器被按设计折叠时草稿仍在，绝不因几何就近改读写别的分栏）→
-     * ③卡内无候选才按增强按钮几何就近取页面内最近的可见输入框（compact 兜底 nearestByRect 同款）。 */
+    /* v469 本卡内选框（issue #477）：旧实现只取卡内第一个输入节点——布局切换后残留的隐藏旧编辑器
+     * 排在前面时读到的是空草稿。选取只在**本卡内**进行，不外扩到页面：按几何就近取页面内输入框会
+     * 选中相邻分栏的那一个，把别栏草稿发给模型再写回去（首轮审查夹具实证）。次序：①实例自己绑定的
+     * 输入框（协调器按本 pane 选定的 composer）→ ②卡内首个可见节点（矩形宽高均 >0）→ ③卡内只有
+     * 隐藏节点时取卡内首个（编辑器被按设计折叠时草稿仍在）。卡内没有候选就是没有，调用方如实提示。 */
     function enhanceInputVisible(el) {
       try { var r = el.getBoundingClientRect(); return !!(r && r.width > 0 && r.height > 0); } catch (e) { return false; }
     }
     function enhanceInputNode() {
       var list = [], input = null, i;
       try { list = cardCache && cardCache.isConnected ? cardCache.querySelectorAll(ENHANCE_INPUT_SEL) : []; } catch (e) { }
+      for (i = 0; i < list.length; i++) if (list[i] === composer) return composer;
       for (i = 0; i < list.length && !input; i++) if (enhanceInputVisible(list[i])) input = list[i];
       if (!input && list.length) input = list[0];
-      /* 几何兜底要有在页的按钮作锚：临时摘按钮期间（enhanceBtnCache 为空或已 detach）矩形退化为
-       * (0,0)，就近会变成「离视口左上角最近」——此时宁可不选，回填链按既有守卫 fail-closed。 */
-      if (!input && enhanceBtnCache && enhanceBtnCache.isConnected) input = nearestByRect(enhanceBtnCache, ENHANCE_INPUT_SEL);
       return input || null;
     }
     /* → { input, api }：api 仅在桥 ready 且桥对象在时非空。宿主 E2ELexicalInputBridgePlugin 在编辑器
-     * 根节点缺失或不匹配时会回退绑到页面第一个同 testid 节点——多分栏下本卡节点的桥可能被别的编辑器
-     * 覆盖或摘除（重启才恢复），调用方按 input/api 的有无分别提示，不再并成「先输入内容」。 */
+     * 根节点缺失或不匹配时会回退绑到页面第一个同 testid 节点并覆盖其上已有的桥——本卡节点的桥可能
+     * 因此被别的编辑器覆盖或摘除，之后只有该编辑器根节点重建才重挂（报告者反馈重启后恢复）；调用方
+     * 按 input/api 的有无分别提示，不再并成「先输入内容」。 */
     function enhanceInputResolve() {
       var input = enhanceInputNode(), api = null;
       if (input && input.getAttribute("data-e2e-lexical-bridge") === "ready") { try { api = input.__zcodeLexicalInputE2E || null; } catch (e) { api = null; } }
@@ -1091,7 +1091,12 @@
               current = apiNow ? String(apiNow.getText() || "") : "";
               if (enhanceOriginalState && apiNow && typeof apiNow.getEditorState === "function") currentState = JSON.stringify(apiNow.getEditorState());
             } catch (e) { }
-            if (!apiNow || current !== draft || (enhanceOriginalState && currentState !== enhanceOriginalState)) {   // 回填前快照比对：用户已编辑/输入框不可用不覆盖
+            if (!apiNow) {   // 回包时输入框已不在本卡或桥已不可用：不是草稿变了，如实提示且不写入
+              enhanceWarn(L("输入框暂不可读，本次结果未应用", "Input box not readable; the result was not applied"));
+              enhanceSetPhase("idle");
+              return;
+            }
+            if (current !== draft || (enhanceOriginalState && currentState !== enhanceOriginalState)) {   // 回填前快照比对：用户已编辑不覆盖
               enhanceWarn(L("草稿已变化，未覆盖你的最新内容", "Draft changed; your latest edits were kept"));
               enhanceSetPhase("idle");
               return;
