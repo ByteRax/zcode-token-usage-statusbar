@@ -103,6 +103,41 @@ class FileLockBusy(TimeoutError):
     """An advisory lock stayed held until its acquisition deadline."""
 
 
+# os.replace / os.unlink 遇并发读者的短暂重试（同 token_rate._replace_state_file）。
+_REPLACE_ATTEMPTS = 20
+_REPLACE_WAIT_S = 0.01
+
+
+def _replace_retrying(source, target):
+    """os.replace 短暂重试。Windows 上读者/杀软正打开目标文件时（Python 的 open 不带
+    FILE_SHARE_DELETE）替换被拒绝；标记文件的读者都是微秒级短开，重试窗口远大于它。
+    静默放弃会丢掉重启待办，手机安装意图的回滚失败还会留下一条永不销账的
+    pending-install。POSIX 的 rename 不受并发读者影响，重试零成本；永久性拒绝只是晚
+    _REPLACE_ATTEMPTS × _REPLACE_WAIT_S 才上抛同一异常。"""
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt == _REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(_REPLACE_WAIT_S)
+
+
+def _unlink_retrying(path):
+    """同 _replace_retrying，用于删除标记；文件本就不在按成功处理。"""
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            os.unlink(path)
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if attempt == _REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(_REPLACE_WAIT_S)
+
+
 @contextmanager
 def file_lock(path, timeout=10.0):
     """Acquire an advisory lock or raise TimeoutError; never unlink the lock file."""
@@ -113,7 +148,14 @@ def file_lock(path, timeout=10.0):
         if os.name == "nt":
             import msvcrt
             if os.fstat(fd).st_size == 0:
-                os.write(fd, b"\0")
+                # 两个进程同时首次创建同一锁文件时，后到者在先到者补写之前看到大小 0，这次
+                # 补写会撞上对方刚锁定的首字节（EACCES）。这只是锁被占，落到下面的取锁
+                # 循环按 busy 处理；其它错误原样上抛。
+                try:
+                    os.write(fd, b"\0")
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                        raise
         else:
             import fcntl
         while True:
@@ -189,7 +231,7 @@ def _write_marker(marker, data, preserve=None):
             fd = None
             json.dump(data, stream, ensure_ascii=False)
             stream.write("\n")
-        os.replace(name, marker)
+        _replace_retrying(name, marker)
     finally:
         if fd is not None:
             os.close(fd)
@@ -201,7 +243,7 @@ def _write_marker(marker, data, preserve=None):
 
 def _restore_marker_bytes(marker, previous):
     if previous is None:
-        marker.unlink(missing_ok=True)
+        _unlink_retrying(marker)
         return
     fd, name = bounded_mkstemp(prefix=marker.name + ".", suffix=".tmp", dir=marker.parent)
     try:
@@ -210,7 +252,7 @@ def _restore_marker_bytes(marker, previous):
             stream.write(previous)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(name, marker)
+        _replace_retrying(name, marker)
     finally:
         if fd is not None:
             os.close(fd)
