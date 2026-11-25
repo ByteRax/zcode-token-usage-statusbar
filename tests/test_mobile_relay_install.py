@@ -394,6 +394,54 @@ class MobileInstallTests(unittest.TestCase):
         self.assertEqual(self.pi.mobile_status()["status"], "patched")
         self.assertIn(b"// host update", self.pi.entry_bytes_of(self.target))
 
+    def test_mobile_only_restarts_when_source_changes_between_inspections(self):
+        # 第一次快照的入口用来算补丁，第二次快照才是构建基准；两次之间归档被改写时
+        # 必须按新源重来，否则会用旧入口盖掉并发落地的宿主更新。
+        self.write_archive(self.with_loader(BODY))
+        real_snapshot, calls = self.pi._archive_snapshot, []
+
+        def snapshot_then_swap(*args, **kwargs):
+            result = real_snapshot(*args, **kwargs)
+            calls.append(1)
+            if len(calls) == 1:
+                self.write_archive(self.with_loader(BODY + b"\n// host update mid-inspection\n"))
+            return result
+
+        with mock.patch.object(self.pi, "_archive_snapshot", side_effect=snapshot_then_swap):
+            result = self.pi.install(mobile_only=True, record_mobile_intent=True)
+
+        self.assertTrue(result)
+        self.assertEqual(len(calls), 4)   # 首轮两次快照不一致，按新源重来一轮
+        self.assertEqual(self.pi.mobile_status(), {"status": "patched"})
+        self.assertIn(b"// host update mid-inspection", self.pi.entry_bytes_of(self.target))
+        self.assertIn(b"__zusageRelayStash", self.pi.entry_bytes_of(self.target))
+        self.assert_no_pending_or_stage()
+
+        # 身份戳、入口、包元数据任一不一致都算源变化：逐项只让一个信号漂移，其余保持一致
+        # （身份戳漂移另有锁内身份复验兜住，不单独构造）。
+        drift = {
+            "entry": lambda stamp, entry, package: (stamp, entry + b"\n", package),
+            "package": lambda stamp, entry, package: (stamp, entry, dict(package, version="0.0.1")),
+        }
+        for label, alter in drift.items():
+            with self.subTest(drift=label):
+                self.write_archive(self.with_loader(BODY))
+                seen = []
+
+                def drift_second(*args, **kwargs):
+                    result = real_snapshot(*args, **kwargs)
+                    seen.append(1)
+                    return alter(*result) if len(seen) == 2 else result
+
+                with mock.patch.object(self.pi, "_archive_snapshot", side_effect=drift_second):
+                    result = self.pi.install(mobile_only=True, record_mobile_intent=True)
+
+                self.assertTrue(result)
+                self.assertEqual(len(seen), 4)
+                self.assertEqual(self.pi.mobile_status(), {"status": "patched"})
+                self.assert_installed(self.target)
+                self.assert_no_pending_or_stage()
+
     def test_mobile_stage_name_is_outside_legacy_and_ordinary_cleaner_globs(self):
         mobile_stage = self.root / ".zusage-mobile-stage-live.stage"
         mobile_stage.write_bytes(b"live mobile stage")
@@ -449,6 +497,52 @@ class MobileInstallTests(unittest.TestCase):
         self.assertEqual(status, {"status": "deferred", "detail": "restart marker lock busy"})
         self.assert_no_pending_or_stage()
         self.assertFalse((self.runtime / ".plugin-restart-required").exists())
+
+    def test_mobile_lock_retry_follows_the_first_round_budget(self):
+        # 首轮已含整包构建 + 等锁：耗时达到 15 秒预算就不再退避重试，避免顶破 SessionStart
+        # 的 60 秒预算被宿主杀掉——那样连限频提示都发不出；预算之内才重试一次。
+        busy = {"status": "deferred", "detail": "target lock busy"}
+
+        def run(clocks):
+            with mock.patch.object(self.pi, "install", return_value=False) as install, \
+                    mock.patch.object(self.pi, "mobile_status", return_value=dict(busy)), \
+                    mock.patch.object(self.installer.time, "monotonic", side_effect=clocks), \
+                    mock.patch.object(self.installer.time, "sleep") as sleep:
+                status = self.installer.ensure_mobile_relay_stash(self.pi, quiet_monitor=True)
+            return status, install.call_count, sleep.call_count
+
+        status, attempts, sleeps = run([0.0, 16.0])
+        self.assertEqual(status, busy)
+        self.assertEqual((attempts, sleeps), (1, 0))   # 首轮 16 秒：不再重试
+
+        status, attempts, sleeps = run([0.0, 15.0, 0.0])
+        self.assertEqual(status, busy)
+        self.assertEqual((attempts, sleeps), (1, 0))   # 恰好 15 秒：已到预算，不再重试
+
+        status, attempts, sleeps = run([0.0, 1.0, 0.0])
+        self.assertEqual(status, busy)
+        self.assertEqual((attempts, sleeps), (2, 1))   # 首轮 1 秒：退避后重试一次
+
+    def test_mobile_quiet_monitor_env_set_and_restored_for_hook_chain(self):
+        # 外层环境可能自带这两个变量：patch.dict 隔离出受控前值，测试不随执行环境漂移。
+        self.write_archive(self.with_loader(BODY))
+        with mock.patch.dict(os.environ):
+            os.environ.pop("ZUSAGE_MONITOR_QUIET", None)
+            os.environ["ZUSAGE_NO_MONITOR"] = "0"
+            captured = {}
+
+            def launch(epoch):
+                captured["no_monitor"] = os.environ.get("ZUSAGE_NO_MONITOR")
+                captured["quiet"] = os.environ.get("ZUSAGE_MONITOR_QUIET")
+
+            with self.observe_archive_io(deny_target=True), \
+                    mock.patch.object(self.pi, "launch_monitor", side_effect=launch):
+                result = self.installer.ensure_mobile_relay_stash(self.pi, quiet_monitor=True)
+
+            self.assertEqual(result["status"], "pending")
+            self.assertEqual(captured, {"no_monitor": "1", "quiet": "1"})   # SessionStart 静默链不弹监控窗口
+            self.assertIsNone(os.environ.get("ZUSAGE_MONITOR_QUIET"))       # 调用后还原进前值（原本缺省）
+            self.assertEqual(os.environ.get("ZUSAGE_NO_MONITOR"), "0")      # 调用后还原进前值（原本非 1）
 
     def test_mobile_only_requires_a_loader_from_the_current_runtime(self):
         self.write_archive(BODY)
@@ -825,6 +919,31 @@ class MobileInstallTests(unittest.TestCase):
         self.assertEqual(self.target.read_bytes(), before)
         self.assert_no_pending_or_stage()
 
+    def test_unwritable_target_with_mobile_hooks_only_is_not_treated_as_not_injected(self):
+        # remove() 的免 root 放行只看「确无注入」：归档里只剩手机钩子、没有 loader 行时
+        # 必须按已注入处理（提示提权），不能打印「未注入」后把钩子留在客户端里。
+        # 三种可识别标记各自单独出现也要认出来，防止日后收窄标记清单。
+        stash_only = BODY.replace(STASH_ANCHOR, b"relayProtocol=Ce," + self.pi.inject_for(STASH_ANCHOR)
+                                  + b"Q.disposeBridge", 1)
+        for label, body in (("stash", stash_only),
+                            ("old v2 uplink", BODY.replace(UPLINK_ANCHOR, OLD_V2, 1)),
+                            ("generation marker", BODY + b"\nglobalThis.__zusageRelayUplinkGeneration=2;\n")):
+            with self.subTest(markers=label):
+                self.write_archive(body)
+                before = self.target.read_bytes()
+                with mock.patch.object(self.pi, "target_writable", return_value=False), \
+                        mock.patch.object(self.pi, "sudo_hint") as hint:
+                    self.assertFalse(self.pi.remove())
+                hint.assert_called_once_with("remove")
+                self.assertEqual(self.target.read_bytes(), before)
+
+        # 对照：确实没有任何注入时才免 root 放行，也不提示提权。
+        self.write_archive(BODY)
+        with mock.patch.object(self.pi, "target_writable", return_value=False), \
+                mock.patch.object(self.pi, "sudo_hint") as hint:
+            self.assertTrue(self.pi.remove())
+        hint.assert_not_called()
+
     def test_remove_strips_loader_and_mobile_in_one_archive_swap(self):
         suffix = b"\n// unrelated trailing code\n"
         restored = self.assets(self.target)
@@ -870,6 +989,22 @@ class MobileInstallTests(unittest.TestCase):
         out = {"suppressOutput": True}
         self.installer._mobile_pending_notice(out, self.pi, {"status": "pending"})
         self.assertIn("已排定", out["systemMessage"])
+
+    def test_existing_pending_operation_gets_the_waiting_guidance(self):
+        # 已有待替换操作（含手机补装自己的让位）与桥 pending 同类：提示等待自动补装，
+        # 不给手动命令。等待文案不限频：24 小时内已提醒过「尚未就绪」也照样提示，
+        # 且不改动限频记录。
+        self.enable_mobile_relay()
+        deferred_file = self.runtime / ".mobile-deferred-notice.json"
+        deferred_file.write_text(
+            json.dumps({"lastShownAt": self.installer.time.time()}), encoding="utf-8")
+        before = deferred_file.read_bytes()
+        waiting = {"suppressOutput": True}
+        self.installer._mobile_pending_notice(
+            waiting, self.pi, {"status": "deferred", "detail": "existing pending operation"})
+        self.assertIn("自动补装", waiting["systemMessage"])
+        self.assertNotIn("/install-overlay", waiting["systemMessage"])
+        self.assertEqual(deferred_file.read_bytes(), before)
 
     def test_mobile_notice_enabled_routes_statuses_and_preserves_existing_output(self):
         self.enable_mobile_relay()

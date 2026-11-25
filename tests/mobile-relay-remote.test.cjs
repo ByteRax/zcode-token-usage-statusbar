@@ -267,6 +267,15 @@ test('实际编码帧不泄露路径、其他会话、标题或正文', async (t
   }
 });
 
+test('isEnabled 为 false 时公告、查询与数据均不发送', async (t) => {
+  const h = harness(t, { isEnabled: () => false });
+  h.announce();
+  h.push(target());
+  await wait(100);
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.frames.length, 0);
+});
+
 test('查询在途时关闭 isEnabled，旧响应及后续公告均不发送', async (t) => {
   let enabled = true;
   const h = harness(t, { isEnabled: () => enabled });
