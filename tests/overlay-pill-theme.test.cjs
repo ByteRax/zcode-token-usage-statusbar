@@ -377,9 +377,15 @@ function speedSlotProbe() {
           const lead = R(items[0]).left - R(speed.querySelector('.zu-live')).left;    // 左侧余量：内容成组靠左，恒为 0（v448）
           row.minSlack = Math.min(row.minSlack, Math.round(slack * 100) / 100);
           row.minLead = Math.min(row.minLead, Math.round(lead * 100) / 100);
-          /* v463：无计时面的四字说法在标签可见的档位里不得被省略（空数值 span 仍占一个 gap） */
+          /* v463：无计时面的四字说法在标签可见的档位里不得被省略。v477 起固定宽速度格里空数值位 display:none，
+           * 标签可用宽就是 .zu-live 宽。判溢出用文本自然宽（Range 矩形，亚像素）对标签盒宽：scrollWidth /
+           * clientWidth 是取整值，半像素级的省略看不出来（zh-CN 雅黑下 Sending / Reading 各超盒约 0.55px，旧判据放过）。 */
           const nakedLab = key.startsWith('naked') && speed.querySelector('.zu-live > .zu-sp-label');
-          if (nakedLab && nakedLab.scrollWidth > nakedLab.clientWidth + 0.5) row.nakedClip.push(key);
+          if (nakedLab) {
+            const range = document.createRange();
+            range.selectNodeContents(nakedLab);
+            if (range.getBoundingClientRect().width > nakedLab.getBoundingClientRect().width + 0.25) row.nakedClip.push(key);
+          }
           if (slack < -0.05) row.overflow.push(key);
         }
       }

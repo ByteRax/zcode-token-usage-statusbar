@@ -11,10 +11,17 @@
 
 读者句柄用 CreateFileW 以 FILE_SHARE_READ 持有；共享模式按句柄生效，同进程的另一
 句柄同样受拒，所以不必起子进程。「读者何时松手」由替身 sleep 决定，不依赖真实时序。
+
+另有一条不限于 Windows 的入站用例也放在这里（同属 runtime_lock 的 stdio 面）：
+3. 命令行入口的入站 JSON（--record-restart 的载荷带 installation.asar，安装路径可含
+   非 ASCII）按 UTF-8 解码。主进程与更新器按 JSON.stringify 写 stdin、spawn 时不注入
+   编码变量，中文 Windows 的管道默认按区域代码页解码，路径被解成乱码。
 """
 import contextlib
 import ctypes
+import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -162,6 +169,29 @@ class MarkerReaderTests(unittest.TestCase):
         self.assertLess(len(waits), 100, "重试必须有界")
         self.assertEqual(self.marker.read_bytes(), before)
         self.assertEqual(self.leftovers(), [])
+
+
+class RuntimeLockStdinTests(unittest.TestCase):
+    """命令行入口的入站 JSON 按 UTF-8 解码（跨平台：用 PYTHONIOENCODING=gbk:strict 钉出中文
+    Windows 的管道）。未钉 UTF-8 时 UTF-8 的「软件」被按 GBK 读成乱码，标记里记下的安装路径
+    不再是真实路径。"""
+
+    def test_record_restart_keeps_non_ascii_installation_path_under_legacy_stdio(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp)
+            asar = str(runtime / "软件" / "ZCode" / "resources" / "app.asar")
+            payload = json.dumps({"state": "pending-install",
+                                  "installation": {"asar": asar, "entryHash": "abc"}},
+                                 ensure_ascii=False)
+            env = {name: os.environ[name] for name in ("SystemRoot", "COMSPEC", "PATHEXT")
+                   if name in os.environ}
+            env.update(PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="gbk:strict")
+            process = subprocess.run(
+                [sys.executable, "-B", str(ROOT / "runtime_lock.py"), "--record-restart", str(runtime)],
+                input=payload.encode("utf-8"), capture_output=True, env=env, cwd=str(runtime), timeout=30)
+            self.assertEqual(process.returncode, 0, process.stderr)
+            marker = runtime_lock._read_marker(runtime / ".plugin-restart-required")
+            self.assertEqual(marker["installation"]["asar"], asar)
 
 
 if __name__ == "__main__":

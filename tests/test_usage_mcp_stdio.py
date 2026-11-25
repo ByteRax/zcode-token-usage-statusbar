@@ -10,14 +10,16 @@ Windows 文本模式默认把 \\n 翻成 \\r\\n，宿主按行分帧，帧尾必
 stdout（与 Windows 文本模式同一个后果），再由脚本自己的 reconfigure(newline="\\n")
 收尾——把那一行改坏，任何平台都会红。
 
-入站是同一个后果的另一面：宿主按 UTF-8 写帧，MCP 子进程的环境却是宿主白名单（拿不到
-PYTHONUTF8），中文 Windows 的管道 stdin 默认按区域代码页（GBK）解码——「项目」被读成
-「椤垝洰」，workspace:<中文关键词> 落到「未找到」分支，而列出的现有工作区里就有那个
-目录。UTF-8 环境的机器同样只靠真跑咬不到：LEGACY_STDIN 给子进程钉一个传统代码页，再由
-脚本自己的 reconfigure(encoding="utf-8") 收尾。
+入站是同一个后果的另一面：宿主按 UTF-8 写帧，而宿主只给工具 shell 与 hooks 的执行环境
+注入 PYTHONUTF8，MCP 子进程拿不到这层注入，中文 Windows 的管道 stdin 默认按区域代码页
+（GBK）解码——「项目」被读成「椤垝洰」，workspace:<中文关键词> 落到「未找到」分支，而
+列出的现有工作区里就有那个目录。UTF-8 环境的机器同样只靠真跑咬不到：LEGACY_STDIN 给
+子进程钉一个传统代码页，再由脚本自己的 reconfigure(encoding="utf-8") 收尾。
 
-HOME 指向临时目录：启动时的待收尾包自愈与浮层拉起读不到真实配置。用量库只碰这里现建
-的临时库。
+入口与依赖拷到临时运行目录（带自己的 config.json）再拉起：zusage 的 CONFIG_PATH 就是
+脚本目录的 config.json，`--dev` 布局的检出根上若有一份带 hosts.zcode.db_path 的配置，
+查库用例会读真实库、启动自愈会读到真实的 asar_path。HOME 也指向临时目录。用量库只碰
+这里现建的临时库。
 """
 import json
 import os
@@ -43,8 +45,11 @@ runpy.run_path(sys.argv[1], run_name="__main__")
 """
 # 只有 ZCode 3.19.0 起且预置工具已下载完成的宿主，才给它拉起的子进程注入这个入口。
 HOST_PYTHON = shutil.which("zcode-python")
-# 中文 Windows 上管道 stdin 的默认形态（区域代码页）；宿主给 MCP 子进程的环境是白名单，
-# 脚本不自己钉 UTF-8 就按它解码入站帧。stdout/stderr 随后由脚本的 reconfigure 接管。
+# usage_mcp 的同目录依赖（zusage → usage_stats / token_pricing）；拷进临时运行目录再拉起
+RUNTIME = ("usage_mcp.py", "zusage.py", "usage_stats.py", "token_pricing.py")
+# 中文 Windows 上管道 stdin 按区域代码页（GBK）解码；这里再钉 `:strict`，让畸形字节在未修
+# 代码上必崩、咬合不依赖机器。宿主只给工具 shell 与 hooks 注入 PYTHONUTF8，脚本不自己钉
+# UTF-8 就按它解码入站帧。stdout/stderr 随后由脚本的 reconfigure 接管。
 LEGACY_STDIN = {"PYTHONIOENCODING": "gbk:strict"}
 # render_workspace 走到的最小表集（列集与 test_project_usage 的夹具同款）。
 USAGE_SCHEMA = """
@@ -165,6 +170,12 @@ class UsageMcpStdioTests(unittest.TestCase):
     def setUp(self):
         self.home = Path(tempfile.mkdtemp(prefix="usage-mcp-stdio-"))
         self.addCleanup(shutil.rmtree, str(self.home), True)
+        self.runtime = self.home / "runtime"
+        self.runtime.mkdir()
+        for name in RUNTIME:
+            shutil.copy2(REPO / name, self.runtime / name)
+        (self.runtime / "config.json").write_text('{"pricing": {"fetch": false}}', encoding="utf-8")
+        self.server = self.runtime / "usage_mcp.py"
 
     def check(self, argv):
         session = Session(argv, self.home)
@@ -188,7 +199,7 @@ class UsageMcpStdioTests(unittest.TestCase):
 
     def open_session(self, env=None):
         """完成 initialize 握手的真子进程会话；env 给 None 即 child_env(home)。"""
-        session = Session([sys.executable, "-B", str(REPO / "usage_mcp.py")], self.home, env=env)
+        session = Session([sys.executable, "-B", str(self.server)], self.home, env=env)
         self.addCleanup(session.stop)
         session.send(jsonrpc="2.0", id=1, method="initialize", params={
             "protocolVersion": "2024-11-05", "capabilities": {},
@@ -239,10 +250,10 @@ class UsageMcpStdioTests(unittest.TestCase):
         self.assertEqual(session.close(), 0)
 
     def test_script_boots_under_current_interpreter(self):
-        self.check([sys.executable, "-B", str(REPO / "usage_mcp.py")])
+        self.check([sys.executable, "-B", str(self.server)])
 
     def test_frames_stay_lf_when_stdout_translates_newlines(self):
-        self.check([sys.executable, "-B", "-c", TEXT_MODE, str(REPO / "usage_mcp.py")])
+        self.check([sys.executable, "-B", "-c", TEXT_MODE, str(self.server)])
 
     @unittest.skipUnless(
         HOST_PYTHON, "PATH 上解析不到 zcode-python："
