@@ -348,8 +348,10 @@ class PluginUpgradeTests(unittest.TestCase):
         result, _ = self.hook()
         self.assertTrue(self.installer.injected_status(self.pi))
         self.assertNotIn("systemMessage", result)
+        # hook 的 stdout 是 UTF-8：父进程按 UTF-8 解码（text=True 走区域代码页，默认中文
+        # Windows 上读线程抛 UnicodeDecodeError、stdout 收成 None；本文件同款调用同理）。
         prompt = subprocess.run([sys.executable, str(PLUGIN_ROOT / "hooks" / "prompt-submit.py")],
-                                input="{}", capture_output=True, text=True, timeout=10)
+                                input="{}", capture_output=True, encoding="utf-8", errors="replace", timeout=10)
         self.assertEqual(prompt.returncode, 0, prompt.stderr)
         context = json.loads(prompt.stdout)["hookSpecificOutput"]["additionalContext"]
         self.assertNotIn("用户可见·", context)
@@ -373,7 +375,7 @@ class PluginUpgradeTests(unittest.TestCase):
         self.assertEqual(self.hook()[0], {"suppressOutput": True})
         self.assertEqual(self.notice_context(self.runtime), "")
         prompt = subprocess.run([sys.executable, str(PLUGIN_ROOT / "hooks" / "prompt-submit.py")],
-                                input="{}", capture_output=True, text=True, timeout=10)
+                                input="{}", capture_output=True, encoding="utf-8", errors="replace", timeout=10)
         self.assertEqual(prompt.returncode, 0, prompt.stderr)
         context = json.loads(prompt.stdout)["hookSpecificOutput"]["additionalContext"]
         self.assertNotIn("用户可见·", context)
@@ -569,7 +571,7 @@ monitor.main()
 print(json.dumps(operations))
 '''
         result = subprocess.run([sys.executable, "-B", "-c", script, str(backend),
-                                 str(self.asar), str(self.runtime)], capture_output=True, text=True,
+                                 str(self.asar), str(self.runtime)], capture_output=True, encoding="utf-8", errors="replace",
                                 env=dict(os.environ, ZUSAGE_MONITOR_QUIET="1",
                                          PYTHONDONTWRITEBYTECODE="1"), timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -580,7 +582,7 @@ print(json.dumps(operations))
     def ack_process(self, backend, loaded):
         result = subprocess.run([sys.executable, "-B", str(backend / "runtime_lock.py"),
                                  "--ack-restart", str(self.runtime), json.dumps(loaded)],
-                                capture_output=True, text=True,
+                                capture_output=True, encoding="utf-8", errors="replace",
                                 env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"), timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)

@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const path = require('node:path');
 const { createQuotaClient } = require('../quota-client.cjs');
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
@@ -15,12 +16,14 @@ function fixture(t) {
     credsPath: '/virtual/provider-revoke/credentials.json',
     customCfgPath: '/virtual/provider-revoke/providers.json',
     secretsPath: '/virtual/provider-revoke/secrets.json',
+    // customCfgPath 过 path.resolve 后才到 readFile（win32 上是反斜杠形态，endsWith('/') 认不出）；
+    // secretsPath 原样透传。
     readFile(p) {
-      if (p.endsWith('/providers.json')) {
+      if (p === path.resolve('/virtual/provider-revoke/providers.json')) {
         return { config: { providerConfigRules: { providerRules: rules } } };
       }
-      if (p.endsWith('/secrets.json')) return { sources: {} };
-      throw new Error('unexpected fixture read');
+      if (p === '/virtual/provider-revoke/secrets.json') return { sources: {} };
+      throw new Error('unexpected fixture read: ' + p);
     },
     fetchImpl(url, options) {
       let resolve;

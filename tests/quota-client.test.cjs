@@ -2541,7 +2541,10 @@ function controlledResetClient(onUpdate) {
     credsPath: "/virtual/credentials.json", secretsPath: "/virtual/quota-secrets.json",
     customCfgPath: "/virtual/provider_config.json", builtinCfgPath: "/virtual/builtin.json",
     readFile: (p) => {
-      if (p === "/virtual/credentials.json") return creds.value;
+      // resolveQuotaPaths 会把 credsPath 过 path.resolve：POSIX 上 /virtual/… 原样，win32 上
+      // 成了 <cwd 盘>:\virtual\…——比较前同样归一化，否则夹具抛错、凭据读成 null，
+      // 这批重置卡用例在 Windows 上恒红（secretsPath 不经归一化，保持字面量）。
+      if (p === path.resolve("/virtual/credentials.json")) return creds.value;
       if (p === "/virtual/quota-secrets.json") return { sources: {} };
       throw new Error("unexpected virtual path: " + p);
     },

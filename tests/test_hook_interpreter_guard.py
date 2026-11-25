@@ -88,7 +88,8 @@ class IsolatedHookTestCase(unittest.TestCase):
     def run_hook(self, script, version, mode):
         return subprocess.run(
             [PYTHON, "-B", str(self.interpreter_stub), str(PLUGIN / "hooks" / script), version, mode],
-            input=PAYLOAD, capture_output=True, text=True, env=self.environment(),
+            # hook 入口把 stdout 钉成 UTF-8：父进程按 UTF-8 解码，不随运行器的区域代码页
+            input=PAYLOAD, capture_output=True, encoding="utf-8", errors="replace", env=self.environment(),
             cwd=str(self.home), timeout=30)
 
 

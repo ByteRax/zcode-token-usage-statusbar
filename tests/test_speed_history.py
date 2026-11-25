@@ -197,10 +197,6 @@ class SpeedHistoryTests(unittest.TestCase):
             self.assertIsInstance(s["v"], float)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class SpeedHistoryEmptyTests(unittest.TestCase):
     def setUp(self):
         self.con = sqlite3.connect(":memory:")

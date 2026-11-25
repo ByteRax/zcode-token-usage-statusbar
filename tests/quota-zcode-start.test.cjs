@@ -53,7 +53,9 @@ function localStamp(ms) {   // zcodeStartStamp 的本地时区镜像（断言与
   return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
 }
 
-/* zcodejwttoken 凭据 + 设备号文件（readFile 按路径分发，虚拟路径） */
+/* zcodejwttoken 凭据 + 设备号文件（readFile 按路径分发，虚拟路径）。credsPath 与由它
+ 推导出的同目录文件在到达 readFile 之前都过了 path.resolve：win32 上不再是 /virtual/…
+ 字面量，比较前同样归一化（POSIX 上是恒等）。 */
 function makeClient({ body, env, secrets } = {}) {
   const clock = { t: T0 };
   const calls = [];
@@ -63,9 +65,9 @@ function makeClient({ body, env, secrets } = {}) {
     now: () => clock.t,
     credsPath: "/virtual/credentials.json",
     readFile: (p) => {
-      if (p === "/virtual/credentials.json") return credsRef.value;
-      if (p === "/virtual/telemetry-state.json") return { deviceMid: DEVICE_MID };
-      if (p === "/virtual/quota-secrets.json") return secrets || { sources: {} };
+      if (p === path.resolve("/virtual/credentials.json")) return credsRef.value;
+      if (p === path.resolve("/virtual/telemetry-state.json")) return { deviceMid: DEVICE_MID };
+      if (p === path.resolve("/virtual/quota-secrets.json")) return secrets || { sources: {} };
       throw new Error("ENOENT: " + p);
     },
     fetchImpl: (url, init) => {
@@ -175,7 +177,7 @@ test("zcode-start client: missing deviceMid fails closed without any request", a
   const fetchCalls = [];
   const probe = Q.createQuotaClient({
     env: ENV, now: () => T0, credsPath: "/virtual/credentials.json",
-    readFile: (p) => { if (p === "/virtual/credentials.json") return { zcodejwttoken: encryptValue("t") }; throw new Error("ENOENT"); },
+    readFile: (p) => { if (p === path.resolve("/virtual/credentials.json")) return { zcodejwttoken: encryptValue("t") }; throw new Error("ENOENT"); },
     fetchImpl: (url, init) => { fetchCalls.push(url); throw new Error("must not fetch"); },
   });
   probe.noteProvider("account:bigmodel-start-plan");
@@ -246,8 +248,8 @@ test("zcode-start client: corrupted zcodejwttoken ciphertext is decrypt failure,
   const probe = Q.createQuotaClient({
     env: ENV, now: () => T0, credsPath: "/virtual/credentials.json",
     readFile: (p) => {
-      if (p === "/virtual/credentials.json") return { zcodejwttoken: "enc:v1:not.valid.ciphertext" };   // 密文损坏（错 key 加密/结构残缺）
-      if (p === "/virtual/telemetry-state.json") return { deviceMid: DEVICE_MID };
+      if (p === path.resolve("/virtual/credentials.json")) return { zcodejwttoken: "enc:v1:not.valid.ciphertext" };   // 密文损坏（错 key 加密/结构残缺）
+      if (p === path.resolve("/virtual/telemetry-state.json")) return { deviceMid: DEVICE_MID };
       throw new Error("ENOENT");
     },
     fetchImpl: (url) => { fetchCalls.push(url); throw new Error("must not fetch"); },
