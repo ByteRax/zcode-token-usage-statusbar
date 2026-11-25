@@ -686,6 +686,9 @@ test('team_auth surfaces the team-exchange copy with its failing step, not "plan
   // 环节码不在本地表内（主进程比渲染端新）：回落 error 短语，不留空白也不误报套餐不支持
   const fallback = failWith({ ok: false, kind: 'team_auth', reason: 'some_new_code', error: 'team credential exchange failed (some_new_code)' });
   assert.match(fallback, /增强失败：\s*team credential exchange failed \(some_new_code\)$/);
+  // status 只认正整数：字符串或非正数不拼进文案
+  assert.match(failWith({ ok: false, kind: 'team_auth', reason: 'keys_http', status: '500', error: 'team credential exchange failed (keys_http, HTTP 500)' }), /增强失败：\s*团队凭据换发失败（第 2 步读取团队密钥失败）$/);
+  assert.match(failWith({ ok: false, kind: 'team_auth', reason: 'keys_http', status: -1, error: 'team credential exchange failed (keys_http, HTTP -1)' }), /增强失败：\s*团队凭据换发失败（第 2 步读取团队密钥失败）$/);
   // 原型链上的名字（constructor/toString）不算表内环节码
   const inherited = failWith({ ok: false, kind: 'team_auth', reason: 'constructor', error: 'team credential exchange failed (constructor)' });
   assert.match(inherited, /增强失败：\s*team credential exchange failed \(constructor\)$/);

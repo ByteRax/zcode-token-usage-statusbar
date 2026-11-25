@@ -1609,9 +1609,16 @@ function teamFixture(opts) {
       const ttlSec = o.ttlSec || 3600, unit = o.expiresUnit || "s", atSec = o.expiresAtSec || ttlSec;
       const expiresAt = unit === "none" ? undefined : unit === "ms" ? Date.now() + atSec * 1000 : Math.floor(Date.now() / 1000) + atSec;
       const payload = JSON.stringify({ code: 200, msg: "操作成功", data: { enabled: true, accessToken: "team-pat-1", tokenType: "Bearer", expiresIn: ttlSec, expiresAt } });
-      /* patExpiresRaw：把 expiresAt 的 JSON 文本换成任意字面量（1e400 解析后非有限、1e308 这类离谱大值） */
-      const text = o.patExpiresRaw === undefined ? payload : payload.replace('"expiresAt":' + JSON.stringify(expiresAt), '"expiresAt":' + o.patExpiresRaw);
-      if (o.patExpiresRaw !== undefined && text === payload) throw new Error("fixture: expiresAt splice failed");
+      /* patExpiresRaw / patExpiresInRaw：把 expiresAt、expiresIn 的 JSON 文本换成任意字面量（1e400 解析后非有限、1e308 这类离谱大值） */
+      let text = payload;
+      if (o.patExpiresRaw !== undefined) {
+        text = text.replace('"expiresAt":' + JSON.stringify(expiresAt), '"expiresAt":' + o.patExpiresRaw);
+        if (text === payload) throw new Error("fixture: expiresAt splice failed");
+      }
+      if (o.patExpiresInRaw !== undefined) {
+        text = text.replace('"expiresIn":' + ttlSec, '"expiresIn":' + o.patExpiresInRaw);
+        if (text.indexOf('"expiresIn":' + o.patExpiresInRaw) < 0) throw new Error("fixture: expiresIn splice failed");
+      }
       return { ok: true, status: 200, text: async () => text };
     }
     if (url === GLR_EXCHANGE_URL) {
@@ -1624,7 +1631,7 @@ function teamFixture(opts) {
   const mp = M.createModelPuller({
     customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "",
     credentialsPath: path.join(dir, "credentials.json"), settingPath: path.join(dir, "setting.json"),
-    decryptValue: (enc) => (enc === "enc:loc-1" ? GLR_LOC_JSON : String(enc).indexOf("enc:oauth-") === 0 ? "glr-oauth-1" : null),
+    ...(o.noDecrypt ? {} : { decryptValue: (enc) => (enc === "enc:loc-1" ? GLR_LOC_JSON : String(enc).indexOf("enc:oauth-") === 0 ? "glr-oauth-1" : null) }),   // noDecrypt：主进程未装配解密能力
     hostVersion: "3.19.1",
     log: (...a) => logs.push(a.join(" ")),
   });
@@ -1751,6 +1758,7 @@ test("Team: fail-closed matrix — every failure reports team_auth with its fail
     [{ selectionJson: { providerFamilyConnectionSelections: { bigmodel: { kind: "individual-coding-plan", organizationId: TEAM_ORG, projectId: TEAM_PROJECT } } } }, "selection"],
     [{ selectionJson: { providerFamilyConnectionSelections: { bigmodel: { kind: "team-coding-plan", organizationId: "", projectId: TEAM_PROJECT } } } }, "selection"],
     [{ noToken: true }, "token"],
+    [{ noDecrypt: true }, "token"],
     [{ customerStatus: 404 }, "customer_http", 404],
     [{ customerOrgs: [{ organizationId: "other-org", projects: [{ projectId: TEAM_PROJECT }] }] }, "customer_mismatch"],
     [{ customerOrgs: [{ organizationId: TEAM_ORG, projects: [{ projectId: "other-project" }] }] }, "customer_mismatch"],
@@ -1832,8 +1840,9 @@ test("Team: a failed exchange never falls back to the personal entry key or GLr 
 });
 
 test("Team: an absurd expiresAt (non-finite or beyond any sane clock) never caches the PAT forever (issue #481 review)", async () => {
-  /* JSON 文本里直接写 1e400（解析成 Infinity）、1e308、1e15；配合 60 秒的 expiresIn，第二次必须重换 */
-  for (const raw of ["1e400", "1e308", "1e15"]) {
+  /* JSON 文本里直接写：1e400（解析成 Infinity）、1e308、1e15 与 9.99e13（毫秒口径的离谱未来）、5e11 与 1e13
+   * （换算成毫秒后仍在 7 天以外）；配合 60 秒的 expiresIn，第二次必须重换 */
+  for (const raw of ["1e400", "1e308", "1e15", "9.99e13", "5e11", "1e13"]) {
     const f = teamFixture({ ttlSec: 60, patExpiresRaw: raw });
     assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "第一次")).ok, true, raw);
     assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "第二次")).ok, true, raw);
@@ -1849,6 +1858,65 @@ test("Team: a sane expiresAt is honoured even when it disagrees with expiresIn (
     assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "第二次")).ok, true, unit);
     assert.equal(f.calls.filter((c) => c.url === f.patUrl).length, 1, "expiresAt wins over expiresIn: " + unit);
   }
+});
+
+test("Team: an absurd expiresIn falls back to the default 1-hour TTL, not years (issue #481 review)", async () => {
+  /* 没带 expiresAt、expiresIn 是 10 亿秒（31 年）或 1e306（折算后溢出成 Infinity）：只能落到缺省 1 小时。
+   * 用替换过的 Date.now 推进时钟：30 分钟时仍复用，75 分钟时必须重换。 */
+  const realNow = Date.now;
+  for (const raw of ["1e9", "1e306"]) {
+    const f = teamFixture({ expiresUnit: "none", ttlSec: 60, patExpiresInRaw: raw });
+    let fakeNow = realNow();
+    Date.now = () => fakeNow;
+    try {
+      assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "一")).ok, true, raw);
+      fakeNow += 30 * 60 * 1000;
+      assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "二")).ok, true, raw);
+      assert.equal(f.calls.filter((c) => c.url === f.patUrl).length, 1, "within the default hour: reused (" + raw + ")");
+      fakeNow += 45 * 60 * 1000;
+      assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "三")).ok, true, raw);
+      assert.equal(f.calls.filter((c) => c.url === f.patUrl).length, 2, "beyond the default hour: re-exchanged (" + raw + ")");
+    } finally { Date.now = realNow; }
+  }
+});
+
+test("Team: a sane multi-hour expiresIn is honoured as-is when expiresAt is absent (the bound is not too tight)", async () => {
+  /* expiresIn 给 2 小时：90 分钟时仍复用、150 分钟时才重换——上界若收得过紧（把 2 小时当成离谱值打回
+   * 缺省 1 小时），90 分钟那一次会多换发一次。 */
+  const realNow = Date.now;
+  const f = teamFixture({ expiresUnit: "none", ttlSec: 7200 });
+  let fakeNow = realNow();
+  Date.now = () => fakeNow;
+  try {
+    assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "一")).ok, true);
+    fakeNow += 90 * 60 * 1000;
+    assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "二")).ok, true);
+    assert.equal(f.calls.filter((c) => c.url === f.patUrl).length, 1, "still within the 2-hour validity: reused");
+    fakeNow += 60 * 60 * 1000;
+    assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "三")).ok, true);
+    assert.equal(f.calls.filter((c) => c.url === f.patUrl).length, 2, "past the 2-hour validity (and the refresh lead): re-exchanged");
+  } finally { Date.now = realNow; }
+});
+
+test("Team: an already-expired expiresAt is kept as-is, so the memo misses instead of borrowing the fallback TTL (issue #481 review)", async () => {
+  /* 过期时间在 60 秒前，expiresIn 却说还有 1 小时：以 expiresAt 为准，第二次必须重换 */
+  for (const unit of ["s", "ms"]) {
+    const f = teamFixture({ ttlSec: 3600, expiresAtSec: -60, expiresUnit: unit });
+    assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "一")).ok, true, unit);
+    assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "二")).ok, true, unit);
+    assert.equal(f.calls.filter((c) => c.url === f.patUrl).length, 2, "an expired PAT is not reused: " + unit);
+  }
+});
+
+test("Team: the 2-minute refresh lead is pinned — a 90-second PAT re-exchanges, a 150-second PAT is reused", async () => {
+  const patCalls = async (sec) => {
+    const f = teamFixture({ ttlSec: sec, expiresUnit: "ms" });
+    assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "一")).ok, true, String(sec));
+    assert.equal((await f.mp.enhanceText("account:bigmodel-team-coding-plan", "GLM-5.3-Flash", "二")).ok, true, String(sec));
+    return f.calls.filter((c) => c.url === f.patUrl).length;
+  };
+  assert.equal(await patCalls(90), 2, "90 s left is inside the 120 s lead: re-exchange");
+  assert.equal(await patCalls(150), 1, "150 s left is outside the 120 s lead: reuse");
 });
 
 test("Team: the key id is trimmed and percent-encoded into the access_tokens URL (issue #481 review)", async () => {

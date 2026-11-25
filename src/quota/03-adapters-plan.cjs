@@ -158,11 +158,13 @@ async function ensureTeamPat(j, fam, sel, loginToken, ctl) {
   if (!pat) throw qErr("unsupported", "team pat missing");
   /* issue #481（线上样本来自报告者抓包）：expiresAt 是秒级时间戳（与 expiresIn 同单位）——< 1e12
    * 视为秒换成毫秒，再与毫秒时钟比较（此前秒级值直接比较，缓存永不命中、每轮都重签 PAT）。
-   * 非有限值或 ≥ 1e14 的离谱值按缺失处理，否则 PAT 会被永久缓存。 */
+   * 离谱值按缺失处理，否则 PAT 会被永久缓存：非有限值，换算后距今超过 7 天的 expiresAt，以及
+   * 折算超过 7 天的 expiresIn；已过期的 expiresAt 原样保留。 */
+  const maxTtlMs = 7 * 24 * 3600 * 1000;
   const at = typeof patData.expiresAt === "number" ? patData.expiresAt : 0;
-  const rawExpiresAt = Number.isFinite(at) && at > 0 && at < 1e14 ? at : 0;
-  const ttlSec = typeof patData.expiresIn === "number" && Number.isFinite(patData.expiresIn) && patData.expiresIn > 0 ? patData.expiresIn : 3600;
-  const expiresAt = rawExpiresAt ? (rawExpiresAt < 1e12 ? rawExpiresAt * 1000 : rawExpiresAt) : now + ttlSec * 1000;
+  const atMs = at > 0 ? (at < 1e12 ? at * 1000 : at) : 0;
+  const ttlSec = typeof patData.expiresIn === "number" && patData.expiresIn > 0 && patData.expiresIn * 1000 <= maxTtlMs ? patData.expiresIn : 3600;
+  const expiresAt = atMs && atMs - now <= maxTtlMs ? atMs : now + ttlSec * 1000;
   const cachedEntry = { pat, expiresAt, apiKey: teamKeyId };
   teamPatCache.set(cacheKey, cachedEntry);
   return cachedEntry.pat;
