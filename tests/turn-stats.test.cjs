@@ -705,6 +705,25 @@ test('issue #483: a returning row counts only what it gained since it left', () 
   assert.equal(tracker.get('t').characterRate, 300, '只算这 60，整行不算「回来时才生成的」');
 });
 
+test('issue #483: a row that leaves, grows in the window and leaves again is not recounted on its second return', () => {
+  let now = 0, seq = 0;
+  const tracker = createTracker({ now: () => now });
+  const a = n => ({ rowId: 3, turnId: 't', kind: 'assistantText', text: 'a'.repeat(n) });   // 一直在窗内，300 字符/s
+  const b = n => ({ rowId: 5, turnId: 't', kind: 'assistantText', text: 'b'.repeat(n) });
+  const at = (t, rows) => { now = t; tracker.ingest(snapshot(++seq, [header(), ...rows])); };
+  at(0, [a(0), b(100)]);
+  at(1000, [a(300), b(100)]);
+  at(1200, [a(360)]);                    // b 出窗（记 100）：字符数下降，保持窗到 3200
+  at(3300, [a(990)]);
+  at(3500, [a(1050), b(260)]);           // b 以最大行身份回来，出窗期间长了 160
+  at(3700, [a(1110), b(320)]);           // 窗内又长 60，这次已经算过
+  at(3900, [a(1170)]);                   // b 再次出窗：应记住 320，而不是第一次的 100
+  at(6000, [a(1770)]);
+  at(6200, [a(1830), b(320)]);           // 原样回来
+  at(6400, [a(1890), b(320)]);
+  assert.equal(tracker.get('t').characterRate, 300, '窗内算过的 60 没有被再算一遍');
+});
+
 test('issue #483: the previous hold only lends its rate for 400ms after its window ends', () => {
   let now = 0, seq = 0;
   const tracker = createTracker({ now: () => now });
