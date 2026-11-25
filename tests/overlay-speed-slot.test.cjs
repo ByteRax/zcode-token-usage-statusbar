@@ -958,24 +958,31 @@ test('速度格占位 CSS：全部格面固定宽 6.6em、右内边距 0、右�
    * 字符串之外的块注释与行注释（含行尾注释）一概不计。再按「选择器 { 声明块 }」切规则：
    * 凡是选择器带 zu-sp-val:empty、声明块里把 display 设成 none 的规则（不分大小写、冒号两侧
    * 空格、带 !important、不在首条、拆在两个字面量里都算），都必须且只能是固定宽速度格这一个。 */
-  const literals = [];
-  for (let i = 0; i < css.length; i++) {
-    if (css[i] === "/" && css[i + 1] === "*") {
-      i = css.indexOf("*/", i + 2);
-      if (i < 0) break;
-    } else if (css[i] === "/" && css[i + 1] === "/") {
-      i = css.indexOf("\n", i + 2);
-      if (i < 0) break;
-    } else if (css[i] === '"' || css[i] === "'" || css[i] === "`") {
-      const quote = css[i];
-      let body = "";
-      for (i++; i < css.length && css[i] !== quote; i++) {
-        if (css[i] === "\\" && i + 1 < css.length) body += css[++i];
-        else body += css[i];
+  const scanLiterals = (text) => {
+    const out = [];
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === "/" && text[i + 1] === "*") {
+        const end = text.indexOf("*/", i + 2);
+        if (end < 0) break;
+        i = end + 1;   // 落在结束符的 "/" 上，外层再自增：紧连的下一个注释不会被它的 "/" 带偏
+      } else if (text[i] === "/" && text[i + 1] === "/") {
+        i = text.indexOf("\n", i + 2);
+        if (i < 0) break;
+      } else if (text[i] === '"' || text[i] === "'" || text[i] === "`") {
+        const quote = text[i];
+        let body = "";
+        for (i++; i < text.length && text[i] !== quote; i++) {
+          if (text[i] === "\\" && i + 1 < text.length) body += text[++i];
+          else body += text[i];
+        }
+        out.push(body);
       }
-      literals.push(body);
     }
-  }
+    return out;
+  };
+  assert.deepEqual(scanLiterals('/* c *//* d */"a" + /* it\'s "x" */ \'b\'`c\\`d` // tail "e"\n"f"'),
+    ["a", "b", "c`d", "f"], "字符串字面量扫描：注释不计，三种引号与转义都认");
+  const literals = scanLiterals(css);
   const cssCode = literals.join("");
   const emptyValueHidden = (cssCode.match(/[^{}]+\{[^{}]*\}/g) || []).filter(rule => {
     const brace = rule.indexOf('{');
