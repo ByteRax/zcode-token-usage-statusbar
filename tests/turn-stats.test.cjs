@@ -304,12 +304,15 @@ test('issue #483: the burst re-baseline only covers the tracker\'s first 300ms, 
 });
 
 /* 通知预算两头的 store：整窗拷贝每次耗时 costMs。≥8ms 进预算（间隔 cost×9，上限 1 秒），间隔内的通知合并成
- * 一次入库，补齐突发凑不出 15ms 的间隔条件；<8ms 每次通知同步处理。字符数与会话由用例给定，时钟从 start 起。 */
+ * 一次入库；<8ms 每次通知同步处理。字符数与会话由用例给定，时钟从 start 起；给了 f.rows 就用它当窗口行。 */
 function rateStore(costMs, start = 0) {
-  const f = { now: start, chars: 600, session: 's', timers: [], listener: null };
+  const f = { now: start, chars: 600, session: 's', timers: [], listener: null, rows: null };
   let seq = 0;
   f.store = {
-    getState() { f.now += costMs; return { snapshot: snapshot(++seq, [header(), text('a'.repeat(f.chars))], f.session) }; },
+    getState() {
+      f.now += costMs;
+      return { snapshot: snapshot(++seq, f.rows || [header(), text('a'.repeat(f.chars))], f.session) };
+    },
     subscribe: cb => { f.listener = cb; return () => {}; },
   };
   f.options = {
@@ -320,7 +323,7 @@ function rateStore(costMs, start = 0) {
   return f;
 }
 
-test('issue #483: an expensive session gets the catch-up burst as one coalesced ingest, which re-baselines too, once per bind', () => {
+test('issue #483: an expensive session gets the catch-up burst as coalesced ingests, which re-baseline inside the settle window', () => {
   const f = rateStore(8);                                  // 预算间隔 72ms
   const tracker = createTracker({ now: () => f.now });
   subscribeStore(f.store, tracker, () => {}, f.options);   // 初次同步处理：t=8，600 字符
@@ -328,20 +331,84 @@ test('issue #483: an expensive session gets the catch-up burst as one coalesced 
   f.now = 40; f.chars = 1200; f.listener();
   f.now = 60; f.chars = 1460; f.listener();
   f.now = 80; f.timers[0].fire();                          // 合并成一次入库：t=88，1460 字符
-  f.now = 288; f.chars = 1520; f.listener();               // 之后 300 字符/s（间隔已过，同步处理）
-  f.now = 488; f.chars = 1580; f.listener();
-  assert.equal(tracker.get('t').characterRate, 120 * 1000 / 408, '合并入库带着订阅快照之后攒下的 860 字符：改作新基线');
+  f.now = 288; f.chars = 1520; f.listener();               // 之后 300 字符/s；仍在建立后 300ms 内，照样重取基线
+  f.now = 488; f.chars = 1580; f.listener();               // 间隔已过，同步处理：t=496
+  assert.equal(tracker.get('t').characterRate, 300, '订阅快照之后攒下的 860 字符没有被算成 80ms 内生成');
   f.now = 497; f.listener();                               // 间隔内再合并一次
   f.now = 560; f.chars = 1605; f.listener();
   f.now = 569; f.timers[1].fire();                         // t=577
-  assert.equal(tracker.get('t').characterRate, 145 * 1000 / 489, '稳窗内只重取一次基线，之后的合并入库照常计入');
+  assert.equal(tracker.get('t').characterRate, 85 * 1000 / 281, '出稳窗之后的合并入库照常计入');
   f.session = 's2'; f.now = 60000; f.chars = 600; f.listener();   // 一分钟后切到另一个会话（同步处理，t=60008）
   f.now = 60009; f.chars = 900; f.listener();              // 同样的补齐突发
   f.now = 60070; f.chars = 1460; f.listener();
   f.now = 60080; f.timers[2].fire();                       // t=60088
   f.now = 60288; f.chars = 1520; f.listener();
   f.now = 60488; f.chars = 1580; f.listener();
-  assert.equal(tracker.get('t').characterRate, 120 * 1000 / 408, '换会话视同新建：这一次的合并入库照样重取基线');
+  assert.equal(tracker.get('t').characterRate, 300, '换会话视同新建：稳窗重新起算');
+});
+
+test('issue #483: a coalesced ingest that lands after the settle window re-baselines once, not twice', () => {
+  const f = rateStore(40);                                 // 预算间隔 360ms：第一个合并入库落在建立后 400ms
+  const tracker = createTracker({ now: () => f.now });
+  subscribeStore(f.store, tracker, () => {}, f.options);   // t=40，600 字符
+  f.now = 50; f.chars = 900; f.listener();                 // 被压住的帧：间隔内只置 pending
+  f.now = 60; f.chars = 1460; f.listener();
+  f.now = 400; f.timers[0].fire();                         // 合并入库：t=440（建立后 400ms），1460 字符
+  f.now = 441; f.chars = 1552; f.listener();               // 之后 200ms 生成 92 字符；仍在间隔内，合并
+  f.now = 801; f.timers[1].fire();                         // t=841
+  assert.equal(tracker.get('t').characterRate, 92 * 1000 / 401, '建立 300ms 之后、1.2 秒之内的第一个合并入库照样重取基线');
+  f.now = 842; f.chars = 1644; f.listener();
+  f.now = 1202; f.timers[2].fire();                        // t=1242
+  assert.equal(tracker.get('t').characterRate, 184 * 1000 / 802, '只做一次：第二次合并入库照常计入');
+  f.session = 's2'; f.now = 60000; f.chars = 600; f.listener();   // 切到另一个会话（同步处理：t=60040）
+  f.now = 60050; f.chars = 900; f.listener();                     // 同样的补齐突发
+  f.now = 60060; f.chars = 1460; f.listener();
+  f.now = 60400; f.timers[3].fire();                              // 合并入库：t=60440（建立后 400ms）
+  f.now = 60801; f.chars = 1552; f.listener();                    // 间隔已过，同步处理
+  f.now = 61201; f.chars = 1644; f.listener();
+  assert.equal(tracker.get('t').characterRate, 184 * 1000 / 801, '换会话视同新建：那一次合并入库的重取重新可用');
+});
+
+test('issue #483: a flat coalesced ingest does not spend the once-per-bind re-baseline', () => {
+  const f = rateStore(40);                                 // 预算间隔 360ms
+  const tracker = createTracker({ now: () => f.now });
+  subscribeStore(f.store, tracker, () => {}, f.options);   // t=40，600 字符
+  f.now = 50; f.listener();                                // 字符没变：只置 pending
+  f.now = 400; f.timers[0].fire();                         // 合并入库：t=440，仍是 600 字符
+  f.now = 441; f.chars = 1460; f.listener();               // 补齐突发
+  f.now = 801; f.timers[1].fire();                         // t=841
+  f.now = 1201; f.chars = 1552; f.listener();              // 之后 300 字符/s（间隔已过，同步处理：t=1241）
+  assert.equal(tracker.get('t').characterRate, 92 * 1000 / 400, '那一次重取基线留给真正带着补齐突发的合并入库');
+});
+
+test('issue #483: a coalesced ingest that first brings a new turn does not trip the re-baseline rule', () => {
+  const f = rateStore(8);
+  let changed = 0;
+  const tracker = createTracker({ now: () => f.now });
+  subscribeStore(f.store, tracker, () => { changed += 1; }, f.options);   // 初次同步处理
+  f.now = 10;
+  f.rows = [header('completedSuccess', { outputTokens: 300 }), text('a'.repeat(600)),
+    { rowId: 10, turnId: 't2', kind: 'turnHeader', state: 'running' },
+    { rowId: 11, turnId: 't2', kind: 'assistantText', text: 'bb' }];
+  f.listener();                                            // 间隔内：置 pending
+  f.now = 80; f.timers[0].fire();                          // 合并入库：新一轮 t2 第一次出现
+  assert.equal(changed, 2, '入库没有抛错（抛错会被订阅吞掉，回调就少一次）');
+  assert.equal(tracker.get('t2').characterRate, null);
+});
+
+test('issue #483: the 1.2s bound on coalesced re-baselines is exact: 1199ms after bind counts, exactly 1200ms does not', () => {
+  const landed = gapMs => {
+    const f = rateStore(8);
+    const tracker = createTracker({ now: () => f.now });
+    subscribeStore(f.store, tracker, () => {}, f.options);   // t=8，600 字符
+    f.now = 9; f.chars = 1460; f.listener();                 // 间隔内只置 pending
+    f.now = gapMs; f.timers[0].fire();                       // 合并入库落在 t=gapMs+8，即建立后 gapMs
+    f.now = gapMs + 300; f.chars = 1552; f.listener();       // 之后 300 字符/s（间隔已过，同步处理）
+    f.now = gapMs + 500; f.chars = 1612; f.listener();
+    return tracker.get('t').characterRate;
+  };
+  assert.equal(landed(1199), 152 * 1000 / 500, '1.2 秒之内：重取基线');
+  assert.equal(landed(1200), 1012 * 1000 / 1700, '整 1.2 秒：按窗口平均');
 });
 
 test('issue #483: a coalesced ingest only re-baselines within the tracker\'s first 1.2s', () => {
@@ -446,17 +513,19 @@ test('issue #483: a baseline that lands after the hold window still bridges, wit
   tracker.ingest(snapshot(2, [header(), text('a'.repeat(900))]));
   now = 1500;
   tracker.ingest(snapshot(3, [header(), text('a'.repeat(600))]));   // 缩水，保持窗到 3500
-  now = 3800;                                                       // 窗结束 300ms 后才有下一条通知
+  now = 3700;                                                       // 窗已结束、下一条通知还没来：读数不空
+  assert.equal(tracker.get('t').characterRate, 300);
+  now = 3899;                                                       // 窗结束 399ms 后才有下一条通知
   tracker.ingest(snapshot(4, [header(), text('a'.repeat(1650))]));
   assert.equal(tracker.get('t').characterRate, 300);
-  now = 3900;
+  now = 3999;
   tracker.ingest(snapshot(5, [header(), text('a'.repeat(1740))]));  // 之后 900 字符/s
   assert.equal(tracker.get('t').characterRate, 300, '新基线未满 200ms：仍沿用');
-  now = 4000;
-  assert.equal(tracker.get('t').characterRate, 450);                 // 新窗口接上：200ms 增 90 字符
+  now = 4099;
+  assert.equal(tracker.get('t').characterRate, 450);                // 新窗口接上：200ms 增 90 字符
 });
 
-test('issue #483: a baseline half a second after the hold window does not echo the pre-drop rate', () => {
+test('issue #483: a baseline exactly 400ms after the hold window does not echo the pre-drop rate', () => {
   let now = 0;
   const tracker = createTracker({ now: () => now });
   tracker.ingest(snapshot(1, [header(), text('a'.repeat(600))]));
@@ -464,11 +533,30 @@ test('issue #483: a baseline half a second after the hold window does not echo t
   tracker.ingest(snapshot(2, [header(), text('a'.repeat(900))]));
   now = 1500;
   tracker.ingest(snapshot(3, [header(), text('a'.repeat(600))]));   // 缩水，保持窗到 3500
-  now = 3950;                                                       // 窗结束 450ms 后才有下一条通知
-  tracker.ingest(snapshot(4, [header(), text('a'.repeat(1650))]));
-  assert.equal(tracker.get('t').characterRate, null, '保持已作废：这一条只作新基线');
-  now = 4150;
+  now = 3899;
+  assert.equal(tracker.get('t').characterRate, 300, '窗结束 399ms：还在沿用');
+  now = 3900;
+  assert.equal(tracker.get('t').characterRate, null, '窗结束整 400ms：保持作废');
+  tracker.ingest(snapshot(4, [header(), text('a'.repeat(1650))]));  // 这一条只作新基线
+  assert.equal(tracker.get('t').characterRate, null);
+  now = 4100;
   tracker.ingest(snapshot(5, [header(), text('a'.repeat(1710))]));
+  assert.equal(tracker.get('t').characterRate, 300);
+});
+
+test('issue #483: a drop after the output had already stopped does not revive the pre-stall rate', () => {
+  let now = 0, seq = 0;
+  const tracker = createTracker({ now: () => now });
+  const at = (t, n) => { now = t; tracker.ingest(snapshot(++seq, [header(), text('a'.repeat(n))])); };
+  at(0, 0); at(500, 150); at(1000, 300);          // 300 字符/s，随后输出停止
+  at(2900, 200);                                  // 近 2 秒没有新输出之后出现一次缩水
+  assert.equal(tracker.get('t').characterRate, null, '停更之前的速率不再被沿用');
+  at(3100, 200);
+  assert.equal(tracker.get('t').characterRate, null);
+  at(3300, 260);                                  // 300 字符/s 恢复：保持窗（到 4900）内不采样
+  assert.equal(tracker.get('t').characterRate, null);
+  at(4950, 500);
+  at(5150, 560);
   assert.equal(tracker.get('t').characterRate, 300);
 });
 
@@ -589,14 +677,64 @@ test('issue #483: the settle window counts from the tracker\'s birth, not from t
   assert.equal(tracker.get('t').characterRate, 60 * 1000 / 378, '稳窗锚在建立时刻');
 });
 
-test('issue #483: frames at a normal cadence inside the settle window do not re-baseline', () => {
+test('issue #483: every growing frame inside the settle window re-baselines, so the first reading counts from the last of them', () => {
   let now = 0, seq = 0;
   const tracker = createTracker({ now: () => now });
   const at = n => { tracker.ingest(snapshot(++seq, [header(), text('a'.repeat(n))])); };
-  at(600); now = 100; at(630); now = 200; at(660); now = 250; at(675);   // 稳态通知：间隔远大于 15ms
+  at(600); now = 100; at(630); now = 200; at(660); now = 250; at(675);   // 稳态通知：间隔远大于成批涌入的帧
   now = 450;
   at(720);
-  assert.equal(tracker.get('t').characterRate, 120 * 1000 / 450, '只有成批涌入的帧才重取基线');
+  assert.equal(tracker.get('t').characterRate, 45 * 1000 / 200, '基线落在稳窗内最后一帧增长上；首个读数因此晚到建立后约半秒');
+});
+
+test('issue #483: a catch-up frame that lands 20ms after the subscribe snapshot is re-baselined as well', () => {
+  let now = 0;
+  const tracker = createTracker({ now: () => now });
+  tracker.ingest(snapshot(1, [header(), text('a'.repeat(600))]));   // 订阅那一刻的整份快照
+  now = 20;
+  tracker.ingest(snapshot(2, [header(), text('a'.repeat(900))]));  // 被压住的首帧隔了 20ms 才到
+  now = 420;
+  tracker.ingest(snapshot(3, [header(), text('a'.repeat(1020))])); // 之后 300 字符/s
+  assert.equal(tracker.get('t').characterRate, 300);
+});
+
+test('issue #483: a burst that arrives 800ms after bind is a late delivery of real output and gets averaged', () => {
+  let now = 0;
+  const tracker = createTracker({ now: () => now });
+  tracker.ingest(snapshot(1, [header(), text('a'.repeat(600))]));
+  now = 800;
+  tracker.ingest(snapshot(2, [header(), text('a'.repeat(900))]));
+  now = 810;
+  tracker.ingest(snapshot(3, [header(), text('a'.repeat(1200))]));
+  now = 1210;
+  tracker.ingest(snapshot(4, [header(), text('a'.repeat(1320))]));
+  assert.equal(tracker.get('t').characterRate, 720 * 1000 / 1210, '稳窗只管建立后 300ms');
+});
+
+test('issue #483: the settle window ends exactly 300ms after bind', () => {
+  const grown = gapMs => {
+    let now = 0;
+    const tracker = createTracker({ now: () => now });
+    tracker.ingest(snapshot(1, [header(), text('a'.repeat(600))]));
+    now = gapMs;
+    tracker.ingest(snapshot(2, [header(), text('a'.repeat(900))]));
+    now = gapMs + 300;
+    tracker.ingest(snapshot(3, [header(), text('a'.repeat(990))]));   // 之后 300 字符/s
+    return tracker.get('t').characterRate;
+  };
+  assert.equal(grown(299), 300, '299ms：还在稳窗内，重取基线');
+  assert.equal(grown(300), 390 * 1000 / 600, '整 300ms：按窗口平均');
+});
+
+test('issue #483: a flat frame right after bind does not move the baseline', () => {
+  let now = 0;
+  const tracker = createTracker({ now: () => now });
+  tracker.ingest(snapshot(1, [header(), text('a'.repeat(600))]));
+  now = 10;
+  tracker.ingest(snapshot(2, [header(), text('a'.repeat(600))]));  // 10ms 后来了一帧，字符没变
+  now = 310;
+  tracker.ingest(snapshot(3, [header(), text('a'.repeat(693))]));  // 300 字符/s
+  assert.equal(tracker.get('t').characterRate, 93 * 1000 / 310);
 });
 
 test('issue #483: a completed turn never shows an estimate, whether or not the completing snapshot drops characters', () => {

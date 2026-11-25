@@ -22,11 +22,16 @@
   }
 
   /* 重挂后的稳窗（issue #483，specs/live-rate-estimate-robustness.md）。重挂时 tracker 的首个快照是订阅那一刻的
-   * 整份快照，被压住的增量帧随后涌入，两者之间的输出会被算成瞬间生成。廉价会话里这些帧逐条入库，与上一
-   * 采样间隔不足 BURST_DT_MS（真机 71ms 内 43 个 seq；稳态间隔实测 17ms 以上）；昂贵会话里通知被下方预算
-   * 合并成一次入库，凑不出间隔条件，改认 tracker 建立后 MERGE_SETTLE_MS 内的第一个合并入库（预算间隔上限
-   * 1 秒）。两种都只发生在 tracker 刚建立这一小段。 */
-  const SETTLE_MS = 300, BURST_DT_MS = 15, MERGE_SETTLE_MS = 1200;
+   * 整份快照，被压住的增量帧随后涌入，两者之间的输出会被算成瞬间生成（真机 71ms 内 43 个 seq）。tracker
+   * 建立后 SETTLE_MS 内，每一帧字符增长的入库都改作新基线——按帧间隔判会漏掉来得稀一点的帧，所以不看间隔；
+   * 只管 tracker 刚建立这一小段，之后的积压是真实生成的迟到投递，仍按窗口平均。昂贵会话里通知被下方预算
+   * 合并成一次入库，可能落在这段之后，放宽到建立后 MERGE_SETTLE_MS 内的第一个合并入库（预算间隔上限 1 秒），
+   * 每次建立只做一次。 */
+  const SETTLE_MS = 300, MERGE_SETTLE_MS = 1200;
+
+  /* 缩水保持窗沿用的下降前速率，只在末样本还很新时取（issue #483）：输出已经停了一阵再缩水，沿用旧速率
+   * 等于把一条早就该消失的读数再延长 2 秒。 */
+  const HOLD_FRESH_MS = 500;
 
   /* 滑动窗速率：窗口首样本到采样时刻的字符增量 ÷ 跨度。跨度不足 200ms、或末样本已停更 2 秒 → null。 */
   function windowRate(samples, sampledAt) {
@@ -121,20 +126,18 @@
         if (turn.prevChars !== null && characters < turn.prevChars) {
           // 字符数比上一条快照少（行文本被替换得更短、行被移除、快照整体替换）：清样本，保持窗从这一条重新
           // 计时，窗内不采样——窗内再次下降照样续期，它随后的回填也不会被采样。沿用的下降前速率取到末样本
-          // 时刻；新基线还不满 200ms 时取不到，就沿用上一段保持的速率。此前立即从新的低基线起算，文本随即
-          // 回填时回填量被算成 200ms 内新生成（issue #483）。
-          let held = cur ? windowRate(turn.samples, cur.at) : null;
+          // 时刻，末样本停更超过 HOLD_FRESH_MS 就不沿用；新基线还不满 200ms 时取不到，就沿用上一段保持的
+          // 速率。此前立即从新的低基线起算，文本随即回填时回填量被算成 200ms 内新生成（issue #483）。
+          let held = cur && at - cur.at <= HOLD_FRESH_MS ? windowRate(turn.samples, cur.at) : null;
           if (held === null && turn.hold && at - turn.hold.until < 400) held = turn.hold.rate;
           turn.samples.length = 0;
           turn.hold = { rate: held, until: at + 2000 };
-        } else if (cur && characters > cur.characters && at - bornAt < SETTLE_MS && at - cur.at < BURST_DT_MS) {
-          // 重挂后的补齐突发（廉价会话）：改作新基线。只管 tracker 刚建立这一小段，之后的积压是真实生成的
-          // 迟到投递，仍按窗口平均。
+        } else if (cur && characters > cur.characters &&
+                   (at - bornAt < SETTLE_MS || (merged && !mergeSettled && at - bornAt < MERGE_SETTLE_MS))) {
+          // 重挂后的补齐突发：tracker 建立后 SETTLE_MS 内的每一帧增长都改作新基线，逐条入库与合并入库都一样；
+          // 昂贵会话的第一个合并入库落在这段之后的话，由后半个条件接住。合并入库重取过一次就记上，不再重复。
           turn.samples.length = 0;
-        } else if (cur && merged && !mergeSettled && characters > cur.characters && at - bornAt < MERGE_SETTLE_MS) {
-          // 同一个补齐突发落在昂贵会话：首个合并入库带着订阅快照之后攒下的全部输出，同样改作新基线，只做一次。
-          turn.samples.length = 0;
-          mergeSettled = true;
+          if (merged) mergeSettled = true;
         }
         turn.prevChars = characters;
         const base = turn.samples[turn.samples.length - 1];
@@ -155,10 +158,11 @@
       let characterRate = !complete ? windowRate(samples, sampledAt) : null;
       const hold = turn.hold;
       if (!complete && hold && characterRate === null) {
-        // 缩水保持窗（issue #483）：窗内沿用下降前的速率；窗过后新基线未满 200ms 时继续沿用，不闪「思考中」。
-        // 以新基线自身的年龄为准：窗结束后新基线来得多晚都接得上；没有新基线（不再有通知）或基线已陈旧则不沿用。
-        const fresh = samples.length && sampledAt - samples[samples.length - 1].at <= 2000 && sampledAt - samples[0].at < 200;
-        if (sampledAt < hold.until || fresh) characterRate = hold.rate;
+        // 缩水保持窗（issue #483）：窗内沿用下降前的速率；窗结束后 400ms 内（下一条通知通常马上就来）与新基线
+        // 未满 200ms 时也沿用，不闪「思考中」。以新基线自身的年龄为准：窗结束后新基线来得多晚都接得上；没有
+        // 新基线（不再有通知）则不沿用。
+        const fresh = samples.length && sampledAt - samples[0].at < 200;
+        if (sampledAt - hold.until < 400 || fresh) characterRate = hold.rate;
       }
       const outputTokens = Number.isFinite(header.outputTokens) && header.outputTokens >= 0 ? header.outputTokens : null;
       const modelMs = Number.isFinite(header.modelDurationMs) && header.modelDurationMs >= 0 ? header.modelDurationMs : null;
