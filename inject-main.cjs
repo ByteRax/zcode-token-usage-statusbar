@@ -2275,9 +2275,16 @@ function queryTurnText(sid, wc, plainUnits, forceKmb, unitEpoch, noCost) {
     /* --no-cn-units：渲染端万/亿开关（localStorage，主进程无真值）显式关闭时才传；
        缺省（含旧渲染端不带 cn 字段）与产品默认一致，Python 侧自行用万/亿。
        --no-cost：v376 预估费用开关（localStorage zusage3.cost）显式关闭时才传；
-       缺省（含旧渲染端不带 cost 字段）保持产品默认开启，统计行带费用段。 */
+       缺省（含旧渲染端不带 cost 字段）保持产品默认开启，统计行带费用段。
+       v447（specs/subagent-turn-stats-line.md）：子代理会话 sid 不带 --current——prompt-submit
+       hook 只记录用户提问时刻，子会话永远没有 promptTs，--current 必然 fail-closed 空输出；
+       改走 latestTurn（token_rate 身份三态的既有第三态，按 sid 取最新已完成轮）。归属安全：
+       子代理窗格 sid=窗格身份，最新完成轮即窗格最后一轮，无同会话连发选错轮的歧义；
+       sess_dwf-* 工作流 actor 不在子代理前缀内，维持 --current 口径不变。 */
+    const subAgentTurn = /^sess_subagent_[A-Za-z0-9_-]{1,72}$/.test(sid);
     py = spawn(readCfgCached().python_path,
-      [TOKEN_RATE, "--turn", "--current", "--session", sid].concat(plainUnits ? ["--no-cn-units"] : [], forceKmb ? ["--force-kmb"] : [], noCost ? ["--no-cost"] : []), { windowsHide: true });
+      [TOKEN_RATE, "--turn"].concat(subAgentTurn ? [] : ["--current"], ["--session", sid],
+        plainUnits ? ["--no-cn-units"] : [], forceKmb ? ["--force-kmb"] : [], noCost ? ["--no-cost"] : []), { windowsHide: true });
   } catch (e) { LOG("turn text spawn failed:", e.message); deliver("", "spawn"); return; }
   let finished = false;
   const finish = (text, reason) => {

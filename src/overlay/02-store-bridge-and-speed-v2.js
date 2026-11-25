@@ -962,11 +962,16 @@
     for (var sid in richTextWants) {
       var w = richTextWants[sid];
       if (richTextCache[w.key]) continue;
-      if (instances.indexOf(w.owner) < 0) { zuBlockOnce(w.owner.pid + "|" + w.tid, "noInst"); continue; }
+      /* v447：子代理窗格观察器 owner 不在 instances 里，zuSubDetHasOwner（03 分片，函数声明
+       * 提升可跨片调用）放行；切片测试只装载 02 无 03 时 typeof 守卫走原行为。 */
+      if (instances.indexOf(w.owner) < 0 && !(typeof zuSubDetHasOwner === "function" && zuSubDetHasOwner(w.owner))) { zuBlockOnce(w.owner.pid + "|" + w.tid, "noInst"); continue; }
       /* 只追当前活跃轮：--current 只返回该会话最新一轮，给历史轮发请求会缓存错轮文本
        * （历史轮保持占位，与 v75 起的实际生效行为一致）。v360：该门在 sent++ 之前，
-       * 恒 false 时 sent 恒 0 且不留痕（报告者 rt 全 0 的候选落点之一），按轮键计一次。 */
-      if (!w.owner.isCurrentTurn || !w.owner.isCurrentTurn(w.tid)) { zuBlockOnce(w.owner.pid + "|" + w.tid, "notCur"); continue; }
+       * 恒 false 时 sent 恒 0 且不留痕（报告者 rt 全 0 的候选落点之一），按轮键计一次。
+       * v447 补强：观察器 owner 短路本门——它的存量轮走 latestTurn（窗格身份=会话身份
+       * 无错挂歧义），「只发窗格最后一轮」的判据在收集端（03 分片 zuSubDetIsLastTurnBox，
+       * 纯 DOM 判据），冷窗格快照无 turnHeader 时 isCurrentTurn 恒 false 不可作门。 */
+      if (!w.owner.isCurrentTurn || !(w.owner.isCurrentTurn(w.tid) || (typeof zuSubDetHasOwner === "function" && zuSubDetHasOwner(w.owner)))) { zuBlockOnce(w.owner.pid + "|" + w.tid, "notCur"); continue; }
       var pending = richTextRequestTids[sid];
       if (!pending || pending.key !== w.key || pending.unit !== richTextUnitEpoch) {
         pending = { key: w.key, tid: w.tid, owner: w.owner, unit: richTextUnitEpoch, epoch: MY_GEN + ":" + (++richTextRequestEpoch), legacy: !pending && richTextUnitEpoch === 0 };
@@ -994,7 +999,8 @@
   window.__zusageDeliverTurnText = function (sid, text, unitEpoch, reason) {
     if (stale() || typeof sid !== "string") return;
     var pending = richTextRequestTids[sid];
-    if (!pending || pending.unit !== richTextUnitEpoch || instances.indexOf(pending.owner) < 0 ||
+    /* v447：子代理窗格观察器 owner 同 noInst 门放行（typeof 守卫，见 zuFlushRichTextWants） */
+    if (!pending || pending.unit !== richTextUnitEpoch || instances.indexOf(pending.owner) < 0 && !(typeof zuSubDetHasOwner === "function" && zuSubDetHasOwner(pending.owner)) ||
         pending.owner.getSid() !== sid || zuRichKey(pending.owner, pending.tid) !== pending.key ||
         (unitEpoch == null ? !pending.legacy : unitEpoch !== pending.epoch)) {
       richTextDiag.stale++;

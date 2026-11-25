@@ -1025,5 +1025,66 @@ class TestTurnLineV376(unittest.TestCase):
             except OSError: pass
 
 
+class SubagentLatestTurnTests(unittest.TestCase):
+    """v447（specs/subagent-turn-stats-line.md）：子代理会话统计行走 latestTurn（无 --current
+    守卫）——inject-main 对 sess_subagent_* 去 --current 后的查询形状。scope_for 对无 main_turn
+    的会话回退全量行：会话均/累计来自 subagent 行本身，非 0。
+
+    口径（窗口=completed−first_token）：s1 窗口 8.0s 输出 1000 → 125.0；s2 窗口 3.0s 输出
+    500 → 166.7（latestTurn 取 completed_at 最晚的 s2）；会话均 = 1500 / 11.0s = 136.4。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = str(Path(self.tmp.name) / "db.sqlite")
+        now = int(time.time() * 1000)
+        t0 = now - 60_000
+        self.t0 = t0
+        rows = [
+            row("s1", "sess_subagent_x", "turn_s1", "subagent", t0 - 10000, t0 - 8000, 2000, t0, 100, 1000, 0),
+            row("s2", "sess_subagent_x", "turn_s2", "subagent", t0 + 1000, t0 + 2000, 1000, t0 + 5000, 200, 500, 0),
+        ]
+        make_db(self.db, rows)
+
+    def tearDown(self):
+        for attempt in range(5):
+            try:
+                self.tmp.cleanup()
+                break
+            except OSError:
+                time.sleep(0.2 * (attempt + 1))
+
+    def run_rate(self, *args, sid="sess_subagent_x"):
+        env = dict(os.environ, ZCODE_USAGE_DB=self.db, ZCODE_SESSION_ID=sid,
+                   ZUSAGE_RATE_STATE_FILE=str(Path(self.tmp.name) / "state.json"))
+        return subprocess.run([sys.executable, str(RATE), *args],
+                              capture_output=True, text=True, env=env, timeout=30)
+
+    def test_latest_turn_line_for_subagent_session(self):
+        # inject-main 子代理分支的实际形状：--turn --session <子会话>（无 --current）
+        r = self.run_rate("--turn", "--session", "sess_subagent_x")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        line = r.stdout.strip()
+        self.assertIn("166.7 token/s(本轮)", line)          # latestTurn = 最新完成的 s2
+        self.assertNotIn("125.0 token/s(本轮)", line)       # 不是更早的 s1
+        self.assertIn("会话均 136.4 token/s", line)          # scope_for 全量回退：subagent 行进会话均
+        self.assertIn("累计 1,500 token", line)
+        self.assertIn("token/s(本轮)", line)
+
+    def test_current_guard_still_fails_closed_for_subagent_session(self):
+        # 旧主进程（未带 v447 分支）对子会话仍传 --current：无提问时刻记录 → 空输出（fail-closed 不破损）
+        r = self.run_rate("--turn", "--current", "--session", "sess_subagent_x", sid="sess_subagent_x")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "")
+
+    def test_json_session_aggregate_for_subagent_session(self):
+        r = self.run_rate("--turn", "--session", "sess_subagent_x", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        data = json.loads(r.stdout)
+        self.assertIsNotNone(data["turn"])
+        self.assertIsNotNone(data.get("session"))
+        self.assertAlmostEqual(data["session"]["sessionAvg"], 136.4, places=1)
+        self.assertEqual(data["session"]["totalOutput"], 1500)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

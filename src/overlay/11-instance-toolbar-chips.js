@@ -1993,8 +1993,10 @@
         var chgEn = win > 0
           ? Math.round(r.b / win * 100) + "% (" + cmpNum(r.b) + ")→" + Math.round(r.a / win * 100) + "% (" + cmpNum(r.a) + ")"
           : cmpNum(r.b) + "→" + cmpNum(r.a);
-        lines.push(L("上下文变化：" + chg + " · 减少：" + cmpNum(drop) + " Token（" + pct + "%）",
-          "Context: " + chgEn + " · Reduced: " + cmpNum(drop) + " tokens (" + pct + "%)"));
+        /* v449：去「上下文变化：/Context: 」开头（用户规格）——宿主分隔线本身已表达压缩语义，
+         * 数值行直接以水位变化起句；减少/压缩消耗/耗时措辞不变。 */
+        lines.push(L(chg + " · 减少：" + cmpNum(drop) + " Token（" + pct + "%）",
+          chgEn + " · Reduced: " + cmpNum(drop) + " tokens (" + pct + "%)"));
       }
       /* v437：缓存四项行（未缓存输入/读取/创建/命中率）整行去除——快照 cr/cw 字段保留
        * （zusage 侧不删，未来费用/首答估算仍需未缓存口径），仅前端不渲染。 */

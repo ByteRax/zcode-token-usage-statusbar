@@ -114,6 +114,8 @@ const INJECT_SLICES = {
   pollPluginRequests: ['async function pollPluginRequests() {', 'setInterval(pollPluginRequests, 1000);'],
   pushPluginState: ['function pushPluginState(wc, state) {', '/* ack 必须先于更新器初始化'],
   deliverPluginRequest: ['function deliverPluginRequest(wc, requestId, result) {', 'async function setAnswerRateLine('],
+  /* v447 子代理统计行：主桥逐问富文本查询段（--current 门与 sess_subagent_ 前缀分支） */
+  turnTextQuery: ['function queryTurnText(sid, wc, plainUnits, forceKmb, unitEpoch, noCost) {', '/* ---------- Git 状态旁路查询（v96）'],
   cdpSwitchBlock: ['/* CDP 调试口', 'catch (e) { LOG("cdp remote-debugging-port switch failed:", e.message); }', { includeEnd: true }],
   pendingZipBlock: ['/* ---------- v339 pending 更新包清理自愈', '/* ---------- v202 更新日志'],
   handleReleaseNotesRequest: ['async function handleReleaseNotesRequest(req, wc) {', '\n/* 逐问速率行开关'],
