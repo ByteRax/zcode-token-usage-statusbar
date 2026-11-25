@@ -76,7 +76,7 @@ https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gi
 
 自动安装始终开启：新建或恢复会话时只要状态条未注入就会自动安装/修复，不再提供开关（旧配置里的 `plugin_auto_install_overlay` 与环境变量 `ZUSAGE_PLUGIN_AUTO_INSTALL` 已不被读取）。只需要查询工具与回答速率时，运行 `/uninstall-overlay` 移除状态条并保留卸载豁免，阻止自动重注入与提示。
 
-Windows 找不到 `python3` 时插件 hook 会自动回退：hook 命令按 `python3` → `python` → `py -3` 依次尝试，无需改文件；候选解释器低于 Python 3.8 时会被 hook 脚本自动跳过（例如 PATH 里 `python` 是 3.7 而 `py -3` 指向 3.13，两条链都落到 `py -3`）。stdio MCP 由宿主预置的 `zcode-python` 直接启动 `usage_mcp.py`（宿主把 preinstalled-tools bin 放在 MCP 子进程 PATH 首位，入口固定 3.8+ 且带 sqlite3；不再经 node 中转，单会话省 ~120–150MB）。没有该入口的旧桌面版仍可用状态条与 `/usage`，但没有 `token_usage` MCP 工具。
+Windows 找不到 `python3` 时插件 hook 会自动回退：hook 命令按 `python3` → `python` → `py -3` 依次尝试，无需改文件；候选解释器低于 Python 3.8 时会被 hook 脚本自动跳过（例如 PATH 里 `python` 是 3.7 而 `py -3` 指向 3.13，两条链都落到 `py -3`）。stdio MCP 由 ZCode 内置的 `zcode-python` 直接启动 `usage_mcp.py`：需要桌面 **3.19.0 及以上**，且预装工具已下载完成（宿主把预装工具的 bin 目录放在 MCP 子进程 PATH 首位，入口是宿主自带的 Python，带 sqlite3）；不再经 `node` 中转，Windows 上每个会话省约 120–150MB。ZCode 3.18.2 及以下，或预装工具尚未就绪时，仍可用状态条与 `/usage`，但没有 `token_usage` MCP 工具（技能会退回 CLI 查询）。
 
 ### 正式 Release 渠道
 

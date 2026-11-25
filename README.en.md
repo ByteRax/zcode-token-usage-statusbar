@@ -25,6 +25,7 @@ Promotional image with staged UI and demonstration data; the actual interface va
 - The **ZCode desktop app**: Windows and macOS are the primary targets. Linux has path and permission adaptations, but not every distribution has been tested on-device.
 - **Python 3.8+** with the standard-library `sqlite3` module. No third-party Python packages are required.
 - No separate Node.js or npm installation is needed; the desktop bar uses ZCode's bundled Node runtime.
+- The `token_usage` MCP tool needs **ZCode desktop 3.19.0 or newer** (it is started by the client's built-in `zcode-python`, available once the preinstalled tools have finished downloading); older desktop builds keep the status bar, the `/usage` command and the CLI.
 
 ### Installation
 

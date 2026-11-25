@@ -84,10 +84,11 @@ class PluginContractTests(unittest.TestCase):
     def test_mcp_declaration_uses_short_service_key_and_same_script(self):
         servers = json.loads((PLUGIN / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]
         self.assertEqual(list(servers), ["zusage"])
-        # 宿主把 preinstalled-tools bin 放在 MCP 子进程 PATH 首位，zcode-python 是
-        # 宿主自带的 Python 入口（3.8+，含 sqlite3）。直接启动 usage_mcp.py，不再经
-        # node 中转：node 空转基线约 120–150MB，每个会话白占一份（issue #234 的回退链
-        # 由宿主预置入口取代；无该入口的旧宿主 MCP 工具不可用，状态条与 CLI 不受影响）。
+        # ZCode 3.19.0 起内置预装工具，宿主把其 bin 放在 MCP 子进程 PATH 首位；
+        # zcode-python 是宿主自带的 Python（含 sqlite3）。直接启动 usage_mcp.py，不再经
+        # node 中转：Windows 上每个会话白占 119–153MB（issue #486；issue #234 的解释器
+        # 回退链由宿主入口取代）。ZCode 3.18.2 及以下 MCP 工具不可用，状态条与 CLI 不受影响。
+        # 真拉起的端到端用例在 tests/test_usage_mcp_stdio.py。
         self.assertEqual(servers["zusage"]["command"], "zcode-python")
         self.assertEqual(
             servers["zusage"]["args"],

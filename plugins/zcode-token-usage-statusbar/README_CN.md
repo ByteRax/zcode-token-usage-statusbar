@@ -14,7 +14,7 @@
 ## 环境要求
 
 - Python **3.8+**，仅标准库，无需安装任何 pip 包。
-- Hook 命令按 `python3` → `python` → `py -3` 自动回退（兼容 Windows；候选解释器低于 Python 3.8 时自动跳过）。stdio MCP 服务由宿主预置的 `zcode-python` 直接启动 `usage_mcp.py`（宿主把 preinstalled-tools bin 放在 MCP 子进程 PATH 首位）：不再经 `node` 中转，也无需手工改 `.mcp.json`。没有该预置入口的旧桌面版仍可用状态条与 `/usage` CLI，但没有 `token_usage` MCP 工具。
+- Hook 命令按 `python3` → `python` → `py -3` 自动回退（兼容 Windows；候选解释器低于 Python 3.8 时自动跳过）。stdio MCP 服务由 ZCode 内置的 `zcode-python` 直接启动——需桌面 **3.19.0 及以上**，且预装工具已下载完成（宿主把预装工具的 bin 目录放在 MCP 子进程 PATH 首位）：不再经 `node` 中转，也无需手工改 `.mcp.json`。更旧的桌面版或预装工具尚未就绪时没有 `token_usage` MCP 工具；状态条、Hook 与 `/usage` CLI 不受影响，技能会退回 CLI。
 - 以前用过独立安装器（`install.py`）？它可能把同一个 MCP 服务注册进了 `~/.zcode/cli/config.json`，导致每个会话各拉起两份 `usage_mcp.py`。插件会在会话启动时移除这些遗留注册（历史名 `zcode-token-usage-statusbar` / `token-usage` / `zusage`），且仅当其指向本插件运行目录或插件目录内的 `usage_mcp.py`；带自定义键（如 `env`）的条目与其它条目一律保留。插件自己的 `.mcp.json` 继续提供 `token_usage` 工具；需要保留可把 `ZUSAGE_KEEP_LEGACY_MCP` 设为任意非空值（如 `1`）。
 
 ## 安装与首次运行
