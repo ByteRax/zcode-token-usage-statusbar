@@ -53,11 +53,18 @@ async function startBrowser(t) {
     '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0',
     '--user-data-dir=' + profile, pathToFileURL(fixture).href,
   ];
-  const proc = spawn(chrome, args, { stdio: 'ignore', env: {
-    ...process.env, HOME: temp, USERPROFILE: temp, TMPDIR: temp,
+  // Windows 上不覆写 HOME / USERPROFILE：Chrome 的「远程调试需要非默认数据目录」检查在
+  // 被改写的用户目录下会把这里显式给出的 --user-data-dir 判成默认目录，直接拒开调试口
+  // （读不到 DevToolsActivePort，整个文件在 Windows 上恒以「isolated Chrome did not start」
+  // 失败——真实浏览器几何锁因此在 Windows 上零覆盖）。隔离由 --user-data-dir 与下面几个
+  // 目录变量保证。
+  const isolatedEnv = {
+    ...process.env, TMPDIR: temp,
     XDG_CONFIG_HOME: path.join(temp, 'config'), XDG_CACHE_HOME: path.join(temp, 'cache'),
     APPDATA: path.join(temp, 'roaming'), LOCALAPPDATA: path.join(temp, 'local'),
-  } });
+  };
+  if (process.platform !== 'win32') Object.assign(isolatedEnv, { HOME: temp, USERPROFILE: temp });
+  const proc = spawn(chrome, args, { stdio: 'ignore', env: isolatedEnv });
   let spawnError;
   proc.on('error', err => { spawnError = err; });
   let socket;
@@ -2470,7 +2477,11 @@ test('speed slot through the live data chain (isolated fixture)', { skip: skipRe
       for (const snap of [g.tool]) assert.deepEqual(labelAnchor(snap.labelRect), labelAnchor(g.think.labelRect), `${label}: label left edge fixed (${snap.label})`);
     }
     for (const snap of [g.estimate, ...g.estimateTicks, g.estimate2, g.final]) assert.equal(snap.labelRect[2], 0, `${label}: labelless faces have no label box (${snap.label})`);
-    for (const snap of labelShown ? [g.estimate, ...g.estimateTicks, g.estimate2, g.final] : all) assert.equal(left(snap.val), left(snap.live), `${label}: value starts right after the icon (${snap.label}|${snap.value})`);
+    /* v477：空数值位不再占位（display:none），没有盒子可量——「数值紧跟图标」只对有数值的面成立 */
+    for (const snap of labelShown ? [g.estimate, ...g.estimateTicks, g.estimate2, g.final] : all) {
+      if (!snap.value) continue;
+      assert.equal(left(snap.val), left(snap.live), `${label}: value starts right after the icon (${snap.label}|${snap.value})`);
+    }
     for (const snap of [...g.estimateTicks, g.estimate2]) assert.equal(left(snap.val), left(g.estimate.val), `${label}: value left edge fixed for the same label (${snap.value})`);
     for (const snap of all) {
       const last = snap.unitRect && snap.unitRect[2] > 0 ? snap.unitRect : snap.val;
