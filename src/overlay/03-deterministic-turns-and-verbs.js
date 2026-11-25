@@ -437,7 +437,20 @@
         }
         if (!stats || !stats.complete) continue;   // 未完成 / 旧消息（tracker 无记录）不插
         var statsOk = zuHasMeaningfulOutput(stats);
-        if (!statsOk && !stats.observedLive && !richTextCache[richKey]) continue;   // v86：历史零值或缺字段不判失败；已缓存的完整统计仍可重建
+        if (!statsOk && !stats.observedLive && !richTextCache[richKey]) {
+          /* v467：切回补捞的完成轮（重绑新建 tracker 后非亲历）在窗口头部行缺真实输出数
+           * 时的静默跳过，会让「离开期间完成的回答」永远没有统计行（真机 diag 实证缺失轮
+           * 清一色 live:0/out:0/line:none——宿主快照只有最近完成轮带 outputTokens）。改为
+           * 仍是实例活跃轮（无更新轮顶替，--current 语义正确定位这一轮）且非压缩轮时按
+           * 既有 --current 通道要富文本（最小替身只带 sessionId），到达后下一拍经下方
+           * 缓存穿越插入；不插占位——空回执不写缓存即永不插行（v458 存量轮同契约），
+           * 用户新提问后 promptTs 前移、旧轮回执为空自然放弃。被顶替/压缩轮维持 v86/v230
+           * 静默（flush notCur 门兜底；rec.line 停在 none）。 */
+          if (!stats.isCompact && owner.isCurrentTurn && owner.isCurrentTurn(tid)) {
+            if (zuRequestTurnText(owner, tid, { sessionId: owner.getSid() }) && rec) rec.line = "backwait";   // noSid 门只读 sessionId；未入队（尝试耗尽/身份拒绝）不标等回执
+          }
+          continue;
+        }
         if (!statsOk && stats.isCompact && !richTextCache[richKey]) continue;   // v230：压缩轮零输出不插「不可用」行（宿主压缩提示已承载语义；rec.line 已在上面记 none）
         if (statsOk) zuRequestTurnText(owner, tid, stats);   // 先占位，向主进程要这轮的数据库富文本
         zuDetPlace(box, zuDetBuildLine(ownerToken, tid, richTextCache[richKey] || (statsOk ? zuFinalText(stats) : zuUnavailableText())));
