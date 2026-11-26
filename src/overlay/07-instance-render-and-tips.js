@@ -182,14 +182,19 @@
     })();
     function zuSpeedFace(view, autoWidth) {
       if (!view) return null;
-      var k = view.kind, lab = "", val = "", unit = "", glue = false;
+      var k = view.kind, lab = "", val = "", unit = "", glue = false, unitGlue = false;
       if (k === "subagent") {
-        /* v461（用户规格「代理 28.8 t/s 改为 子·X」）：子代理面 = 单字「子」+ 贴紧的间隔点 + 速率，不带单位与数量——
-         * 固定宽 6.6em 里「代理 28.8 t/s」整个被省略成「…」，「子×N·1286.5」也放不下；数量仍在全称（aria / 菜单 / tooltip）里。
-         * 六字符数值（1286.5，多子代理合计上千 t/s）带间隔点放不下：退成不带点、同样贴紧的「子1286.5」 */
+        /* v461（用户规格「代理 28.8 t/s 改为 子·X」）+ v485（用户规格「展示得下的时候不要隐藏 t/s」）：
+         * 子代理面 = 标签 + 贴紧的数值；固定宽 6.6em 里放得下就带单位（实机 CDP 量宽，specs/speed-chip-stable-slot.md）：
+         * ≤4 字符「子·28.8t/s」余 8.1px；5 字符「子·138.9t/s」带点会把标签压成省略号（余 -9px），
+         * 点让位给单位后「子138.9t/s」余 3.5px；≥6 字符维持 v461「子1286.5」不带单位。
+         * 精简 chip（autoWidth）按内容定宽：恒带单位、恒按数值长度取点；药丸左内边距吃掉余量（五字符面裁尾），
+         * 06 分片按 zu-sp-unit-glue 在药丸上隐藏单位、维持 v461 面。数量与单位全称仍在 aria / 菜单 / tooltip 里。 */
         val = zuSpNum(view.speedValue, true);   // v452：格面不带 ≈（估算靠「子」标签与流光区分）
-        lab = val.length < 6 ? L("子·", "Ag·") : L("子", "A");
         glue = true;   // 标签与数值贴紧：zuSpeedFaceHtml 给标签加 zu-sp-glue
+        if (val && (autoWidth || val.length < 6)) { unit = "t/s"; unitGlue = true; }   // 单位贴紧（zu-sp-unit-glue）：chip 恒带；固定宽 ≤5 字符带
+        /* 点沿用 v461 长度制（<6 带点）；唯一例外=固定宽里 5 字符带点与单位放不下，点让位给单位 */
+        lab = (val.length < 6 && !(!autoWidth && val.length === 5)) ? L("子·", "Ag·") : L("子", "A");
       } else if (k === "estimate") {
         /* v454：生成中也不带「生成」标签（用户指示），与完成态同面；流光动画区分生成中，aria/tooltip 全称不变 */
         lab = ""; val = zuSpNum(view.speedValue, true); unit = "t/s";
@@ -227,6 +232,7 @@
        * 精简 chip（autoWidth）不在此列：它按内容定宽，中等档本来就是按「Think 23:59:59」标定的，状态词放得下 */
       else if (!autoWidth && unit === "" && typeof view.elapsedMs === "number" && view.elapsedMs >= 3600000) lab = "";
       var face = { label: lab, value: val, unit: unit, glue: glue };
+      if (unitGlue) face.unitGlue = true;   // v485：只有带单位的子代理面带 unitGlue（其余面的对象形状不变）
       if (view.avgFace) face.avg = true;   // v476：只有会话均兜底面带 avg（其余面的对象形状不变）
       return face;
     }
@@ -238,10 +244,11 @@
     function zuSpeedFaceHtml(view, autoWidth) {
       var f = zuSpeedFace(view, autoWidth);
       if (!f) return "";
-      /* v461：子代理面（glue）的标签与数值贴紧——zu-sp-glue 用负外边距抵消 .zu-live 的 gap（06 分片） */
+      /* v461：子代理面（glue）的标签与数值贴紧——zu-sp-glue 用负外边距抵消 .zu-live 的 gap（06 分片）；
+       * v485：子代理面的单位同样贴紧（zu-sp-unit-glue，与标签 glue 同款机制） */
       var glue = !!f.glue;
       return '<span class="zu-sp-label' + (glue ? " zu-sp-glue" : "") + (f.avg ? " zu-sp-avg" : "") + '">' + ttEsc(f.label) + '</span><span class="zu-sp-val">' + ttEsc(f.value) + '</span>' +
-        (f.unit ? '<span class="zu-sp-unit dim">' + ttEsc(f.unit) + '</span>' : "");
+        (f.unit ? '<span class="zu-sp-unit dim' + (f.unitGlue ? " zu-sp-unit-glue" : "") + '">' + ttEsc(f.unit) + '</span>' : "");
     }
     /* 速度格图标：思考=动效脑、工具=扳手、其余相位=闪电。07 整条渲染与 08 原地换图标共用同一出口。 */
     function zuSpeedIconHtml(phase) {

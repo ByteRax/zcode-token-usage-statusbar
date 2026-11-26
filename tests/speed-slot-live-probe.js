@@ -14,14 +14,15 @@
   if (!bar && !tsb) return { error: '页面上没有状态条（.zusage-root）也没有精简速率 chip（.zu-tsb）' };
   const F = (label, val, unit) => '<span class="zu-sp-label">' + label + '</span><span class="zu-sp-val">' + val + '</span>' +
     (unit ? '<span class="zu-sp-unit dim">' + unit + '</span>' : '');
-  const G = (label, val) => '<span class="zu-sp-label zu-sp-glue">' + label + '</span><span class="zu-sp-val">' + val + '</span>';   // v461 子代理面「子·X」：与 zuSpeedFaceHtml 同构（标签带 zu-sp-glue）
+  const G = (label, val, unit) => '<span class="zu-sp-label zu-sp-glue">' + label + '</span><span class="zu-sp-val">' + val + '</span>' +
+    (unit ? '<span class="zu-sp-unit dim zu-sp-unit-glue">' + unit + '</span>' : '');   // v461+v485 子代理面：标签与数值贴紧，放得下带贴紧单位（药丸档由 CSS 隐藏单位）
   const faces = {
     '完成 201': F('', '201', 't/s'), '回退 201.4': F('', '201.4', 't/s'), '完成 9.9': F('', '9.9', 't/s'), '完成 250.0': F('', '250.0', 't/s'),
     '估算 128.6': F('生成', '128.6', 't/s'), '估算 9999.9': F('生成', '9999.9', 't/s'), '估算 12.9k': F('生成', '12.9k', 't/s'),
     '思考 0.5s': F('思考', '0.5s'), '思考 6:33': F('思考', '6:33'), '思考 23:59:59': F('思考', '23:59:59'), '思考 1:05:00': F('思考', '1:05:00'),
     '思考 1天3时': F('思考', '1天3时'), '工具 读取': F('读取', '01s'), '工具组 查阅': F('查阅', '03s'), '技能 长名': F('代码审查与修复', '12s'),
-    '子代理 ·128.6': G('子·', '128.6'), '子代理 ·28.8': G('子·', '28.8'), '子代理 1286.5': G('子', '1286.5'),
-    'en Think': F('Think', '23:59:59'), 'en Ag·': G('Ag·', '128.6'), 'en A': G('A', '1286.5'), 'en Gen': F('Gen', '9999.9', 't/s'), 'en skill': F('code-review-and-fix', '12s'),
+    '子代理 128.6': G('子', '128.6', 't/s'), '子代理 ·28.8': G('子·', '28.8', 't/s'), '子代理 1286.5': G('子', '1286.5'),
+    'en Think': F('Think', '23:59:59'), 'en A 128.6': G('A', '128.6', 't/s'), 'en Ag· 28.8': G('Ag·', '28.8', 't/s'), 'en A': G('A', '1286.5'), 'en Gen': F('Gen', '9999.9', 't/s'), 'en skill': F('code-review-and-fix', '12s'),
   };
   const R = e => e.getBoundingClientRect();
   const r2 = x => Math.round(x * 100) / 100;

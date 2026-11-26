@@ -322,14 +322,14 @@ function speedSlotProbe() {
   const speed = main.querySelector('.it.zu-speed');
   if (!speed) return { error: 'speed cell missing' };
   const F = (label, val, unit) => '<span class="zu-sp-label">' + label + '</span><span class="zu-sp-val">' + val + '</span>' + (unit ? '<span class="zu-sp-unit dim">' + unit + '</span>' : '');
-  const G = (label, val) => '<span class="zu-sp-label zu-sp-glue">' + label + '</span><span class="zu-sp-val">' + val + '</span>';   // v461 子代理面「子·X」：与 zuSpeedFaceHtml 同构（标签带 zu-sp-glue）
+  const G = (label, val, unit) => '<span class="zu-sp-label zu-sp-glue">' + label + '</span><span class="zu-sp-val">' + val + '</span>' + (unit ? '<span class="zu-sp-unit dim zu-sp-unit-glue">' + unit + '</span>' : '');   // v461+v485 子代理面：标签与数值贴紧，放得下带贴紧单位（药丸档由 CSS 隐藏单位、维持 v461 面）
   const faces = {
     real201: F('', '201', 't/s'), hist: F('', '201.4', 't/s'), real99: F('', '9.9', 't/s'), real250: F('', '250.0', 't/s'),
     est: F('生成', '128.6', 't/s'), estMax: F('生成', '9999.9', 't/s'), estK: F('生成', '12.9k', 't/s'),
     thinkHalf: F('思考', '0.5s'), think: F('思考', '6:33'), thinkHour: F('思考', '1:05:00'), thinkDay: F('思考', '23:59:59'), thinkOver: F('思考', '1天3时'),
     tool: F('读取', '01s'), group: F('查阅', '03s'), skill: F('代码审查与修复', '12s'),
-    sub1: G('子·', '128.6'), sub3: G('子·', '28.8'), sub12: G('子', '1286.5'),
-    enThink: F('Think', '23:59:59'), enOver: F('Think', '1d 3h'), enAgt: G('Ag·', '128.6'), enAgtLong: G('A', '1286.5'), enGen: F('Gen', '9999.9', 't/s'), enSkill: F('code-review-and-fix', '12s'),
+    sub1: G('子', '128.6', 't/s'), sub3: G('子·', '28.8', 't/s'), sub12: G('子', '1286.5'),
+    enThink: F('Think', '23:59:59'), enOver: F('Think', '1d 3h'), enAgt: G('A', '128.6', 't/s'), enAgt4: G('Ag·', '28.8', 't/s'), enAgtLong: G('A', '1286.5'), enGen: F('Gen', '9999.9', 't/s'), enSkill: F('code-review-and-fix', '12s'),
     /* v463 无计时面：四字说法（与 zuSpeedFace 的 ZU_SPEED_NAKED 同文案；中文四字等宽，取表里最宽的英文说法；Thinking 等更宽的词实测在最紧的档放不下，不入表） */
     nakedRun: F('正在执行', ''), nakedCtx: F('正在读取', ''), nakedEn: F('Running', ''), nakedEnWide: F('Sending', ''),
   };
@@ -357,7 +357,7 @@ function speedSlotProbe() {
         bar.style.minWidth = lock; bar.style.maxWidth = lock;
         if (min) speed.dataset.zuSpeedMin = min; else delete speed.dataset.zuSpeedMin;
         const turn = main.querySelector('.it[data-zu-key="turn"]');
-        const row = { fs: getComputedStyle(speed).fontSize, speedW: [], plainW: [], turnL: [], plainTurnL: [], overflow: [], minSlack: Infinity, minLead: Infinity, nakedClip: [] };
+        const row = { fs: getComputedStyle(speed).fontSize, speedW: [], plainW: [], turnL: [], plainTurnL: [], overflow: [], minSlack: Infinity, minLead: Infinity, nakedClip: [] , glueVis: [] };
         res[(ui || 'default') + ' ' + name] = row;
         row.padL = Math.round(parseFloat(getComputedStyle(speed).paddingLeft) * 100) / 100;   // v462：默认条非仅图标档为 0（图标贴格左缘），药丸与仅图标档保留
         row.iconInset = speed.querySelector('.ico') ? Math.round((R(speed.querySelector('.ico')).left - R(speed).left) * 100) / 100 : null;
@@ -387,6 +387,19 @@ function speedSlotProbe() {
             if (range.getBoundingClientRect().width > nakedLab.getBoundingClientRect().width + 0.25) row.nakedClip.push(key);
           }
           if (slack < -0.05) row.overflow.push(key);
+          /* v485：子代理贴紧单位在默认条可见、药丸三档（宽裕/中等/紧张）由 .zu-pill 规则隐藏；
+           * 行为级断言（审查 MINOR：仅有源码串锁时，删除/降级药丸规则只靠精确串兜底） */
+          if (html.includes('zu-sp-unit-glue')) {
+            const liveEl = speed.querySelector('.zu-live');
+            const liveShown = !!liveEl && getComputedStyle(liveEl).display !== 'none';
+            if (liveShown) {
+              const u = liveEl.querySelector('.zu-sp-unit');
+              const shownU = !!u && getComputedStyle(u).display !== 'none';
+              /* 期望矩阵：默认宽裕/中等可见；默认紧张档由既有 zu-narrow 规则隐藏；药丸三档全隐藏；极窄档 .zu-live 整体隐藏跳过 */
+              const expectShown = mode !== 'p' && !cls.includes('zu-narrow');
+              if (shownU !== expectShown) row.glueVis.push(key + (mode === 'p' ? '@pill' : '@bar') + (shownU ? ':shown' : ':hidden'));
+            }
+          }
         }
       }
     }
@@ -537,6 +550,7 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
       assert.deepEqual(r.overflow.filter(k => !['thinkDay', 'thinkHour', 'enThink'].includes(k)), [], `${tier}: value crosses the cell edge`);
       assert.equal(r.minLead, 0, `${tier}: content starts at the cell's left edge (icon next to text)`);
       assert.deepEqual(r.nakedClip, [], `${tier}: untimed four-character labels are never clipped`);
+      assert.deepEqual(r.glueVis, [], `${tier}: subagent glued unit visible on default bar, hidden on all pill tiers (v485)`);
       /* v462 左内边距 0 只作用于默认条的非仅图标档：图标贴格左缘；药丸（底色圆角）与默认条仅图标档保留左内边距 */
       if (tier.includes('药丸') || iconOnly) {
         assert.ok(r.padL > 0, `${tier}: left padding is kept (${r.padL}px)`);
@@ -3120,15 +3134,15 @@ test('speed slot in the compact toolbar chip through the live data chain (isolat
   await t.test('every face fits its tier box under six font stacks; only capped long-label faces clip; label-only faces never go blank (v475); the 均 marker survives every tier (v476)', async () => {
     await setup(275);
     const F = (label, val, unit) => `<span class="zu-sp-label">${label}</span><span class="zu-sp-val">${val}</span>${unit ? `<span class="zu-sp-unit dim">${unit}</span>` : ''}`;
-    const G = (label, val) => `<span class="zu-sp-label zu-sp-glue">${label}</span><span class="zu-sp-val">${val}</span>`;   // v461 子代理面「子·X」
+    const G = (label, val, unit) => `<span class="zu-sp-label zu-sp-glue">${label}</span><span class="zu-sp-val">${val}</span>${unit ? `<span class="zu-sp-unit dim zu-sp-unit-glue">${unit}</span>` : ''}`;   // v461+v485 子代理面：chip 按内容定宽恒带贴紧单位
     const faces = {
       '完成 92': F('', '92', 't/s'), '完成 250.0': F('', '250.0', 't/s'), '回退 201.4': F('', '201.4', 't/s'),
       '估算 128.6': F('', '128.6', 't/s'), '估算 9999.9': F('', '9999.9', 't/s'), '估算 12.9k': F('', '12.9k', 't/s'),
       '思考 0.5s': F('思考', '0.5s'), '思考 23:59:59': F('思考', '23:59:59'), '思考 1:05:00': F('思考', '1:05:00'), '思考 1天3时': F('思考', '1天3时'),
       '读取 01s': F('读取', '01s'), '查阅 03s': F('查阅', '03s'), '终端 12s': F('终端', '12s'), '技能 代码审查与修复 12s': F('代码审查与修复', '12s'),
-      '子· 128.6': G('子·', '128.6'), '子· 28.8': G('子·', '28.8'), '子 1286.5': G('子', '1286.5'),
+      '子· 128.6': G('子·', '128.6', 't/s'), '子· 28.8': G('子·', '28.8', 't/s'), '子 1286.5': G('子', '1286.5', 't/s'),
       'en 201.4': F('', '201.4', 't/s'), 'en Gen 9999.9': F('Gen', '9999.9', 't/s'), 'en Think 23:59:59': F('Think', '23:59:59'),
-      'en Ag· 128.6': G('Ag·', '128.6'), 'en A 1286.5': G('A', '1286.5'), 'en Scan 03s': F('Scan', '03s'),
+      'en Ag· 128.6': G('Ag·', '128.6', 't/s'), 'en Ag· 28.8': G('Ag·', '28.8', 't/s'), 'en A 1286.5': G('A', '1286.5', 't/s'), 'en Scan 03s': F('Scan', '03s'),
       /* v475：只有状态词、没有数值的面（后台智能体合成的「正在派发」、未开始计时的「正在执行」等）——三档都不得是空壳；
        * 原始工具名的无计时面最长，在中等/紧张档顶到上限按省略号降级 */
       '无计时 正在派发': F('正在派发', ''), '无计时 正在执行': F('正在执行', ''), '无计时 更新待办': F('更新待办', ''), 'en Running': F('Running', ''),
