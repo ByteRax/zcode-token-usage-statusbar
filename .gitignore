@@ -19,6 +19,7 @@ mobile-relay-diag.json
 !.zcode/skills/source-feature-adaptation/
 !.zcode/skills/distill-project-memory/
 !.zcode/rules/
+!.zcode/agents/
 config.json
 enhance-provider.json
 enhance-provider.lock

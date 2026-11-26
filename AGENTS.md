@@ -107,7 +107,7 @@ python3 sync_plugin.py --check
 
 1. **先检查，再同步仓库副本。** 按改动范围执行语法检查与相关回归，未通过不部署。共享文件执行本节的 `python3 sync_plugin.py` 与 `python3 sync_plugin.py --check`；同步会扫描整个共享清单，须先核对既有差异，不能把并行会话未完成、未验证的改动一并部署。
 2. **核实当前加载位置。** 以目标客户端实际加载的 `inject-main.cjs` 路径为准，结合 asar 入口引用与当前进程启动信息核实，不默认仓库、插件缓存和稳定运行目录是同一份。`--dev` 已直接加载本次修改的源码目录时无需重复复制。尊重显式 `hot_reload:false`，不为触发热更擅自改配置。
-3. **安全部署本次改动。** 写入前比较运行文件、来源基与本次修改，保留运行目录热修和其它会话改动，禁止整目录覆盖或借重装绕过保护。`overlay_install.py sync` 是全名单可信同步、没有单文件参数，仅在来源身份匹配且所有待同步差异均属本次已验证范围时使用。需要选择性开发部署时，按 [.zcode/rules/install-release.md](.zcode/rules/install-release.md) 先备份为 `.pre-<原因>-<时间戳>`，只将已确认可安全更新的文件经同目录临时文件、语法检查后原子替换；内容变化须确保 mtime 也变化。出现 `preserved`、来源身份不符、运行目录领先或并行写入冲突时，停止相关文件部署并说明，不强制覆盖。
+3. **安全部署本次改动。** 写入前比较运行文件、来源基与本次修改，保留运行目录热修和其它会话改动，禁止整目录覆盖或借重装绕过保护。`overlay_install.py sync` 是全名单可信同步、没有单文件参数，仅在来源身份匹配且所有待同步差异均属本次已验证范围时使用。需要选择性开发部署时，按 [.zcode/rules/install-release.md](.zcode/rules/install-release.md) 先备份为 `.pre-<原因>-<时间戳>`，只将已确认可安全更新的文件经同目录临时文件、语法检查后原子替换；内容变化须确保 mtime 也变化。出现 `preserved`、来源身份不符、运行目录领先或并行写入冲突时，停止相关文件部署并说明，不强制覆盖。选择性开发部署用 `python3 -B scripts/deploy_hot.py`：先带 `--dry-run` 看甄别结果，再去掉它并带 `--reason <原因>` 部署；脚本按上述纪律做基线甄别、备份、语法检查、写前写后比对与热重载取证，被保护的文件原样报告、没有强制覆盖（契约见 [specs/dev-loop-speed.md](specs/dev-loop-speed.md)）。
 4. **按生效类型触发。**
    - `overlay.js`、`turn-stats.js`：部署到实际加载目录后，由主桥按 mtime 轮询检查（`hot_reload` 显式 `true` 时 2 秒、缺省 5 秒、显式 `false` 关闭），任一变化即整体重注入，不刷新页面或重启客户端冒充热重载。
    - `zusage.py`：同一轮询发现变化后自动重启已有常驻 Python（若单独修改被导入的 `usage_stats.py` 或 `token_pricing.py`，因主桥仅监听 `zusage.py` mtime，须连带更新运行目录 `zusage.py` mtime 或确认常驻进程已重启）；未启动常驻进程时，下一次启动读取新代码。
@@ -215,6 +215,7 @@ python3 scripts/build_overlay.py --check
 python3 scripts/build_quota.py --check
 python3 scripts/build_puller.py --check
 python3 sync_plugin.py --check
+python3 -B scripts/check_all.py   # 上面全部的一键跑法：两套测试并行，汇总失败用例名
 ```
 
 - 仅在显式更新油猴脚本产物或正式发版时，另用 `python3 scripts/build_mobile_userscript.py --check` 确认两份根产物与当前源码逐字节一致；普通回归在内存或临时目录验证当前源码。
@@ -222,7 +223,7 @@ python3 sync_plugin.py --check
 - `ZCODE_USAGE_DB` 只隔离插件逐问脚本，不能当根 `zusage.py` 的通用数据库隔离开关；新测试沿用夹具替换数据库入口，默认不执行真实查询。
 - 首两条是自动化回归，`--check` 是语法/分片拼接一致性/副本同步与 6 处分发清单漂移检查，不等于行为验证；无需因仅修改文档而跑安装/发布。
 - Node 测试通配符命令适用于会展开 glob 的 shell；Windows PowerShell 请显式列出匹配文件，不能假设 Unix shell 展开行为。部分进程/平台测试会按环境跳过，必须报告。
-- 定向 Python 示例：`python3 -B -m unittest discover -s tests -p 'test_token_rate.py'`；Node 示例：`node --test tests/overlay-rate.test.cjs`。范围扩大时再运行上面的全套命令。
+- 定向 Python 示例：`python3 -B -m unittest discover -s tests -p 'test_token_rate.py'`；Node 示例：`node --test tests/overlay-rate.test.cjs`。迭代期间只跑受影响的文件，提交或收口前再跑一遍全套。`python3 -B scripts/check_all.py` 是全套的一键跑法：自己展开通配（Windows PowerShell 也可用），先语法与一致性、再并行跑两套测试，汇总失败用例名；`--quick` 只跑前两段，`--list` 只列命令。
 
 | 改动范围 | 验证选择（文件位于 `tests/`） |
 |---|---|
@@ -274,3 +275,16 @@ python3 sync_plugin.py --check
 - 实际执行的检查与结果；跳过/未执行的检查及原因，不隐去失败或平台跳过。
 - 是否已同步插件副本；是否更新安装缓存/稳定运行文件；是否需要重开会话或完全重启客户端。
 - 尚存限制与需要实机验证的部分。只有相应日志、测试、加载诊断或正式渠道证据齐全，才能宣称功能正常、安装成功、远端恢复或发布完成。
+
+## 10. 并发与耗时纪律
+
+依据是 2026-11-23~26 的会话耗时拆解：主会话的时间模型生成占 43%、限流重试 15%、等子代理 12%，近一半的轮次由后台通知或 goal 续跑触发。数据、根因与审查调度的完整规则见 [specs/review-agent-concurrency.md](specs/review-agent-concurrency.md)，三件配套工具的契约见 [specs/dev-loop-speed.md](specs/dev-loop-speed.md)。
+
+- **子代理**：默认模型的 subagent 一次只跑一路，机械活（跑测试、批跑变异、清单比对）交 `review-runner`（固定 GLM-5.3-FlashX）；每路写死工具调用上限，报告只回结论；派发前跑 `python3 -B scripts/model_load.py`，把预计用时告诉用户。
+- **合并工具调用**：互不依赖的读、查、跑放进同一步，多条命令并进一次 Bash。只调一个工具的步骤占那一周的 72%，每一步都固定多一次等首字和一次推理。
+- **回归先定向**：迭代期间只跑 §6 对照表里受影响的测试文件，提交或收口前跑一遍全套（`python3 -B scripts/check_all.py`）。全套每遍约 3~5 分钟，同一个任务里不重复跑；基线对照只在排查既有红灯时做。
+- **上下文**：一个任务一个会话。在已有会话里开新任务前查一次 `token_usage(scope="current")`，「上下文容量」达到 20 万 token 就提醒用户新开会话或 `/compact`（自动压缩要到约 56.5 万 token 才触发，超过 30 万后每步多花约 7 秒）。子代理的长输出落文件，主会话只读结论。
+- **限流后续跑**：上一轮因 `rate_limited` 重试耗尽而失败时，先 `TaskStop` 在途的默认模型 subagent，再跑 `python3 -B scripts/model_load.py`；结论为「拥挤」就告诉用户并建议错峰，等用户决定。
+- **后台通知**：subagent 完成通知触发的新一轮只做汇总、修复、收尾；没有待修项就汇报并结束，不自动再派一轮。
+- **等外部结果**：知道要等很久的命令（机器人 review、远端回读、全套测试）一次给足 `timeout`（最长 600000 毫秒），让命令自己等到结束；不短轮询，不用 `sleep` 反复调用。
+- **交互改动自测**：改了点击、悬停、焦点这类交互，交付前在真实页面走一遍完整点击路径（合成事件驱动不动 hover 卡，见 [.zcode/rules/tests.md](.zcode/rules/tests.md) §4），再请用户验收。
