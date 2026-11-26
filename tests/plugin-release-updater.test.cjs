@@ -104,6 +104,14 @@ function fixture(t, settings = {}, customStorage = false, variant = "github") {
   f.fetch = async (url, limit) => {
     events.push("fetch");
     if (variant === "gitcode") {
+      // 渠道落后察觉的交叉核对会问官方镜像的 Release 列表与 manifest（specs/channel-lag-detection.md）
+      if (url.startsWith("https://api.gitcode.com/")) {
+        events.push("mirror-api");
+        if (f.mirrorApiError) throw new Error(f.mirrorApiError);
+        return Buffer.from(JSON.stringify(f.mirrorApiRows ?? []));
+      }
+      if (f.mirrorRelease && url === f.mirrorRelease.manifest.browser_download_url)
+        return Buffer.from(JSON.stringify(f.mirrorManifest));
       if (url === f.release.manifest.browser_download_url) return Buffer.from(JSON.stringify(f.manifest));
       if (url === f.release.archive.browser_download_url) return f.bytes;
       throw new Error("unexpected gitcode download: " + url);
@@ -264,6 +272,71 @@ for (const variant of ["github", "gitcode"]) {
     assert.equal(readJson(f.stateFile).pendingSync, false);
   });
 }
+
+/* 渠道落后察觉（specs/channel-lag-detection.md，issue #497）：market 渠道与 GitCode Release 渠道的
+ * 版本源只有渠道清单，清单没跟上最新发布（分支断链、清单没推、宿主刷新静默失败）时用户原本
+ * 只会看到「已是最新」。结论为「已是最新」时交叉核对不依赖用户克隆的 Release 列表，落后要留痕；
+ * 交叉核对只是诊断，失败一律静默。 */
+const LAG_NOTICE = /更新渠道没有跟上最新发布：渠道清单是 1\.0\.0，最新发布已是 1\.2\.0/;
+
+test("market channel: a catalog that lags the latest release is reported instead of a silent 'current'", async (t) => {
+  const f = sourceCatalogFixture(t, "1.0.0");          // 渠道清单 = 已安装 1.0.0
+  f.setRelease("1.2.0");                               // Release 列表已有更新版本
+  await f.updater.request({ action: "check" });
+  const state = f.updater.status();
+  assert.equal(state.phase, "current", state.error);
+  assert.match(state.lastError.message, LAG_NOTICE);
+  assert.match(state.lastError.message, /刷新 zusage-marketplace/);
+  assert.equal(readJson(f.stateFile).lastError.message, state.lastError.message);   // 落盘：浮层不在时也是痕迹
+  assertNoInstall(f);
+});
+
+test("market channel: a catalog that catches up leaves no notice and clears the earlier one", async (t) => {
+  const f = sourceCatalogFixture(t, "1.0.0");
+  f.setRelease("1.2.0");
+  await f.updater.request({ action: "check" });
+  assert.match(f.updater.status().lastError.message, LAG_NOTICE);
+  f.setRelease("1.0.0");                               // 渠道跟上了
+  await f.updater.request({ action: "check" });
+  assert.equal(f.updater.status().phase, "current");
+  assert.equal(f.updater.status().lastError, null);
+  assert.equal(readJson(f.stateFile).lastError, null);
+});
+
+test("market channel: an available update skips the cross-check and installs as before", async (t) => {
+  const f = sourceCatalogFixture(t, "1.1.0");
+  f.setRelease("1.2.0");
+  await f.updater.request({ action: "check" });
+  assert.equal(f.updater.status().phase, "available");
+  assert.equal(f.updater.status().lastError, null);
+  assert.equal(f.events.includes("fetch"), false);     // 不为交叉核对多查一次列表
+  assertNoInstall(f);
+});
+
+for (const [label, breakFetch] of [["rate-limited", (f) => { f.apiLimited = true; }],
+                                   ["offline", (f) => { f.offline = true; }]]) {
+  test(`market channel: a ${label} cross-check stays silent`, async (t) => {
+    const f = sourceCatalogFixture(t, "1.0.0");
+    f.setRelease("1.2.0"); breakFetch(f);
+    await f.updater.request({ action: "check" });
+    const state = f.updater.status();
+    assert.equal(state.phase, "current", state.error);
+    assert.equal(state.error, "");
+    assert.equal(state.lastError, null);
+    assert.equal(readJson(f.stateFile).lastError, null);
+  });
+}
+
+test("local directory marketplace never cross-checks a Release list", async (t) => {
+  const f = sourceCatalogFixture(t, "1.0.0");
+  f.setRelease("1.2.0");
+  f.options.channel = () => ({ kind: "local", flavor: "", repository: "", source: { source: "directory", path: f.record.source.path } });
+  f.updater = f.restart();
+  await f.updater.request({ action: "check" });
+  assert.equal(f.updater.status().phase, "current", f.updater.status().error);
+  assert.equal(f.updater.status().lastError, null);
+  assert.equal(f.events.includes("fetch"), false);
+});
 
 /* GitHub API 匿名配额（60/h/IP）被共享出口耗尽时，检查退回注册 ref 的渠道清单
    （zipball 下载桶不占配额），渠道身份与安装校验链不变；清单 sha256 全程交叉比对。 */
@@ -1649,8 +1722,35 @@ test("GitCode channel up-to-date version never offers an install", async (t) => 
   f.setGitcodeRelease("1.2.0");
   await f.updater.request({ action: "check" });
   assert.equal(f.updater.status().phase, "current");
-  assert.deepEqual(f.events, ["marketplace"]);
+  // 「已是最新」后交叉核对官方镜像的 Release 列表（specs/channel-lag-detection.md）；镜像列表为空
+  // 属交叉核对失败，静默
+  assert.deepEqual(f.events, ["marketplace", "fetch", "mirror-api"]);
+  assert.equal(f.updater.status().lastError, null);
   assertNoInstall(f);
+});
+
+test("GitCode channel: a catalog that lags the latest mirror release is reported instead of a silent 'current'", async (t) => {
+  const f = fixture(t, {}, false, "gitcode");
+  f.setGitcodeRelease("1.0.0");                 // 渠道清单 = 已安装 1.0.0
+  f.setGithubMirrorRelease("1.2.0");            // 镜像的 Release 列表已有更新版本
+  await f.updater.request({ action: "check" });
+  const state = f.updater.status();
+  assert.equal(state.phase, "current", state.error);
+  assert.equal(state.checkedVia, "release-catalog");
+  assert.match(state.lastError.message, LAG_NOTICE);
+  assert.equal(readJson(f.stateFile).lastError.message, state.lastError.message);
+  assertNoInstall(f);
+});
+
+test("GitCode channel: a mirror list that cannot be read leaves the up-to-date result untouched", async (t) => {
+  const f = fixture(t, {}, false, "gitcode");
+  f.setGitcodeRelease("1.0.0");                 // 渠道清单 = 已安装 1.0.0
+  f.setGithubMirrorRelease("1.2.0");
+  f.mirrorApiError = "Release 请求失败 (429)";
+  await f.updater.request({ action: "check" });
+  const state = f.updater.status();
+  assert.equal(state.phase, "current", state.error);
+  assert.equal(state.lastError, null);
 });
 
 test("GitCode channel installs through gitcode URLs with the upstream manifest identity", async (t) => {
