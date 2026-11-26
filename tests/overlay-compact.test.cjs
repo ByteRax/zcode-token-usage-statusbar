@@ -801,10 +801,10 @@ test('v487 悬停大白话说明：7 类中英标签均能识别，mouseover 弹
   assert.equal(tip.style.display, 'block', '跨行切换保持显示');
   assert.match(tip.innerHTML, /关闭当前任务不需要的 MCP/, '内容切换为 MCP 工具说明');
 
-  // 移出分项区（180ms 悬停保活桥后隐藏）
+  // 移出分项区（350ms 悬停保活桥后隐藏）
   ui.body.dispatch('mouseout', { target: ui.bkdRows[3].row, relatedTarget: ui.body });
   assert.equal(tip.style.display, 'block', '保活桥窗口内暂不收起');
-  h.flushTimeouts(180);
+  h.flushTimeouts(350);
   assert.equal(tip.style.display, 'none', '到期后隐藏');
   h.tick();
   assert.equal(tip.style.display, 'none', '隐藏后的下一拍对账不把气泡重新拉起');
@@ -972,19 +972,26 @@ test('v487 技能列表、其他路径、系统提示词名称与路径展示；
   assert.match(tip.innerHTML, /guidelines（编码与执行规范）/);
   assert.match(tip.innerHTML, /\/Applications\/ZCode\.app\/Contents\/Resources\/glm\/zcode\.cjs/);
 
-  // 4. 气泡纯说明、指针穿透：路径只展示，pointerdown / click / Enter 都不触发打开文件夹
-  //    （真机实证：气泡若拦截鼠标，指针一进入气泡宿主 hover-card 就判定离开并关闭弹层）
-  assert.equal(tip.style.pointerEvents, 'none', '气泡不拦截鼠标');
-  assert.equal(tip.listeners.size, 0, '气泡不挂任何监听（指针进出不干预宿主弹层）');
-  assert.doesNotMatch(tip.innerHTML, /role="button"|tabindex="0"/, '路径不是可聚焦控件');
-  assert.match(tip.innerHTML, /<span class="cb-path" data-cb-path="\/Applications\/ZCode\.app\/Contents\/Resources\/glm">/, '路径只作文本展示');
+  // 4. 点击路径打开文件夹：pointerdown 命中 .cb-path 调用 openInFileManager，悬停气泡期间保持显示
+  assert.notEqual(tip.style.pointerEvents, 'none', '气泡可交互');
   const pathNode = new Element('span');
   pathNode.className = 'cb-path';
+  pathNode.setAttribute('data-cb-path', '/Applications/ZCode.app/Contents/Resources/glm');
   pathNode.closest = sel => sel === '.cb-path' ? pathNode : null;
   tip.dispatch('pointerdown', { target: pathNode });
-  tip.dispatch('click', { target: pathNode });
-  tip.dispatch('keydown', { target: pathNode, key: 'Enter' });
-  assert.deepEqual(opened, [], '任何事件都不调用 openInFileManager');
+  assert.deepEqual(opened, ['/Applications/ZCode.app/Contents/Resources/glm']);
+
+  // 5. 鼠标从行移入气泡：取消隐藏定时器；即使宿主卸载或动画抖动仍保持显示，离开气泡 350ms 后才隐藏
+  ui.body.dispatch('mouseout', { target: ui.bkdRows[2].row, relatedTarget: tip });
+  tip.dispatch('mouseenter', {});
+  h.flushTimeouts(350);
+  assert.equal(tip.style.display, 'block', '悬停气泡内取消隐藏定时器');
+  ui.bkdRows[2].row.isConnected = false;
+  h.tick();
+  assert.equal(tip.style.display, 'block', '悬停气泡期间即使宿主卸载仍保持显示');
+  tip.dispatch('mouseleave', {});
+  h.flushTimeouts(350);
+  assert.equal(tip.style.display, 'none', '移出气泡 350ms 后收起');
 });
 
 /* ---------- v487 审查补测：折算边界、开关、定位、路径与生命周期 ---------- */
@@ -1040,7 +1047,7 @@ test('v487 开关：启动时 zusage3.ctxBkd="0" 不注入也不弹气泡；运�
   assert.equal(hasTok(ui.bkdRows[0]), false, '对账发现开关关即摘除');
 });
 
-test('v487 气泡定位与主题：贴行上方、上方放不下翻到行下方、左缘视口钳边，对账拍跟随行重锚定，浅色主题挂 zu-light', () => {
+test('v488 气泡侧边定位、坐标锁定与主题：紧贴行右侧（放不下放左侧）、同 row 锁定防动画抖动、浅色主题挂 zu-light', () => {
   const h = harness();
   const comp = h.buildComposer('workspace-main', 'sid_main');
   comp.btn.setAttribute('aria-label', '上下文已用 100,000 / 总量 200,000');
@@ -1053,17 +1060,23 @@ test('v487 气泡定位与主题：贴行上方、上方放不下翻到行下方
   row._rect = { top: 600, bottom: 620, left: 100, right: 400, width: 300, height: 20 };
   ui.body.dispatch('mouseover', { target: row });
   assert.equal(tip.style.display, 'block');
-  assert.equal(tip.style.top, '498px', '气泡底边贴行上方 2px');
-  assert.equal(tip.style.left, '100px');
+  assert.equal(tip.style.left, '396px', '优先贴右侧（4px 重叠）');
+  assert.equal(tip.style.top, '596px', '对齐行顶 -4px');
   assert.ok(!tip.classList.contains('zu-light'), '深色主题不挂 zu-light');
-  row._rect = { top: 20, bottom: 40, left: 100, right: 400, width: 300, height: 20 };
+
+  // 同一行对账拍：即使 row._rect 抖动也锁定坐标不重算
+  row._rect = { top: 615, bottom: 635, left: 105, right: 405, width: 300, height: 20 };
   h.tick();
-  assert.equal(tip.style.top, '42px', '上方放不下翻到行下方，并在对账拍跟随行位置');
-  row._rect = { top: 20, bottom: 40, left: 950, right: 990, width: 40, height: 20 };
-  h.tick();
-  assert.equal(tip.style.left, '792px', '左缘钳到 vw - tw - 8');
+  assert.equal(tip.style.left, '396px', '同一行锁定 left');
+  assert.equal(tip.style.top, '596px', '同一行锁定 top');
+
+  // 移出后切到浅色主题并重悬停（右侧超出视口时翻到左侧）
+  ui.body.dispatch('mouseout', { target: row, relatedTarget: ui.body });
+  h.flushTimeouts(350);
   h.document.documentElement.classList.remove('dark');
-  h.tick();
+  row._rect = { top: 20, bottom: 40, left: 950, right: 990, width: 40, height: 20 };
+  ui.body.dispatch('mouseover', { target: row });
+  assert.equal(tip.style.left, '754px', '右侧放不下翻到左侧（950 - 200 + 4）');
   assert.ok(tip.classList.contains('zu-light'), '浅色主题挂 zu-light');
 });
 

@@ -26,9 +26,9 @@
        - 其他（`meta_user_context`）：「指令规则」位置（全局 `AGENTS.md`、项目 `AGENTS.md` / `.zcode/AGENTS.md`）、「记忆索引」位置（`<home>/.zcode/cli/memories/projects/<工作区标识>/memory/MEMORY.md`，宿主 `memoryService` 的真实布局，目录名是工作区标识、与项目名不同）、动态「系统提醒」各项。
        - 系统提示词（`system_prompt`）：内置系统提示词核心段名称（`core`、`guidelines`、`safety`、`output_style`）及内置引擎路径（从 `location.href` 解析，如 `/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`）。
     4. 减负建议：针对该类别的可操作提示。
-  - 气泡交互（只看不点）：气泡 `pointer-events: none`，不挂指针与键盘监听，路径不可点击。原因：气泡挂在 `document.body`，不在宿主 hover-card 的 DOM 子树里。只要它拦截鼠标，指针一进入气泡，宿主（Radix hover-card）就判定指针已离开弹层并立即关闭，气泡随即失去锚点收起；气泡又贴在行上方，往上挪一行会撞进它。ZCode 4.0.0 真机实证：气泡可拦截鼠标时，悬停第 2 行后上移到第 1 行，宿主弹层消失；改成指针穿透后，上移、下移弹层都保持打开，气泡跟随切换。宿主弹层还带 `overflow-hidden`，把气泡挂进弹层内部会被裁剪。要打开目录请用状态条「项目」格或项目菜单的「在 Finder 中打开」。
-  - 移出分项行 180ms 后收起（跨行间隙不闪）；弹层被 Radix 卸载（`!ctxBkdTipFor.isConnected`）时由 `scanRateLines` 的 500ms 健康检查收起；开关关闭时对账分支与设置面板 `change` 分支立即收起；气泡 DOM 随代际 dispose 移除。
-  - 定位：优先贴在当前行上方 2px（`r.top - th - 2`），上方放不下（小于 8px）时翻到行下方（`r.bottom + 2`，且不超出视口底 8px）；左缘钳在 `[8, vw - tw - 8]`；每拍对账跟随行位置重新锚定。气泡会盖住被悬停行上方的各行；指针穿透，这些行仍可悬停。
+  - 气泡交互（侧边停靠 + 悬停保活 + 路径可点击）：气泡挂载在 `document.body` 并可接收指针事件；`.cb-path` 路径节点支持 `pointerdown` 点击调用 `openProjFolder(path)` 打开对应目录。为解决移入气泡时宿主弹层关闭的问题，气泡紧贴 `[data-slot="hover-card-content"]` 左右两侧停靠（4px 重叠无缝隙），并在捕获阶段拦截指向气泡的 `pointerout`/`mouseout`（阻止宿主判定离开），同时对同一行锁定气泡坐标防止宿主动画抖动甩出鼠标；移出气泡且不在主浮层内时再向宿主补发离开事件并经 350ms 保活桥收起。
+  - 移出分项行 350ms 后收起（跨行间隙不闪）；悬停气泡期间即使弹层被宿主卸载仍保持显示，移出气泡后 350ms 或点击气泡外收起；开关关闭时对账分支与设置面板 `change` 分支立即收起；气泡 DOM 与捕获阶段监听随代际 dispose 移除。
+  - 定位：紧贴主弹层 `[data-slot="hover-card-content"]` 右侧（`anchor.right - 4`），右侧超出视口时放左侧（`anchor.left - tw + 4`），并钳在 `[8, vw - tw - 8]`；垂直方向对齐当前行 `r.top - 4` 并钳在 `[8, vh - th - 8]`；同一行已显示时锁定坐标不随宿主动画抖动。
   - 平均缓存命中率行悬停明细：识别弹层内的「平均缓存命中率 / Average cache hit rate」行（打 `data-zusage-bkd-cache="1"`），`taskUsage.cache` 可用时悬停展示：最近一次请求命中率（`cacheReadTokens / inputTokens`）、本会话累计命中率与累计命中/输入 Token 数、参与统计的主轮请求次数（`hitRateRequestCount`）及说明。
   - 七类说明文案（中英双语，遵循宿主 `classifyContextComposition` 归类口径）：
     1. 消息（`messages` / `Messages`）：对话记录、工具执行返回结果（读文件、跑命令等输出）及历史压缩摘要。占比过高时可点下方「压缩上下文」释放空间。
@@ -53,7 +53,7 @@
 1. Token 数计算与格式：`used = 325000`，分项 `74.7%` → 中文默认显示 `24.28万 · `（`325000 * 0.747 = 242775` → `fmt(242775) = "24.28万"`），开启强制 K/M/B 显示 `242.8K · `，英文界面显示 `242.8K · `。四舍五入：`used = 101`、`50.0%` → `51`。小数逗号：`50,5 %` 按 50.5 解析。
 2. 七类标签识别与悬停气泡：中文与英文的 7 类标签均能识别并弹出对应的双语说明气泡；移出或弹层卸载即收起；隐藏后的下一拍对账不会把气泡重新拉起。
 3. 开关控制与幂等：`zusage3.ctxBkd="0"` 时不注入 Token 节点、不弹气泡；运行中关闭开关立即摘除已注入的 `.zu-ctx-bkd-tok` 并收起气泡，重开立即恢复；多次 `tick()` 节点不重复创建。
-4. 气泡不拦截鼠标：`pointer-events: none`，路径不是可聚焦控件，`pointerdown` / `click` / `Enter` 都不调用 `openInFileManager`；真机上悬停第 2 行后上移到第 1 行，宿主弹层保持打开、气泡切换。
+4. 移入气泡时气泡与宿主上下文浮层均保持打开，点击 `.cb-path` 可调用 `openInFileManager` 打开文件夹；移出气泡到空白处后双浮层自动收起。
 5. 路径：记忆索引位置写 `~/.zcode/cli/memories/projects/<工作区标识>/memory/MEMORY.md`，不出现 `~/.zcode/projects`；Windows 路径按反斜杠拼接；同名技能只列一次并补全目录；home 与工作区之外的技能目录、以及字面落在其下但用 `..` 穿出去的目录，都只列名称。
 6. 热重载：弹层没关时重新注入，新一代仍能弹出气泡。
 
