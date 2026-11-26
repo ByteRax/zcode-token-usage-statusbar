@@ -82,7 +82,7 @@ test('zuSpeedFaceHtml behaviour lock: 标签/数值/单位三 item、数值与�
   // 从产物提取真函数体在隔离函数里执行，锁定结构输出与转义边界
   const start = source.indexOf('function zuSpeedFaceHtml(view, autoWidth) {');
   assert.ok(start >= 0, 'zuSpeedFaceHtml missing');
-  const endMarker = '(f.unit ? \'<span class="zu-sp-unit dim">\' + ttEsc(f.unit) + \'</span>\' : "");\n    }';
+  const endMarker = '(f.unit ? \'<span class="zu-sp-unit dim\' + (f.unitGlue ? " zu-sp-unit-glue" : "") + \'">\' + ttEsc(f.unit) + \'</span>\' : "");\n    }';   // v485 起单位可带贴紧类
   const fnSrc = source.slice(start, source.indexOf(endMarker, start) + endMarker.length);
   assert.ok(fnSrc.includes('var f = zuSpeedFace(view, autoWidth);'), '提取到的是完整函数体（autoWidth 透传，v464）');
   const ttEsc = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');

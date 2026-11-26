@@ -9,7 +9,11 @@ const { getNamedSlice, sliceOverlay } = require('./helpers/overlay-extract.cjs')
 // 外宽只随布局档位变、不随状态文字变；展示模型只读结构化字段；协调器只管展示时机。
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
-const FACE = (label, value, unit = '', glue = false) => ({ label, value, unit, glue });   // v461：glue=标签与数值贴紧（子代理面）
+const FACE = (label, value, unit = '', glue = false, unitGlue = false) => {
+  const f = { label, value, unit, glue };   // v461：glue=标签与数值贴紧（子代理面）
+  if (unitGlue) f.unitGlue = true;   // v485：单位与数值贴紧（带单位的子代理面），其余面对象形状不变
+  return f;
+};
 
 /* ---------- 展示模型（07 分片实例级渲染助手区的纯函数） + 状态机（02 分片） ---------- */
 const NOW = 100000;
@@ -39,10 +43,14 @@ test('展示模型住在 html() 切片夹具共用的渲染助手区（ttEsc→s
 
 test('zuSpeedFace: 八态标签/数值/单位（zh），只读结构化字段', () => {
   const m = model('zh');
-  // v461：子代理面「子·X」——单字标签 + 贴紧的间隔点 + 速率，不带单位；数量不上面（全称里才有 ×N）
-  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 3, speedValue: 128.6 })), FACE('子·', '128.6', '', true));
-  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 1, speedValue: 128.6 })), FACE('子·', '128.6', '', true), '数量不上格面：N=1 与 N>1 同面');
-  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 12, speedValue: 1286.5 })), FACE('子', '1286.5', '', true), '六字符数值带点放不下：退成不带点、同样贴紧的标签');
+  // v461+v485：子代理面 = 标签 + 贴紧数值；固定宽里放得下就带单位——≤4 字符带点「子·28.8t/s」（余 8.1px），
+  // 5 字符点让位给单位「子138.9t/s」（带点会压标签成省略号，余 3.5px）；数量不上面（全称里才有 ×N）
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 3, speedValue: 128.6 })), FACE('子', '128.6', 't/s', true, true), '五字符数值：点让位给单位');
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 1, speedValue: 128.6 })), FACE('子', '128.6', 't/s', true, true), '数量不上格面：N=1 与 N>1 同面');
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 12, speedValue: 1286.5 })), FACE('子', '1286.5', '', true), '六字符数值带点放不下：退成不带点、同样贴紧的标签，单位也放不下不带');
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 3, speedValue: 28.8 })), FACE('子·', '28.8', 't/s', true, true), '四字符以内：保留点 + 单位');
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 3, speedValue: 173.4 }, true)), FACE('子·', '173.4', 't/s', true, true), '精简 chip 按内容定宽：恒带点与单位');
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 3, speedValue: null })), FACE('子·', '', '', true), '无新鲜速率（数值为空）：维持「子·」不带单位');
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'toolgroup', groupKind: 'explore', elapsedMs: 3200 })), FACE('查阅', '03s'));
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'toolgroup', groupKind: 'terminal', elapsedMs: 3200 })), FACE('终端', '03s'));
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'skill', nameText: '代码审查与修复', elapsedMs: 12500 })), FACE('代码审查与修复', '12s'));
@@ -69,7 +77,7 @@ test('zuSpeedFace: 八态标签/数值/单位（zh），只读结构化字段', 
 
 test('zuSpeedFace: 英文标签', () => {
   const m = model('en');
-  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 3, speedValue: 128.6 })), FACE('Ag·', '128.6', '', true));
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 3, speedValue: 128.6 })), FACE('A', '128.6', 't/s', true, true), '英文五字符同样点让位给单位（Ag·138.9t/s 在固定宽放不下）');
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 3, speedValue: 1286.5 })), FACE('A', '1286.5', '', true), '英文六字符数值退成单字母（实测 Ag1286.5 在 14px 下仍被省略');
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'toolgroup', groupKind: 'explore', elapsedMs: 3200 })), FACE('Scan', '03s'));
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'toolgroup', groupKind: 'terminal', elapsedMs: 3200 })), FACE('Shell', '03s'));
@@ -126,7 +134,7 @@ test('v463 无计时面：已登记的短状态词换成四字说法（用户「
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'tool', toolName: 'AskUserQuestion', elapsedMs: null })), FACE('AskUserQuestion', ''), '未登记工具名不换');
   /* 无标签面与子代理面不受影响 */
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'estimate', speedValue: 173.4 })), FACE('', '173.4', 't/s'));
-  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 3, speedValue: 128.6 })), FACE('子·', '128.6', '', true));
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 3, speedValue: 128.6 })), FACE('子', '128.6', 't/s', true, true));
   /* 格面 HTML：仍是三个 item 的结构（空的数值位 span 保留），标签不带 glue */
   assert.equal(faceHtml('zh').zuSpeedFaceHtml({ kind: 'tool', toolName: 'Bash', elapsedMs: null }), '<span class="zu-sp-label">正在执行</span><span class="zu-sp-val"></span>');
   assert.equal(faceHtml('en').zuSpeedFaceHtml({ kind: 'tool', toolName: 'Bash', elapsedMs: null }), '<span class="zu-sp-label">Running</span><span class="zu-sp-val"></span>');
@@ -173,30 +181,42 @@ test('v464 长计时面：计时满 1 小时起不出文字标签（只留图标
   assert.ok(source.includes('>.zu-live>.zu-sp-label:empty{display:none}'), '空标签不占位依赖既有 :empty 规则（06 分片）');
   /* 无标签面与子代理面不受影响（没有 elapsedMs）；全称来自 text，不经展示模型 */
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'estimate', speedValue: 173.4 })), FACE('', '173.4', 't/s'));
-  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 3, speedValue: 128.6 })), FACE('子·', '128.6', '', true));
+  assert.deepEqual(plain(m.zuSpeedFace({ kind: 'subagent', activeCount: 3, speedValue: 128.6 })), FACE('子', '128.6', 't/s', true, true));
   /* 精简 chip（autoWidth=true）不在此列：按内容定宽，中等档按「Think 23:59:59」标定——长计时面照旧带状态词 */
   assert.deepEqual(plain(m.zuSpeedFace({ kind: 'thinking', elapsedMs: 4922000 }, true)), FACE('思考', '1:22:02'), '精简 chip：满 1 小时仍带状态词');
   assert.deepEqual(plain(en.zuSpeedFace({ kind: 'tool', toolName: 'Bash', elapsedMs: 97200000 }, true)), FACE('Run', '1d 3h'), '精简 chip：英文同理');
   assert.equal(h.zuSpeedFaceHtml({ kind: 'thinking', elapsedMs: 4922000 }, true), '<span class="zu-sp-label">思考</span><span class="zu-sp-val">1:22:02</span>', 'autoWidth 透传到展示模型');
 });
 
-test('v461 子代理面「子·X」：标签带 zu-sp-glue（点与数值贴紧），其余面不带；贴紧规则与 .zu-live 的 gap 同源', () => {
+test('v461+v485 子代理面「子·Xt/s」：标签带 zu-sp-glue、单位带 zu-sp-unit-glue（均与数值贴紧），其余面不带；贴紧规则与 .zu-live 的 gap 同源', () => {
   const m = faceHtml('zh'), en = faceHtml('en');
-  assert.equal(m.zuSpeedFaceHtml({ kind: 'subagent', activeCount: 3, speedValue: 128.6 }), '<span class="zu-sp-label zu-sp-glue">子·</span><span class="zu-sp-val">128.6</span>');
-  assert.equal(m.zuSpeedFaceHtml({ kind: 'subagent', activeCount: 1, speedValue: 28.8 }), '<span class="zu-sp-label zu-sp-glue">子·</span><span class="zu-sp-val">28.8</span>', '数量不上格面');
-  assert.equal(en.zuSpeedFaceHtml({ kind: 'subagent', activeCount: 3, speedValue: 128.6 }), '<span class="zu-sp-label zu-sp-glue">Ag·</span><span class="zu-sp-val">128.6</span>');
-  assert.equal(m.zuSpeedFaceHtml({ kind: 'subagent', activeCount: 12, speedValue: 1286.5 }), '<span class="zu-sp-label zu-sp-glue">子</span><span class="zu-sp-val">1286.5</span>', '六字符数值：不带点、仍贴紧');
+  assert.equal(m.zuSpeedFaceHtml({ kind: 'subagent', activeCount: 3, speedValue: 128.6 }), '<span class="zu-sp-label zu-sp-glue">子</span><span class="zu-sp-val">128.6</span><span class="zu-sp-unit dim zu-sp-unit-glue">t/s</span>', '五字符数值：点让位给单位');
+  assert.equal(m.zuSpeedFaceHtml({ kind: 'subagent', activeCount: 1, speedValue: 28.8 }), '<span class="zu-sp-label zu-sp-glue">子·</span><span class="zu-sp-val">28.8</span><span class="zu-sp-unit dim zu-sp-unit-glue">t/s</span>', '四字符以内保留点；数量不上格面');
+  assert.equal(en.zuSpeedFaceHtml({ kind: 'subagent', activeCount: 3, speedValue: 128.6 }), '<span class="zu-sp-label zu-sp-glue">A</span><span class="zu-sp-val">128.6</span><span class="zu-sp-unit dim zu-sp-unit-glue">t/s</span>');
+  assert.equal(m.zuSpeedFaceHtml({ kind: 'subagent', activeCount: 12, speedValue: 1286.5 }), '<span class="zu-sp-label zu-sp-glue">子</span><span class="zu-sp-val">1286.5</span>', '六字符数值：不带点、不带单位、仍贴紧');
   assert.equal(m.zuSpeedFaceHtml({ kind: 'subagent', activeCount: 12, speedValue: 9999.9 }), '<span class="zu-sp-label zu-sp-glue">子</span><span class="zu-sp-val">9999.9</span>');
-  assert.equal(m.zuSpeedFaceHtml({ kind: 'subagent', activeCount: 12, speedValue: 10000 }), '<span class="zu-sp-label zu-sp-glue">子·</span><span class="zu-sp-val">10.0k</span>', '万位起缩写成五字符，回到带点的面');
+  assert.equal(m.zuSpeedFaceHtml({ kind: 'subagent', activeCount: 12, speedValue: 10000 }), '<span class="zu-sp-label zu-sp-glue">子</span><span class="zu-sp-val">10.0k</span><span class="zu-sp-unit dim zu-sp-unit-glue">t/s</span>', '万位起缩写成五字符：点让位给单位');
+  /* 精简 chip（autoWidth）：按内容定宽，恒带点与单位 */
+  assert.equal(m.zuSpeedFaceHtml({ kind: 'subagent', activeCount: 3, speedValue: 128.6 }, true), '<span class="zu-sp-label zu-sp-glue">子·</span><span class="zu-sp-val">128.6</span><span class="zu-sp-unit dim zu-sp-unit-glue">t/s</span>');
+  assert.equal(m.zuSpeedFaceHtml({ kind: 'subagent', activeCount: 12, speedValue: 1286.5 }, true), '<span class="zu-sp-label zu-sp-glue">子</span><span class="zu-sp-val">1286.5</span><span class="zu-sp-unit dim zu-sp-unit-glue">t/s</span>');
+  assert.equal(m.zuSpeedFaceHtml({ kind: 'subagent', activeCount: 3, speedValue: null }), '<span class="zu-sp-label zu-sp-glue">子·</span><span class="zu-sp-val"></span>', '无新鲜速率：维持「子·」不带单位（空数值位 span 保留）');
   assert.equal(m.zuSpeedFaceHtml({ kind: 'thinking', elapsedMs: 393000 }), '<span class="zu-sp-label">思考</span><span class="zu-sp-val">6:33</span>', '思考面不带 glue');
   assert.equal(m.zuSpeedFaceHtml({ kind: 'avg', speedValue: 128.6 }), '<span class="zu-sp-label"></span><span class="zu-sp-val">128.6</span><span class="zu-sp-unit dim">t/s</span>', '完成态不带 glue、单位仍在');
   assert.ok(!/代理/.test(m.zuSpeedFaceHtml({ kind: 'subagent', activeCount: 12, speedValue: 128.6 })), '子代理面不再出现「代理」与 ×N');
   /* 贴紧靠负外边距抵消 .zu-live 的 gap：两个数值必须相反数，且 .zu-live 的 gap 只此一处定义 */
   const glue = /\.zu-sp-label\.zu-sp-glue\{margin-right:(-?[\d.]+px)\}/.exec(source);
+  const uglue = /\.zu-sp-unit\.zu-sp-unit-glue\{margin-left:(-?[\d.]+px)\}/.exec(source);
   const gap = /"\.zu-live\{[^}]*?gap:([\d.]+px)/.exec(source);
   assert.ok(glue && gap, `glue ${glue && glue[1]} / gap ${gap && gap[1]}`);
   assert.equal(Number(glue[1]), -Number(gap[1]), `zu-sp-glue 的外边距 ${glue[1]} 必须抵消 .zu-live 的 gap ${gap[1]}`);
+  assert.ok(uglue, 'zu-sp-unit-glue 规则存在（06 分片）');
+  assert.equal(Number(uglue[1]), -Number(gap[1]), `zu-sp-unit-glue 的外边距 ${uglue[1]} 必须抵消 .zu-live 的 gap ${gap[1]}`);
+  /* 审查 M7/M8：镜像锁只取首个匹配不校验选择器——选择器降级或其后追加覆盖规则都能绕开，贴紧静默失效。
+   * 加两条硬锁：margin-left 规则全文唯一（追加覆盖即红）+ 双选择器完整原文（降级/改写即红） */
+  assert.equal((source.match(/\.zu-sp-unit-glue\{margin-left:/g) || []).length, 1, 'margin-left 贴紧规则全文唯一（追加覆盖/重复规则即红）');
+  assert.ok(source.includes('".zusage-root .it.zu-speed>.zu-live>.zu-sp-unit.zu-sp-unit-glue,.zu-tsb>.zu-live>.zu-sp-unit.zu-sp-unit-glue{margin-left:-5px}"'), '贴紧规则双选择器原文必须完整（降级/改写即红）');
   assert.equal((source.match(/"\.zu-live\{/g) || []).length, 1, '.zu-live 的 gap 只此一处定义（各档位都是 5px）');
+  assert.ok(source.includes('.zusage-root.zu-pill .it.zu-speed>.zu-live>.zu-sp-unit.zu-sp-unit-glue{display:none}'), '药丸左内边距吃掉余量：子代理单位在药丸上隐藏、维持 v461 面');
 });
 
 test('zuSpTime: 格面紧凑时间（不足 1 秒一位小数→整数秒两位补零→分:秒→时:分:秒→天+时）', () => {
