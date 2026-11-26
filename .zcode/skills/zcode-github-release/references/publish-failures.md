@@ -1,6 +1,6 @@
 # 发布失败与回退
 
-`release_tool.py publish` 的核验失败都会停下并保留现场，不会自动清理。先汇报现状，处置由用户决定。下面这些动作各自需要用户针对**该具体动作**的明确授权，不能由「授权发版」推出：删除 Release 或 draft、移动或删除已推送的 tag、重新发布、手动转正、重推渠道清单。agent 汇报事实并给出可行的做法，但不替用户选择、不自行执行；移动已推送的 tag（需要 force push）不在主动提出的做法之内，只有用户自己提出时才讨论。
+`release_tool.py publish` 的核验失败都会停下并保留现场，不会自动清理。先汇报现状，处置由用户决定。下面这些动作各自需要用户针对**该具体动作**的明确授权，不能由默认全链推出：删除 Release 或 draft、移动或删除已推送的 tag、重新发布、手动转正、重推渠道清单。agent 汇报事实并给出可行的做法，但不替用户选择、不自行执行；移动已推送的 tag（需要 force push）不在主动提出的做法之内，只有用户自己提出时才讨论。
 
 ## draft 残留
 
@@ -28,7 +28,8 @@
 - 不重跑（preflight 会因 Release 已存在而拒绝），也不删除重发。
 - 汇报 `gh release view vX.Y.Z --repo OWNER/REPO --json url,body,isDraft,assets` 的实际内容，明确区分「GitHub 已公开」与「GitCode 镜像失败」。前两种核验不符发生在镜像步骤之前，此时 GitCode 上还没有 Release。
 - 正文不符：按 `release-notes.md`「修订已发布说明」用 `gh release edit --notes-file` 修订。资产不符：停下，由用户决策。
-- GitCode 镜像失败：缺 `GITCODE_TOKEN` 不是原因（缺该变量时 `--publish` 在创建 draft 之前就整体失败）。能走到这一步的原因是令牌失效或权限不足（GitCode API 返回 401/403）、网络错误、资产下载主机不在白名单、回读字节不符。`release_tool.py` 没有单独重跑镜像的入口，补镜像的做法（直接调用 `gitcode_mirror`，或在 GitCode 手动建同 tag Release 并上传两个资产）由用户决定，不要为此删除 GitHub Release；无论哪种做法，都先按 SKILL.md「预演与正式发布」里的 GitCode tag 闸门确认镜像上已有同一个 tag 且指向发布提交（创建 Release 的请求不带 `target_commitish`；GitCode 文档写的是不传则取默认分支的最新提交，缺 tag 时可能据此建出指向错误提交的 tag，未实测）。
+- GitCode 镜像失败：缺 `GITCODE_TOKEN` 不是原因（缺该变量时 `--publish` 在创建 draft 之前就整体失败）。能走到这一步的原因是令牌失效或权限不足（GitCode API 返回 401/403）、匿名接口限流（见下一条）、网络错误、资产下载主机不在白名单、回读字节不符。`release_tool.py` 没有单独重跑镜像的入口，补镜像的做法（直接调用 `gitcode_mirror`，或在 GitCode 手动建同 tag Release 并上传两个资产）由用户决定，不要为此删除 GitHub Release；无论哪种做法，都先按 SKILL.md「预演与正式发布」里的 GitCode tag 闸门确认镜像上已有同一个 tag 且指向发布提交（创建 Release 的请求不带 `target_commitish`；GitCode 文档写的是不传则取默认分支的最新提交，缺 tag 时可能据此建出指向错误提交的 tag，未实测）。
+  - 匿名接口限流（429）的默认处置：报错是 `gitcode release lookup -> HTTP 429`（原文含 `Limited account:p_repoRobot`，公共机器人账号的共享额度被用光，与本项目调用量无关；工具的两处 Release 查询不带令牌）。GitHub 已公开时直接调用 `gitcode_mirror` 补镜像，只把函数内不带令牌的查询改成带令牌（按本人账号计额度）：先带令牌只读查询，确认镜像上还没有同 tag 的 Release（404）；从发布 tag 的 `release_tool.py` 导入模块，用 `GITCODE_TOKEN` 包装模块的 `gitcode_api`（`token` 为空时补上），把资产与 manifest 拷进临时目录做快照，`verify` 取 manifest，正文取说明文件，输出目录取资产目录，按 `publish` 同样的参数调用 `gitcode_mirror`。补完照常回读正文（带令牌）与资产，再推进 E。
 
 ## tag 或提交需要变更
 

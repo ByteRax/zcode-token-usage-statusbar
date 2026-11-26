@@ -142,7 +142,7 @@ python3 release_tool.py verify --repo OWNER/REPO \
 
 发布包取工作区字节，必须与 HEAD 逐字节一致。`.gitattributes` 固定 `eol=lf`，Windows 新检出也是 LF；在此之前检出的 Windows 工作区可能仍是 CRLF，预演会报 `line endings differ from HEAD`。先提交或暂存改动，再执行 `git rm --cached -r -q . && git reset --hard` 重新检出。
 
-正式发布还需明确 `--publish` 与 `--confirm OWNER/REPO/v版本号`，先上传草稿并核验下载字节，再发布。提交、tag 推送、Release 和渠道清单推送分别需要授权；默认不替用户执行。
+正式发布还需明确 `--publish` 与 `--confirm OWNER/REPO/v版本号`，先上传草稿并核验下载字节，再发布。提交、tag 推送、Release 和渠道清单推送分别需要授权；用户调用[发布技能](../.zcode/skills/zcode-github-release/SKILL.md)发版时按该技能的默认全链执行（提交与 tag 推送、GitHub Release 与 GitCode 镜像、两个渠道清单、源码 PR 合并，不再逐项询问），此外默认不替用户执行。
 
 GitHub 自动更新要求已注册市场的 `marketplace.json` 指向同一个 Release ZIP/hash。维护者应将生成的 `marketplace-release.json` 作为渠道分支上的 `marketplace.json` 发布。[ByteRax 的 `plugin-releases` 渠道](https://github.com/ByteRax/zcode-token-usage-statusbar/tree/plugin-releases) 已发布 `v1.4.0` 一致清单，新用户注册 `ByteRax/zcode-token-usage-statusbar#plugin-releases`。未来发版须同步更新该清单，不能只上传 Release（`publish` 结束时会输出 `channelLag` 并在 stderr 警告清单滞后；发布目录已清理时可从正式 tag 确定性重建清单，见发布技能的[发布后收尾](../.zcode/skills/zcode-github-release/references/post-release.md)）；不要擅自切换用户已有来源。
 
