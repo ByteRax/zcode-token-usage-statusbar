@@ -34,13 +34,14 @@ def default_db_path():
 
 
 def load_rows(db_path, since_ms):
-    """窗口内的请求行；库不存在或读不了时原样抛出，由 main 报错退出。"""
+    """窗口内已完成（status='completed'）的请求行；进行中/取消/出错的不算，
+    与 zusage 查询口径一致。库不存在或读不了时原样抛出，由 main 报错退出。"""
     path = Path(os.path.abspath(os.fspath(db_path)))
     con = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=3)
     try:
         return [dict(zip(_COLUMNS, row)) for row in con.execute(
             "select session_id, model_id, query_source, started_at, first_token_at, retry_count"
-            " from model_usage where started_at >= ?", (since_ms,))]
+            " from model_usage where started_at >= ? and status = 'completed'", (since_ms,))]
     finally:
         con.close()
 
@@ -54,7 +55,8 @@ def median(values):
 
 
 def _is_main(row):
-    return not row["session_id"].startswith(SUBAGENT_PREFIX) and row["query_source"] == "main_turn"
+    # 与 zusage 查询口径一致：query_source 为 NULL 视同 main_turn
+    return not row["session_id"].startswith(SUBAGENT_PREFIX) and row["query_source"] in (None, "main_turn")
 
 
 def _is_sub(row):

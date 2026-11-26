@@ -82,9 +82,11 @@ class DeployHotInstallTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.run = Path(self._tmp.name)
         self.target = _write(self.run, "overlay.js", BASE)
-        past = time.time() - 3600
-        self.past = past
-        os.utime(self.target, (past, past))
+        # 目标 mtime 设在「未来」：os.replace 的天然 mtime（现在）必然不大于它，
+        # 只有 install_file 的「mtime 未前进就 utime 强推」守卫能让断言为真——
+        # 变异审查（M6）证明设在过去时该守卫删掉测试照样绿（replace 天然拿到当前时间）。
+        self.old_mtime = time.time() + 3600
+        os.utime(self.target, (self.old_mtime, self.old_mtime))
 
     def _step(self, work=NEW, run=BASE, name="overlay.js"):
         return {"name": name, "action": "deploy", "work": work, "run": run}
@@ -100,7 +102,8 @@ class DeployHotInstallTests(unittest.TestCase):
         self.assertEqual(self.target.read_bytes(), NEW)
         self.assertEqual((self.run / ".pre-issue-1-20261126-120000-overlay.js").read_bytes(), BASE)
         self.assertEqual(stat.S_IMODE(self.target.stat().st_mode), 0o600, "保留原权限位")
-        self.assertGreater(self.target.stat().st_mtime, self.past, "mtime 必须前进，热重载按它轮询")
+        self.assertGreater(self.target.stat().st_mtime, self.old_mtime,
+                           "mtime 必须前进（旧值在未来，只有守卫的 utime 强推能做到），热重载按它轮询")
         self.assertEqual(self._leftovers(), [".pre-issue-1-20261126-120000-overlay.js", "overlay.js"], "不留临时文件")
 
     def test_syntax_failure_leaves_the_runtime_file_untouched(self):

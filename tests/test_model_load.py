@@ -25,9 +25,9 @@ def _sub(n):
     return "sess_subagent_agent_%032d" % n
 
 
-def _row(session, model, started_ms, wait_s=None, retry=0, source="main_turn"):
+def _row(session, model, started_ms, wait_s=None, retry=0, source="main_turn", status="completed"):
     first = None if wait_s is None else int(started_ms + wait_s * 1000)
-    return (session, model, source, int(started_ms), first, retry)
+    return (session, model, source, int(started_ms), first, retry, status)
 
 
 class ModelLoadSummarizeTests(unittest.TestCase):
@@ -81,6 +81,21 @@ class ModelLoadSummarizeTests(unittest.TestCase):
         summary = self._summarize(rows)
         self.assertEqual(summary["main"], 1, "标题生成这类后台小请求不算主会话请求")
 
+    def test_null_query_source_counts_as_main_turn(self):
+        # 仓库统一口径（zusage.py 全部查询）：query_source is null or 'main_turn'
+        base = 1_800_000_000_000
+        rows = [_row(MAIN, "M-A", base, wait_s=1, source=None), _row(MAIN, "M-A", base + 5, wait_s=1)]
+        summary = self._summarize(rows)
+        self.assertEqual(summary["main"], 2, "query_source 为 NULL 的行视同 main_turn")
+        self.assertEqual(summary["default_model"], "M-A")
+
+    def test_summarize_does_not_filter_status_filtering_lives_in_load_rows(self):
+        # summarize 收到什么算什么；status 过滤由 load_rows 的 SQL 负责（有端到端用例锁）
+        base = 1_800_000_000_000
+        rows = [_row(MAIN, "M-A", base, wait_s=1), _row(MAIN, "M-A", base + 5, wait_s=1, status="cancelled")]
+        summary = self._summarize(rows)
+        self.assertEqual(summary["main"], 2)
+
     def test_no_main_requests_is_undecidable(self):
         base = 1_800_000_000_000
         summary = self._summarize([_row(_sub(1), "M-A", base, wait_s=1)])
@@ -118,13 +133,13 @@ class ModelLoadCliTests(unittest.TestCase):
     def _make_db(self):
         con = sqlite3.connect(self.db)
         con.execute("create table model_usage (session_id text, model_id text, query_source text,"
-                    " started_at integer, first_token_at integer, retry_count integer)")
+                    " started_at integer, first_token_at integer, retry_count integer, status text)")
         con.commit()
         con.close()
 
     def _insert(self, rows):
         con = sqlite3.connect(self.db)
-        con.executemany("insert into model_usage values (?, ?, ?, ?, ?, ?)", rows)
+        con.executemany("insert into model_usage values (?, ?, ?, ?, ?, ?, ?)", rows)
         con.commit()
         con.close()
 
@@ -152,6 +167,20 @@ class ModelLoadCliTests(unittest.TestCase):
         self.assertIn("主会话：请求 1 次，被限流 0 次（0%）", out, "窗口外（45 分钟前）的请求不计入")
         self.assertIn("默认模型子代理：请求 1 条", out)
         self.assertTrue(out.rstrip().splitlines()[-1].startswith("结论："), out)
+
+    def test_cli_counts_null_source_and_excludes_non_completed(self):
+        # 端到端锁两个口径：NULL query_source 视同 main_turn；只有 status='completed' 进统计
+        self._make_db()
+        now = time.time() * 1000
+        self._insert([_row(MAIN, "M-A", now - 60_000, wait_s=2, source=None),
+                      _row(MAIN, "M-A", now - 50_000, retry=3, status="running"),
+                      _row(MAIN, "M-A", now - 40_000, retry=2, status="cancelled")])
+        code, out, _ = self._run("--db", str(self.db), "--minutes", "30")
+        self.assertEqual(code, 0)
+        self.assertIn("主会话：请求 1 次，被限流 0 次（0%）", out,
+                      "running/cancelled 的行不进统计：若被计入会是 3 次、限流 2 次")
+        self.assertIn("结论：不拥挤", out)
+        self.assertIn("逐路派发", out)
 
     def test_cli_opens_the_database_read_only(self):
         self._make_db()
