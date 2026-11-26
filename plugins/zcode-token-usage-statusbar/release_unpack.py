@@ -35,6 +35,7 @@ PLUGIN_FILES = (
     ".zcode-plugin/plugin.json", ".claude-plugin/plugin.json", "hooks/hooks.json",
     "hooks/session-start.py", "hooks/prompt-submit.py", "commands/usage.md",
     "commands/install-overlay.md", "commands/uninstall-overlay.md",
+    "commands/zusage-doctor.md",
     "skills/zcode-token-usage/SKILL.md",
 )
 ALLOWED_FILES = frozenset(("marketplace.json", "LICENSE") +

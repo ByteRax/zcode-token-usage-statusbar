@@ -59,6 +59,7 @@ PLUGIN_ONLY_FILES = (
     "commands/usage.md",
     "commands/install-overlay.md",
     "commands/uninstall-overlay.md",
+    "commands/zusage-doctor.md",
     "skills/zcode-token-usage/SKILL.md",
 )
 
