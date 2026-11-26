@@ -505,6 +505,11 @@
           (grp === "period" && SPD_PERIODS.indexOf(val) >= 0)) {
         e.stopPropagation();
         t.speedSel[grp] = val;
+        /* v384：切 Tab 收起筛选弹出层（06 链同款契约；v479 审查补齐精简链缺口） */
+        if (t.speedSel.pop) t.speedSel.pop.open = false;
+        /* v479（spec §28.5）：切 Tab 收起月历弹层（所选月保留）。指针路径已由
+         * spd3MonthOutside 兜住，这里补键盘路径（Enter 走 click 委托、不经 pointerdown） */
+        if (t.speedSel.mpop) t.speedSel.mpop.open = false;
         t.speedHover = -1;
         /* v272：维度切换移除，dim 恒 time */
         tpsTip.__zuTipSig = "";
@@ -520,10 +525,24 @@
     if (!el || !el.__zuT) return false;
     var t = el.__zuT, s3 = t.speedSel;
     var hit = e.target && e.target.closest ? e.target.closest(
-      ".zu-sv3-chip,.zu-sv3-chip-more,.zu-sv3-fopen,.zu-sv3-fpop-row,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-act]") : null;   /* v390：fopen 入口；v391+：data-sv3-more 折叠链退役 */
+      ".zu-sv3-chip,.zu-sv3-chip-more,[data-sv3-fopen],.zu-sv3-fpop-row,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-act]," +
+      "[data-sv3-mnav],[data-sv3-mlabel],[data-sv3-mpick],[data-sv3-myear]") : null;   /* v390：fopen 入口；v391+：data-sv3-more 折叠链退役；v479：月份导航四类元素 */
     if (!hit || !s3 || typeof spd3FilterToggle !== "function") return false;
     if (!s3.filt) s3.filt = (typeof spd3FilterAuto === "function") ? spd3FilterAuto() : { mode: "auto", keys: null };
     if (!s3.pop) s3.pop = { open: false, query: "" };
+    /* v479（spec §28.5）月份导航动作（同 06 分片 spd3Activate）：状态机在 wire 的
+     * spd3MonthAct 单点实现；本链负责重编、弹层锚定与焦点归位。无动作吞掉事件不重编。 */
+    if (typeof spd3MonthHit === "function" && spd3MonthHit(hit)) {
+      var mAct1 = spd3MonthAct(s3, hit, (typeof SPD3_MON !== "undefined" ? SPD3_MON : null));
+      if (!mAct1) return true;
+      if (mAct1 === "open") spd3MonthAnchor(s3.mpop, hit, tpsTip.querySelector(".zu-sv3-root"));
+      t.speedHover = -1;
+      tpsTip.__zuTipSig = "";
+      showTpsTip(el);
+      /* 焦点归位只走键盘路径（同 06：指针按下重建后焦点留不住卡内） */
+      if (e.type !== "pointerdown") spd3MonthFocus(tpsTip, mAct1);
+      return true;
+    }
     var key = hit.getAttribute("data-k");
     if (key && (hit.classList.contains("zu-sv3-chip") || hit.classList.contains("zu-sv3-fpop-row"))) {
       spd3FilterToggle(s3.filt, key);
@@ -532,6 +551,9 @@
     } else if (hit.hasAttribute("data-sv3-fopen")) {
       s3.pop.open = !s3.pop.open;
       if (s3.pop.open) {
+        /* v479（spec §28.5）：与月历弹层互斥（双向）——键盘路径（Enter→click 委托）
+         * 不经 pointerdown，spd3MonthOutside 兜不到，这里镜像补收 */
+        if (s3.mpop) s3.mpop.open = false;
         var fb1 = tpsTip.querySelector(".zu-sv3-fbar"), rt1 = tpsTip.querySelector(".zu-sv3-root");
         if (fb1 && rt1) s3.pop.top = Math.round(fb1.getBoundingClientRect().bottom - rt1.getBoundingClientRect().top + 8);
       }
@@ -569,6 +591,7 @@
     if (!t || !t.closest) return;
     var interactive = t.closest(".zu-sv-tab") || t.closest(".zu-sv3-fbar") ||
       (t.closest(".zu-sv3-fpop") && !t.classList.contains("zu-sv3-fpop-input")) || t.closest(".zu-sv3-more") ||
+      t.closest(".zu-sv3-mnav") || t.closest(".zu-sv3-mpop") ||   /* v479：月份导航胶囊与月历弹层 */
       t.closest(".zu-sv3-empty-wrap");   /* v387：空态动作同入名单 */
     if (interactive) {
       e.stopPropagation();
@@ -576,6 +599,13 @@
     }
   });
   tpsTip.addEventListener("pointerdown", function (e) {
+    /* v479（spec §28.5）点弹层之外即收（同 06）：月历弹层开着且按在弹层与胶囊之外 →
+     * 先收弹层重编，被点控件照常由下面的分支处理 */
+    if (typeof spd3MonthOutside === "function" &&
+        spd3MonthOutside(tpsTipFor && tpsTipFor.__zuT ? tpsTipFor.__zuT.speedSel : null, e.target)) {
+      tpsTip.__zuTipSig = "";
+      showTpsTip(tpsTipFor);
+    }
     if (tpsSpd3Activate(e)) return;
     tpsTabActivate(e);
   });
@@ -677,6 +707,15 @@
     }
     if (e.key !== "Escape") return;
     var t3 = tpsTipFor && tpsTipFor.__zuT, s3 = t3 && t3.speedSel;
+    /* v479（spec §28.5）：月历弹层与筛选弹层同层（互斥，一次只有一个开着），焦点归还月份文字按钮 */
+    if (s3 && s3.mpop && s3.mpop.open) {
+      e.stopPropagation();
+      s3.mpop.open = false;
+      tpsTip.__zuTipSig = "";
+      showTpsTip(tpsTipFor);
+      if (typeof spd3MonthFocus === "function") spd3MonthFocus(tpsTip, "close");
+      return;
+    }
     if (s3 && s3.pop && s3.pop.open) {
       e.stopPropagation();
       s3.pop.open = false; s3.pop.query = "";
@@ -879,6 +918,9 @@
       if (closingChart && closingRoot) tpsTip.__zuChartScroll = { key: closingRoot.getAttribute("data-sv-key") || "", x: closingChart.scrollLeft };
     }
     tpsTip.style.display = "none";
+    /* v479（spec §28.5）：月历弹层随卡收起，重开不残留 */
+    var tpsHideSel = tpsTipFor && tpsTipFor.__zuT && tpsTipFor.__zuT.speedSel;
+    if (tpsHideSel && tpsHideSel.mpop) tpsHideSel.mpop.open = false;
     tpsTipFor = null;
     spdHoverPortalHide();   // v280：Portal 随 tooltip 收起，不留孤儿浮层
     spdLegendTipHide();     // v281：档位说明浮层同链收起

@@ -212,8 +212,8 @@ test('spd3CardHTML 结构锁: 根类/data-sv-key/双 Tab 组/chips/单多左卡�
   // 两链源码锁（§11.4）：06 全量链与 01 精简链的 closest 白名单、mousedown 名单、
   // 委托分支（clear-filter → spd3FilterAll；all-time → period="all"）
   const src = readOverlaySource();
-  assert.equal((src.match(/\[data-sv3-reset\],\[data-sv3-act\]"\)/g) || []).length, 2,
-    '06/01 两链 closest 白名单含 data-sv3-act（v391+ data-sv3-more 折叠链退役）');
+  assert.equal((src.match(/\[data-sv3-reset\],\[data-sv3-act\],"\s*\+\s*"\[data-sv3-mnav\],\[data-sv3-mlabel\],\[data-sv3-mpick\],\[data-sv3-myear\]"\)/g) || []).length, 2,
+    '06/01 两链 closest 白名单含 data-sv3-act 与 v479 月份导航四选择器（v391+ data-sv3-more 折叠链退役）');
   assert.equal((src.match(/closest\("\.zu-sv3-empty-wrap"\)/g) || []).length, 2,
     '06/01 两链 mousedown 名单补空态块');
   assert.equal((src.match(/act\d === "clear-filter"\) spd3FilterAll\(/g) || []).length, 2,
@@ -736,7 +736,7 @@ test('v390 §14.1 入口统一: fsearch 分片+产物双废；+N/「模型筛选
   const shard06 = readOverlayPart('06-instance-dom-and-styles.js');
   const shard01 = readOverlayPart('01-git-and-doc-tooltips.js');
   for (const [tag, shard] of [['06', shard06], ['01', shard01]]) {
-    assert.match(shard, /\.zu-sv3-chip,\.zu-sv3-chip-more,\.zu-sv3-fopen,/, tag + ' 委托白名单含 chip-more/fopen 入口');
+    assert.match(shard, /\.zu-sv3-chip,\.zu-sv3-chip-more,\[data-sv3-fopen\],/, tag + ' 委托白名单含 chip-more 与 fopen 入口（按属性匹配：标签与 +N 都带 data-sv3-fopen）');
     assert.match(shard, /hasAttribute\("data-sv3-fopen"\)/, tag + ' fopen 打开分支在场');
     assert.match(shard, /pop\.top = Math\.round\(/, tag + ' fopen 打开时实测 fbar 底缘写 pop.top');
     assert.match(shard, /querySelector\("\[data-sv3-fopen\]"\)/, tag + ' Esc 关闭焦点归还 fopen 触发按钮');
@@ -840,4 +840,175 @@ test('v391 §15.2/§15.4: 图表边框只挂外层 [data-sv3-chart]、内层盒�
   assert.ok(!dom4.includes('data-sv3-more'), '折叠按钮已退役（4 模型态同样无）');
   assert.equal((dom4.match(/role="row"/g) || []).length, 5, '表头+4 数据行全显');
   assert.match(dom4, /zu-sv3-main-num"><span class="[a-z-]+">\d/, '4 模型主数字恒在');
+});
+
+// ---------- ⑪ v479 月份导航（spec §28） ----------
+const MON_OCT = { y: 2026, m: 9 };
+function headOf(ctx, an, nav) {
+  ctx.__an = an; ctx.__nav = nav || null;
+  return vm.runInContext('spd3ChartHeadHTML(__an, "按日聚合", __nav)', ctx);
+}
+// 会话 s 在给定月份（0 基）各一轮（各轮相隔较远，delta 编码逐轮相减）
+function sessMonths(months, opts = {}) {
+  const turns = [];
+  let prev = 0;
+  for (const m of months) {
+    const t = new Date(2026, m, 5, 9).getTime();
+    turns.push({ s: 0, t: t - prev, out: 100, ms: 1000, i: 80, o: 100, n: 1, msl: [[0, 100, 1000, 1]] });
+    prev = t;
+  }
+  return Object.assign({ sid: 's', source: 'local', truncated: false, sids: ['s'], snames: ['S'], pids: [['p', 'P']],
+    mnames: ['GLM-A'], mkeys: [KEYS.a], turns }, opts);
+}
+
+test('v479 月份胶囊: 仅本月视图出现并取代区间 chip；边界 disabled；原区间降级为 title；aria-expanded 随弹层', () => {
+  const ctx = makeCtx();
+  const h = fixture();
+  // 其余四个时间视图：区间 chip 原样，无胶囊
+  for (const period of ['recent', 'today', 'week', 'all']) {
+    const sel = { range: 'session', period, sid: 'sess_main' };
+    const head = headOf(ctx, analyze(ctx, h, sel));
+    assert.match(head, /class="zu-sv-range" title="/, period + ' 保持区间 chip');
+    assert.ok(!head.includes('zu-sv3-mnav'), period + ' 无胶囊');
+  }
+  const selCur = { range: 'all', period: 'month', sid: 'sess_main' };
+  const head = headOf(ctx, analyze(ctx, h, selCur));
+  assert.ok(!head.includes('zu-sv-range'), '本月视图不再出区间 chip');
+  assert.match(head, /zu-sc-sub zu-hm-sub">按日聚合<\/span><div class="zu-sv3-mnav" role="group" aria-label="选择月份">/,
+    '胶囊接在副题之后的右端位');
+  assert.match(head, /data-sv3-mnav="prev" aria-label="上个月" title="上个月"><svg[^]*?<\/button>/, '上个月可用（最早一轮在 10 月）');
+  assert.match(head, /data-sv3-mnav="next" aria-label="下个月" title="下个月" disabled><svg/, '当前月的下个月置灰');
+  assert.match(head, /class="zu-sv3-mlabel" data-sv3-mlabel aria-haspopup="dialog" aria-expanded="false" title="2026-11-01 00:00:00 – 2026-11-05 14:00:00">2026年11月<\/button>/,
+    '月份文字按钮；精确区间进 title（区间末=最后一个有数据桶的结束时刻）');
+  assert.match(head, /<path d="m15 18-6-6 6-6"\/>/, '左箭头=lucide chevron-left');
+  assert.match(head, /<path d="m9 18 6-6-6-6"\/>/, '右箭头=lucide chevron-right');
+  const headOct = headOf(ctx, analyze(ctx, h, Object.assign({}, selCur, { mon: MON_OCT })));
+  assert.match(headOct, /aria-expanded="false" title="2026-10-01 00:00:00 – 2026-10-06 00:00:00">2026年10月<\/button>/,
+    '历史月 title 区间末=最后有数据日桶结束时刻，不显示成整月到 23:59:59');
+  assert.match(headOct, /data-sv3-mnav="prev"[^>]* disabled/, '下界月的上个月置灰');
+  assert.match(headOct, /data-sv3-mnav="next"[^>]*><svg/, '历史月的下个月可用');
+  // 空月：title 直接说明无请求，不编区间
+  const empty = analyze(ctx, sessMonths([8, 10]), { range: 'session', period: 'month', sid: 's', mon: MON_OCT });
+  assert.match(headOf(ctx, empty), /title="该月无请求数据">2026年10月</, '空月 title');
+  // aria-expanded 随月历弹层开态（heat 经 o.mpopOpen 透传第三参）
+  assert.match(headOf(ctx, analyze(ctx, h, selCur), { mpopOpen: true }), /data-sv3-mlabel aria-haspopup="dialog" aria-expanded="true"/);
+  // an.mon 缺席（手工构造的 an / 旧 core 切片）：按当前月、无更早月份，不崩
+  const headBare = headOf(ctx, { period: 'month', title: '本月 · 日均生成速度', spanA: 0, spanB: 0 });
+  assert.match(headBare, /data-sv3-mnav="prev"[^>]* disabled/);
+  assert.match(headBare, /data-sv3-mnav="next"[^>]* disabled/);
+  assert.match(headBare, /title="该月无请求数据"/);
+});
+
+test('v479 文案随所选月: 时间 Tab「10月」+ 左卡标题「2026年10月平均速度」；当前月与 en', () => {
+  const ctx = makeCtx();
+  const h = fixture();
+  const selCur = { range: 'all', period: 'month', sid: 'sess_main' };
+  const domCur = stripStyle(cardHTML(ctx, analyze(ctx, h, selCur), selCur));
+  assert.match(domCur, /data-sv-val="month" aria-pressed="true">本月<\/button>/, '当前月 Tab 仍是「本月」');
+  assert.match(domCur, /zu-sv3-ltitle">本月平均速度/, '当前月左卡标题不变');
+  const selOct = Object.assign({}, selCur, { mon: MON_OCT });
+  const domOct = stripStyle(cardHTML(ctx, analyze(ctx, h, selOct), selOct));
+  assert.match(domOct, /data-sv-val="month" aria-pressed="true">10月<\/button>/, '历史月 Tab 显示所选月');
+  assert.match(domOct, /zu-sv3-ltitle">10月平均速度<\/span>/, '历史月左卡标题带月份（年份由胶囊与图表标题给出，避免与计数同行被截断）');
+  assert.match(domOct, /data-sv-key="all\|month\|auto"/, 'data-sv-key 不含月份（横滚记忆键契约不变）');
+  const en = makeCtx('en');
+  const domEn = stripStyle(cardHTML(en, analyze(en, h, selOct), selOct));
+  assert.match(domEn, /data-sv-val="month" aria-pressed="true">Oct<\/button>/);
+  assert.match(domEn, /zu-sv3-ltitle">Oct · average speed<\/span>/);
+});
+
+test('v479 左卡标题跨年带年份：所选月不在今年时「2025年12月平均速度」/「Dec 2025 · average speed」', () => {
+  const mk = lang => {
+    const ctx = makeCtx(lang);
+    const sel = { range: 'all', period: 'month', sid: 's', mon: { y: 2025, m: 11 } };
+    // 2025-12 与 2026-11 各一轮（下界须早于所选月，否则会被钳走）
+    const t1 = new Date(2025, 11, 5, 9).getTime(), t2 = FIXED_NOW - 3600000;
+    ctx.__h = { sid: 's', source: 'local', truncated: false, sids: ['s'], snames: ['S'], pids: [['p', 'P']],
+      mnames: ['GLM-A'], mkeys: [KEYS.a],
+      turns: [{ s: 0, t: t1, out: 100, ms: 1000, i: 80, o: 100, n: 1, msl: [[0, 100, 1000, 1]] },
+        { s: 0, t: t2 - t1, out: 300, ms: 1000, i: 80, o: 300, n: 1, msl: [[0, 300, 1000, 1]] }] };
+    ctx.__sel = sel;
+    const an = vm.runInContext('spd3Analyze(__h, null, __sel)', ctx);
+    return stripStyle(cardHTML(ctx, an, sel));
+  };
+  assert.match(mk('zh'), /zu-sv3-ltitle">2025年12月平均速度</);
+  assert.match(mk('en'), /zu-sv3-ltitle">Dec 2025 · average speed</);
+});
+
+test('v479 空月不走空态接管: 保留 CHART 占位、无空态页、通知行带原因；其它视图空态不变', () => {
+  const ctx = makeCtx();
+  const selOct = { range: 'session', period: 'month', sid: 's', mon: MON_OCT };
+  const html = cardHTML(ctx, analyze(ctx, sessMonths([8, 10]), selOct), selOct);
+  const dom = stripStyle(html);
+  assert.match(dom, /<!--CHART-->/, '月视图空月保留图表占位（胶囊随图表头保命，用户不会困在空月上）');
+  assert.ok(!dom.includes('zu-sv3-empty-wrap'), '不出空态页');
+  assert.match(dom, /zu-sv3-notice">所选月份内暂无请求</, '原因由通知行承载');
+  assert.match(dom, /data-h-tier="empty" style="height:450px"/, '高度档位不变');
+  // 叠加既有通知（轮表截断披露）时并列，不互相顶掉
+  const domTr = stripStyle(cardHTML(ctx, analyze(ctx, sessMonths([8, 10], { truncated: true }), selOct), selOct));
+  assert.match(domTr, /zu-sv3-notice">历史较长，仅统计最近可用轮次 · 所选月份内暂无请求</);
+  // 其它时间视图的空态照旧接管
+  const selToday = { range: 'session', period: 'today', sid: 's' };
+  const domToday = stripStyle(cardHTML(ctx, analyze(ctx, sessMonths([8, 9]), selToday), selToday));
+  assert.match(domToday, /zu-sv3-empty-wrap/);
+  assert.ok(!domToday.includes('<!--CHART-->'), '非月视图空态仍替换占位');
+  // 有数据的月份不出该通知
+  const selCur = { range: 'all', period: 'month', sid: 'sess_main' };
+  assert.ok(!stripStyle(cardHTML(ctx, analyze(ctx, fixture(), selCur), selCur)).includes('zu-sv3-notice'));
+});
+
+test('v479 月历弹层: 12 宫格、选中 aria-pressed、当前月描边、界外 disabled、年份切换钳制、锚定内联、仅月视图渲染', () => {
+  const ctx = makeCtx();
+  const h = fixture();
+  const selCur = { range: 'all', period: 'month', sid: 'sess_main' };
+  const anCur = analyze(ctx, h, selCur);
+  const html = cardHTML(ctx, anCur, selCur, { mpop: { open: true, y: 2026, top: 118, right: 13 } });
+  const dom = stripStyle(html);
+  assert.ok(dom.lastIndexOf('<div class="zu-sv3-mpop"') > dom.indexOf('class="zu-sv3-main"'), '弹层在主区之后（根容器末尾）');
+  assert.match(dom, /<div class="zu-sv3-mpop" style="top:118px;right:13px" role="dialog" aria-label="选择月份">/, '锚定值内联覆写');
+  assert.match(dom, /zu-sv3-mpop-y">2026年</, '年份头');
+  assert.equal((dom.match(/class="zu-sv3-mpick/g) || []).length, 12, '12 宫格');
+  assert.match(dom, /class="zu-sv3-mpick on zu-sv3-mpick-cur" data-sv3-mpick="24322" aria-pressed="true">11月</, '选中=当前 11 月');
+  assert.equal((dom.match(/data-sv3-mpick="\d+" aria-pressed="(?:true|false)" disabled/g) || []).length, 10,
+    '2026 年 1–9 月（9 格，早于下界 10 月）与 12 月（未来）共 10 格 disabled');
+  assert.match(dom, /data-sv3-mpick="24321" aria-pressed="false">10月</, '下界月 10 月可选');
+  assert.match(dom, /data-sv3-myear="-1" aria-label="上一年" disabled/, '可看范围只在 2026 年 → 上一年置灰');
+  assert.match(dom, /data-sv3-myear="1" aria-label="下一年" disabled/, '下一年置灰');
+  // 未传锚定值：不写内联 style（走 CSS 默认位置）
+  assert.match(stripStyle(cardHTML(ctx, anCur, selCur, { mpop: { open: true, y: 2026 } })),
+    /<div class="zu-sv3-mpop" role="dialog" aria-label="选择月份">/);
+  // 仅月视图渲染：精简链切 Tab 不收弹层态，不得泄漏到其它时间视图
+  const selToday = { range: 'all', period: 'today', sid: 'sess_main' };
+  assert.ok(!stripStyle(cardHTML(ctx, analyze(ctx, h, selToday), selToday, { mpop: { open: true, y: 2026 } }))
+    .includes('zu-sv3-mpop'), '非月视图不出弹层');
+  // 跨年：最早一轮在 2025-12 → 可看 2025 年 12 月与 2026 全年（截至当前月）
+  const cross = sessMonths([-1, 10]);   // -1 = 2025-12（Date 月份自动进位）
+  const anCross = analyze(ctx, cross, selCur);
+  assert.equal(host(anCross.mon).lo, 2025 * 12 + 11);
+  const d26 = stripStyle(cardHTML(ctx, anCross, selCur, { mpop: { open: true, y: 2026 } }));
+  assert.match(d26, /data-sv3-myear="-1" aria-label="上一年"><svg/, '可回看 2025 年 → 上一年可用');
+  assert.equal((d26.match(/data-sv3-mpick="\d+" aria-pressed="(?:true|false)" disabled/g) || []).length, 1, '2026 年只有 12 月（未来）置灰');
+  const d25 = stripStyle(cardHTML(ctx, anCross, selCur, { mpop: { open: true, y: 2025 } }));
+  assert.match(d25, /zu-sv3-mpop-y">2025年</);
+  assert.match(d25, /data-sv3-myear="1" aria-label="下一年"><svg/, '2025 年 → 下一年可用');
+  assert.equal((d25.match(/data-sv3-mpick="\d+" aria-pressed="(?:true|false)" disabled/g) || []).length, 11, '2025 年 1–11 月置灰');
+  assert.match(d25, /data-sv3-mpick="24311" aria-pressed="false">12月</, '2025-12 可选');
+  assert.match(d25, /data-sv3-myear="-1" aria-label="上一年" disabled/, '再往前无可看月份');
+  // 当前月未选中：带描边类、不带选中态
+  const selOct = Object.assign({}, selCur, { mon: MON_OCT });
+  const dOct = stripStyle(cardHTML(ctx, analyze(ctx, h, selOct), selOct, { mpop: { open: true, y: 2026 } }));
+  assert.match(dOct, /class="zu-sv3-mpick on" data-sv3-mpick="24321" aria-pressed="true">10月</);
+  assert.match(dOct, /class="zu-sv3-mpick zu-sv3-mpick-cur" data-sv3-mpick="24322" aria-pressed="false">11月</, '当前月描边不与选中态叠加');
+  // 非法/越界年份：钳进可看年份
+  assert.match(stripStyle(cardHTML(ctx, anCross, selCur, { mpop: { open: true, y: 1999 } })), /zu-sv3-mpop-y">2025年</);
+  assert.match(stripStyle(cardHTML(ctx, anCur, selCur, { mpop: { open: true, y: 2099 } })), /zu-sv3-mpop-y">2026年</);
+  // 样式在场：胶囊/弹层/选中主色对/当前月描边/置灰，深浅两套
+  assert.match(html, /\.zu-sv3-root \.zu-sv3-mnav\{display:inline-flex;[^}]*border-radius:999px;background:var\(--color-hover,/);
+  assert.match(html, /\.zu-light \.zu-sv3-root \.zu-sv3-mnav\{/);
+  assert.match(html, /\.zu-sv3-root \.zu-sv3-mpop\{position:absolute;right:13px;top:112px;z-index:6;width:252px;/);
+  assert.match(html, /\.zu-sv3-root \.zu-sv3-mpick\.on\{background:var\(--color-primary,[^}]*color:var\(--color-primary-foreground,/);
+  assert.match(html, /\.zu-light \.zu-sv3-root \.zu-sv3-mpick\.on\{/);
+  assert.match(html, /\.zu-sv3-root \.zu-sv3-mpick\.zu-sv3-mpick-cur:not\(\.on\)\{box-shadow:inset 0 0 0 1px var\(--color-border-hover,/);
+  assert.match(html, /\.zu-sv3-root \.zu-sv3-mbtn:disabled\{opacity:\.35;cursor:not-allowed\}/);
+  assert.match(html, /\.zu-sv3-root \.zu-sv3-mpick:disabled\{opacity:\.35;cursor:not-allowed\}/);
 });

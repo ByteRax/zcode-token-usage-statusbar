@@ -1000,3 +1000,46 @@ test('v457 §25 本月日历 token 用全文（窄列紧凑只作用于周列/�
   assert.match(cellOf(html, 4), /zu3-tk">1261\.57万<\//, '本月日历保留全文');
   assert.match(cellOf(html, 4), /，消耗 1261\.57万 token"/, 'aria 全文');
 });
+
+// ---------- v479 历史月网格（spec §28.2/§28.4） ----------
+test('v479 历史月网格: 按所选月铺格（首日星期对齐）、无今天描边与未来遮罩、数据日落对格；空月全灰仍出周表头', () => {
+  const ctx = makeCtx();   // 冻结 2026-11-05（周四）
+  ctx.__h = frameFrom([
+    { t: new Date(2026, 9, 1, 10).getTime(), out: 3000, ms: 10000, msl: [[0, 3000, 10000, 1, 1]] },   // 10-01（周四）300 t/s
+    { t: new Date(2026, 9, 20, 10).getTime(), out: 100, ms: 1000, msl: [[0, 100, 1000, 1, 1]] },     // 10-20 100 t/s
+    { t: tOf(5, 9), out: 500, ms: 5000, msl: [[0, 500, 5000, 1, 1]] },                                // 11-05
+  ]);
+  ctx.__s = { range: 'all', period: 'month', sid: 'sess_main', mon: { y: 2026, m: 9 } };
+  const an = vm.runInContext('spd3Analyze(__h, null, __s)', ctx);
+  const html = dom(monthHTML(ctx, an, -1));
+  assert.match(html, /--zu-hm-rows:5/, '4 前导 + 31 天 = 5 行');
+  assert.equal(count(html, 'zu-hm-pad'), 4, '2026-10-01 是周四：前补 4 空');
+  assert.equal(count(html, 'role="gridcell"'), 31, '10 月 31 天');
+  assert.equal(count(html, 'role="row"'), 5);
+  assert.equal(count(html, 'zu-hm-today'), 0, '历史月没有今天描边');
+  assert.equal(count(html, 'zu-hm-fut'), 0, '历史月没有未来遮罩');
+  const d1 = cellOf(html, 0);   // data-i=0 → 10-01
+  assert.match(d1, /zu-hm-data/);
+  assert.match(d1, /zu-azure/, '300 t/s');
+  assert.match(d1, /zu3-v">300</);
+  assert.match(d1, /tabindex="0"/, 'roving tabindex：首格 0');
+  const d20 = cellOf(html, 19); // 10-20
+  assert.match(d20, /zu-hm-data/);
+  assert.match(d20, /zu3-v">100</);
+  assert.match(d20, /tabindex="-1"/, '其余格 -1');
+  assert.match(cellOf(html, 5), /zu-hm-void/, '10-06 无记录灰');
+  assert.match(cellOf(html, 0), /2026年10月1日 周四/, 'aria 用所选月日期');
+  assert.match(html, /data-head-sub="按日聚合"/, '图表头第三参透传不破坏调用');
+  // 空月：31 格全灰、无焦点格，仍出周表头与网格
+  ctx.__h3 = frameFrom([
+    { t: new Date(2026, 8, 5, 9).getTime(), out: 500, ms: 5000, msl: [[0, 500, 5000, 1, 1]] },   // 09-05
+    { t: tOf(5, 9), out: 500, ms: 5000, msl: [[0, 500, 5000, 1, 1]] },
+  ]);
+  ctx.__an3 = vm.runInContext('spd3Analyze(__h3, null, __s)', ctx);
+  const empty = dom(monthHTML(ctx, ctx.__an3, -1));
+  assert.equal(count(empty, 'zu-hm-void'), 31, '空月 31 格全灰');
+  assert.equal(count(empty, 'zu-hm-data'), 0);
+  assert.equal(count(empty, 'tabindex="0"'), 0, '空月无可聚焦格');
+  assert.equal(count(empty, 'zu3-hm-week'), 1, '周表头照出');
+  assert.equal(portal(ctx), '', '无悬停不出卡');
+});

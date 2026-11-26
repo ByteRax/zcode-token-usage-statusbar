@@ -427,3 +427,87 @@ test('粘性接线: window 级初始化/写回与 spd3RebuildOr/speed_days 兜�
   assert.ok((src.match(/typeof lastSpeedDays !== "undefined" && lastSpeedDays/g) || []).length >= 3,
     'speed_days 消费点 typeof 守卫');
 });
+
+// ---------- v479 月份导航装配（spec §28.5） ----------
+const countStr = (s, needle) => s.split(needle).length - 1;
+// v479 专用夹具：2025-12 / 2026-10 / 2026-11 三个月，可看范围跨年；10 月只有 GLM-A
+// （本文件既有 fixture() 的「上个月」一轮实际落在 11-09，不能当历史月用）
+function monthsFixture() {
+  const at = (y, mo, d, h) => new Date(y, mo, d, h).getTime();
+  const rows = [
+    { abs: at(2025, 11, 5, 9), s: 0, out: 100, ms: 1000, i: 80, o: 100, n: 1, msl: [[0, 100, 1000, 1]] },
+    { abs: at(2026, 9, 5, 10), s: 0, out: 1000, ms: 10000, i: 800, o: 1000, n: 1, msl: [[0, 1000, 10000, 1]], c: 0.1 },
+    { abs: at(2026, 10, 4, 15), s: 1, out: 3000, ms: 10000, i: 2000, o: 3000, n: 2, msl: [[0, 3000, 10000, 2]] },
+    { abs: at(2026, 10, 5, 10), s: 0, out: 900, ms: 3000, i: 600, o: 900, n: 2, msl: [[0, 600, 2000, 1], [1, 300, 1000, 1]] },
+    { abs: at(2026, 10, 5, 12), s: 0, out: 400, ms: 8000, i: 400, o: 400, n: 1, msl: [[1, 400, 8000, 1]] },
+  ];
+  let prev = 0;
+  const turns = rows.map(r => {
+    const o = { s: r.s, t: r.abs - prev, b: r.abs - 60000, out: r.out, ms: r.ms, i: r.i, o: r.o, n: r.n, msl: r.msl };
+    prev = r.abs;
+    if (r.c != null) o.c = r.c;
+    return o;
+  });
+  return { sid: 'sess_main', source: 'local', truncated: false,
+    sids: ['sess_main', 'sess_proj2'], snames: ['本会话', '另一会话'],
+    pids: [['proj_a', '项目A'], ['proj_a', '项目A']],
+    mnames: ['GLM-A', 'Claude-B'], mkeys: [KEYS.a, KEYS.b], turns };
+}
+
+test('v479 wire: 所选月进整卡与 SPD3_MON、筛选池与卡同月、mpop 态进 memo tail、弹层开态透传 aria-expanded', () => {
+  const ctx = makeCtx();
+  const h = monthsFixture();
+  const poolNames = () => host(vm.runInContext('SPD3_POOL.map(function (p) { return p.name; })', ctx)).join(',');
+  const selOct = { range: 'all', period: 'month', sid: 'sess_main', mon: { y: 2026, m: 9 } };
+  const rb = rebuild(ctx, h, selOct);
+  const card = cardOf(ctx, rb, -1, selOct);
+  assert.match(card, /zu-sc-title">2026年10月 · 日均生成速度</, '整卡（含 heat 图表头）带历史月标题');
+  assert.match(card, /data-sv3-mlabel aria-haspopup="dialog" aria-expanded="false"[^>]*>2026年10月</, '胶囊随整卡注入');
+  assert.ok(!stripStyle(card).includes('class="zu-sv-range"'), '区间 chip 已被胶囊取代（样式表里的 .zu-sv-range 规则不算）');
+  assert.match(card, /class="zu-hm-cell zu-hm-data ok" role="gridcell" tabindex="0" data-i="4"/, '日历随所选月出 10-05 的数据格（100 t/s=流畅档）');
+  assert.ok(!stripStyle(card).includes('zu-hm-today'), '历史月无今天描边');
+  assert.equal(vm.runInContext('SPD3_MON.m', ctx), 9, 'SPD3_MON=当前卡有效月份');
+  assert.equal(vm.runInContext('SPD3_MON.lo', ctx), 2025 * 12 + 11, 'SPD3_MON.lo=下界（跨年）');
+  // 串级 memo：同输入逐字节恒等；弹层开/关与切年各自失配
+  assert.equal(cardOf(ctx, rb, -1, selOct), card, 'memo 命中复用同串');
+  const open = cardOf(ctx, rb, -1, Object.assign({}, selOct, { mpop: { open: true, y: 2026, top: 118, right: 13 } }));
+  assert.notEqual(open, card, '打开弹层即失配');
+  assert.match(open, /data-sv3-mlabel aria-haspopup="dialog" aria-expanded="true"/, '弹层开态经 o.mpopOpen 透传到胶囊');
+  assert.match(open, /<div class="zu-sv3-mpop" style="top:118px;right:13px" role="dialog"/, '弹层随整卡注入并内联锚定');
+  assert.equal(countStr(open, 'class="zu-sv3-mpop"'), 1, '弹层恰一个');
+  assert.ok(!stripStyle(open).includes('class="zu-sv3-fpop"'), '月历弹层与筛选弹层不共存');
+  const prevYear = cardOf(ctx, rb, -1, Object.assign({}, selOct, { mpop: { open: true, y: 2025, top: 118, right: 13 } }));
+  assert.notEqual(prevYear, open, '切年进 memo tail');
+  assert.match(prevYear, /zu-sv3-mpop-y">2025年</, '弹层显示所选年份');
+  assert.equal(cardOf(ctx, rb, -1, selOct), card, '回到初始态再次命中 memo');
+  // SPD3_MON 跟随当前卡：切回当前月
+  cardOf(ctx, rb, -1, { range: 'all', period: 'month', sid: 'sess_main' });
+  assert.equal(vm.runInContext('SPD3_MON.cur', ctx), true);
+  // 筛选池与卡同月：10 月只有 GLM-A，「全选」不得混入 11 月才出现的 Claude-B
+  const selF = { range: 'all', period: 'month', sid: 'sess_main', mon: { y: 2026, m: 9 }, filt: { mode: 'sel', keys: [KEYS.a] } };
+  cardOf(ctx, rebuild(ctx, h, selF), -1, selF);
+  assert.equal(poolNames(), 'GLM-A', 'SPD3_POOL=未筛选池，但限定在所选月');
+  const selCurF = { range: 'all', period: 'month', sid: 'sess_main', filt: { mode: 'sel', keys: [KEYS.a] } };
+  cardOf(ctx, rebuild(ctx, h, selCurF), -1, selCurF);
+  assert.equal(poolNames(), 'GLM-A,Claude-B', '对照：当前月的未筛选池含两个模型');
+  // 非 month 视图不渲染弹层（精简链切 Tab 不收弹层态）
+  const selToday = { range: 'all', period: 'today', sid: 'sess_main', mpop: { open: true, y: 2026 } };
+  assert.ok(!stripStyle(cardOf(ctx, rebuild(ctx, h, selToday), -1, selToday)).includes('class="zu-sv3-mpop"'));
+});
+
+test('v479 两链接入源码锁: 06/01 各有月份动作分支、锚定、Esc 归位与 mousedown 名单；会话切换复位在场', () => {
+  // 行为级验证见 overlay-speed-v3-month-nav.test.cjs；这里锁两链都接了同一状态机
+  for (const [tag, shard] of [['06', readOverlayPart('06-instance-dom-and-styles.js')],
+    ['01', readOverlayPart('01-git-and-doc-tooltips.js')]]) {
+    assert.equal(countStr(shard, 'spd3MonthAct('), 1, tag + ' 月份动作分支恰一处（单点状态机）');
+    assert.equal(countStr(shard, 'spd3MonthAnchor('), 1, tag + ' 打开弹层时锚定');
+    assert.equal(countStr(shard, 'spd3MonthFocus('), 2, tag + ' 动作后与 Esc 各归位一次');
+    assert.equal(countStr(shard, '[data-sv3-mnav],[data-sv3-mlabel],[data-sv3-mpick],[data-sv3-myear]'), 1, tag + ' closest 白名单含四选择器');
+    assert.equal(countStr(shard, 't.closest(".zu-sv3-mnav") || t.closest(".zu-sv3-mpop")'), 1, tag + ' mousedown 名单');
+  }
+  const shard07 = readOverlayPart('07-instance-render-and-tips.js');
+  assert.equal(countStr(shard07, 'speedSel.mon = null; speedSel.mpop = { open: false, y: 0 };'), 2,
+    '07 两条渲染路径的会话切换复位都清所选月与弹层');
+  const shard06 = readOverlayPart('06-instance-dom-and-styles.js');
+  assert.match(shard06, /if \(speedSel\.mpop\) speedSel\.mpop\.open = false;/, '06 切 Tab 收起月历弹层（所选月保留）');
+});
