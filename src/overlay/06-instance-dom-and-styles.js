@@ -357,8 +357,9 @@
      * → v484 倍率徽标数值排版（真机首版反馈「丑陋」，对照维护者参考图）：首版按尾零裁剪（2×/3×/1.2×）各行宽窄不一、左缘参差，且 -2px 缩小字号在行文本旁显得瘦弱、离选中 ✓ 太近。改为恒两位小数（2.00×/0.67×/1.00×）+ tabular-nums 等宽数字成列右对齐、字号随行文本（去掉 font-size/line-height 覆写）保持弱化灰、padding-right 2px 改 6px 与 ✓ 留出呼吸空隙（✓ 仍在 pr-8 padding 区 absolute right-2，零重叠不变）。规则/门控/数据链零改动（specs/model-peak-factor-badge.md 同步 UI 节）。
      * → v485 子代理面放得下就带单位（用户规格「需要展示 子·138.9t/s，展示得下的时候不要隐藏 t/s」；本批原立账 v480，v480/v481 随并行批次先行合入，v482/v484 属峰谷徽标批次 PR#507 先行合入，按合入顺序顺延 v485）：v461 的子代理面恒不带单位，但实机 CDP 量宽（14px 格字号、.zu-live 73.4px，克隆换面量矩形）显示多数常见值装得下。07 分片 zuSpeedFace 子代理分支改为：≤4 字符数值保留点 + 单位「子·28.8t/s」（实机余 8.1px）；5 字符数值（138.9/101.4/12.9k 这类）带点会把标签压成省略号（「子·138.9t/s」标签 -9px，正是 v461 修掉的病），点让位给单位出「子138.9t/s」（余 3.5px，12.9k 约 4.8px）；≥6 字符维持 v461「子1286.5」不带单位。单位与数值贴紧：面对象带 unitGlue，zuSpeedFaceHtml 给单位挂 zu-sp-unit-glue，06 分片 margin-left:-5px 抵消 .zu-live 的 gap（与 zu-sp-glue 同款、镜像成对）；药丸左内边距吃掉余量（宽裕 7px 下五字符面裁尾 3.5px），药丸按该类隐藏单位、维持 v461 面。精简 chip（autoWidth）按内容定宽：面模型恒带单位、点仍按数值长度取点。数值为空的守卫分支（无新鲜速率）维持「子·」不带单位；aria-label / data-zu-full 全称本就含 t/s，不变。窄档/药丸紧张档既有去单位规则自然兼容（display:none 后负外边距无副作用）。overlay-speed-slot 面断言与 glue 镜像锁（含全文唯一与原文双锁）、overlay-pill-theme G() 夹具与 glueVis 行为断言、speed-slot-live-probe(.py/.js) 面清单同步；specs/speed-chip-stable-slot.md 补 v485 节与量宽数据
      * → v486 项目菜单「在 Finder 中打开」（用户规格初设「打开文件夹」，后按用户提示完全参照宿主任务菜单原生同名项改纯渲染端，specs/project-open-folder-menu.md）：宿主项目侧栏两类菜单各注入一枚「在 Finder 中打开」（文案随 navigator.userAgent 平台分支跟随宿主 appHeader.openInFinder/openInFileExplorer/openInFileManager 三平台措辞）——右键菜单逐个跟随 virtual-project-context-files-N（textContent 首个「 · 」后即根路径，多根一一对应；克隆同菜单项只借外观、剥宿主身份属性），「…」下拉经 content 的 aria-labelledby 找触发按钮、closest 项目行、React fiber 上溯（≤48 层，真机实测行元素 36 层）取 memoizedProps.project.roots[].rootPath 首根（SOt 层 paths 备选；与宿主行内「查看文件」按钮 M[0]?.run() 同取首根语义），任一环节取不到 fail-closed 不注入；本地/远程甄别=项目行外层 section 的 data-project-host === "local"（真机本地恒 "local"，属性缺席视为不注入），右键菜单来源行靠 document 捕获阶段 contextmenu 监听在菜单打开前记录（ContextMenuContent 不回指触发行，记录有效期 8 秒）；点击直调宿主 preload 桥 window.zcode.openInFileManager(path)（与宿主任务菜单原生项同一 IPC zcode:open-in-file-manager，真机 4.0.0 实证桥函数在场），随后向菜单派发 Escape 关闭（非 Radix collection 成员，宿主不会因选中收菜单）；桥缺失整链不注入（渲染端自证，无能力标记协议）。新分片 05-project-open-folder.js（外层闭包，菜单是文档级对象不进 spawnInstance）：MutationObserver 只挂 body 直属子节点（Radix portal 容器层，聊天流式变更不触发）rAF 去抖扫描，重注入后立即补扫一次；disposeOverlay 增 zuOpfDispose typeof 守卫调用（disconnect + 取消在途 rAF + 摘除 contextmenu 监听）；弹层关闭注入项随宿主 DOM 销毁零摘除路径；回执失败 FATAL.openPathErr 计数不弹 UI；悬停高亮自补（Radix 只给 collection 成员发 data-highlighted——mouseenter 自挂同款属性并清同菜单宿主项的残留高亮、mouseleave 还原，复用克隆来的 data-[highlighted]:bg-menu-hover 样式）。inject-main.cjs、快照协议、Python 零改动。
+     * → v487 上下文容量弹层分项构成增强（用户拍板「建议 1 加具体 token 数 + 建议 3 悬停大白话说明」，格式「24.3万 · 74.7%」，⚙ 通用独立开关；specs/context-breakdown-enhance.md）：①Token 数补充——从就近上下文触发器 aria-label 解析已用总量 used，按各构成行右侧百分比折算 round(used*pct/100) 并经实例 fmt() 格式化（自动跟随万/亿与强制 K/M/B），在百分比 span 前幂等插入 .zu-ctx-bkd-tok（弱化灰+tabular-nums，「24.3万 · 」）并由其接管 margin-left:auto；②悬停大白话说明——按宿主 7 类构成标签（消息/其他/系统工具/MCP 工具/技能/系统提示词/工具提示词，中英双语）标记 data-zusage-bkd 并在 body 容器委托 mouseover/mouseout，悬停即在行上方/下方弹出文档级单例 .zusage-ctx-bkd-tip 说明该项真实构成与减负建议；③开关 zusage3.ctxBkd（⚙ 通用「上下文构成明细增强」.zu-ctx-bkd，缺省开，仅显式 "0" 关），关闭即摘除已注入节点与属性并收起气泡。
      */
-    var VERSION = "v486";
+    var VERSION = "v487";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -2123,6 +2124,12 @@
       ".zu-ac-link:hover{opacity:1;color:var(--color-brand,#57c7ff)}" +
       /* v195 说明行：space-y v4 只写 margin-bottom，margin-top 无冲突可安全收紧间距 */
       ".zu-ac-hint{margin-top:-8px;font-size:11px;line-height:1.45;opacity:.6}" +
+      /* v487 上下文构成明细增强：分项行悬停反馈 + 估算 Token 数（接管右侧百分比的 ml-auto） */
+      "[data-zusage-bkd],[data-zusage-bkd-cache]{cursor:help;border-radius:4px;transition:background-color .12s ease}" +
+      "[data-zusage-bkd]:hover,[data-zusage-bkd-cache]:hover{background:rgba(255,255,255,.05)}" +
+      "html:not(.dark) [data-zusage-bkd]:hover,html:not(.dark) [data-zusage-bkd-cache]:hover{background:rgba(0,0,0,.04)}" +
+      ".zu-ctx-bkd-tok{margin-left:auto;flex-shrink:0;color:var(--color-foreground-subtle,#8791a3);font-variant-numeric:tabular-nums;white-space:pre}" +
+      ".zu-ctx-bkd-tok+span{margin-left:0!important;min-width:0!important}" +
       /* v190：高亮改琥珀左条+淡底（--color-brand 在宿主主题可能是白色系，描边观感像输入框焦点） */
       ".zu-settings label.zu-ac-flash{background:rgba(245,185,68,.10);box-shadow:inset 3px 0 0 #f5b944;" +
       "border-radius:6px;transition:background .3s,box-shadow .3s}" +
@@ -2494,6 +2501,7 @@
       '<section class="zu-settings-section" data-sec="general"' + secOpen("general") + '><div class="cap">' + L("通用", "General") + '</div><div class="zu-settings-card">' +
       settingRow('<input type="text" class="zu-ctxov" inputmode="numeric" aria-label="' + L("上下文窗口", "Context window") + '" placeholder="' + L("自动（按模型）", "Auto (model)") + '">', L("上下文窗口", "Context window"), L("留空自动识别，优先使用客户端数值；手动值以 token 为单位，按整数读取", "Leave empty for automatic detection, preferring the client value; manual values are read as integer tokens")) +
       settingRow('<input type="checkbox" class="zu-ctx-enh">', L("上下文按钮增强", "Context button enhancement"), L("在输入框上下文按钮上显示环形用量填充、档位颜色与百分比；关闭即还原原生形态（重置卡徽标不受影响）。默认开启。", "Adds a ring fill, tier color and percentage to the context button; off restores the native look (reset card badge is unaffected). On by default.")) +
+      settingRow('<input type="checkbox" class="zu-ctx-bkd">', L("上下文构成明细增强", "Context breakdown details"), L("在「上下文容量」弹层的各构成项右侧补充估算 Token 数（如 24.3万 · 74.7%），悬停某一行时显示该项的大白话说明与减负建议；关闭即还原原生仅百分比展示。默认开启。", "Adds estimated token counts next to each item in the context-usage popup (e.g. 243K · 74.7%) and shows a plain-language explanation with space-saving tips on hover; off restores the native percentage-only rows. On by default.")) +
       settingRow('<input type="checkbox" class="zu-cpt-btn">', L("压缩上下文按钮", "Compact context button"), L("在「上下文容量」弹层内显示「压缩上下文」按钮（点击后需二次确认，把会话历史总结压缩以释放上下文窗口）。关闭即不再显示；自动压缩阈值行不受影响，位置上移补位。默认开启。", "Shows the Compact context button inside the context-usage popup (with a confirmation step that summarizes the conversation to free context window space). Off hides it; the auto-compact threshold row is unaffected and moves up into the button's place. On by default.")) +
       settingRow('<input type="checkbox" class="zu-cost-enable">', L("预估费用", "Estimated cost"), L("悬停本轮/会话累计/项目累计/今日合计时显示按 models.dev 官方模型价格估算的费用（USD×汇率折 ¥；无汇率时显示 $ 原值；模型匹配不到价格按默认均价估算）。启动后每 12 小时静默同步一次价表与汇率，只下载不上传，可在配置文件关闭。默认开启。", "Shows estimated cost when hovering the stat cells, priced at official models.dev rates (USD × exchange rate as ¥; falls back to $ without a rate; unmatched models use a default average). The price table and FX rate sync silently every 12h after startup — download only, nothing uploaded; can be disabled in the config file. On by default.")) +
       settingRow('<input type="checkbox" class="zu-tip-click">', L("点击激活悬浮窗口", "Click to open popups"), L("开启后状态条统计卡与子代理面板改为点击才打开（再点同一格、按 Escape、点击空白处或移出条面收起）；关闭时按下方「悬停显示延迟」悬停显示。键盘 Tab 聚焦两种模式下都即时打开。默认关闭。", "On: bar stat cards and the sub-agent panel open on click only (click the same cell again, press Escape, click blank space or move off the bar to close); off: they show on hover after the delay set below. Keyboard Tab focus opens immediately in both modes. Off by default.")) +
@@ -2597,6 +2605,8 @@
       if (ppBox) ppBox.checked = !!state.projPath;
       var ctxEnhBox = panel.querySelector(".zu-ctx-enh");
       if (ctxEnhBox) ctxEnhBox.checked = !!state.ctxEnh;
+      var ctxBkdBox = panel.querySelector(".zu-ctx-bkd");
+      if (ctxBkdBox) ctxBkdBox.checked = !!state.ctxBkd;
       var cptBox = panel.querySelector(".zu-cpt-btn");
       if (cptBox) cptBox.checked = !!state.ctxCpt;
       var costBox = panel.querySelector(".zu-cost-enable");

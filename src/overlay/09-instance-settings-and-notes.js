@@ -2063,6 +2063,8 @@
       if (ppBox) ppBox.checked = !!state.projPath;
       var ctxEnhBox = panel.querySelector(".zu-ctx-enh");
       if (ctxEnhBox) ctxEnhBox.checked = !!state.ctxEnh;
+      var ctxBkdBox = panel.querySelector(".zu-ctx-bkd");
+      if (ctxBkdBox) ctxBkdBox.checked = !!state.ctxBkd;
       var cptBox = panel.querySelector(".zu-cpt-btn");
       if (cptBox) cptBox.checked = !!state.ctxCpt;
       var costBox = panel.querySelector(".zu-cost-enable");
@@ -2889,6 +2891,15 @@
         state.ctxEnh = t2.checked ? 1 : 0;
         persist();
         renderAll(false);
+        return;
+      }
+      if (t2.classList.contains("zu-ctx-bkd")) {
+        /* v487：构成明细增强开关即时生效——关闭即摘除弹层内已注入的估算 Token 数并收起气泡，
+         * 开启即原位重挂，不等 Observer/heavy 对账周期 */
+        state.ctxBkd = t2.checked ? 1 : 0;
+        persist();
+        if (!state.ctxBkd && typeof hideCtxBkdTip === "function") hideCtxBkdTip();
+        syncCompactBtn();
         return;
       }
       if (t2.classList.contains("zu-cpt-btn")) {

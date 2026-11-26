@@ -117,7 +117,7 @@ function harness({ lang = 'zh', ls = null } = {}) {
     elementFromPoint: () => panes[0] || body });
   const timers = new Map(), frames = new Map(), observers = []; let id = 0;
   const sandbox = vm.createContext({ window, document, console, innerHeight: 800, innerWidth: 1000,
-    location: { href: 'file:///fixture' },
+    location: { href: 'file:///Applications/ZCode.app/Contents/Resources/app.asar/out/renderer/index.html' },
     localStorage: { getItem: k => (k === 'zusage3.lang' && lang === 'en' ? 'en' : (ls && ls[k] != null ? ls[k] : null)), setItem() {} },
     getComputedStyle: () => ({ borderTopWidth: '1px', backgroundColor: 'black', opacity: '1', display: 'block', visibility: 'visible' }),
     setTimeout: (fn, ms) => { timers.set(++id, { fn, ms, interval: false }); return id; },
@@ -134,6 +134,7 @@ function harness({ lang = 'zh', ls = null } = {}) {
   const executable = source.replace(/\}\)\(\);\s*$/, 'window.compactTest = { instances: function() { return instances; }, state: function() { return state; } };})();');
   function inject() { window.__zusageOverlay = false; vm.runInContext(executable, sandbox); }
   function tick() { for (const t of [...timers.values()]) if (t.interval && (t.ms === 600 || t.ms === 500)) t.fn(); }
+  function flushTimeouts(msMatch) { for (const [n, t] of [...timers]) if (!t.interval && (msMatch == null || t.ms === msMatch)) { timers.delete(n); t.fn(); } }
   function boot() { for (const [n, t] of [...timers]) if (!t.interval && t.ms === 0) { timers.delete(n); t.fn(); } }
   function pumpFrames() { for (const [n, f] of [...frames]) { frames.delete(n); f(); } }
   function buildComposer(pid, sid) {
@@ -184,8 +185,8 @@ function harness({ lang = 'zh', ls = null } = {}) {
     return { input, api, send, stopBtn };
   }
   /* 「上下文容量」弹层：hover-card-content（!w-80 + Progress 指纹）> ContextContentBody
-   * （space-y-3）> 头部块 + 命中率行 + 可选「剩余额度」border-t 段。 */
-  function buildHoverCard({ withBorderT = true, fingerprint = true } = {}) {
+   * （space-y-3）> 头部块 + 可选分项构成块（breakdown）+ 命中率行 + 可选「剩余额度」border-t 段。 */
+  function buildHoverCard({ withBorderT = true, fingerprint = true, breakdown = null } = {}) {
     const hc = new Element('div');
     hc.className = fingerprint
       ? 'z-50 w-72 !w-80 !rounded-xl !shadow-md'
@@ -196,8 +197,35 @@ function harness({ lang = 'zh', ls = null } = {}) {
     bodyEl.className = 'w-full bg-menu p-3 space-y-3';
     const head = bodyEl.appendChild(new Element('div'));
     head.className = 'space-y-2';
+    let bkdWrap = null, bkdGrid = null, bkdRows = [];
+    if (Array.isArray(breakdown) && breakdown.length) {
+      bkdWrap = bodyEl.appendChild(new Element('div'));
+      bkdWrap.className = 'space-y-1.5';
+      bkdWrap.setAttribute('aria-label', lang === 'en' ? 'Context sources' : '上下文来源');
+      bkdGrid = bkdWrap.appendChild(new Element('div'));
+      bkdGrid.className = 'grid gap-1.5';
+      for (const item of breakdown) {
+        const row = bkdGrid.appendChild(new Element('div'));
+        row.className = 'flex min-w-0 items-center gap-2 text-ui-sm';
+        const dot = row.appendChild(new Element('span'));
+        dot.className = 'size-2 shrink-0 rounded-sm border border-border';
+        const lbl = row.appendChild(new Element('span'));
+        lbl.className = 'min-w-0 truncate text-foreground-subtle';
+        lbl.textContent = item.label;
+        const pct = row.appendChild(new Element('span'));
+        pct.className = 'ml-auto min-w-10 shrink-0 text-right font-mono text-ui-sm tabular-nums text-foreground';
+        pct.textContent = item.pct;
+        bkdRows.push({ row, dot, lbl, pct });
+      }
+    }
     const cacheRow = bodyEl.appendChild(new Element('div'));
     cacheRow.className = 'flex items-center justify-between gap-3 text-ui-sm';
+    const cacheLbl = cacheRow.appendChild(new Element('span'));
+    cacheLbl.className = 'text-foreground-subtle';
+    cacheLbl.textContent = lang === 'en' ? 'Average cache hit rate' : '平均缓存命中率';
+    const cacheVal = cacheRow.appendChild(new Element('span'));
+    cacheVal.className = 'font-mono text-ui-sm text-foreground';
+    cacheVal.textContent = '95.4%';
     let borderT = null;
     if (withBorderT) {
       borderT = bodyEl.appendChild(new Element('div'));
@@ -205,10 +233,11 @@ function harness({ lang = 'zh', ls = null } = {}) {
     }
     hoverCards.push(hc);
     body.appendChild(hc);   // Radix portal 直挂 body
-    return { hc, body: bodyEl, head, cacheRow, borderT };
+    return { hc, body: bodyEl, head, bkdWrap, bkdGrid, bkdRows, cacheRow, borderT };
   }
   const compactBtnOf = bodyEl => bodyEl.children.find(e => e.classList.contains('zu-compact-btn'));
   const dlgEl = () => body.children.find(e => e.classList.contains('zu-compact-dlg'));
+  const bkdTipEl = () => body.children.find(e => e.classList.contains('zusage-ctx-bkd-tip'));
   const findIn = (root, cls) => {
     for (const c of root.children) {
       if (c.classList && c.classList.contains(cls)) return c;
@@ -219,8 +248,8 @@ function harness({ lang = 'zh', ls = null } = {}) {
   };
   function mutateBody() { for (const o of [...observers]) if (o.connected && o.target === body) o.fn([]); }
   function keyDownLast() { const fns = document.listeners.get('keydown'); return fns && fns.length ? fns[fns.length - 1] : null; }
-  return { window, document, body, inject, tick, boot, pumpFrames, buildComposer, buildSubmitChain, buildHoverCard,
-    compactBtnOf, dlgEl, findIn, mutateBody, keyDownLast, observers, frames, hoverCards };
+  return { window, document, body, inject, tick, boot, flushTimeouts, pumpFrames, buildComposer, buildSubmitChain, buildHoverCard,
+    compactBtnOf, dlgEl, bkdTipEl, findIn, mutateBody, keyDownLast, observers, frames, hoverCards };
 }
 
 test('胶囊按钮注入在命中率行下、「剩余额度」段前，重复同步幂等', () => {
@@ -694,4 +723,256 @@ test('v200 ⚙ 开关全链路（真实面板 change）：关掉即摘按钮，�
   panel.dispatch('change', { target: box });
   assert.equal(h.dlgEl(), undefined, '兜底收起确认框（正常被遮罩挡住进不到设置）');
   assert.equal(h.window.compactTest.state().ctxCpt, 0);
+});
+
+/* ---------- v487 上下文容量弹层分项构成增强（Token 数 + 悬停说明 + 独立开关） ---------- */
+
+test('v487 分项构成增强：计算估算 Token 数（24.3万 · 74.7%），支持万/亿与 K/M/B 切换，重复对账幂等', () => {
+  const h = harness();
+  const comp = h.buildComposer('workspace-main', 'sid_main');
+  comp.btn.setAttribute('aria-label', '上下文已用 325,000 / 总量 1,000,000');
+  const ui = h.buildHoverCard({
+    withBorderT: true,
+    breakdown: [
+      { label: '消息', pct: '74.7%' },
+      { label: '其他', pct: '17.5%' },
+      { label: '系统工具', pct: '5.7%' },
+      { label: '技能', pct: '1.3%' },
+      { label: '系统提示词', pct: '0.9%' },
+    ],
+  });
+  h.inject(); h.boot(); h.tick();
+  const tokOf = r => r.row.children.find(c => c.classList && c.classList.contains('zu-ctx-bkd-tok'));
+  // 325000 * 74.7% = 242775 -> fmt(242775) = 24.28万
+  assert.ok(tokOf(ui.bkdRows[0]), '首行已注入 token 节点');
+  assert.equal(tokOf(ui.bkdRows[0]).textContent, '24.28万 · ');
+  assert.equal(ui.bkdRows[0].row.children.indexOf(tokOf(ui.bkdRows[0])), ui.bkdRows[0].row.children.indexOf(ui.bkdRows[0].pct) - 1, '插在百分比节点紧前面');
+  // 325000 * 0.9% = 2925 (<1万保持原值)
+  assert.equal(tokOf(ui.bkdRows[4]).textContent, '2925 · ');
+  const firstTokNode = tokOf(ui.bkdRows[0]);
+  h.tick();
+  assert.equal(tokOf(ui.bkdRows[0]), firstTokNode, '幂等：同一节点原地复用不重复插入');
+  assert.equal(ui.bkdRows[0].row.children.filter(c => c.classList && c.classList.contains('zu-ctx-bkd-tok')).length, 1);
+
+  // 切换强制 K/M/B 时同拍刷新为 K/M/B 格式
+  h.window.compactTest.state().forceKmb = 1;
+  h.tick();
+  assert.equal(tokOf(ui.bkdRows[0]).textContent, '242.8K · ');
+  assert.equal(tokOf(ui.bkdRows[4]).textContent, '2.9K · ');
+});
+
+test('v487 悬停大白话说明：7 类中英标签均能识别，mouseover 弹出说明气泡、mouseout 与弹层卸载即收起', () => {
+  const h = harness();
+  const comp = h.buildComposer('workspace-main', 'sid_main');
+  comp.btn.setAttribute('aria-label', '上下文已用 100,000 / 总量 200,000');
+  const ui = h.buildHoverCard({
+    withBorderT: true,
+    breakdown: [
+      { label: '消息', pct: '50.0%' },
+      { label: '其他', pct: '20.0%' },
+      { label: '系统工具', pct: '10.0%' },
+      { label: 'MCP 工具', pct: '8.0%' },
+      { label: '技能', pct: '5.0%' },
+      { label: '系统提示词', pct: '4.0%' },
+      { label: '工具提示词', pct: '3.0%' },
+    ],
+  });
+  h.inject(); h.boot(); h.tick();
+  const expectedKeys = ['messages', 'meta_user_context', 'system_tool_schemas', 'mcp_tool_schemas', 'skills', 'system_prompt', 'tool_prompt'];
+  ui.bkdRows.forEach((r, idx) => {
+    assert.equal(r.row.getAttribute('data-zusage-bkd'), expectedKeys[idx], `第 ${idx} 行 key 识别正确`);
+  });
+
+  const tip = h.bkdTipEl();
+  assert.ok(tip, '文档级单例气泡已挂载');
+  assert.equal(tip.style.display, 'none', '初始隐藏');
+
+  // 悬停「其他」行
+  ui.body.dispatch('mouseover', { target: ui.bkdRows[1].lbl });
+  assert.equal(tip.style.display, 'block', '悬停后显示');
+  assert.match(tip.innerHTML, /AGENTS\.md/, '包含其他项大白话说明');
+  assert.match(tip.innerHTML, /≈ 2万 token \(20,000\)/, '显示估算用量与精确千分位');
+  assert.match(tip.innerHTML, /占已用 20\.0% · 占总窗口 10\.0%/, '显示双口径占比');
+  assert.match(tip.innerHTML, /包含内容/, '显示结构化清单标题');
+
+  // 移到「MCP 工具」行
+  ui.body.dispatch('mouseout', { target: ui.bkdRows[1].lbl, relatedTarget: ui.bkdRows[3].row });
+  assert.equal(tip.style.display, 'block', '跨行切换保持显示');
+  assert.match(tip.innerHTML, /关闭当前任务不需要的 MCP/, '内容切换为 MCP 工具说明');
+
+  // 移出分项区（180ms 悬停保活桥后隐藏）
+  ui.body.dispatch('mouseout', { target: ui.bkdRows[3].row, relatedTarget: ui.body });
+  assert.equal(tip.style.display, 'block', '保活桥窗口内暂不收起');
+  h.flushTimeouts(180);
+  assert.equal(tip.style.display, 'none', '到期后隐藏');
+
+  // 再次悬停后模拟 Radix 卸载弹层，500ms 健康检查兜底收起
+  ui.body.dispatch('mouseover', { target: ui.bkdRows[0].row });
+  assert.equal(tip.style.display, 'block');
+  ui.bkdRows[0].row.isConnected = false;
+  h.tick();
+  assert.equal(tip.style.display, 'none', '宿主卸载分项行后兜底收起');
+});
+
+test('v487 英文界面与独立开关（zusage3.ctxBkd）：关闭即摘除 Token 节点与属性并收起气泡，重开即恢复', () => {
+  const h = harness({ lang: 'en' });
+  const comp = h.buildComposer('workspace-main', 'sid_main');
+  comp.btn.setAttribute('aria-label', 'Context usage 200,000 of 1,000,000');
+  const ui = h.buildHoverCard({
+    withBorderT: true,
+    breakdown: [
+      { label: 'Messages', pct: '60.0%' },
+      { label: 'Meta context', pct: '40.0%' },
+    ],
+  });
+  h.inject(); h.boot(); h.tick();
+  const tokOf = r => r.row.children.find(c => c.classList && c.classList.contains('zu-ctx-bkd-tok'));
+  assert.equal(tokOf(ui.bkdRows[0]).textContent, '120.0K · ');
+  ui.body.dispatch('mouseover', { target: ui.bkdRows[0].row });
+  const tip = h.bkdTipEl();
+  assert.equal(tip.style.display, 'block');
+  assert.match(tip.innerHTML, /Chat turns/);
+
+  // 通过 ⚙ 通用面板关闭 .zu-ctx-bkd 开关
+  const panel = h.body.children.find(e => e.classList.contains('zu-settings'));
+  const box = panel.querySelector('.zu-ctx-bkd');
+  box.classList.add('zu-ctx-bkd');
+  box.checked = false;
+  panel.dispatch('change', { target: box });
+
+  assert.equal(h.window.compactTest.state().ctxBkd, 0, 'state.ctxBkd 落账 0');
+  assert.equal(tokOf(ui.bkdRows[0]), undefined, 'Token 节点即时摘除');
+  assert.equal(ui.bkdRows[0].row.getAttribute('data-zusage-bkd'), null, 'data-zusage-bkd 属性已清理');
+  assert.equal(tip.style.display, 'none', '在显说明气泡同步收起');
+
+  // 重新开启
+  box.checked = true;
+  panel.dispatch('change', { target: box });
+  assert.equal(h.window.compactTest.state().ctxBkd, 1);
+  assert.equal(tokOf(ui.bkdRows[0]).textContent, '120.0K · ', '重开后原位恢复');
+  assert.equal(ui.bkdRows[0].row.getAttribute('data-zusage-bkd'), 'messages');
+});
+
+test('v487 结构化明细增强：从 React Fiber 读取 taskUsage 原始字符数与缓存命中率明细', () => {
+  const h = harness();
+  const comp = h.buildComposer('workspace-main', 'sid_main');
+  comp.btn.setAttribute('aria-label', '上下文已用 35,721 / 总量 1,000,000');
+  comp.btn['__reactFiber$fixture'] = {
+    memoizedProps: {
+      taskUsage: {
+        used: 35721,
+        size: 1000000,
+        cache: {
+          inputTokens: 35500,
+          cacheReadTokens: 35264,
+          cacheWriteTokens: 0,
+          latestHitRate: 0.993,
+          hitRateRequestCount: 6,
+          totalInputTokens: 203081,
+          totalCacheReadTokens: 164672,
+          hitRate: 0.811,
+        },
+        breakdown: [
+          { source: 'meta_user_context', chars: 51809 },
+          { source: 'messages', chars: 17921 },
+        ],
+      },
+    },
+    return: null,
+  };
+  const ui = h.buildHoverCard({
+    withBorderT: true,
+    breakdown: [
+      { label: '其他', pct: '74.3%' },
+      { label: '消息', pct: '25.7%' },
+    ],
+  });
+  h.inject(); h.boot(); h.tick();
+  const tip = h.bkdTipEl();
+
+  // 悬停「其他」行：应含原始文本字符数
+  ui.body.dispatch('mouseover', { target: ui.bkdRows[0].row });
+  assert.equal(tip.style.display, 'block');
+  assert.match(tip.innerHTML, /5\.18万 字符 \/ 共 6\.97万/, '显示原始文本与总文本字符数');
+
+  // 悬停「平均缓存命中率」行：应含最近一次、累计、主轮次数
+  assert.equal(ui.cacheRow.getAttribute('data-zusage-bkd-cache'), '1');
+  ui.body.dispatch('mouseover', { target: ui.cacheRow });
+  assert.equal(tip.style.display, 'block');
+  assert.match(tip.innerHTML, /99\.3% \(3\.53万 \/ 3\.55万\)/, '显示最近一次请求命中率与 token 比例');
+  assert.match(tip.innerHTML, /81\.1% \(16\.47万 \/ 20\.31万\)/, '显示本会话累计命中率与 token 比例');
+  assert.match(tip.innerHTML, /6 次/, '显示统计主轮数');
+
+  // 开关关闭时摘除缓存行标记与气泡
+  const panel = h.body.children.find(e => e.classList.contains('zu-settings'));
+  const box = panel.querySelector('.zu-ctx-bkd');
+  box.classList.add('zu-ctx-bkd');
+  box.checked = false;
+  panel.dispatch('change', { target: box });
+  assert.equal(ui.cacheRow.getAttribute('data-zusage-bkd-cache'), null);
+  assert.equal(tip.style.display, 'none');
+});
+
+test('v487 技能列表、其他路径、系统提示词名称与路径及点击打开文件夹', () => {
+  const h = harness();
+  const opened = [];
+  h.window.zcode = { openInFileManager: p => opened.push(p) };
+  const comp = h.buildComposer('workspace-main', 'sid_main');
+  comp.btn.setAttribute('aria-label', '上下文已用 100,000 / 总量 1,000,000');
+  comp.btn['__reactFiber$fixture'] = {
+    memoizedProps: {
+      taskUsage: { used: 100000, size: 1000000 },
+      workspacePath: '/Users/alice/Projects/demo-app',
+      snapshot: {
+        rows: {
+          window: [
+            {
+              toolName: 'Skill',
+              input: { skill: 'zcode-review-fix-merge' },
+              output: { text: 'ok\nBase directory for this skill: /Users/alice/Projects/demo-app/.zcode/skills/zcode-review-fix-merge\n' },
+            },
+          ],
+        },
+      },
+    },
+    return: null,
+  };
+  const ui = h.buildHoverCard({
+    withBorderT: true,
+    breakdown: [
+      { label: '技能', pct: '1.2%' },
+      { label: '其他', pct: '17.5%' },
+      { label: '系统提示词', pct: '0.9%' },
+    ],
+  });
+  h.inject(); h.boot(); h.tick();
+  const tip = h.bkdTipEl();
+
+  // 1. 技能：列出已用技能和目录位置
+  ui.body.dispatch('mouseover', { target: ui.bkdRows[0].row });
+  assert.match(tip.innerHTML, /本会话已用技能.*\(1\)/);
+  assert.match(tip.innerHTML, /zcode-review-fix-merge/);
+  assert.match(tip.innerHTML, /\/Users\/alice\/\.zcode\/skills/);
+  assert.match(tip.innerHTML, /\/Users\/alice\/Projects\/demo-app\/\.zcode\/skills/);
+
+  // 2. 其他：指令规则、记忆索引、动态系统提醒
+  ui.body.dispatch('mouseover', { target: ui.bkdRows[1].row });
+  assert.match(tip.innerHTML, /全局 AGENTS\.md/);
+  assert.match(tip.innerHTML, /项目 AGENTS\.md/);
+  assert.match(tip.innerHTML, /MEMORY\.md/);
+  assert.match(tip.innerHTML, /ToolSearch 公告/);
+
+  // 3. 系统提示词：核心段名称 + 内置引擎路径
+  ui.body.dispatch('mouseover', { target: ui.bkdRows[2].row });
+  assert.match(tip.innerHTML, /core（核心身份与能力）/);
+  assert.match(tip.innerHTML, /guidelines（编码与执行规范）/);
+  assert.match(tip.innerHTML, /\/Applications\/ZCode\.app\/Contents\/Resources\/glm\/zcode\.cjs/);
+
+  // 4. 点击路径打开文件夹：模拟 pointerdown 命中 .cb-path
+  const pathNode = new Element('span');
+  pathNode.className = 'cb-path';
+  pathNode.setAttribute('data-cb-path', '/Applications/ZCode.app/Contents/Resources/glm');
+  pathNode.closest = sel => sel === '.cb-path' ? pathNode : null;
+  tip.dispatch('pointerdown', { target: pathNode });
+  assert.deepEqual(opened, ['/Applications/ZCode.app/Contents/Resources/glm']);
 });

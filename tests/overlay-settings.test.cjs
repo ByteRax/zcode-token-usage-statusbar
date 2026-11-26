@@ -422,7 +422,7 @@ test('panel retains all controls, scroll position and settings-only styling', ()
     assert.ok(layoutHtml.includes('data-k="' + key + '"'), 'layout html data-k=' + key);
   }
   assert.ok(layoutHtml.includes('zu-layout-fixed'), 'speed 行应为「固定（始终显示）」徽标');
-  for (const selector of ['zu-rate-line', 'zu-auto-update', 'zu-restart-notice', 'zu-ctxov', 'zu-cn-num', 'zu-ctx-enh', 'zu-cpt-btn', 'data-update="check"', 'data-update="update"', 'name="zu-lang"', 'zu-settings-feedback']) {
+  for (const selector of ['zu-rate-line', 'zu-auto-update', 'zu-restart-notice', 'zu-ctxov', 'zu-cn-num', 'zu-ctx-enh', 'zu-ctx-bkd', 'zu-cpt-btn', 'data-update="check"', 'data-update="update"', 'name="zu-lang"', 'zu-settings-feedback']) {
     assert.ok(source.includes(selector));
   }
   assert.match(source, /\.zu-settings-body"\)\.scrollTop = scrollTop/);
@@ -1808,6 +1808,33 @@ test('compact-context-button toggle persists and re-syncs the popup, closing a s
   assert.equal(saved, 3);
   assert.equal(syncs, 3);
   assert.equal(closed, 1, '开启方向不触发关闭');
+});
+
+test('context-breakdown-details toggle persists, hides the tip when turned off, and re-syncs the popup', () => {
+  const changeSource = extract('    panel.addEventListener("change",', '    listenGlobal(document, "mousedown",');
+  let handler, saved = 0, syncs = 0, hidden = 0;
+  const context = {
+    panel: { addEventListener: (_, fn) => { handler = fn; } },
+    state: { ctxOv: '', show: { ctx: 1 }, projPath: 1, ctxEnh: 1, ctxBkd: 1, ctxCpt: 1 },
+    persist: () => { saved++; },
+    applyProjPath: () => {},
+    renderAll: () => {},
+    hideCtxBkdTip: () => { hidden++; },
+    syncCompactBtn: () => { syncs++; },
+  };
+  vm.runInNewContext(changeSource, context);
+  const target = checked => ({ type: 'checkbox', checked, dataset: {}, classList: { contains: name => name === 'zu-ctx-bkd' } });
+  handler({ target: target(false) });
+  assert.equal(context.state.ctxBkd, 0);
+  assert.equal(saved, 1);
+  assert.equal(hidden, 1, '关闭时收起分项说明气泡');
+  assert.equal(syncs, 1, '直调 syncCompactBtn 摘除已注入节点');
+  assert.deepEqual(context.state.show, { ctx: 1 });
+  handler({ target: target(true) });
+  assert.equal(context.state.ctxBkd, 1);
+  assert.equal(saved, 2);
+  assert.equal(hidden, 1, '开启方向不调 hideCtxBkdTip');
+  assert.equal(syncs, 2);
 });
 
 /* ---------- v137 点击源文件夹行在文件管理器中打开 ---------- */
