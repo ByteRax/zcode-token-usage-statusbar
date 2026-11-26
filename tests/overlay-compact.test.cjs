@@ -962,7 +962,7 @@ test('v487 技能列表、其他路径、系统提示词名称与路径展示；
   ui.body.dispatch('mouseover', { target: ui.bkdRows[1].row });
   assert.match(tip.innerHTML, /全局 AGENTS\.md/);
   assert.match(tip.innerHTML, /项目 AGENTS\.md/);
-  assert.match(tip.innerHTML, /\/\.zcode\/cli\/memories\/projects\/&lt;项目&gt;\/memory\/MEMORY\.md/, '记忆索引写宿主真实布局');
+  assert.match(tip.innerHTML, /\/\.zcode\/cli\/memories\/projects\/&lt;工作区标识&gt;\/memory\/MEMORY\.md/, '记忆索引写宿主真实布局');
   assert.doesNotMatch(tip.innerHTML, /\.zcode\/projects/, '不再出现不存在的 ~/.zcode/projects');
   assert.match(tip.innerHTML, /ToolSearch 公告/);
 
@@ -1080,6 +1080,7 @@ test('v487 Windows 路径、技能去重与目录可信限制：同技能只列�
             { kind: 'toolCall', toolName: 'Skill', inputText: '{"skill":"alpha"}' },   // 无 output：先登记，目录留空
             { kind: 'toolCall', toolName: 'Skill', input: { skill: 'alpha' }, output: { text: 'Base directory for this skill: C:\\Users\\bob\\proj\\.zcode\\skills\\alpha\n' } },
             { kind: 'toolCall', toolName: 'Skill', input: { skill: 'stray' }, output: { text: 'Base directory for this skill: D:\\elsewhere\\stray\n' } },
+            { kind: 'toolCall', toolName: 'Skill', input: { skill: 'sneaky' }, output: { text: 'Base directory for this skill: C:\\Users\\bob\\proj\\.zcode\\skills\\..\\..\\..\\private\\sneaky\n' } },
           ],
         },
       },
@@ -1091,10 +1092,11 @@ test('v487 Windows 路径、技能去重与目录可信限制：同技能只列�
   const tip = h.bkdTipEl();
   const linkTargets = () => [...tip.innerHTML.matchAll(/data-cb-path="([^"]*)"/g)].map(m => m[1]);
   ui.body.dispatch('mouseover', { target: ui.bkdRows[0].row });
-  assert.match(tip.innerHTML, /近期已用技能.*\(2\)/, '同名技能去重后 2 个（alpha、stray）');
+  assert.match(tip.innerHTML, /近期已用技能.*\(3\)/, '同名技能去重后 3 个（alpha、stray、sneaky）');
   assert.deepEqual(linkTargets(), ['C:\\Users\\bob\\proj\\.zcode\\skills\\alpha', 'C:\\Users\\bob\\.zcode\\skills', 'C:\\Users\\bob\\proj\\.zcode\\skills'],
     '已用技能只在 home/工作区之下才展示目录；目录按反斜杠拼接');
   assert.match(tip.innerHTML, /<span class="cb-tag">stray<\/span>/, 'home 与工作区之外的技能目录只列名称');
+  assert.match(tip.innerHTML, /<span class="cb-tag">sneaky<\/span>/, '字面落在工作区之下、实际用「..」穿出去的目录同样只列名称');
   ui.body.dispatch('mouseover', { target: ui.bkdRows[1].row });
   assert.ok(linkTargets().includes('C:\\Users\\bob\\.zcode\\cli\\memories\\projects'), '记忆索引路径指向真实布局');
   assert.doesNotMatch(tip.innerHTML, /\.zcode\/projects/);

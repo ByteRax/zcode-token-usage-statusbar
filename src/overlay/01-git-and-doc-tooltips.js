@@ -2181,6 +2181,7 @@
        * 其余只列名称——不让工具输出把任意路径带进气泡 */
       var dirTrusted = function (d) {
         if (!d) return false;
+        if (/(^|[\\/])\.\.([\\/]|$)/.test(d)) return false;   /* 字面前缀挡不住「..」穿越，直接拒 */
         return [home, ws].some(function (root) {
           return !!root && (d === root || d.indexOf(root + "/") === 0 || d.indexOf(root + "\\") === 0);
         });
@@ -2213,7 +2214,7 @@
          * 工作区标识与目录名不同，不逐项拼，链接打开 projects 目录 */
         var memDir = ctxBkdJoinPath(home, ".zcode/cli/memories/projects");
         html += '<div class="cb-item"><b>· ' + ctxBkdEsc(L("记忆索引位置", "Memory index")) + '</b><div class="cb-paths">' +
-          ctxBkdPathText(ctxBkdJoinPath(memDir, "<项目>/memory/MEMORY.md"), memDir) + "</div></div>";
+          ctxBkdPathText(ctxBkdJoinPath(memDir, "<工作区标识>/memory/MEMORY.md"), memDir) + "</div></div>";
       }
       html += '<div class="cb-item"><b>· ' + ctxBkdEsc(L("动态系统提醒", "Dynamic reminders")) + "</b>" +
         ctxBkdEsc(L("每轮实时拼接：OS/Shell/工作目录、日期、Git 分支与改动、Todo 待办、子代理列表、ToolSearch 公告（无磁盘文件）",
