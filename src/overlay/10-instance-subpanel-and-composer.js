@@ -35,12 +35,16 @@
       return String(it1.rec.task || "").trim() || String(it1.rec.title || "").trim() ||
         String(it1.rec.agent || "sub").replace(/^zcode-/, "") + "…" + it1.sid.slice(-4);
     }
-    function subPopRunningCount() {
-      var n = 0, now = Date.now();
-      for (var k in subRate.slots) {
-        var sl = subRate.slots[k];
-        if (sl && sl.rate != null && now - sl.at <= 3000) n++;
-      }
+    /* 运行中判定（v481 单一来源，左列绿点/估速行与顶部计数共用）：库中无记录的纯新会话
+     * （rec===null）或快照标 30 秒内有请求（rec.active，明细页 meta 同款）都算；旧快照
+     * 无 active 字段按不运行降级。此前计数只数 3 秒内有估算速率的槽位，思考期（无字符流）
+     * 少报甚至显示「暂无运行中的子代理」。 */
+    function subPopIsRunning(it1) {
+      return it1.rec === null || it1.rec.active === true;
+    }
+    function subPopRunningCount(items) {
+      var n = 0;
+      for (var i = 0; i < items.length; i++) if (subPopIsRunning(items[i])) n++;
       return n;
     }
     /* v304：首参=KPI_ICON_PATHS 图标名（14px，与统计卡同表 kpiIco 单源）；k 为 raw HTML
@@ -82,8 +86,8 @@
         rows + "</tbody></table></div>";
     }
     function subPopSummaryHTML(sub) {
-      var run = subPopRunningCount();
       var items = subPopItems(sub);
+      var run = subPopRunningCount(items);
       var costOk = !!(state.cost && sub && typeof sub.cost_usd === "number" && isFinite(sub.cost_usd));
       var sIn = (sub && sub.input) || 0, sHit = sIn > 0 ? Math.round(((sub && sub.cache_read) || 0) / sIn * 100) : -1;
       var sRea = (sub && sub.reasoning) || 0;
@@ -164,7 +168,7 @@
         '</div>';
       var meta = [];
       if (r.last) meta.push(L("最后活动", "Last active") + " <b>" + ttEsc(fmtStartS(r.last)) + "</b>");
-      if (r.active || it1.rec === null) {
+      if (subPopIsRunning(it1)) {
         /* 运行中：估算速率 span 由面板 800ms tick 原地刷新（.subrate[data-sid] 契约不变） */
         meta.push('<span class="subrate" data-sid="' + escAttr(it1.sid) + '">' + ttEsc(subRateSlotText(it1.sid)) + "</span>");
       }
@@ -180,7 +184,7 @@
         var keep = items.filter(function (x) { return x.sid === subPopSel; });
         if (!keep.length) subPopSel = "";   // 任务已从当前会话数据消失才回汇总
       }
-      var runN = subPopRunningCount();
+      var runN = subPopRunningCount(items);
       var sig = subPopMode + "|" + subPopSel + "|" + items.map(function (x) { return x.sid; }).join(",") +
         "|" + runN + "|" + (state.cost ? 1 : 0) + "|" + JSON.stringify(sub || null);
       if (sig === subPopSig) return;
@@ -191,10 +195,12 @@
         '<div class="zu-spnav-h">' + ttEsc(L("任务列表", "Tasks")) + '</div><div class="zu-spnav-list">';
       for (var i = 0; i < items.length; i++) {
         var on = items[i].sid === subPopSel;
+        var run = subPopIsRunning(items[i]);
         nav += '<button type="button" class="zu-spnav-item' + (on ? " on" : "") + '" data-sid="' + escAttr(items[i].sid) +
           '" aria-selected="' + on + '" title="' + escAttr(subPopNameOf(items[i])) + '"><span class="zu-spnav-label">' +
+          (run ? '<span class="zu-spnav-dot" aria-hidden="true"></span>' : "") +
           ttEsc(subPopNameOf(items[i])) + "</span>" +
-          (items[i].rec === null ? '<span class="zu-spnav-live" data-sid="' + escAttr(items[i].sid) + '">' + ttEsc(subRateSlotText(items[i].sid)) + "</span>" : "") +
+          (run ? '<span class="zu-spnav-live" data-sid="' + escAttr(items[i].sid) + '">' + ttEsc(subRateSlotText(items[i].sid)) + "</span>" : "") +
           "</button>";
       }
       nav += "</div>";
@@ -244,7 +250,7 @@
         if (subRateTimer) { clearInterval(subRateTimer); subRateTimer = 0; }
         return;
       }
-      var spans = subPanel.querySelectorAll(".subrate");
+      var spans = subPanel.querySelectorAll(".subrate, .zu-spnav-live");
       for (var i = 0; i < spans.length; i++) {
         var txt = subRateSlotText(spans[i].getAttribute("data-sid") || "");
         if (spans[i].textContent !== txt) spans[i].textContent = txt;

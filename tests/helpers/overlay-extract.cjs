@@ -79,6 +79,8 @@ const NAMED_SLICES = {
   zuBarSpeedView: ['  var DEFAULT_CHARS_PER_TOKEN = 2;', '  /* 思考态动效图标'],
   positionSubPop: ['    function positionSubPop() {', '    var subRateTimer = 0;'],
   buildSubPop: ['    function subPopItems(sub) {', '    function positionSubPop() {'],
+  /* v481 面板 800ms tick：估速文案刷新（.subrate 与左列 .zu-spnav-live 双选择器契约） */
+  subRateTickPanel: ['    function subRateTickPanel() {', '    function subPopFollowPush(view) {'],
   tpsBandsTable: ['  var TPS_BANDS = [', '  /* 返回 null = 调用方应把这当成'],
   tpsBandOnly: ['  var TPS_BANDS = [', '  /* tooltip 档位行文本'],
   buildLiveTip: ['    function buildLiveTip(speedView) {', '    /* 行内 SVG 线性图标（v54）'],

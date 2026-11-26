@@ -184,4 +184,64 @@ test('zero-rect entry falls back to the bar anchor; a detached entry closes the 
     const expect = longAgent.replace(/^zcode-/, '') + ' · …1234';
     assert.ok(panel.__html.includes('<span class="zu-spsub" title="' + expect + '">'), '超长 agent 名全文进 title');
   });
+
+  /* v481 左列运行中标识：判定=rec===null（槽位-only 新会话）或 rec.active（30 秒内有请求），
+   * 绿点+估速行与顶部计数三处同源（specs/subagent-detail-panel.md） */
+  test('v481: nav marks active-record tasks with dot + live line; finished tasks stay plain', () => {
+    const sub = { total: 10, active: true, requests: 2, models: [],
+      list: [
+        { task: 'running-with-record', title: 't', agent: 'zcode-gen', sid: 'sess_subagent_run0001',
+          input: 1, output: 1, cache_read: 0, reasoning: 0, cache_write: 0, requests: 1, tps_avg: 1, last: 1, active: true },
+        { task: 'finished', title: 't', agent: 'zcode-gen', sid: 'sess_subagent_done0002',
+          input: 1, output: 1, cache_read: 0, reasoning: 0, cache_write: 0, requests: 1, tps_avg: 1, last: 1, active: false },
+      ] };
+    const panel = makePanel();
+    runBuild(panel, sub, '');
+    const html = panel.__html;
+    const runItem = html.match(/<button[^>]*data-sid="sess_subagent_run0001"[\s\S]*?<\/button>/);
+    assert.ok(runItem, 'active 记录任务在左列渲染');
+    assert.ok(runItem[0].includes('zu-spnav-dot'), 'active 记录任务有绿点（此前 rec!==null 完全无标识）');
+    assert.ok(runItem[0].includes('zu-spnav-live'), 'active 记录任务有估速行');
+    const doneItem = html.match(/<button[^>]*data-sid="sess_subagent_done0002"[\s\S]*?<\/button>/);
+    assert.ok(doneItem, '完成任务在左列渲染');
+    assert.ok(!doneItem[0].includes('zu-spnav-dot') && !doneItem[0].includes('zu-spnav-live'), '完成任务无点无估速行');
+  });
+
+  test('v481: header count follows the nav dot definition (slot-only + active records), not estimate freshness', () => {
+    const sub = { total: 10, active: true, requests: 2, models: [],
+      list: [
+        { task: 'running-with-record', title: 't', agent: 'zcode-gen', sid: 'sess_subagent_run0001',
+          input: 1, output: 1, cache_read: 0, reasoning: 0, cache_write: 0, requests: 1, tps_avg: 1, last: 1, active: true },
+        { task: 'finished', title: 't', agent: 'zcode-gen', sid: 'sess_subagent_done0002',
+          input: 1, output: 1, cache_read: 0, reasoning: 0, cache_write: 0, requests: 1, tps_avg: 1, last: 1, active: false },
+      ] };
+    const panel = makePanel();
+    runBuild(panel, sub, '', { subRate: { slots: { sess_subagent_slot03: { rate: 5, at: Date.now() } } } });
+    assert.ok(panel.__html.includes('2 个子代理运行中'), '计数=左列运行中数（active 记录 + 槽位-only 各 1，已完成不计）');
+    const item = panel.__html.match(/<button[^>]*data-sid="sess_subagent_slot03"[\s\S]*?<\/button>/);
+    assert.ok(item && item[0].includes('zu-spnav-dot'), '槽位-only 新会话（rec===null）仍有点');
+  });
+
+  test('v481: thinking-phase slot (no estimate yet) still counts as running', () => {
+    const sub = { total: 1, active: false, requests: 1, models: [], list: [] };
+    const panel = makePanel();
+    runBuild(panel, sub, '', { subRate: { slots: { sess_subagent_think09: { rate: null, at: Date.now() } } } });
+    assert.ok(panel.__html.includes('1 个子代理运行中'), '思考期（rate=null）不少报——旧逻辑此处为「暂无运行中的子代理」');
+    assert.ok(!panel.__html.includes('暂无运行中的子代理'), '不再出现空运行态');
+  });
+
+  test('v481: 800ms tick refreshes nav live lines, not only detail .subrate spans', () => {
+    const tickSource = getNamedSlice('subRateTickPanel');
+    const spans = [{ attrs: { 'data-sid': 'sess_x' }, textContent: 'stale', getAttribute(k) { return this.attrs[k]; } }];
+    const ctx = {
+      inactive: () => false,
+      subPopOpen: () => true,
+      subRateTimer: 1,
+      clearInterval: () => {},
+      subPanel: { querySelectorAll: (sel) => (sel.includes('zu-spnav-live') ? spans : []) },
+      subRateSlotText: () => 'est 9.9 t/s',
+    };
+    vm.runInNewContext(tickSource + '\nsubRateTickPanel();', ctx);
+    assert.equal(spans[0].textContent, 'est 9.9 t/s', '左列估速行随 tick 刷新（此前只在重建时写一次）');
+  });
 }
