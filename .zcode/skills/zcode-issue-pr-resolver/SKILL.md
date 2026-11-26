@@ -1,6 +1,6 @@
 ---
 name: zcode-issue-pr-resolver
-description: "处理本项目（ByteRax/zcode-token-usage-statusbar）的 GitHub issue 与 PR 并走完整闭环：分析 → 在独立 worktree 修复（外部 PR 则先审查再整合）→ 多 subagent 并发独立 review 到无问题 → 合并 main → 在 issue/PR 下如实回复、感谢提交者 → 关闭。支持多议题并行探索/复现与同轮多路 subagent 并发深审。用户只贴出本仓库的 issues/pulls 链接或编号，或说「处理 issue」「处理 PR」「修复 #N」时使用，即使没明说要合并。带疑问或查看语气（有没有新 issue/PR、看看、怎么回事）时，只做采集分类并汇报，不动手。授权止于源码合并：不含发版、打 tag、推渠道分支、部署本机运行目录（那是 zcode-github-release 的事）。"
+description: "处理本项目（ByteRax/zcode-token-usage-statusbar）的 GitHub issue 与 PR 并走完整闭环：分析 → 在独立 worktree 修复（外部 PR 则先审查再整合）→ 多 subagent 独立 review 到无问题 → 合并 main → 在 issue/PR 下如实回复、感谢提交者 → 关闭。支持多议题并行探索/复现与多路 subagent 深审。用户只贴出本仓库的 issues/pulls 链接或编号，或说「处理 issue」「处理 PR」「修复 #N」时使用，即使没明说要合并。带疑问或查看语气（有没有新 issue/PR、看看、怎么回事）时，只做采集分类并汇报，不动手。授权止于源码合并：不含发版、打 tag、推渠道分支、部署本机运行目录（那是 zcode-github-release 的事）。"
 ---
 
 # 处理本项目的 issue / PR
@@ -13,7 +13,7 @@ description: "处理本项目（ByteRax/zcode-token-usage-statusbar）的 GitHub
 
 ## 并行多 Subagent 协同总则
 
-处理多个 issue/PR、跨模块复杂缺陷或进入 §4 审查循环时，优先通过**同一轮并发派发多个 subagent（单轮 Fan-out）**提速并隔离上下文，同时严守以下安全与并发纪律。路数始终对齐用户全局子代理策略（不为走流程多开）：下文超过其默认上限（常规 2–4 路、大型最多 6 路）的用法，仅限多议题并行（每议题一路）或复杂域深审的专项拆细，且以任务确有必要为限：
+处理多个 issue/PR、跨模块复杂缺陷或进入 §4 审查循环时，用 subagent 提速并隔离上下文，同时严守以下安全与并发纪律。**§4 审查类 subagent 的派发节奏（逐路还是同轮并发）按仓库 `specs/review-agent-concurrency.md` 执行**，其余并行用法照旧。路数始终对齐用户全局子代理策略（不为走流程多开）：下文超过其默认上限（常规 2–4 路、大型最多 6 路）的用法，仅限多议题并行（每议题一路）或复杂域深审的专项拆细，且以任务确有必要为限：
 
 1. **多议题并行分治（worktree 独占）**：
    - 当一次处理多个互不冲突的 open issue 时，先由主 agent 在项目根目录完成 §0 预检、`triage.py show` 净化采集，并**在项目根串行创建好各自的 `.worktrees/issue-N`**（避免多个 subagent 并发执行 `git worktree add` 争抢 `.git/worktrees` 锁或因相对路径嵌套创建）。
@@ -23,9 +23,9 @@ description: "处理本项目（ByteRax/zcode-token-usage-statusbar）的 GitHub
    - 遇到涉及多层的疑难问题（例如同时跨 `zusage.py` SQLite 聚合、`inject-main.cjs` 主桥 IPC、`renderer_bridge.py` 宿主 bundle 指纹与 `overlay.js` 浮层），可在同一轮并行派发只读探索 subagent（一路查宿主 `zcode.cjs` / 上游数据链，一路分析渲染与状态机边界，一路在主 agent 预建的新 worktree 跑全套 Node + Python 基线测试），汇总后再动手修改。
    - 全套回归耗时约两分钟，可将 `node --test tests/*.test.cjs` 与 `python3 -B -m unittest discover -s tests -p 'test_*.py'` 分派给两个并行验证 subagent 同时运行并比对基线。
 3. **外部 PR 先扫后派（安全硬门禁）**：
-   - 外部 PR **严禁在未完成 §3 隐藏字符扫描前直接并发派给多个 subagent 裸读**。必须先由主 agent 在项目根完成 `git fetch` 固定起点 SHA、落盘 diff 与提交信息、跑 `triage.py scan` 确认「高危类 = 0」，之后才可在同一轮并发派发 §4 的多路只读审查 subagent。
-4. **同轮多路并发独立 Review（见 §4）**：
-   - §4 的每一轮审查都必须在**同一轮工具调用中同时启动全部 reviewer subagent**（按规模表取路数，首行 0–1 路小改动可自审不派；常规 2–4 路，复杂 UI/图表/多状态机改动可横向拆细至合计 4–6 路专项只读 subagent，上限见仓库 `specs/review-agent-concurrency.md`），禁止串行排队。所有 reviewer 严格只读，需要改码做变异测试或运行外部 PR 代码时，各自在独立的 `mktemp -d` 下 `git clone --no-hardlinks` 临时副本并 `remote remove origin`。
+   - 外部 PR **严禁在未完成 §3 隐藏字符扫描前直接并发派给多个 subagent 裸读**。必须先由主 agent 在项目根完成 `git fetch` 固定起点 SHA、落盘 diff 与提交信息、跑 `triage.py scan` 确认「高危类 = 0」，之后才可按 §4 的派发节奏派发多路只读审查 subagent。
+4. **多路独立 Review（见 §4）**：
+   - §4 每一轮的 reviewer 按规模表取路数（首行 0 路小改动可自审不派；常规 2–4 路，复杂 UI/图表/多状态机改动可横向拆细至合计 4–6 路专项只读 subagent，上限见仓库 `specs/review-agent-concurrency.md`）。**派发节奏按该 spec：默认模型的 reviewer 一次只跑一路，机械活交给 `review-runner`，条件满足才同轮并发。**所有 reviewer 严格只读，需要改码做变异测试或运行外部 PR 代码时，各自在独立的 `mktemp -d` 下 `git clone --no-hardlinks` 临时副本并 `remote remove origin`。
 
 ## 0. 预检
 
@@ -42,7 +42,7 @@ description: "处理本项目（ByteRax/zcode-token-usage-statusbar）的 GitHub
    ```
 
 5. 清点已有成果：`triage.py show N` 末尾的「在途成果检查」列出名称含「issue/pr/fix + 编号」的 worktree/分支（★，附未提交改动、领先与落后 `fork/main` 的提交数，`?` 表示 git 查询失败），以及提到该编号的 open PR。**以下一律视为他人（含并行会话）的成果，不接手**：任何名称命中该编号的 worktree/分支，**即使刚建、还没有改动或提交**（对方可能正处在复现阶段）；本地有未提交改动或领先 `fork/main` 的提交（不论是否已推送）；**同仓库**分支的 open PR（含 draft）指向该编号。遇到就不另起炉灶重做、不重复开 PR：该项跳过并记入最终报告，其余 open 项照常处理。**用户只是贴出该 issue 或 PR 的链接/编号，不算点名接手**；要用户明确说「接手」「继续做」或指定那个 worktree/PR 才动。外部 fork 的 open PR 另当别论：它用 `Fixes/Closes/Resolves/Refs #N` 或分支名声称修复本 issue（脚本标「声称修复」）时，不另开 PR，该 PR 本身按 §3 处理（审查后发现修不了或不合并，就回到本 issue 按 §2 自己修，最终报告里说明为什么没合那个 PR——「声称修复」只决定先看谁的方案，不锁定处理方式）；只是提到编号的外部 PR 不影响本项处理。脚本认不出描述性命名的并行分支（如 `fix/quota-tip-...`），要对照同一处列出的全部 worktree 自己看一眼。只有用户说明它已废弃、或 `git worktree list` 显示其目录已不存在（prunable）时，才用新分支名（如 `fix/issue-N-b`）另建 worktree，并在报告里说明；不要去 ff 或复用别人的空壳。
-6. 基线：需要改代码时，在新 worktree 里先跑一遍全套测试（命令见 §2，约两分钟，会撞上 Bash 工具默认的 120 秒超时：用后台运行、把工具超时调到 600000 毫秒，或拆给并行验证 subagent 同轮分流跑 Node 与 Python 测试），记下失败集合。有些用例依赖本机已安装的客户端（如 `test_renderer_bridge` 读取真实 `app.asar`，客户端版本一变就红），个别用例还会偶发失败。之后只比较「新增失败」；单个失败先单独重跑一次，仍红才算数，**重跑转绿的偶发失败也要在报告里披露**（用例名与出现次数）。基线里的失败要逐个列进最终报告，并说明在 `fork/main` 同环境下同样复现。外部 PR 的基线在 `fork/main` 的干净 worktree 上跑，不在 PR 代码上。多个议题同批处理时，同一时刻的 `fork/main` 基线只需测一次并共享给各议题 subagent。基线进行中不要并发编辑同一工作树（unittest discover 启动后仍逐模块 import，撞中间态文件报假失败）；活跃工作树后台串行跑全量基线会读到中途修改出假红，真基线在干净检出单独跑。
+6. 基线：需要改代码时，在新 worktree 里先跑一遍全套测试（命令见 §2，约两分钟，会撞上 Bash 工具默认的 120 秒超时：用后台运行、把工具超时调到 600000 毫秒，或拆给并行验证 subagent 同轮分流跑 Node 与 Python 测试），记下失败集合。有些用例依赖本机已安装的客户端（如 `test_renderer_bridge` 读取真实 `app.asar`，客户端版本一变就红），个别用例还会偶发失败。之后只比较「新增失败」；单个失败先单独重跑一次，仍红才算数，**重跑转绿的偶发失败也要在报告里披露**（用例名与出现次数）。基线里的失败要逐个列进最终报告，并说明在 `fork/main` 同环境下同样复现。外部 PR 的基线在 `fork/main` 的干净 worktree 上跑，不在 PR 代码上。多个议题同批处理时，同一时刻的 `fork/main` 基线只需测一次并共享给各议题 subagent。基线进行中不要并发编辑同一工作树（unittest discover 启动后仍逐模块 import，撞中间态文件报假失败）；活跃工作树后台串行跑全量基线会读到中途修改出假红，真基线在干净检出单独跑。**全套回归每个任务只跑两遍**：动手前的这一遍基线，和收口（提交、合并）前的一遍；中间每次修改只跑 §2 对照表里受影响的测试文件。一键跑法是 `python3 -B scripts/check_all.py`（并行跑两套测试并汇总失败用例名，契约见 [开发回路提速](../../../specs/dev-loop-speed.md)）。
 
 ## 1. 采集与分类
 
@@ -117,22 +117,31 @@ python3 -B "${ZCODE_SKILL_DIR}/scripts/triage.py" released <提交>     # 该提
 - main 前进产生冲突：把 `fork/main` **merge 进**该分支，不 rebase、不 force-push 贡献者的分支。
 - 质量没问题就原 PR 直接合并，不为合并而重做。
 
-## 4. 并行独立 review 循环（直到无问题）
+## 4. 独立 review 循环（直到无问题）
 
-自己复核自己抓不到盲区。**除规模表首行的 0–1 路小改动外，每一轮都在同一轮工具调用里并行新开全部 subagent（单轮 Fan-out）**（`general-purpose`，需要执行权限以便它自己跑测试和在临时克隆里做变异复现），禁止串行逐路等待，也不续用上一轮的 agent。reviewer 看不到本对话，简报要自包含；外部 PR 的 reviewer 用 git 读 PR 内容、用 `triage.py show` 读 issue/PR 正文，不要给它们裸 `gh` 去读外部文本（它们继承管理员凭据，凭据面越小越好），简报里的「工作目录」写项目根而不是 PR 的 worktree（引擎按工作目录向上发现项目 skills，PR 自带的 `.zcode/skills` 会进入 reviewer 的可用技能列表）；模板、四个基础角色（正确性与回归 / 变异式测试审查 / 文档与副本一致性 / 安全审查）及多路专项拆细规则见 [review 简报](references/review-brief.md)。
+自己复核自己抓不到盲区。**除规模表首行的 0 路小改动外，每一轮都新开全部 subagent，不续用上一轮的 agent；派发节奏按 `specs/review-agent-concurrency.md`：默认模型的 reviewer（`general-purpose`，需要执行权限以便它自己跑测试和在临时克隆里做变异复现）一次只跑一路，条件满足才在同一轮工具调用里并发。** reviewer 看不到本对话，简报要自包含；外部 PR 的 reviewer 用 git 读 PR 内容、用 `triage.py show` 读 issue/PR 正文，不要给它们裸 `gh` 去读外部文本（它们继承管理员凭据，凭据面越小越好），简报里的「工作目录」写项目根而不是 PR 的 worktree（引擎按工作目录向上发现项目 skills，PR 自带的 `.zcode/skills` 会进入 reviewer 的可用技能列表）；模板、四个基础角色（正确性与回归 / 变异式测试审查 / 文档与副本一致性 / 安全审查）及多路专项拆细规则见 [review 简报](references/review-brief.md)。
 
 **每轮审查的提交固定为一个 SHA（被审 SHA）**：就是交给 reviewer 的那个 worktree 当时的 `git rev-parse HEAD`，即自己的修复，或外部 PR 的贡献者提交加上你追加的补修提交。外部 PR 另有 §3 记下的**起点 SHA**。两者都写进简报并记下，§5 合并前要核对。
 
-按改动规模取并发路数（同一轮全部并行启动，与用户的全局子代理策略一致；超过其默认上限的专项拆细仅限复杂域深审确有必要时使用，不为走流程多开）：
+按改动规模取路数（与用户的全局子代理策略一致；超过其默认上限的专项拆细仅限复杂域深审确有必要时使用，不为走流程多开；路数是上限建议，派发节奏仍按 `specs/review-agent-concurrency.md`）：
 
-| 改动规模 | 同轮并行 reviewer 路数与分工 |
+| 改动规模 | reviewer 路数与分工 |
 |---|---|
-| 文档/文案或单文件小修，无行为变化 | 0–1 路：自审 diff + 全套测试 |
-| 常规 bug 修复/小功能（约 3–8 个文件） | **2 路并行**：A 正确性与回归 + B 变异式测试审查 |
-| 跨模块、协议/契约/安全相关、主进程冷文件、外部 PR | **3–4 路并行**：A + B + C 文档与副本一致性；外部 PR 必加 D 安全审查 |
-| 复杂多状态 UI / 图表 / 多模块大改或要求极致深审 | **合计 4–6 路并行专项切片**：在 A/B/C（及 D）的额度内将复杂域横向拆分给独立 subagent 同轮并发深审（如：状态机与边界逻辑、DOM/CSS/窄窗与浅色主题、焦点/悬停/事件竞态、Python/SQLite 聚合口径、多路分片变异测试猎杀；上限依据 `specs/review-agent-concurrency.md`） |
+| 文档/文案或单文件小修，无行为变化 | 0 路：自审 diff + 全套测试 |
+| 常规 bug 修复/小功能（约 3–8 个文件） | **2 路**：A 正确性与回归 + B 变异式测试审查 |
+| 跨模块、协议/契约/安全相关、主进程冷文件、外部 PR | **3–4 路**：A + B + C 文档与副本一致性；外部 PR 必加 D 安全审查 |
+| 复杂多状态 UI / 图表 / 多模块大改或要求极致深审 | **合计 4–6 路专项切片**：在 A/B/C（及 D）的额度内将复杂域横向拆分给独立 subagent 深审（如：状态机与边界逻辑、DOM/CSS/窄窗与浅色主题、焦点/悬停/事件竞态、Python/SQLite 聚合口径、多路分片变异测试猎杀；上限与派发节奏依据 `specs/review-agent-concurrency.md`） |
 
-处理规则：主 agent 等待当轮全部并行 reviewer 返回后汇总去重；BLOCKER/MAJOR 必须修；MINOR 修掉，或在回复里写明为何不修；MINOR 的修复若不只是改措辞，再开 reviewer 覆盖这些改动。**review 发现问题的修复均由主 agent 在目标 worktree 内集中执行并同步副本**（避免多 subagent 并发写同一 worktree；多议题各自的实现 subagent 仍按总则 item 1 在独占 worktree 内并行工作）。修完提交后**再开新一轮并行 reviewer**，攻击对象包括上一轮的修复本身，被审 SHA 换成修复之后的新 SHA。终止条件是某一轮所有并行 reviewer 都给出「可合并」且无 BLOCKER/MAJOR（MINOR 已修或写明理由），并且本地全套测试相对基线无新增失败。**默认最多 3 轮**：第 3 轮仍有 BLOCKER/MAJOR（说明方案本身有问题），或一轮之内反复来回震荡，就停下来向用户报告，不无限循环；此时成果只在本地 worktree，报告里写明路径、分支和未解决的问题。用户明确要求「审到没有任何问题为止」时，终止条件收紧为某一轮所有 reviewer 都未发现任何缺陷，轮数不设上限；但同一个缺陷修后又复现、修复来回震荡、或连续三轮的缺陷总数（含 MINOR）没有下降，就停下来报告。
+C 的副本与清单检查、全量测试、B 跑不完的变异批跑这些纯执行的活，由主 agent 交给 `review-runner`（FlashX，最多 2 路）跑，可与判断类 reviewer 同时进行；它只执行、不裁决，结果由主 agent 复核。
+
+**派发前、等待中、收尾时的四条纪律**（规格见 [审查子代理并发](../../../specs/review-agent-concurrency.md)「单路上限、等待与刹车」）：
+1. **派发前报预计用时。** 先跑 `python3 -B scripts/model_load.py`：结论为通畅时判断类每路约 10~15 分钟，拥挤时 30~60 分钟，告诉用户再派。上一轮因限流失败且结论为「拥挤」时，先 `TaskStop` 在途的默认模型子代理，请用户决定是否错峰。
+2. **阻塞等，不 sleep 轮询。** 用 `TaskOutput`（`block: true`，`timeout` 不超过 600000 毫秒）等报告。一路 30 分钟没有新的工具调用完成，或总用时超过 60 分钟，先 `TaskStop`，再 `SendMessage` 下「不再调用任何工具，凭已有证据出报告」。
+3. **完成通知不自动开新一轮。** 子代理完成通知触发的新一轮只做收报告、汇总、修复、收尾；没有待修项，或已是最后一轮，就汇报并结束。
+4. **MINOR 不单独触发新一轮。** 修掉，或写明不修的理由；它的修复随下一轮审查一并覆盖，不单独开一轮。
+5. **一个时间只跑一个审查会话。** 本机别的会话同时也在跑审查时，各路审查员共用同一个名额，会互相排队。`scripts/model_load.py` 报「拥挤」就是这个信号：告诉用户，由用户决定串行还是继续。
+
+处理规则：主 agent 等待当轮全部 reviewer 返回后汇总去重；BLOCKER/MAJOR 必须修；MINOR 修掉，或在回复里写明为何不修；MINOR 的修复若不只是改措辞，随下一轮审查一并覆盖，不单独开一轮。**review 发现问题的修复均由主 agent 在目标 worktree 内集中执行并同步副本**（避免多 subagent 并发写同一 worktree；多议题各自的实现 subagent 仍按总则 item 1 在独占 worktree 内并行工作）。修完提交后**再开一轮 reviewer**，攻击对象包括上一轮的修复本身，被审 SHA 换成修复之后的新 SHA。终止条件是某一轮所有 reviewer 都给出「可合并」且无 BLOCKER/MAJOR（MINOR 已修或写明理由），并且本地全套测试相对基线无新增失败。**默认最多 2 轮**：第 2 轮之后仍有 BLOCKER/MAJOR（说明方案本身有问题），或一轮之内反复来回震荡，就停下来向用户报告，用户点头才开第 3 轮，不无限循环；此时成果只在本地 worktree，报告里写明路径、分支和未解决的问题。用户明确要求「审到没有任何问题为止」时，终止条件收紧为某一轮所有 reviewer 都未发现任何缺陷，轮数不设上限；但同一个缺陷修后又复现、修复来回震荡、或连续三轮的缺陷总数（含 MINOR）没有下降，就停下来报告。
 
 ## 5. 合并
 
@@ -212,7 +221,7 @@ python3 -B "${ZCODE_SKILL_DIR}/scripts/triage.py" released <提交>     # 该提
 
 ## 7. 最终报告（给用户）
 
-每个处理项一段，先说结论：issue/PR 编号、类型、结果（已合并关闭 / 已追问待回复 / 需用户决策 / 他人已在处理故未接手 / review 未收敛而停下）、合并提交。然后列实际跑过的检查与结果（相对基线的新增失败；基线失败逐个列出并给出 `fork/main` 同环境复现依据；重跑转绿的偶发失败也列出）、并行派发的 subagent 路数与 review 轮数及抓出的主要问题、是否同步插件副本、GitCode 镜像同步状态、是否需要发版或重启客户端才能生效、尚未在真实环境验证的部分。停下来的项写明 worktree 路径、分支和未解决的问题。跳过的检查和失败要原样说出，不隐去。
+每个处理项一段，先说结论：issue/PR 编号、类型、结果（已合并关闭 / 已追问待回复 / 需用户决策 / 他人已在处理故未接手 / review 未收敛而停下）、合并提交。然后列实际跑过的检查与结果（相对基线的新增失败；基线失败逐个列出并给出 `fork/main` 同环境复现依据；重跑转绿的偶发失败也列出）、派发的 subagent 路数、review 轮数与派发节奏（逐路或同轮并发）及抓出的主要问题、是否同步插件副本、GitCode 镜像同步状态、是否需要发版或重启客户端才能生效、尚未在真实环境验证的部分。停下来的项写明 worktree 路径、分支和未解决的问题。跳过的检查和失败要原样说出，不隐去。
 
 ## 红线
 
