@@ -450,8 +450,10 @@ test('dispose：弹框与 keydown 监听一并摘除，body 观察器断开，�
   const inst = h.window.compactTest.instances()[0];
   inst.dispose();
   assert.equal(h.dlgEl(), undefined, '弹框随 dispose 摘除');
-  const bodyObs = h.observers.find(o => o.target === h.body);
-  assert.ok(bodyObs && !bodyObs.connected, 'body 观察器断开');
+  const bodyObs = h.observers.filter(o => o.target === h.body);
+  assert.ok(bodyObs.length >= 2, '实例弹框 body 观察器与 v486 文档级「在 Finder 中打开」观察器并存');
+  assert.ok(!bodyObs[bodyObs.length - 1].connected, 'body 观察器断开');
+  assert.ok(bodyObs[0].connected, 'v486 文档级观察器归代际所有，实例 dispose 不摘除（全局 __zusageDispose 才摘）');
   btn.dispatch('click');   // 新代际清扫前的残留按钮：无声失效
   assert.equal(h.dlgEl(), undefined);
 });

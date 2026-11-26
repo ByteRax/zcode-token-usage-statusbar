@@ -5,7 +5,7 @@
 设计目标：
 - 保持分发产物形态不变：根目录 overlay.js 与 plugins/.../overlay.js 仍为单文件 IIFE，
   无需打包器或第三方依赖，也不改变 Release ZIP 的文件清单契约。
-- 降低维护粒度：2MB 的 overlay.js 拆分为职责清晰的 19 个源码模块（src/overlay/，`04-` 前缀七文件：词包纯数据、速度 V3 五分片（04-speed-v3-*）与 `04-status-rotator-data.js`，按字典序加载）。
+- 降低维护粒度：2MB 的 overlay.js 拆分为职责清晰的 21 个源码模块（src/overlay/，`04-` 前缀七文件：词包纯数据、速度 V3 五分片（04-speed-v3-*）与 `04-status-rotator-data.js`；`11-model-peak-factor-badge.js` 峰谷倍率徽标（specs/model-peak-factor-badge.md）与 v486 项目菜单分片 `05-project-open-folder.js`（specs/project-open-folder-menu.md），按字典序加载）。
 - 防漂移门禁：`--check` 校验 src/overlay/ 拼接结果与根 overlay.js 逐字节一致，
   并由 `sync_plugin.py` 自动串联调用。
 
@@ -22,6 +22,7 @@
   │  04-speed-v3-view.js                v384 速度 V3：920×480 外壳/头部双 Tab/模型筛选/左右卡
   │  04-speed-v3-wire.js                v384 速度 V3：spd3RebuildOr 装配桥（图表分发+状态烘入）
   │  04-status-rotator-data.js          内置语录库、在线热更缓存、自动轮换引擎与通知音效
+  │  05-project-open-folder.js          v486 项目菜单「在 Finder 中打开」：宿主两类项目菜单注入项（specs/project-open-folder-menu.md）
   │  05-status-rotator-runtime.js       词包编辑器弹窗、多 pane 协调器与几何可见性判定
   │  ┌─ 实例级闭包 `function spawnInstance(pid)`（06 开 → 12 闭）──────────────────┐ │
   │  │ 06-instance-dom-and-styles.js     VERSION 台账、实例级状态、内联 CSS 与条面根 DOM
@@ -30,6 +31,7 @@
   │  │ 09-instance-settings-and-notes.js ⚙ 设置面板构建、更新日志卡片与提示词增强历史/配置
   │  │ 10-instance-subpanel-and-composer.js 子代理任务抽屉浮层、工作流卡片与输入框查找定位
   │  │ 11-instance-toolbar-chips.js      输入框工具行 chip（上下文/额度/Git/速率/系统/增强）与模型拉取弹窗
+  │  │ 11-model-peak-factor-badge.js    v482 模型选择器峰谷倍率徽标（specs/model-peak-factor-badge.md）
   │  │ 12-instance-mount-and-boot.js     in-card/pill/compact 挂载、窄宽三档收缩、折叠与实例 dispose()
   │  └─────────────────────────────────────────────────────────────────────────────┘ │
   └──────────────────────────────────────────────────────────────────────────────────┘

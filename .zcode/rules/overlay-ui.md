@@ -6,7 +6,7 @@
 
 ## 1. 文件与版本契约
 
-- **多文件分片与拼接**：桌面 `overlay.js` 源码按职责拆分为 `src/overlay/00-boot-state-i18n.js` 至 `12-instance-mount-and-boot.js` 共 19 个模块（`04-` 前缀七文件：`04-rotator-builtin-packs.js` 内置词包纯数据、`04-speed-v3-{charts,core,heat,view,wire}.js` 速度 V3 五分片、`04-status-rotator-data.js` rotator 其余数据与鲸鱼解码；分片按文件名字典序加载，速度 V3 规格见 specs/speed-tooltip-v3.md），由零依赖脚本 `scripts/build_overlay.py` 拼接生成根 `overlay.js`（`python3 sync_plugin.py` 会自动先拼接再同步插件副本；`--check` 与 `test_plugin_package.py` 守护拼接产物逐字节一致）。日常修改优先编辑 `src/overlay/` 下的对应分片，再执行 `python3 sync_plugin.py`。
+- **多文件分片与拼接**：桌面 `overlay.js` 源码按职责拆分为 `src/overlay/00-boot-state-i18n.js` 至 `12-instance-mount-and-boot.js` 共 21 个模块（`04-` 前缀七文件：`04-rotator-builtin-packs.js` 内置词包纯数据、`04-speed-v3-{charts,core,heat,view,wire}.js` 速度 V3 五分片、`04-status-rotator-data.js` rotator 其余数据与鲸鱼解码；`11-model-peak-factor-badge.js` 模型选择器峰谷倍率徽标（specs/model-peak-factor-badge.md）；`05-project-open-folder.js` 宿主项目菜单「在 Finder 中打开」注入（specs/project-open-folder-menu.md）；分片按文件名字典序加载，速度 V3 规格见 specs/speed-tooltip-v3.md），由零依赖脚本 `scripts/build_overlay.py` 拼接生成根 `overlay.js`（`python3 sync_plugin.py` 会自动先拼接再同步插件副本；`--check` 与 `test_plugin_package.py` 守护拼接产物逐字节一致）。日常修改优先编辑 `src/overlay/` 下的对应分片，再执行 `python3 sync_plugin.py`。
 - `overlay.js`（位于 `src/overlay/06-instance-dom-and-styles.js` 的 `spawnInstance` 首部）的 `VERSION` 随**提交**递增，未提交的中间迭代不涨号；在 `06-instance-dom-and-styles.js` 中以多行 `/* VERSION 台账 ... */` 注释块维护（每行一个 `→ vNN` 条目），`scripts/build_overlay.py` 构建时自动收敛为单行 `//v82 ...` 同行注释以兼容发版台账检查脚本。
 - 顶层常量（如 `SRC_FIELD_LABELS`、进度阶段表、签名缓存）必须在 `buildPanel` 等消费函数定义**之前**赋值，`var` 提升不会提升初始值，曾因时序在面板打开时崩溃。
 - 浮层是注入宿主渲染进程的脚本：保留代际守卫（`__zusageDispose` 移除旧条再重注入）、幂等内容更新、tooltip 解绑与扫描清理；`rAF` 自调度必须在异常后继续下一帧；诊断对象原地更新，不替换闭包共享引用。

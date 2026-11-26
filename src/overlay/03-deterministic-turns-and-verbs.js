@@ -573,6 +573,7 @@
     if (mpModalDispose) mpModalDispose();
     cleanupDeterministic();
     if (typeof zuRotatorDisposeAll === "function") zuRotatorDisposeAll();
+    if (typeof zuOpfDispose === "function") zuOpfDispose();   // v486：项目菜单「打开文件夹」观察器随代际摘除
     window.__zusageWantSids = [];
     window.__zusageWantSid = "";
     window.__zusageGitPaths = [];   // v96：主进程下轮 tick 读到空集即停查
