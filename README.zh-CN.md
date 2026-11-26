@@ -31,16 +31,22 @@ A community toolkit for ZCode desktop: generation speed, token usage, context tr
 
 ### 安装方法
 
-把下面这段话发给 ZCode，安装或更新插件（GitHub 连不上时，它会自动改用国内源重试，不用你再发一次）：
+把下面这段话发给 ZCode，安装或更新插件。文案把要执行的命令都写明了，ZCode 不需要自己摸索安装方式；GitHub 连不上时它会自动改用国内源重试，不用你再发一次：
 
 ```text
-请安装或更新并启用 ZCode 插件：https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases
-GitHub 连不上时，自动改用 https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode 重试，不用再问我。
-完成后，在 ZCode 对话中执行 /install-overlay；确认状态条安装成功后，提醒我完全退出并重新打开 ZCode（仅关闭窗口不算），不要自动重启。
-若安装失败，请说明原因；若当前会话无法执行该命令，请提示我手动执行，不要跳过这一步或声称安装成功。
+请安装或更新 ZCode 插件 zcode-token-usage-statusbar，严格按下面三步做，不要另找安装方式：
+
+1. 用 ZCode 自带的命令行添加市场并安装插件。调用方法：先设置环境变量 ELECTRON_RUN_AS_NODE=1，再运行 ZCode 的可执行文件，把安装目录里的 resources/glm/zcode.cjs 作为第一个参数。macOS 默认是 /Applications/ZCode.app/Contents/MacOS/ZCode 和 /Applications/ZCode.app/Contents/Resources/glm/zcode.cjs；Windows 上 ZCode.exe 与 resources\glm\zcode.cjs 在同一个安装目录，位置不固定时用 PowerShell 的 (Get-Process ZCode).Path 查到正在运行的 ZCode.exe。在这个命令行里依次执行：
+   plugins marketplace add "https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases" --json
+   plugins install "zcode-token-usage-statusbar@zusage-marketplace" --scope user --json
+   第一条失败时（多半是 GitHub 连不上），把地址换成 https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode 重试，不用再问我。
+2. 运行 python3 "<第 1 步第二条命令输出里的 installPath>/overlay_install.py" install（Windows 上 python3 不可用就依次换 python、py -3）。
+3. 按第 2 步的输出提醒我：出现重启提醒时，提醒我完全退出 ZCode（从菜单或托盘退出，只关窗口不算）再重新打开；不要自动重启。
+
+任何一步失败都原样转述错误，不要跳过，也不要声称安装成功。
 ```
 
-保留地址里的 `#plugin-releases` 与 `.git#plugin-releases-gitcode`，它们选择正式发布的稳定渠道。国内源要求本机装有 [Git](https://git-scm.com/downloads)（宿主通过 git 拉取渠道清单），而且地址里的 `.git` 不能省：宿主只把以 `.git` 结尾的地址当作仓库来源，否则会把它当成清单文件的直链去下载。
+两个地址里的 `#plugin-releases` 与 `.git#plugin-releases-gitcode` 选择正式发布的稳定渠道，保持原样。国内源要求本机装有 [Git](https://git-scm.com/downloads)，而且地址里的 `.git` 不能省：宿主只把以 `.git` 结尾的地址当作仓库来源，否则会把它当成清单文件的直链去下载。
 
 > **注意**：状态条安装会修改 ZCode 的程序文件（`app.asar`），请先确认信任本项目。**首次注入成功后，须完全退出并重开 ZCode**（仅关闭窗口或重开会话不算），再检查状态条是否出现；安装失败或权限不足时，先排查原因，重启不能替代安装。
 

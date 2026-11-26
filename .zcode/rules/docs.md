@@ -17,6 +17,7 @@
 - 差异化卖点=上下文占比 + 中英双语 + 首屏截图三条守住，不拼竞品功能清单。
 - 逐问速率行的标签（`token_rate.py format_turn_line`）不分语言恒中文（硬编码无 locale 分支，英文宣传图里速率行是手写演示文案，已知产品限制）；`overlay.js` 自身 `L()` 双语可在布景页 `localStorage.setItem("zusage3.lang","en")` 取真实英文文案，不手写翻译。
 - 市场条目保留 `description_i18n`；门面显示名「速度状态栏」与市场 UI 显示的 slug 派生名（"ZCode Token Usage Statusbar"）不一致**刻意保留**——slug、市场名、命令、配置键、仓库/安装指引里的英文名都不擅改（受插件市场 UI 名约束，真改是破坏性工程）。README 安装指引中的英文名是市场实际显示名，不能翻译。
+- **README 安装文案必须自包含**（`tests/test_install_prompt_contract.py` 锁定）：宿主不提供单独的 `zcode` 命令，也不给代理任何「怎么装插件」的指引（引擎里没有面向模型的添加市场说明，`SearchPlugins`/`SuggestPluginInstall` 只覆盖官方市场，本插件不在其中），代理只能靠文案本身。只给地址、或只说「执行 /install-overlay」时，代理得自己摸索调用方式（插件刚装好时当前会话里还没有这条命令）。文案须写明：命令行调用方式（`ELECTRON_RUN_AS_NODE=1` + ZCode 可执行文件 + `resources/glm/zcode.cjs`）、两条 `plugins` 子命令及 `--json`、GitHub 失败自动换带 `.git` 的 GitCode 地址、安装器脚本的调用路径（`installPath` 取自安装输出）、完全退出的重启措辞与失败时原样转述。改文案里的命令后跑 `python3 -B tests/install-prompt-smoke.py`（macOS，联网）确认全新环境仍装得上；这三步之外不要塞进与安装无关的内容。
 - GitHub 默认仓库搜索只匹配 name+description+topics（README 需 `in:readme`）——辨识度关键词写 Description/Topics 而非正文堆同义词；topics ≤20、仅小写字母数字连字符、≤50 字符、不加竞品名不凑满。远端写入（Description/Topics/README）后 `gh api` 回读确认。
 
 ## 3. 宣传图与 tour 截图（docs/promo、docs/tour）
