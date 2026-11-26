@@ -1304,11 +1304,24 @@ print("bounded unclosed notes completed")
                            asset, manifest_path, out)
         self.assertFalse(out.exists())
 
+    def test_channel_commit_refuses_an_orphan_commit_by_default(self):
+        # 市场克隆按快进跟进渠道分支：孤儿 tip 让它们静默卡在旧清单（issue #497）。
+        _, _, catalog_path = self.published()
+        objects = self.git("count-objects", "-v")
+        with self.assertRaisesRegex(tool.ReleaseError, "issue #497"):
+            tool.channel_commit(self.root, catalog_path, "1.2.3")
+        self.assertEqual(self.git("count-objects", "-v"), objects, "被拒的孤儿请求不留下任何对象")
+
+    def test_channel_commit_rejects_parent_and_orphan_together(self):
+        _, _, catalog_path = self.published()
+        with self.assertRaisesRegex(tool.ReleaseError, "mutually exclusive"):
+            tool.channel_commit(self.root, catalog_path, "1.2.3", parent="HEAD", orphan=True)
+
     def test_channel_commit_creates_a_minimal_orphan_commit_without_touching_the_worktree(self):
         _, _, catalog_path = self.published()
         before = (self.git("status", "--porcelain"), self.git("rev-parse", "HEAD"),
                   self.git("for-each-ref"), self.git("count-objects", "-v"))
-        result = tool.channel_commit(self.root, catalog_path, "1.2.3")
+        result = tool.channel_commit(self.root, catalog_path, "1.2.3", orphan=True)
         after = (self.git("status", "--porcelain"), self.git("rev-parse", "HEAD"),
                  self.git("for-each-ref"), self.git("count-objects", "-v"))
         self.assertEqual(result["files"], ["LICENSE", "marketplace.json"])
@@ -1361,9 +1374,9 @@ print("bounded unclosed notes completed")
                               "--published-zip", str(asset), "--published-manifest", str(manifest_path),
                               "--catalog-out", str(self.base / "cli.json")])
             committed = tool.main(["channel-commit", "--root", str(self.root), "--catalog", str(catalog_path),
-                                   "--version", "1.2.3"])
+                                   "--version", "1.2.3", "--orphan"])
             rejected = tool.main(["channel-commit", "--root", str(self.root), "--catalog", str(catalog_path),
-                                  "--version", "9.9.9"])
+                                  "--version", "9.9.9", "--orphan"])
         self.assertEqual((code, committed, rejected), (0, 0, 1))
         # 输出是多行缩进 JSON：按对象逐个解码
         text, reports = out.getvalue().lstrip(), []

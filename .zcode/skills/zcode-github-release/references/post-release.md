@@ -67,21 +67,21 @@ python3 release_tool.py reconcile --repo OWNER/REPO \
 
 ## 渠道分支精简
 
-渠道分支是全体用户的更新入口：宿主每次添加市场、每次刷新市场都按 ref 下载整份归档，所以分支里只放 `marketplace.json`（和 `LICENSE`），不带源码树。提交对象由 `release_tool.py channel-commit` 生成，它不动工作区、不推送；快进推送属于阶段 E，授权范围以发布技能为准。
+渠道分支是全体市场渠道用户的更新入口：已有市场克隆按快进方式跟进分支（issue #497 的克隆 reflog 实证），分支里只放 `marketplace.json`（和 `LICENSE`）即可满足清单读取，不带源码树把每次刷新的下载降到最小。提交对象由 `release_tool.py channel-commit` 生成，它不动工作区、不推送；推送属于阶段 E，授权范围以发布技能为准。
 
-存量分支换成精简分支是一次性动作，要强推，默认全链不含强推，须用户针对这个动作明确授权：
+换精简分支与之后的每次发版是同一条快进链，全程普通推送、不需要强推：
 
 ```bash
 git fetch -q fork plugin-releases
 git show fork/plugin-releases:marketplace.json      # 远端原清单的版本：新清单版本不得低于它
-OLD=$(git rev-parse fork/plugin-releases)
-python3 release_tool.py channel-commit --catalog /new/artifact-directory/marketplace-release.json --version X.Y.Z
-git push --force-with-lease=plugin-releases:"$OLD" fork <上一步输出的 commit>:refs/heads/plugin-releases
+python3 release_tool.py channel-commit --catalog /new/artifact-directory/marketplace-release.json \
+  --version X.Y.Z --parent fork/plugin-releases
+git push fork <上一步输出的 commit>:refs/heads/plugin-releases
 ```
 
-- 不给 `--parent` 时生成的是孤儿提交，与旧分支没有共同祖先，必须带 `--force-with-lease=<分支>:<远端旧提交>` 推送；远端在核对之后被别人更新过就会拒绝，被拒就重新读取远端并停止。
-- 两台主机上的旧提交不同时 `fork` 的双推送会在其中一段被拒：按 [仓库协作流程规则](../../../rules/repo-workflow.md) §3 的做法用显式仓库 URL 分别推送，不要去掉 lease 强推。
-- 精简分支上之后的每次发版不必再建 worktree：`python3 release_tool.py channel-commit --catalog … --version X.Y.Z --parent fork/plugin-releases`，再普通推送 `<commit>:refs/heads/plugin-releases`（快进，禁止强推）；上一节带 worktree 的写法在精简分支上照样可用。
+- `channel-commit` 缺省拒绝生成孤儿提交：市场克隆按快进拉取清单，孤儿 tip 会让它们静默卡在旧版本（issue #497，2026-11-26 曾因孤儿强推致市场渠道全体卡在 1.5.23）；`--orphan` 只用于首次创建一个全新的渠道分支。
+- 推送必须是快进；被拒说明远端 tip 不是所给的 parent，重新读取远端并核对，不要加 `-f`。
+- 两台主机上的旧 tip 不同时 `fork` 的双推送会在其中一段被拒：按 [仓库协作流程规则](../../../rules/repo-workflow.md) §3 的做法用显式仓库 URL 分别推送（每段仍须是快进）。
 - GitCode 渠道分支同理：清单换成 `marketplace-release-gitcode.json`，分支名换成 `plugin-releases-gitcode`，远端 refspec 写法与「分支只在部分主机存在」的处理见下一节。
 
 ## GitCode 渠道
