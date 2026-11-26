@@ -975,6 +975,7 @@ test('v487 技能列表、其他路径、系统提示词名称与路径展示；
   // 4. 气泡纯说明、指针穿透：路径只展示，pointerdown / click / Enter 都不触发打开文件夹
   //    （真机实证：气泡若拦截鼠标，指针一进入气泡宿主 hover-card 就判定离开并关闭弹层）
   assert.equal(tip.style.pointerEvents, 'none', '气泡不拦截鼠标');
+  assert.equal(tip.listeners.size, 0, '气泡不挂任何监听（指针进出不干预宿主弹层）');
   assert.doesNotMatch(tip.innerHTML, /role="button"|tabindex="0"/, '路径不是可聚焦控件');
   assert.match(tip.innerHTML, /<span class="cb-path" data-cb-path="\/Applications\/ZCode\.app\/Contents\/Resources\/glm">/, '路径只作文本展示');
   const pathNode = new Element('span');
@@ -988,7 +989,7 @@ test('v487 技能列表、其他路径、系统提示词名称与路径展示；
 
 /* ---------- v487 审查补测：折算边界、开关、定位、路径与生命周期 ---------- */
 
-test('v487 折算四舍五入、小数逗号百分比与降级：101×50.0%→51，「50,5 %」按 50.5 解析，已用量或百分比取不到不出数', () => {
+test('v487 折算四舍五入、小数逗号百分比与降级：101×50.0%→51，「33,3 %」按 33.3 解析，已用量或百分比取不到不出数', () => {
   const h = harness();
   const comp = h.buildComposer('workspace-main', 'sid_main');
   comp.btn.setAttribute('aria-label', '上下文已用 101 / 总量 1,000');
@@ -996,17 +997,17 @@ test('v487 折算四舍五入、小数逗号百分比与降级：101×50.0%→51
     withBorderT: true,
     breakdown: [
       { label: '消息', pct: '50.0%' },
-      { label: '其他', pct: '50,5 %' },
-      { label: '技能', pct: '—' },
+      { label: '技能', pct: '—' },   // 解析失败的行放在中段：后面的行不能被连累
+      { label: '其他', pct: '33,3 %' },
     ],
   });
   h.inject(); h.boot(); h.tick();
   const tokOf = r => r.row.children.find(c => c.classList && c.classList.contains('zu-ctx-bkd-tok'));
   assert.equal(tokOf(ui.bkdRows[0]).textContent, '51 · ', '50.5 四舍五入进位（截尾会得 50）');
-  assert.equal(tokOf(ui.bkdRows[1]).textContent, '51 · ', '小数逗号按 50.5 解析（截成 5 会得 5）');
-  assert.equal(tokOf(ui.bkdRows[2]), undefined, '百分比解析失败不出数');
-  ui.body.dispatch('mouseover', { target: ui.bkdRows[1].row });
-  assert.match(h.bkdTipEl().innerHTML, /占已用 50,5 %/, '气泡里的占比串照抄宿主原文');
+  assert.equal(tokOf(ui.bkdRows[1]), undefined, '百分比解析失败不出数');
+  assert.equal(tokOf(ui.bkdRows[2]).textContent, '34 · ', '小数逗号按 33.3 解析（不把逗号当小数点会得 33）');
+  ui.body.dispatch('mouseover', { target: ui.bkdRows[2].row });
+  assert.match(h.bkdTipEl().innerHTML, /占已用 33,3 %/, '气泡里的占比串照抄宿主原文');
   comp.btn.setAttribute('aria-label', '上下文已用 0 / 总量 1,000');
   h.tick();
   assert.equal(tokOf(ui.bkdRows[0]), undefined, '已用量取不到时摘除已插入节点');
@@ -1081,6 +1082,8 @@ test('v487 Windows 路径、技能去重与目录可信限制：同技能只列�
             { kind: 'toolCall', toolName: 'Skill', input: { skill: 'alpha' }, output: { text: 'Base directory for this skill: C:\\Users\\bob\\proj\\.zcode\\skills\\alpha\n' } },
             { kind: 'toolCall', toolName: 'Skill', input: { skill: 'stray' }, output: { text: 'Base directory for this skill: D:\\elsewhere\\stray\n' } },
             { kind: 'toolCall', toolName: 'Skill', input: { skill: 'sneaky' }, output: { text: 'Base directory for this skill: C:\\Users\\bob\\proj\\.zcode\\skills\\..\\..\\..\\private\\sneaky\n' } },
+            { kind: 'toolCall', toolName: 'Skill', input: { skill: 'sneaky2' }, output: { text: 'Base directory for this skill: C:\\Users\\bob\\proj\\.zcode\\skills/../../private\n' } },   // 正斜杠形式的穿越
+            { kind: 'toolCall', toolName: 'Skill', inputText: '{"skill":"beta"}' },   // 只带 inputText 的行
           ],
         },
       },
@@ -1092,11 +1095,13 @@ test('v487 Windows 路径、技能去重与目录可信限制：同技能只列�
   const tip = h.bkdTipEl();
   const linkTargets = () => [...tip.innerHTML.matchAll(/data-cb-path="([^"]*)"/g)].map(m => m[1]);
   ui.body.dispatch('mouseover', { target: ui.bkdRows[0].row });
-  assert.match(tip.innerHTML, /近期已用技能.*\(3\)/, '同名技能去重后 3 个（alpha、stray、sneaky）');
+  assert.match(tip.innerHTML, /近期已用技能.*\(5\)/, '同名技能去重后 5 个（alpha、stray、sneaky、sneaky2、beta）');
   assert.deepEqual(linkTargets(), ['C:\\Users\\bob\\proj\\.zcode\\skills\\alpha', 'C:\\Users\\bob\\.zcode\\skills', 'C:\\Users\\bob\\proj\\.zcode\\skills'],
     '已用技能只在 home/工作区之下才展示目录；目录按反斜杠拼接');
   assert.match(tip.innerHTML, /<span class="cb-tag">stray<\/span>/, 'home 与工作区之外的技能目录只列名称');
   assert.match(tip.innerHTML, /<span class="cb-tag">sneaky<\/span>/, '字面落在工作区之下、实际用「..」穿出去的目录同样只列名称');
+  assert.match(tip.innerHTML, /<span class="cb-tag">sneaky2<\/span>/, '正斜杠形式的「..」穿越同样只列名称');
+  assert.match(tip.innerHTML, /<span class="cb-tag">beta<\/span>/, '只带 inputText 的技能行也列出名称');
   ui.body.dispatch('mouseover', { target: ui.bkdRows[1].row });
   assert.ok(linkTargets().includes('C:\\Users\\bob\\.zcode\\cli\\memories\\projects'), '记忆索引路径指向真实布局');
   assert.doesNotMatch(tip.innerHTML, /\.zcode\/projects/);
@@ -1174,4 +1179,26 @@ test('v487 整张弹层被宿主卸载后，500ms 健康检查兜底收起气泡
   ui.hc.isConnected = false; ui.bkdRows[0].row.isConnected = false;   // Radix 卸载：卡片连同行一起离开文档
   h.tick();
   assert.equal(tip.style.display, 'none', '对账拍已看不到弹层，由健康检查收起');
+});
+
+test('v487 对账摘除：缓存明细消失后缓存行摘标记；行标签变成未知类别后摘标记且不再弹气泡，Token 数照常显示', () => {
+  const h = harness();
+  const comp = h.buildComposer('workspace-main', 'sid_main');
+  comp.btn.setAttribute('aria-label', '上下文已用 100,000 / 总量 1,000,000');
+  const props = { taskUsage: { used: 100000, size: 1000000, cache: { latestHitRate: 0.9, hitRate: 0.8 } } };
+  comp.btn['__reactFiber$fixture'] = { memoizedProps: props, return: null };
+  const ui = h.buildHoverCard({ withBorderT: true, breakdown: [{ label: '消息', pct: '60.0%' }, { label: '其他', pct: '40.0%' }] });
+  h.inject(); h.boot(); h.tick();
+  const tip = h.bkdTipEl();
+  assert.equal(ui.cacheRow.getAttribute('data-zusage-bkd-cache'), '1');
+  props.taskUsage = { used: 100000, size: 1000000 };   // 缓存明细没了
+  ui.bkdRows[1].lbl.textContent = '新类别';             // 行标签变成未知类别
+  h.tick();
+  assert.equal(ui.cacheRow.getAttribute('data-zusage-bkd-cache'), null, '缓存明细消失后摘标记');
+  assert.equal(ui.cacheRow.__zuBkdCache, null);
+  assert.equal(ui.bkdRows[1].row.getAttribute('data-zusage-bkd'), null, '未知类别摘标记');
+  assert.equal(ui.bkdRows[1].row.__zuBkdData, null);
+  ui.body.dispatch('mouseover', { target: ui.bkdRows[1].row });
+  assert.equal(tip.style.display, 'none', '未知类别不弹气泡');
+  assert.ok(ui.bkdRows[1].row.children.some(c => c.classList && c.classList.contains('zu-ctx-bkd-tok')), 'Token 数不依赖类别，照常显示');
 });
