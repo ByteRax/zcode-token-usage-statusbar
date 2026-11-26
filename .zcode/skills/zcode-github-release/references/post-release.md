@@ -7,7 +7,9 @@
 渠道清单是 `build` 输出的 `marketplace-release.json`（不是 Release 资产，也不在 ZIP 内）。用独立 worktree 操作，不碰脏的开发工作区：
 
 ```bash
-git fetch fork plugin-releases
+git fetch -q fork plugin-releases && git fetch -q gitcode plugin-releases
+[ "$(git rev-parse fork/plugin-releases)" = "$(git rev-parse gitcode/plugin-releases)" ] || echo "两端 tip 不同：先查清原因，不推"
+OLD=$(git rev-parse fork/plugin-releases)                                   # 记下推送前的远端 tip，消费者验收要用
 git worktree add --detach .worktrees/channel-vX.Y.Z fork/plugin-releases   # 分支已存在：从远端 tip 派生
 git show fork/plugin-releases:marketplace.json                              # 先读远端原清单，核对插件、版本与 ref
 ```
@@ -31,13 +33,35 @@ git -C .worktrees/channel-vX.Y.Z push fork HEAD:refs/heads/plugin-releases
 - 推送写法：从 detached worktree 推送必须写 `HEAD:refs/heads/分支名`。写成 `git push fork plugin-releases` 推的是同名本地分支，它常落后于远端而被拒（non-fast-forward），没有同名本地分支则报 `src refspec ... does not match any`；目标分支不存在时写短名 `HEAD:分支名` 会报 `not a full refname`。
 - 正常推送，禁止强推；被拒绝就重新读取远端并停止，不盲目重试。`fork` 的双 push URL 会同时推到 GitCode。渠道分支按设计直接推送，不开 PR。
 
-回读核对，渠道未成功之前不能声称远端更新可用：
-
-```bash
-git fetch -q fork plugin-releases && git show FETCH_HEAD:marketplace.json | diff - /new/artifact-directory/marketplace-release.json && echo "清单一致"
-```
+推送后做下面的[消费者验收](#消费者验收渠道分支)；没通过之前不能声称远端更新可用。
 
 新用户注册 `OWNER/REPO#plugin-releases`；已有注册追踪原 ref，不会自动切换，也不修改用户的市场注册。追踪源码路径清单的用户走 `market` 渠道，由宿主插件管理器按清单直接更新、不经发布包校验。
+
+### 消费者验收（渠道分支）
+
+任何对渠道分支的推送之后都做这一组检查（[渠道分支不变量](../SKILL.md#渠道分支不变量硬约束)第 2 条）。清单内容一致只说明文件对，不说明用户跟得上来：
+
+```bash
+BR=plugin-releases                                   # 或 plugin-releases-gitcode
+URL=https://github.com/OWNER/REPO.git                # 该渠道用户实际克隆的地址；GitCode 渠道用 https://gitcode.com/tanranran/zcode-token-usage-statusbar.git
+CAT=/new/artifact-directory/marketplace-release.json # 该渠道的生成清单；GitCode 渠道用 marketplace-release-gitcode.json
+VER=X.Y.Z                                            # 本次要送达的版本
+OLD=<推送前记下的远端 tip>
+git fetch -q fork "$BR" && git fetch -q gitcode "$BR"
+git rev-parse --quiet --verify "fork/${BR}^" >/dev/null && echo "tip 有父提交"            # 没打印 = tip 是孤儿提交，断链
+[ "$(git rev-parse "fork/$BR")" = "$(git rev-parse "gitcode/$BR")" ] && echo "① 两端 tip 一致"
+git merge-base --is-ancestor "$OLD" "fork/$BR" && echo "② 旧 tip 是新 tip 的祖先"
+git show "fork/${BR}:marketplace.json" | diff -q - "$CAT" && echo "清单与生成结果一致"
+S=$(mktemp -d) && git clone -q --branch "$BR" --single-branch "$URL" "$S/c" \
+  && git -C "$S/c" reset -q --hard "$OLD" \
+  && git -C "$S/c" pull -q --ff-only origin "$BR" \
+  && git -C "$S/c" show HEAD:marketplace.json | python3 -c 'import json,sys; print("③ 旧克隆快进后的清单版本:", json.load(sys.stdin)["plugins"][0]["version"])'   # 须等于 VER
+[ -n "$S" ] && rm -rf "$S"
+```
+
+- 哪一行没打印出预期结果，就是哪一项没过；全部打印且 ③ 等于 `VER` 才算渠道可更新。分支只在一台主机存在时只验那一台，并在报告里写明。
+- 发版之外的任何会话、任何理由动了渠道分支，推送之后同样做这一组检查。
+- 反向对照（确认这套检查真能拦住问题）：把 `OLD` 换成一个不在新 tip 祖先链上的提交，② 必须失败；#497 的孤儿提交就是没有父提交的 tip。
 
 ## 补推（Release 已发、渠道清单未更新）
 
@@ -63,11 +87,11 @@ python3 release_tool.py reconcile --repo OWNER/REPO \
   --catalog-out /tmp/zusage-rebuild-vX.Y.Z/marketplace-release.json
 ```
 
-对账通过后，把 `/tmp/zusage-rebuild-vX.Y.Z` 当作上面的 `/new/artifact-directory` 走同一推送与回读流程。GitCode 渠道欠账时先补镜像（直接调用 `gitcode_mirror`，见 [发布失败与回退](publish-failures.md#已公开但核验不符)），再用其生成的 `marketplace-release-gitcode.json` 推 `plugin-releases-gitcode`；补镜像时传 `$OUT` 里的线上发布包与线上 manifest，不要传重建包——两台主机必须托管同一份字节，否则同一版本在两条渠道上的 sha256 不一致。
+对账通过后，把 `/tmp/zusage-rebuild-vX.Y.Z` 当作上面的 `/new/artifact-directory` 走同一推送流程，推送后做[消费者验收](#消费者验收渠道分支)。GitCode 渠道欠账时先补镜像（直接调用 `gitcode_mirror`，见 [发布失败与回退](publish-failures.md#已公开但核验不符)），再用其生成的 `marketplace-release-gitcode.json` 推 `plugin-releases-gitcode`；补镜像时传 `$OUT` 里的线上发布包与线上 manifest，不要传重建包——两台主机必须托管同一份字节，否则同一版本在两条渠道上的 sha256 不一致。
 
 ## 渠道分支精简
 
-渠道分支是全体市场渠道用户的更新入口：已有市场克隆按快进方式跟进分支（issue #497 的克隆 reflog 实证），分支里只放 `marketplace.json`（和 `LICENSE`）即可满足清单读取，不带源码树把每次刷新的下载降到最小。提交对象由 `release_tool.py channel-commit` 生成，它不动工作区、不推送；推送属于阶段 E，授权范围以发布技能为准。
+渠道分支是全体市场渠道用户的更新入口：已有市场克隆按快进方式跟进分支（issue #497 的克隆 reflog 实证），分支里只放 `marketplace.json`（和 `LICENSE`）即可满足清单读取，不带源码树把每次刷新的下载降到最小。提交对象由 `release_tool.py channel-commit` 生成，它不动工作区、不推送；推送属于阶段 E，授权范围以发布技能为准。本节同样受 SKILL.md [渠道分支不变量](../SKILL.md#渠道分支不变量硬约束)约束：推送前记下远端 tip，推送后做[消费者验收](#消费者验收渠道分支)。
 
 换精简分支与之后的每次发版是同一条快进链，全程普通推送、不需要强推：
 
