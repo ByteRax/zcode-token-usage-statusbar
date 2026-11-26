@@ -793,6 +793,49 @@ test('issue501: recovery requires the ownership proof — no fiber, an editor ro
   }
 });
 
+/* 凭证的查找细节：只认 LexicalComposer 的 context（value=[editor, config]，editor 有 getRootElement/
+ * getEditorState、config 有 getTheme，缺一不可），链上更靠内的其它 Provider 一路跳过；旧版 React 的
+ * __reactInternalInstance$ 键名同样认 */
+test('issue501: only the Lexical composer context counts — providers nearer the input are skipped, and the legacy fiber key works', () => {
+  const decoys = {
+    'plain object value': { memoizedProps: { value: { theme: 'x' } } },
+    'array without an editor': { memoizedProps: { value: [{}, {}] } },
+    'editor without composer config': { memoizedProps: { value: [{ getRootElement() {}, getEditorState() {} }, {}] } },
+    'legacy fiber key': null,
+  };
+  for (const [name, decoy] of Object.entries(decoys)) {
+    const h = harness();
+    const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '' });
+    const lex = ownLexInput(h, ui, '本卡草稿');
+    if (decoy) { decoy.return = ui.editor.__reactFiber$fixture; ui.editor.__reactFiber$fixture = decoy; }   // 诱饵夹在输入节点与真正的 composer Provider 之间
+    else { ui.editor.__reactInternalInstance$fixture = ui.editor.__reactFiber$fixture; delete ui.editor.__reactFiber$fixture; }
+    const enh = mountEnh(h, ui);
+    stripBridge(ui.editor);
+    clickButton(enh);
+    const reqs = enhanceRequests(h);
+    assert.equal(reqs.length, 1, name + ': ' + enh.getAttribute('aria-label'));
+    assert.equal(reqs[0].text, '本卡草稿', name);
+    h.respond(reqs[0].requestId, { ok: true, text: '增强结果' });
+    assert.equal(lex.draft, '增强结果', name);
+  }
+});
+
+test('issue501: a fiber chain with no Lexical composer context is undecidable — the ready bridge is used but nothing is remembered', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '' });
+  const lex = ownLexInput(h, ui, '本卡草稿');
+  ui.editor.__reactFiber$fixture = { memoizedProps: { value: [{ getRootElement() {}, getEditorState() {} }, {}] }, return: null };   // 像编辑器，但不是 composer context
+  const enh = mountEnh(h, ui);
+  clickButton(enh);
+  const req = enhanceRequests(h)[0];
+  assert.ok(req, 'the ready bridge is still used — ' + enh.getAttribute('aria-label'));
+  h.respond(req.requestId, { ok: true, text: '增强结果' });
+  stripBridge(ui.editor);
+  clickButton(enh);
+  assert.equal(enhanceRequests(h).length, 0, 'nothing was remembered');
+  assert.match(enh.getAttribute('aria-label'), /输入框暂不可读/);
+});
+
 /* 判明是别栏的桥（3p）：宿主回退错绑把别栏编辑器的桥挂到本卡输入框上。没记住过本节点自己的桥时不读、不发、
  * 不写，提示与桥未就绪相同，也不记住它——之后桥被摘也不找回 */
 test('issue501: a live bridge proven to belong to another editor is refused — no request, nothing read or sent, and it is never remembered', () => {
