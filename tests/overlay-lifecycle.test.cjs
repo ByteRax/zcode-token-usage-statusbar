@@ -97,8 +97,9 @@ test('coordinator quota counts only live panes and handles more than four sequen
   h.setPanes(['e', 'f', 'g', 'h']); h.tick();
   assert.deepEqual(Array.from(h.window.lifecycleTest.instances(), e => e.pid), ['e', 'f', 'g', 'h']);
   assert.equal(h.frames.size, 4);
-  /* v105 起每实例两个常连观察器：theme + 弹层压缩按钮的 body 观察器（4 实例 × 2）。 */
-  assert.equal(h.observers.filter(e => e.connected).length, 8);
+  /* v105 起每实例两个常连观察器：theme + 弹层压缩按钮的 body 观察器（4 实例 × 2）；
+   * v486 另有文档级「在 Finder 中打开」body 观察器，每代 1 个。 */
+  assert.equal(h.observers.filter(e => e.connected).length, 9);
   old.forEach(e => e.dispose());
   assert.equal(h.frames.size, 4);
   h.window.__zusageDispose();
@@ -380,7 +381,7 @@ test('reinjection and repeated cleanup leave one live generation', () => {
   const h = harness(); h.setPanes(['a']); h.inject(); h.boot();
   const cleanup = h.window.__zusageDispose;
   h.inject(); h.boot(); cleanup();
-  assert.equal(h.frames.size, 1); assert.equal(h.observers.filter(e => e.connected).length, 2);   // v105：theme + 弹层压缩按钮 body 观察器
+  assert.equal(h.frames.size, 1); assert.equal(h.observers.filter(e => e.connected).length, 3);   // v105：theme + 弹层压缩按钮 body 观察器；v486：文档级「在 Finder 中打开」body 观察器（旧代的已随 cleanup 断开）
   // 六个桌面循环：coordinator/heavy(600ms)、rate/deterministic/bridge(2s)、rotator(65ms)。
   assert.equal([...h.timers.values()].filter(t => t.interval).length, 6);
   assert.equal(h.timers.size, 6);
