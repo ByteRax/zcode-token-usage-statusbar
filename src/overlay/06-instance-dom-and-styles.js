@@ -2905,6 +2905,9 @@
          * （字号缩放安全，替代静态 top 估算） */
         speedSel.pop.open = !speedSel.pop.open;
         if (speedSel.pop.open) {
+          /* v479（spec §28.5）：与月历弹层互斥（双向）——键盘路径（Enter→click 委托）
+           * 不经 pointerdown，spd3MonthOutside 兜不到，这里镜像补收（01 链同款） */
+          if (speedSel.mpop) speedSel.mpop.open = false;
           var fb6 = tip.querySelector(".zu-sv3-fbar"), rt6 = tip.querySelector(".zu-sv3-root");
           if (fb6 && rt6) speedSel.pop.top = Math.round(fb6.getBoundingClientRect().bottom - rt6.getBoundingClientRect().top + 8);
         }

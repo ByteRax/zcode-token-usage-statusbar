@@ -1539,6 +1539,11 @@
           (grp === "period" && SPD_PERIODS.indexOf(val) >= 0)) {
         e.stopPropagation();
         t.speedSel[grp] = val;
+        /* v384：切 Tab 收起筛选弹出层（06 链同款契约；v479 审查补齐精简链缺口） */
+        if (t.speedSel.pop) t.speedSel.pop.open = false;
+        /* v479（spec §28.5）：切 Tab 收起月历弹层（所选月保留）。指针路径已由
+         * spd3MonthOutside 兜住，这里补键盘路径（Enter 走 click 委托、不经 pointerdown） */
+        if (t.speedSel.mpop) t.speedSel.mpop.open = false;
         t.speedHover = -1;
         /* v272：维度切换移除，dim 恒 time */
         tpsTip.__zuTipSig = "";
@@ -1580,6 +1585,9 @@
     } else if (hit.hasAttribute("data-sv3-fopen")) {
       s3.pop.open = !s3.pop.open;
       if (s3.pop.open) {
+        /* v479（spec §28.5）：与月历弹层互斥（双向）——键盘路径（Enter→click 委托）
+         * 不经 pointerdown，spd3MonthOutside 兜不到，这里镜像补收 */
+        if (s3.mpop) s3.mpop.open = false;
         var fb1 = tpsTip.querySelector(".zu-sv3-fbar"), rt1 = tpsTip.querySelector(".zu-sv3-root");
         if (fb1 && rt1) s3.pop.top = Math.round(fb1.getBoundingClientRect().bottom - rt1.getBoundingClientRect().top + 8);
       }
@@ -16899,6 +16907,9 @@
          * （字号缩放安全，替代静态 top 估算） */
         speedSel.pop.open = !speedSel.pop.open;
         if (speedSel.pop.open) {
+          /* v479（spec §28.5）：与月历弹层互斥（双向）——键盘路径（Enter→click 委托）
+           * 不经 pointerdown，spd3MonthOutside 兜不到，这里镜像补收（01 链同款） */
+          if (speedSel.mpop) speedSel.mpop.open = false;
           var fb6 = tip.querySelector(".zu-sv3-fbar"), rt6 = tip.querySelector(".zu-sv3-root");
           if (fb6 && rt6) speedSel.pop.top = Math.round(fb6.getBoundingClientRect().bottom - rt6.getBoundingClientRect().top + 8);
         }

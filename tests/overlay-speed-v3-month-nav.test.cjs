@@ -181,6 +181,7 @@ function chain01(ctx, sel, dom) {
     sel, handlers, dom, t, rebuilds: () => rebuilds,
     fire: (el, type) => vm.runInContext('tpsSpd3Activate', ctx)({ target: el, type: type || 'pointerdown' }),
     down: el => handlers.pointerdown({ target: el, button: 0, preventDefault() {}, stopPropagation() {} }),
+    tab: el => vm.runInContext('tpsTabActivate', ctx)({ target: el, stopPropagation() {} }),
     hide: () => vm.runInContext('hideTpsTip', ctx)(),
   };
 }
@@ -397,14 +398,21 @@ for (const [tag, mkChain] of CHAINS) {
     chain.down(mkEl({ cls: 'zu-sv-tab', attrs: { 'data-sv-group': 'period', 'data-sv-val': 'today' } }, dom.root));
     assert.equal(sel.mpop.open, false, '月历收起');
     assert.equal(sel.period, 'today', '被点的 Tab 照常切换（从已脱离的旧节点读属性）');
-    assert.ok(chain.rebuilds() > before, '有重绘');
+    assert.equal(chain.rebuilds(), before + 2, '恰好两次重绘：点外即收一次 + Tab 动作自身一次');
     sel.period = 'month';
     sel.mpop = { open: true, y: 2026 };
     before = chain.rebuilds();
     chain.down(mkEl({ cls: 'zu-sv3-flabel', attrs: { 'data-sv3-fopen': '' } }, mkEl({ cls: 'zu-sv3-fbar' }, dom.root)));
     assert.equal(sel.mpop.open, false, '月历收起');
     assert.equal(sel.pop.open, true, '筛选弹层打开（互斥双向）');
-    assert.ok(chain.rebuilds() > before);
+    assert.equal(chain.rebuilds(), before + 2, '恰好两次重绘：点外即收一次 + fopen 动作自身一次');
+    /* 键盘路径（Enter→click 委托，不经 pointerdown，spd3MonthOutside 兜不到）：
+     * fopen 分支自身镜像补收月历（审查 MINOR：互斥双向此前只在指针路径成立） */
+    sel.pop = { open: false, query: '' };
+    sel.mpop = { open: true, y: 2026 };
+    assert.equal(chain.fire(mkEl({ cls: 'zu-sv3-flabel', attrs: { 'data-sv3-fopen': '' } }, mkEl({ cls: 'zu-sv3-fbar' }, dom.root)), 'click'), true);
+    assert.equal(sel.mpop.open, false, '键盘开筛选弹层同样收月历（fopen 分支镜像）');
+    assert.equal(sel.pop.open, true, '筛选弹层打开');
   });
 
   test(`[${tag}] 「模型筛选」标签入口可开可收（v390 起白名单按无人使用的类名匹配、入口失配的回归锁）`, () => {
@@ -437,6 +445,19 @@ for (const [tag, mkChain] of CHAINS) {
     assert.equal(sel.mon, null, '所选月保留（只有会话切换才复位）');
   });
 }
+
+test('[01 精简 chip 链] 切 Tab（键盘路径）：收起月历与筛选弹层、保留所选月（审查补齐 06 链同款契约）', () => {
+  const { ctx, sel, chain } = setup(chain01);
+  sel.mon = { y: 2026, m: 9 };
+  sel.mpop = { open: true, y: 2026 };
+  sel.pop = { open: true, query: 'glm' };
+  chain.tab(mkEl({ cls: 'zu-sv-tab', attrs: { 'data-sv-group': 'period', 'data-sv-val': 'today' } }));
+  assert.equal(sel.period, 'today');
+  assert.equal(sel.mpop.open, false, '月历收起（键盘路径此前泄漏，指针路径由点外即收兜住）');
+  assert.equal(sel.pop.open, false, '筛选弹层收起（对齐 06 链 v384 契约）');
+  assert.deepEqual(plain(sel.mon), { y: 2026, m: 9 }, '所选月保留');
+  assert.equal(chain.rebuilds(), 1);
+});
 
 test('[06 主卡链] 切 Tab：收起月历弹层、保留所选月', () => {
   const { ctx, sel, chain } = setup(chain06);
