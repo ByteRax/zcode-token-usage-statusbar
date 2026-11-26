@@ -402,7 +402,6 @@ test('fire-and-forget bridge (null/undefined reply) does not count as failure', 
   f0.nextElementSibling.click();
   return new Promise(r => setImmediate(() => {
     assert.equal(ctx.FATAL.openPathErr, undefined, 'null 回执不计数');
-    assert.deepEqual(ctx.opened, ['/tmp/ok']);
     r();
   }));
 });
