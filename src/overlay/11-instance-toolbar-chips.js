@@ -968,13 +968,65 @@
       if (!input && list.length) input = list[0];   // ④
       return input || null;
     }
-    /* → { input, api }：api 仅在桥 ready 且桥对象在时非空。宿主 E2ELexicalInputBridgePlugin 在编辑器
-     * 根节点缺失或不匹配时会回退绑到页面第一个同 testid 节点并覆盖其上已有的桥——本卡节点的桥可能
-     * 因此被别的编辑器覆盖或摘除；据 4.0.0 包内代码静态阅读推断（未实测），之后只有该编辑器根节点
-     * 重建才重挂（报告者反馈重启后恢复）。调用方按 input/api 的有无分别提示，不再并成「先输入内容」。 */
+    /* v480 输入桥记忆与归属凭证（issue #501：输入框有字却提示「输入框暂不可读」——节点在、桥没了）。宿主
+     * E2ELexicalInputBridgePlugin（4.0.0 渲染包 W9t）的卸载清理会误伤别的编辑器：Lexical registerRootListener
+     * 注销时以 (null, 当前根) 回调一次，卸载中的编辑器先 detach 自己的根，再 resolveInput(null)——退回
+     * document.querySelector 取页面首个同 testid 节点，把自己的桥覆盖上去；effect 收尾的 detachBridge(attachedInput)
+     * 又把桥对象与 ready 标记一并删掉。被波及的输入框编辑器还活着、草稿还在，桥却没了；宿主补挂轮询找到节点
+     * 后即停，只有编辑器重新挂载或重启才重挂（包内代码静态核实，夹具确定性复现；未在真机制造现场）。
+     * 宿主没有重挂入口，插件按归属凭证找回：见过「就绪且确属本节点编辑器」的桥就记进页面级 WeakMap（按节点
+     * 索引，热更换代与多实例共享），桥丢了再按同一凭证核对后取回。凭证=沿输入节点的 React fiber 上溯找
+     * LexicalComposer 的 context Provider（memoizedProps.value=[editor, config]，真机 4.0.0 实测距输入节点 5 层），
+     * 要求 editor.getRootElement() 就是该节点，且桥的 getEditorState() 与 editor.getEditorState() 是同一对象——
+     * 桥只闭包自己的编辑器，错绑到本节点的别栏桥过不了这一关。三种判定：凭证成立→照用并记住；判明是别栏的
+     * 桥→不用它，改取记住的本节点的桥，没有则提示与桥未就绪相同（不把别栏草稿发给模型或写回别栏）；无从判定
+     * （无 fiber、找不到 Provider、编辑器根不是该节点、桥没有 getEditorState）→沿用 v472 口径，节点上就绪的照用，
+     * 不记住、不找回。取回时重新核对（节点被别的编辑器复用即不成立）；从不改写宿主节点上的桥属性。 */
+    var enhanceBridgeMemo = window.__zusageEnhanceBridges || (window.__zusageEnhanceBridges = new WeakMap());   // 输入节点 → 见过就绪且确属它的桥
+    function enhanceInputEditor(input) {   // 输入节点所属的 Lexical 编辑器；找不到回 null
+      try {
+        var ks = Object.keys(input), fk = "", i, f, n, v;
+        for (i = 0; i < ks.length; i++) {
+          if (ks[i].indexOf("__reactFiber$") === 0 || ks[i].indexOf("__reactInternalInstance$") === 0) { fk = ks[i]; break; }
+        }
+        if (!fk) return null;
+        f = input[fk];
+        for (n = 0; f && n < 24; n++, f = f.return) {
+          v = f.memoizedProps && typeof f.memoizedProps === "object" ? f.memoizedProps.value : null;
+          if (v && typeof v[0] === "object" && v[0] && typeof v[0].getRootElement === "function" && typeof v[0].getEditorState === "function" && v[1] && typeof v[1].getTheme === "function") return v[0];
+        }
+      } catch (e) { }
+      return null;
+    }
+    /* "own"=桥确属该节点的编辑器；"foreign"=编辑器以该节点为根、桥却是别的编辑器的；null=无从判定 */
+    function enhanceBridgeOwner(input, api) {
+      if (!api || typeof api.getEditorState !== "function") return null;
+      var editor = enhanceInputEditor(input);
+      if (!editor) return null;
+      try {
+        if (editor.getRootElement() !== input) return null;
+        return api.getEditorState() === editor.getEditorState() ? "own" : "foreign";
+      } catch (e) { return null; }
+    }
+    function enhanceBridgeLive(input) {   // 节点上就绪的桥（未就绪或判明是别栏的回 null）；确属本节点时顺手记住
+      var api = null;
+      if (!input || input.getAttribute("data-e2e-lexical-bridge") !== "ready") return null;
+      try { api = input.__zcodeLexicalInputE2E || null; } catch (e) { api = null; }
+      if (!api) return null;
+      var owner = enhanceBridgeOwner(input, api);
+      if (owner === "foreign") return null;
+      if (owner === "own" && enhanceBridgeMemo.get(input) !== api) enhanceBridgeMemo.set(input, api);
+      return api;
+    }
+    function enhanceBridgeRecall(input) {   // 桥丢了：按凭证取回记住的桥，凭证不成立回 null
+      var api = input ? enhanceBridgeMemo.get(input) : null;
+      return api && enhanceBridgeOwner(input, api) === "own" ? api : null;
+    }
+    /* → { input, api }：api=节点上就绪的桥，不在时按凭证取回记住的桥，都没有则 null。调用方按 input/api
+     * 的有无分别提示，不再并成「先输入内容」（v472）。 */
     function enhanceInputResolve() {
-      var input = enhanceInputNode(), api = null;
-      if (input && input.getAttribute("data-e2e-lexical-bridge") === "ready") { try { api = input.__zcodeLexicalInputE2E || null; } catch (e) { api = null; } }
+      var input = enhanceInputNode(), api = enhanceBridgeLive(input);
+      if (!api) api = enhanceBridgeRecall(input);
       return { input: input, api: api };
     }
     function enhanceInputApi() { return enhanceInputResolve().api; }
@@ -1201,6 +1253,7 @@
     }
     function enhancePromptBtn() {
       if (inactive() || state.enhanceEnabled === false) { restoreEnhanceBtn(true); return; }
+      enhanceBridgeLive(composer);   // v480：对账点顺手记下绑定输入框就绪的桥（被宿主清理误摘后凭它找回，见 enhanceInputResolve）
       var btn = null;
       try { btn = (cardCache && cardCache.isConnected) ? cardCache.querySelector(ENHANCE_ANCHOR_SEL) : null; } catch (e) { }
       if (!btn || !btn.parentElement) {   // 模型 chip 缺位（罕见分支）：回退用量圆环
