@@ -7,9 +7,11 @@ output_tokens 已含 reasoning，故裸输入 = max(0, input − cr − cw)，re
 
 运行：python3 -B -m unittest discover -s tests -p 'test_token_pricing.py'
 """
+import calendar
 import json
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -379,6 +381,146 @@ class RefreshTests(unittest.TestCase):
         with tp._START_LOCK:
             tp._STARTED = True   # 假装已启动：不真开线程
         self.assertIsNone(tp.start_refresh())
+
+
+class PeakValleyTests(unittest.TestCase):
+    """峰谷时段纯函数：北京边界、周末分界、切换点扫描与口径一致（specs/peak-valley-time.md）。"""
+
+    def bj(self, y, mo, d, h, mi=0, s=0):
+        # 北京墙钟时刻 → epoch 秒：先按 UTC 组时刻再减 8h，不依赖本机时区
+        return calendar.timegm((y, mo, d, h, mi, s)) - 8 * 3600
+
+    def test_fixture_weekdays_sanity(self):
+        # 夹具日期自身校验：周几用 time.gmtime 独立求证，防手算错位
+        self.assertEqual(time.gmtime(self.bj(2026, 11, 26, 10)).tm_wday, 3)  # 周四
+        self.assertEqual(time.gmtime(self.bj(2026, 11, 28, 10)).tm_wday, 5)  # 周六
+        self.assertEqual(time.gmtime(self.bj(2026, 8, 22, 10)).tm_wday, 5)   # 周六
+
+    def test_workday_boundaries(self):
+        # 周四 2026-11-26：8:59:59 谷、9:00:00 峰、11:59:59 峰、12:00 谷、
+        # 13:59:59 谷、14:00:00 峰、17:59:59 峰、18:00:00 谷
+        cases = [((8, 59, 59), False), ((9, 0, 0), True), ((11, 59, 59), True),
+                 ((12, 0, 0), False), ((13, 59, 59), False), ((14, 0, 0), True),
+                 ((17, 59, 59), True), ((18, 0, 0), False)]
+        for (h, mi, s), want in cases:
+            self.assertIs(tp.is_peak_time(self.bj(2026, 11, 26, h, mi, s)), want,
+                          "北京 %02d:%02d:%02d 应为 %s" % (h, mi, s, "高峰" if want else "谷时"))
+
+    def test_weekend_all_valley(self):
+        # 分界已生效：周六/周日全天谷（含工作日同时刻为高峰的对照）
+        self.assertFalse(tp.is_peak_time(self.bj(2026, 11, 28, 10, 0, 0)))   # 周六 10:00
+        self.assertFalse(tp.is_peak_time(self.bj(2026, 11, 29, 15, 0, 0)))   # 周日 15:00
+        self.assertTrue(tp.is_peak_time(self.bj(2026, 11, 27, 10, 0, 0)))    # 周五 10:00 对照
+
+    def test_weekend_boundary_semantics(self):
+        # 分界 = 北京 2026-08-23 00:00：分界前的周六 10:00 仍按旧规则是峰，
+        # 分界后的周六同一时刻全天谷
+        self.assertEqual(tp._WEEKEND_VALLEY_FROM_SEC, self.bj(2026, 8, 23, 0, 0, 0))
+        self.assertTrue(tp.is_peak_time(self.bj(2026, 8, 22, 10, 0, 0)))
+        self.assertFalse(tp.is_peak_time(self.bj(2026, 8, 29, 10, 0, 0)))
+        # glm-plan 无分界概念：分界前的周六 15:00（峰窗内）仍恒谷（变异审查缺口②）
+        self.assertFalse(tp.is_peak_time(self.bj(2026, 8, 22, 15, 0, 0), 'glm-plan'))
+        self.assertFalse(tp.is_peak_time(self.bj(2026, 8, 29, 15, 0, 0), 'glm-plan'))
+
+    def test_invalid_inputs(self):
+        for bad in (None, "abc", "", float("nan"), float("inf"), -float("inf"), object()):
+            self.assertFalse(tp.is_peak_time(bad), repr(bad))
+            self.assertIsNone(tp.next_peak_change(bad), repr(bad))
+
+    def test_next_peak_change_basic(self):
+        b = self.bj
+        self.assertEqual(tp.next_peak_change(b(2026, 11, 26, 8, 0, 0)), b(2026, 11, 26, 9, 0, 0))
+        self.assertEqual(tp.next_peak_change(b(2026, 11, 26, 10, 0, 0)), b(2026, 11, 26, 12, 0, 0))
+        self.assertEqual(tp.next_peak_change(b(2026, 11, 26, 12, 30, 0)), b(2026, 11, 26, 14, 0, 0))
+        # 恰在切换点上：9:00:00 自身被排除，下一切换是 12:00
+        self.assertEqual(tp.next_peak_change(b(2026, 11, 26, 9, 0, 0)), b(2026, 11, 26, 12, 0, 0))
+        # 周四 18:00 谷起，下一个状态相反时刻是周五 9:00（0 点跨日边界同为谷不翻转）
+        self.assertEqual(tp.next_peak_change(b(2026, 11, 26, 18, 0, 0)), b(2026, 11, 27, 9, 0, 0))
+
+    def test_next_peak_change_boundary_minus_one_second(self):
+        # 边界前 1 秒必须能取到紧邻切换点（审查 MAJOR：sec+1 守卫曾把它跳成下下个边界）
+        b = self.bj
+        self.assertEqual(tp.next_peak_change(b(2026, 11, 26, 8, 59, 59)), b(2026, 11, 26, 9, 0, 0))
+        self.assertEqual(tp.next_peak_change(b(2026, 11, 26, 11, 59, 59)), b(2026, 11, 26, 12, 0, 0))
+        self.assertEqual(tp.next_peak_change(b(2026, 11, 26, 17, 59, 59)), b(2026, 11, 26, 18, 0, 0))
+        self.assertEqual(tp.next_peak_change(b(2026, 11, 26, 13, 59, 59), 'glm-plan'),
+                         b(2026, 11, 26, 14, 0, 0))
+        # 周五 17:59:59 仍在高峰窗内（17<18），下一切换是当日 18:00；跨周末语义由 skips_weekend 用例覆盖
+        self.assertEqual(tp.next_peak_change(b(2026, 11, 27, 17, 59, 59)), b(2026, 11, 27, 18, 0, 0))
+
+    def test_next_peak_change_skips_weekend(self):
+        # 周五 18:30 谷起：周六/周日全天谷不翻转，下一切换是周一 9:00
+        self.assertEqual(tp.next_peak_change(self.bj(2026, 11, 27, 18, 30, 0)),
+                         self.bj(2026, 11, 30, 9, 0, 0))
+
+    def test_next_peak_change_flip_property(self):
+        # 14 天逐小时样本：切换点必落整点、时刻前进、两侧峰谷状态必相反，
+        # 且 (t, next) 区间内状态恒定
+        t = self.bj(2026, 11, 20, 0, 0, 0)
+        for _ in range(14 * 24):
+            nxt = tp.next_peak_change(t)
+            self.assertIsNotNone(nxt)
+            self.assertEqual(nxt % 3600, 0)
+            self.assertGreater(nxt, t)
+            cur, after = tp.is_peak_time(t), tp.is_peak_time(nxt)
+            self.assertNotEqual(cur, after, "t=%d" % t)
+            for frac in (0.25, 0.5, 0.75):
+                self.assertEqual(tp.is_peak_time(t + int((nxt - t) * frac)), cur,
+                                 "t=%d frac=%s" % (t, frac))
+            t = nxt
+
+    def test_glm_plan_window_differs_from_deepseek(self):
+        # GLM 高峰只有周一至五 14–18：周四 10:00 在 deepseek 是峰、glm-plan 是谷
+        t = self.bj(2026, 11, 26, 10, 0, 0)
+        self.assertTrue(tp.is_peak_time(t, 'deepseek'))
+        self.assertFalse(tp.is_peak_time(t, 'glm-plan'))
+        # 13:59:59 谷 / 14:00:00 峰 / 17:59:59 峰 / 18:00:00 谷
+        self.assertFalse(tp.is_peak_time(self.bj(2026, 11, 26, 13, 59, 59), 'glm-plan'))
+        self.assertTrue(tp.is_peak_time(self.bj(2026, 11, 26, 14, 0, 0), 'glm-plan'))
+        self.assertTrue(tp.is_peak_time(self.bj(2026, 11, 26, 17, 59, 59), 'glm-plan'))
+        self.assertFalse(tp.is_peak_time(self.bj(2026, 11, 26, 18, 0, 0), 'glm-plan'))
+
+    def test_glm_plan_weekend_and_next_change(self):
+        # 周末自然非高峰（无分界概念）；切换点跨周末：周五 18:30 → 周一 14:00
+        self.assertFalse(tp.is_peak_time(self.bj(2026, 11, 28, 15, 0, 0), 'glm-plan'))
+        self.assertEqual(tp.next_peak_change(self.bj(2026, 11, 26, 10, 0, 0), 'glm-plan'),
+                         self.bj(2026, 11, 26, 14, 0, 0))
+        self.assertEqual(tp.next_peak_change(self.bj(2026, 11, 27, 18, 30, 0), 'glm-plan'),
+                         self.bj(2026, 11, 30, 14, 0, 0))
+
+    def test_glm_plan_peak_factor(self):
+        peak = self.bj(2026, 11, 26, 15, 0, 0)   # 周四 15:00 高峰
+        off = self.bj(2026, 11, 26, 10, 0, 0)    # 周四 10:00 非高峰（glm 口径）
+        sat = self.bj(2026, 11, 28, 15, 0, 0)    # 周六 15:00 非高峰
+        self.assertEqual(tp.glm_plan_peak_factor('glm-5.4', off), 0.67)
+        self.assertEqual(tp.glm_plan_peak_factor('glm-5.4', peak), 2.0)
+        self.assertEqual(tp.glm_plan_peak_factor('glm-5.3', peak), 3.0)
+        self.assertEqual(tp.glm_plan_peak_factor('glm-5.3', sat), 1.0)
+        # 精确等值：flash 命中自身档位；flashx 命中自身键（体验版=flash×2.5）不串档
+        self.assertEqual(tp.glm_plan_peak_factor('glm-5.3-flash', off), 0.4)
+        self.assertEqual(tp.glm_plan_peak_factor('glm-5.3-flash', peak), 1.2)
+        self.assertEqual(tp.glm_plan_peak_factor('glm-5.3-flashx', off), 1.0)
+        self.assertEqual(tp.glm_plan_peak_factor('glm-5.3-flashx', peak), 3.0)
+        # 未收录/空名 → 1.0（无系数调整）
+        self.assertEqual(tp.glm_plan_peak_factor('glm-9.9', peak), 1.0)
+        self.assertEqual(tp.glm_plan_peak_factor(None, peak), 1.0)
+
+    def test_peak_snapshot_segment(self):
+        seg = tp.peak_snapshot_segment(self.bj(2026, 11, 26, 15, 0, 0))   # 周四 15:00 高峰
+        self.assertEqual(set(seg.keys()), {"glm_plan"})
+        g = seg["glm_plan"]
+        self.assertIs(g["is_peak"], True)
+        self.assertEqual(g["next_change_at"], self.bj(2026, 11, 26, 18, 0, 0))
+        self.assertEqual([f[0] for f in g["factors"]],
+                         ["glm-5.4", "glm-5.3", "glm-5.3-flash", "glm-5.3-flashx"])
+        self.assertEqual(g["factors"][0], ["glm-5.4", 0.67, 2.0])
+        self.assertEqual(g["factors"][3], ["glm-5.3-flashx", 1.0, 3.0])
+        off = tp.peak_snapshot_segment(self.bj(2026, 11, 26, 10, 0, 0))["glm_plan"]   # glm 口径谷
+        self.assertIs(off["is_peak"], False)
+        self.assertEqual(off["next_change_at"], self.bj(2026, 11, 26, 14, 0, 0))
+        # 非法时刻按契约向上抛（zusage 侧 _peak_segment_safe 宽捕获后省略），本函数不吞
+        with self.assertRaises(ValueError):
+            tp.peak_snapshot_segment("abc")
 
 
 if __name__ == "__main__":

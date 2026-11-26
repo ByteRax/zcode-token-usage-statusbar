@@ -2502,6 +2502,17 @@ def _speed_history_safe(con, sid=""):
         return None
 
 
+def _peak_segment_safe():
+    """peak 段（specs/model-peak-factor-badge.md）：纯函数现算，任何异常返回 None
+    （渲染端判空静默），不拖垮整帧快照；价表模块缺失（旧运行目录）同 None。"""
+    if _pricing is None:
+        return None
+    try:
+        return _pricing.peak_snapshot_segment()
+    except Exception:
+        return None
+
+
 def _speed_days(con):
     """v384（specs/speed-tooltip-v3.md §1.2）：全历史按**本地自然日**聚合的日桶帧——
     解决轮表 6000 轮上限对「全部」视图的截断。聚合口径与 _speed_turns 完全同源：已完成
@@ -3785,7 +3796,7 @@ def _provider_fallback_uncached(con):
 
 def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=False,
              include_all_projects=False, include_speed_days=False, include_worktree=False,
-             include_compactions=False):
+             include_compactions=False, include_peak=False):
     """单次快照：最新会话 + 最近 6+6 会话池 + 今日。
     force_sid：各窗口当前会话 id，逗号分隔（泵按窗口汇总上报：主进程 IPC 映射的焦点会话 +
     overlay localStorage 键兜底），全部强制纳入快照——不在 6+6 池里的会话（新开的、久远的）
@@ -3805,6 +3816,9 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
     include_compactions（v421）：同门控产出最新会话与 force_sid 各会话的压缩边界表
     （挂顶层 compactions，{sid: [{ts,b,a,cr,cw}]}，~百字节级，无 compact 行的会话省略）；
     宿主「上下文已压缩」分隔线统计标注的数据源，语义见 _session_compactions。
+    include_peak（v480，specs/model-peak-factor-badge.md）：同门控产出峰谷时段段
+    （挂顶层 peak，{glm_plan: {is_peak,next_change_at,factors}}，纯函数现算）；价表模块
+    缺失/异常省略，模型选择器倍率徽标的数据源，口径单一来源 token_pricing。
     连接所有权归调用方：serve 模式下查询期出错会就地 close（调用方下次探活重建），
     finally 不重复关闭。"""
     cfg = load_config()
@@ -4041,6 +4055,10 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
             # v384 全历史按日聚合（specs/speed-tooltip-v3.md §1.2）：与 speed_history 同款
             # 门控/降级（None=失败，渲染端判空）；CLI / MCP / 远端子查询 stdout 不夹带
             **({"speed_days": _speed_days_safe(con)} if include_speed_days else {}),
+            # v480 模型选择器峰谷倍率（specs/model-peak-factor-badge.md）：与 speed_history
+            # 同门控；价表模块缺失/异常省略（None），渲染端判空静默。CLI/MCP 不走本函数，
+            # 手机中继 lean 链与远端子查询不带，纯函数现算无缓存
+            **({"peak": _peak_segment_safe()} if include_peak else {}),
             # v331 全部项目聚合（specs/all-projects-usage.md）：桌面快照链顶层可选字段；
             # 无连接/缺列降级时省略，渲染端判空显「暂不可用」，不借当前项目数据冒充
             **({"all_projects": all_proj} if all_proj is not None else {}),
@@ -4796,7 +4814,8 @@ def serve():
                                       include_all_projects=not lean,
                                       include_speed_days=not lean,
                                       include_worktree=not lean,
-                                      include_compactions=not lean), separators=(",", ":"))
+                                      include_compactions=not lean,
+                                      include_peak=not lean), separators=(",", ":"))
         except Exception as e:
             out = json.dumps({"error": str(e)[:200]})   # 单次查询失败不杀常驻进程
             _drop()   # 异常路径下连接状态未知：弃用，下轮重建
@@ -4878,7 +4897,8 @@ def main(argv):
                                       include_all_projects=desktop,
                                       include_speed_days=desktop,
                                       include_worktree=desktop,
-                                      include_compactions=desktop), separators=(",", ":")))   # v384 同上
+                                      include_compactions=desktop,
+                                      include_peak=desktop), separators=(",", ":")))   # v384 同上
             return 0
         if cmd == "serve":
             serve()

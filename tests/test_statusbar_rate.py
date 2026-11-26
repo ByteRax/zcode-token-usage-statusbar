@@ -4,6 +4,8 @@
 运行：python3 -B -m unittest discover -s tests -p 'test_*.py'
 """
 import importlib.util
+import io
+import json
 import sqlite3
 import sys
 import unittest
@@ -907,6 +909,78 @@ class ProjectTodayAggTests(unittest.TestCase):
         self.assertEqual(r[12], 7000.0)   # avg duration: main_turn 且 >0（子代理稀释=4500、含 0=3500，都不等）
         self.assertEqual(r[13], 2000.0)   # avg ttft 同口径
         self.assertEqual(r[0], 3)         # 计数列保持全请求口径不变
+
+
+class PeakSnapshotGateTests(unittest.TestCase):
+    """快照 peak 段门控（specs/model-peak-factor-badge.md）：与 speed_history 同旗同边界——
+    serve 非 lean 与桌面 json 带、缺省不带；远端子查询（ZUSAGE_REMOTE_CHILD=1）与手机
+    中继 lean 请求不带；价表模块缺失降级 None 不拖垮整帧。"""
+
+    def snap(self, **kw):
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.row_factory = sqlite3.Row
+        con.executescript(SCHEMA)
+        con.execute("insert into session (id, title) values ('s', 't')")
+        proxy = mock.Mock(wraps=con)
+        proxy.close = mock.Mock()
+        with mock.patch.object(zusage, "connect", return_value=proxy), \
+             mock.patch.object(zusage, "load_config", return_value={"context_window": 200000}), \
+             mock.patch.object(zusage, "_AGG_CACHE", {}), \
+             mock.patch.object(zusage, "_scan_session_ids", return_value=[]), \
+             mock.patch.object(zusage, "_remote_setup", return_value=None):
+            return zusage.snapshot("s", **kw)
+
+    def frame(self, argv, env=None, stdin_data=None):
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.row_factory = sqlite3.Row
+        con.executescript(SCHEMA)
+        con.execute("insert into session (id, title) values ('s', 't')")
+        con.commit()
+        out = io.StringIO()
+        with mock.patch.object(zusage, "connect", return_value=con), \
+             mock.patch.object(zusage, "load_config", return_value={"context_window": 1}), \
+             mock.patch.dict("os.environ", env or {}, clear=False), \
+             mock.patch.object(zusage.sys, "stdout", out), \
+             mock.patch.object(zusage.sys, "stdin", io.StringIO((stdin_data or "") + "\n")):
+            zusage.main(argv)
+        return json.loads(out.getvalue())
+
+    def test_gate_default_off_explicit_on(self):
+        self.assertNotIn("peak", self.snap())
+        g = self.snap(include_peak=True)["peak"]["glm_plan"]
+        self.assertIsInstance(g["is_peak"], bool)
+        self.assertIsInstance(g["next_change_at"], int)
+        self.assertEqual([f[0] for f in g["factors"]],
+                         ["glm-5.4", "glm-5.3", "glm-5.3-flash", "glm-5.3-flashx"])
+
+    def test_pricing_module_missing_degrades_none(self):
+        with mock.patch.object(zusage, "_pricing", None):
+            self.assertIsNone(self.snap(include_peak=True)["peak"])
+
+    def test_pricing_module_failure_degrades_none(self):
+        with mock.patch.object(zusage._pricing, "peak_snapshot_segment",
+                               side_effect=RuntimeError("boom")):
+            self.assertIsNone(self.snap(include_peak=True)["peak"])
+
+    def test_remote_child_json_keeps_stdout_contract(self):
+        d = self.frame(["json", "s"], {"ZUSAGE_REMOTE_CHILD": "1"})
+        self.assertNotIn("peak", d, "远端子查询 stdout 不夹带桌面增强字段")
+
+    def test_desktop_oneshot_json_has_peak(self):
+        d = self.frame(["json", json.dumps({"sids": ["s"], "scopes": []})])
+        self.assertIn("peak", d, "常驻进程回退帧缺 peak 段会让倍率徽标整体静默")
+
+    def test_serve_lean_frame_omits_peak(self):
+        request = json.dumps({"sids": ["s"], "scopes": [], "lean": True})
+        d = self.frame(["serve"], stdin_data=request)
+        self.assertNotIn("peak", d, "手机中继 lean 请求不计算峰谷段")
+
+    def test_serve_frame_has_peak(self):
+        request = json.dumps({"sids": ["s"], "scopes": []})
+        d = self.frame(["serve"], stdin_data=request)
+        self.assertIn("peak", d)
 
 
 if __name__ == "__main__":

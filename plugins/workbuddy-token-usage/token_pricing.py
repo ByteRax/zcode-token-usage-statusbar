@@ -14,6 +14,7 @@ cache_read 与 cache_creation、output_tokens 已含 reasoning，因此
 一次性 CLI（json 子命令）只读不拉网；config pricing.fetch=false 彻底关闭联网。
 币种换算不在本模块：快照只带 cost_usd 原值与 fx 汇率，¥ 在展示层相乘。
 """
+import calendar
 import json
 import math
 import os
@@ -558,6 +559,116 @@ def merge_model_costs(groups):
         if model_id:
             per[model_id] = round(per.get(model_id, 0.0) + c, 8)
     return round(total, 8), per
+
+
+# ---- 峰谷时段（按数据源口径分窗口；纯时间判定，不依赖价表与联网）----
+# DeepSeek 口径自 zcode-fox-widget pricing.mjs 移植；GLM Coding Plan 口径按官方
+# 说明补充（specs/peak-valley-time.md）。当前无运行时消费者，先落基座：快照展示
+# 与「按请求时刻选档计价/额度系数」都从这里取口径。
+
+# 各数据源的高峰窗口（北京时间小时区间）：
+#   deepseek = 工作日 9:00–12:00 与 14:00–18:00；周末全天谷自北京 2026-08-23
+#              00:00 起（官方规则变更），分界前历史时刻周末仍按旧规则有峰，保留
+#              分界让将来按时刻计价的历史桶不被新规则重算错。
+#   glm-plan = 周一至周五 14:00–18:00（GLM Coding Plan 官方口径），周末自然非高峰。
+PEAK_HOURS = {
+    'deepseek': ((9, 12), (14, 18)),
+    'glm-plan': ((14, 18),),
+}
+_WEEKEND_VALLEY_FROM_SEC = calendar.timegm((2026, 8, 22, 16, 0, 0))  # 北京 08-23 00:00
+
+# 小时切换边界从 PEAK_HOURS 展开（每段起点与终点，外加 0 点跨日边界），不手写
+# 第二份边界清单：改窗口只动 PEAK_HOURS 一处，切换点与判定不打架。
+_PEAK_EDGES = {
+    mode: tuple(sorted({0} | {h for start, end in hours for h in (start, end)}))
+    for mode, hours in PEAK_HOURS.items()
+}
+
+
+def is_peak_time(time_sec, mode='deepseek'):
+    """epoch 秒是否高峰时段（按北京时间判定，与机器时区无关）。
+
+    mode 选数据源口径，窗口见 PEAK_HOURS；周末特例只有 deepseek 有（分界起全天
+    谷），glm-plan 因「周一至五」定义周末自然非高峰。非法输入（None/非数/NaN/
+    inf）按谷 False 处理，不抛错；未知 mode 属调用方错误，让它照常 KeyError。
+    """
+    try:
+        sec = int(time_sec)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    bj = time.gmtime(sec + 8 * 3600)  # 加 8h 再按 UTC 读，即北京日历
+    # 周末恒为谷的条件：glm-plan 无分界、周一至五定义下周末恒非高峰；deepseek
+    # 有 2026-08-23 生效分界（分界前周末按旧规则仍有峰，不豁免）
+    if bj.tm_wday >= 5 and (mode != 'deepseek' or sec >= _WEEKEND_VALLEY_FROM_SEC):
+        return False  # 5=周六 6=周日
+    for start, end in PEAK_HOURS[mode]:
+        if start <= bj.tm_hour < end:
+            return True
+    return False
+
+
+def next_peak_change(time_sec, mode='deepseek'):
+    """epoch 秒 → 下一个峰/谷切换点（epoch 秒），与 is_peak_time 同 mode 同口径。
+
+    从北京当日 0 点起最多扫 12 天的小时边界，取第一个与当前状态相反的时刻；
+    扫不到（理论不可达）兜底 +1 天，避免倒计时卡 00:00:00。非法输入返回 None。
+    """
+    try:
+        sec = int(time_sec)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    edges = _PEAK_EDGES[mode]
+    cur = is_peak_time(sec, mode)
+    day0 = (sec + 8 * 3600) // 86400 * 86400  # 北京当日 0 点（已含 8h 平移）
+    for d in range(13):
+        for edge in edges:
+            cand = day0 + d * 86400 + edge * 3600 - 8 * 3600
+            if cand <= sec:   # 只排除当前与过去时刻；边界前 1 秒（如 08:59:59）必须能取到 09:00:00
+                continue
+            if is_peak_time(cand, mode) != cur:
+                return cand
+    return sec + 86400
+
+
+# GLM Coding Plan 峰谷额度消耗系数（官方说明，2026-11-26 提供）：系数乘在套餐
+# 额度扣减上，不是现金单价；高峰窗口同 'glm-plan' 口径。glm-5.3-flash 官方另有
+# 0.2/0.6 限时系数但未提供生效区间，暂按常规 0.4/1.2，拿到日期再补自动切换。
+# glm-5.3-flashx 为体验版本，按 flash 系数的 2.5 倍消耗（维护者 2026-11-26 提供）。
+GLM_PLAN_PEAK_FACTOR = {
+    'glm-5.4': (0.67, 2.0),
+    'glm-5.3': (1.0, 3.0),
+    'glm-5.3-flash': (0.4, 1.2),
+    'glm-5.3-flashx': (1.0, 3.0),
+}
+# 模型名匹配用精确等值（小写化后比较），不用子串——防 GLM-5.3-FlashX 子串误命中
+# GLM-5.3-Flash；倍率徽标场景「未收录模型不显示」依赖这一语义（specs/peak-valley-time.md）
+
+
+def glm_plan_peak_factor(model, time_sec):
+    """GLM Coding Plan 模型在指定时刻的额度消耗系数（float）。
+
+    按 is_peak_time(…, 'glm-plan') 选 (非高峰, 高峰) 两档；模型名（去空白小写化）
+    与系数表键精确等值匹配，未收录或名字为空按 1.0（无系数调整）。
+    """
+    pair = GLM_PLAN_PEAK_FACTOR.get(str(model or '').strip().lower())
+    if not pair:
+        return 1.0
+    return pair[1] if is_peak_time(time_sec, 'glm-plan') else pair[0]
+
+
+def peak_snapshot_segment(time_sec=None):
+    """桌面快照 peak 段（消费契约见 specs/model-peak-factor-badge.md）。
+
+    返回 {"glm_plan": {"is_peak": bool, "next_change_at": int,
+    "factors": [[模型键, 非高峰, 高峰], …]}}；异常向上抛，由 zusage 侧
+    _peak_segment_safe 宽捕获后省略字段。time_sec 缺省取当前时刻。
+    """
+    sec = int(time.time() if time_sec is None else time_sec)
+    return {"glm_plan": {
+        "is_peak": is_peak_time(sec, 'glm-plan'),
+        "next_change_at": next_peak_change(sec, 'glm-plan'),
+        "factors": [[key, pair[0], pair[1]] for key, pair in GLM_PLAN_PEAK_FACTOR.items()],
+    }}
 
 
 # ---- 运行时覆盖层与汇率（pricing-cache.json）----
