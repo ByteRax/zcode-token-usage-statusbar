@@ -44,6 +44,16 @@ https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gi
 
 此渠道从经过校验的正式 Release ZIP 安装插件，不跟随开发分支，也不需要自己下载源码。当前正式版自动安装/修复状态条（始终开启，旧自动安装开关配置只保留不再读取）；成功后完全退出并重开；不需要状态条时用 `/uninstall-overlay` 移除并阻止自动重注入。
 
+### 对话安装时实际执行的步骤
+
+README 的安装文案把命令写明了，ZCode 不必自己摸索。想手动走同一条路，或排查看它卡在哪一步时，步骤如下：
+
+1. 添加市场并安装插件：设置环境变量 `ELECTRON_RUN_AS_NODE=1`，运行 ZCode 的可执行文件并把安装目录里的 `resources/glm/zcode.cjs` 作为第一个参数，依次执行 `plugins marketplace add "<渠道地址>" --json` 和 `plugins install "zcode-token-usage-statusbar@zusage-marketplace" --scope user --json`。已装用户重复执行第一条就是刷新市场。
+2. 运行 `python3 "<上一步输出里的 installPath>/overlay_install.py" install`。插件刚装好时当前会话里还没有 `/install-overlay` 命令，所以这一步直接运行脚本。
+3. 完全退出 ZCode 后重新打开。
+
+国内源地址必须带 `.git`：宿主只把以 `.git` 结尾的地址当作仓库来源，否则会把它当成清单文件的直链去下载。
+
 ### 方式二：本地目录安装
 
 从 [ByteRax 仓库](https://github.com/ByteRax/zcode-token-usage-statusbar) 下载或克隆源码后：

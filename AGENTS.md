@@ -233,7 +233,7 @@ python3 sync_plugin.py --check
 | 桥/SSH 路由 | `test_renderer_bridge.py`、`test_bridge_pending.py`、`test_remote_targets.py`、`test_serve_stdio.py`、`inject-remote-recovery.test.cjs`、`overlay-remote-scope.test.cjs`；实机身份/重连与认证另验 |
 | 安装/更新/锁/解包 | `test_install_discovery.py`、`test_plugin_sudo_install.py`、`test_pending_asar.py`、`test_quiet_monitor.py`、`test_pending_zip_patch.py`、`test_config_transactions.py`、`test_plugin_upgrade.py`、`test_runtime_sync_guard.py`、`test_release*.py` 及 `plugin-*.test.cjs`、`runtime-lock.test.cjs`、`test_runtime_lock_windows.py` |
 | 插件命令/hooks/MCP | `test_command_frontmatter.py`、`test_plugin_contract.py`、`test_usage_mcp_stdio.py`（MCP 直启的 stdio 帧契约）、`test_plugin_package.py`、`test_plugin_runtime.py`、`test_session_start_channels.py`、`test_restart_notice.py`、`test_zusage_doctor.py`（体检命令）、`test_test_file_layout.py`（测试文件布局契约，新增测试文件后必跑）；共享文件同时同步并检查漂移 |
-| 文档/本地化 | 路径、相对链接/锚点、JSON 示例、双语对应与 manifest 一致性；涉及默认值/协议时加对应契约测试 |
+| 文档/本地化 | 路径、相对链接/锚点、JSON 示例、双语对应与 manifest 一致性；涉及默认值/协议时加对应契约测试；README 安装文案的自包含契约见 `test_install_prompt_contract.py`（文案里的命令须与 `install-prompt-smoke.py` 实跑的一致） |
 
 宿主真实 CLI 沙箱测试和交互演示见 [测试说明](tests/README.md)。它们使用真实 ZCode、认证和模型，可能联网/消耗 token，不属于默认纯隔离测试；测试对象必须指向自有临时 HOME、插件库存与夹具。
 真实桌面安装会改客户端文件；默认回归不得接触个人数据库、配置、真实插件库存或客户端。语法通过、手工 hook 成功、Windows 收尾夹具通过均不能替代自然 SessionStart/重启/多窗口/远端实机证据。

@@ -29,16 +29,22 @@ Promotional image with staged UI and demonstration data; the actual interface va
 
 ### Installation
 
-Send this to ZCode to install or update the plugin (when GitHub is unreachable it retries through the mirror on its own, so you do not have to send anything again):
+Send this to ZCode to install or update the plugin. The message spells out every command, so ZCode does not have to work out how to install on its own; when GitHub is unreachable it retries through the mirror by itself, so you do not have to send anything again:
 
 ```text
-Please install or update and enable this ZCode plugin: https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases
-If GitHub is unreachable, retry with https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode on your own; do not ask me again.
-Then run /install-overlay in the ZCode chat. Once you confirm the status bar installation succeeded, remind me to quit ZCode completely and reopen it (closing the window is not enough); do not restart it automatically.
-If installation fails, explain why. If you cannot run the command in the current session, ask me to run it manually; do not skip this step or claim installation succeeded.
+Please install or update the ZCode plugin zcode-token-usage-statusbar. Follow the three steps below exactly and do not look for another installation method:
+
+1. Add the marketplace and install the plugin with ZCode's own command line. There is no separate zcode command: set the environment variable ELECTRON_RUN_AS_NODE=1, run the ZCode executable, and pass resources/glm/zcode.cjs from the installation directory as its first argument. On macOS the defaults are /Applications/ZCode.app/Contents/MacOS/ZCode and /Applications/ZCode.app/Contents/Resources/glm/zcode.cjs. On Windows ZCode.exe and resources\glm\zcode.cjs sit in the same installation directory; when it is not in the default location, find the running ZCode.exe with (Get-Process ZCode).Path in PowerShell. Run these two commands in that command line, in order:
+   plugins marketplace add "https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases" --json
+   plugins install "zcode-token-usage-statusbar@zusage-marketplace" --scope user --json
+   If the first one fails (usually because GitHub is unreachable), retry with the address https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode instead; do not ask me again.
+2. Run python3 "<installPath from the second command's output in step 1>/overlay_install.py" install (on Windows, if python3 is unavailable, try python and then py -3).
+3. Report step 2's output to me: when it asks for a restart, remind me to quit ZCode completely (from the menu or the tray; closing the window is not enough) and reopen it; do not restart it automatically.
+
+If any step fails, relay the error as is; do not skip it and do not claim installation succeeded.
 ```
 
-Keep `#plugin-releases` and `.git#plugin-releases-gitcode` in the URLs: they select the project's stable release channels. The mirror route needs local [Git](https://git-scm.com/downloads) (the host fetches the channel manifest through git), and the `.git` suffix cannot be dropped: the host treats only URLs ending in `.git` as repository sources and would otherwise download the page as if it were the manifest.
+Keep `#plugin-releases` and `.git#plugin-releases-gitcode` in the URLs: they select the project's stable release channels. The mirror route needs local [Git](https://git-scm.com/downloads), and the `.git` suffix cannot be dropped: the host treats only URLs ending in `.git` as repository sources and would otherwise download the page as if it were the manifest.
 
 > **Important:** installing the bar modifies ZCode's program files (`app.asar`), so proceed only if you trust the project. **After the first successful injection, quit ZCode completely and reopen it** (closing the window or reopening a session is not enough), then check that the bar appears. If installation fails or permissions are insufficient, diagnose that first; restarting does not replace installation.
 
