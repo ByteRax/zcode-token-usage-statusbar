@@ -836,6 +836,42 @@ test('issue501: a fiber chain with no Lexical composer context is undecidable �
   assert.match(enh.getAttribute('aria-label'), /输入框暂不可读/);
 });
 
+/* 宿主对象在核对凭证时抛错（编辑器刚被销毁之类）：按无从判定处理，对账点不抛，节点上就绪的桥照用 */
+test('issue501: a host object throwing during the ownership check is treated as undecidable, not as an error', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '' });
+  const lex = ownLexInput(h, ui, '本卡草稿');
+  const enh = mountEnh(h, ui);
+  lex.getEditorState = () => { throw new Error('editor torn down'); };   // fiber 上找得到编辑器，但它的状态读不了
+  assert.doesNotThrow(() => h.tick());
+  clickButton(enh);
+  const req = enhanceRequests(h)[0];
+  assert.ok(req, 'the ready bridge is still used — ' + enh.getAttribute('aria-label'));
+  assert.equal(req.text, '本卡草稿');
+});
+
+/* 写回后的 0ms 校验认桥的身份：setText 之后节点上的桥换成了别的对象（节点被新编辑器复用、宿主挂上了
+ * 它自己的新桥），校验要报「写回输入框失败或草稿已变化」，不能因为新桥读回的文本恰好相同就假成功 */
+test('issue501: a bridge swapped between setText and the commit check fails the write-back instead of reporting success', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '' });
+  const lex = ownLexInput(h, ui, '原草稿');
+  const enh = mountEnh(h, ui);
+  stripBridge(ui.editor);   // 本次增强走取回的桥
+  clickButton(enh);
+  const req = enhanceRequests(h)[0];
+  assert.ok(req, 'request fired via the recalled bridge');
+  h.window.__zusagePluginResult(Object.assign({ id: req.requestId }, { ok: true, text: '增强结果' }));   // 只跑回包回调：setText 已写，0ms 校验还没跑
+  assert.equal(lex.draft, '增强结果', 'setText went through the recalled bridge');
+  const next = mkLexicalEditor(ui.editor);   // 节点被新编辑器复用
+  attachComposerFiber(ui.editor, next);
+  hostMountBridge(next, h.document);   // 宿主给新编辑器挂上了它自己的新桥
+  next.draft = '增强结果';   // 新桥读回的文本与结果相同：只有身份校验能识破
+  runPending(h.timers, 0);
+  assert.match(enh.getAttribute('aria-label'), /写回输入框失败或草稿已变化/);
+  assert.equal(lex.setTextCalls, 1);
+});
+
 /* 判明是别栏的桥（3p）：宿主回退错绑把别栏编辑器的桥挂到本卡输入框上。没记住过本节点自己的桥时不读、不发、
  * 不写，提示与桥未就绪相同，也不记住它——之后桥被摘也不找回 */
 test('issue501: a live bridge proven to belong to another editor is refused — no request, nothing read or sent, and it is never remembered', () => {
