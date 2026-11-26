@@ -3,7 +3,7 @@
 - repository：发布目标 `owner/repo`，必须用户明确选择，并与远端更新市场来源一致；不能默认把 fork 的包安装到跟踪上游的用户。
 - tag：`vX.Y.Z`；version：`X.Y.Z`，数字三段，正式版，不含预发布或 build metadata。
 - 发布为非 draft、非 prerelease。截图托管 tag（例如 `screenshots-v65-hover-bubble`）不属于产品发布。
-- 资产：`zcode-token-usage-statusbar-vX.Y.Z.zip` 与 `release-manifest.json`。
+- 资产：`zcode-token-usage-statusbar-vX.Y.Z.zip` 与 `release-manifest.json`。ZIP 成员一律 DEFLATE（级别 9）；在野解包器自 v1.4.0 起接受该压缩方式。压缩字节可能随打包机的 zlib 实现变化，`release-manifest.json` 的 `asset.sha256` 始终取实际打包结果的字节，补推对账按成员内容比对（`release_tool.py reconcile`），不要求重建包与线上包字节相同。
 
 manifest：
 
