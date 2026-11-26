@@ -1,6 +1,6 @@
 # 仓库协作流程规则
 
-适用范围：本仓库的一切 git 操作（提交、分支、worktree、推送、PR、issue/PR 处理）与并行会话协作。远程拓扑：`fork` = ByteRax（GitHub，活跃开发，双 push URL 同时推 GitCode 镜像 `gitcode.com/tanranran/zcode-token-usage-statusbar`）、`gitcode` 仅核对/恢复、`origin` = xhwxt 上游**只读**。PR 一律经 fork 提交。fork 的 main 已设最小分支保护：禁 force push、禁删除、enforce_admins（管理员同样受限）；普通快进推送与自合并 PR 不受影响，重置 main 须先经用户授权临时删保护（`gh api -X DELETE repos/ByteRax/zcode-token-usage-statusbar/branches/main/protection`）。
+适用范围：本仓库的一切 git 操作（提交、分支、worktree、推送、PR、issue/PR 处理）与并行会话协作。远程拓扑：`fork` = ByteRax（GitHub，活跃开发，双 push URL 同时推 GitCode 镜像 `gitcode.com/tanranran/zcode-token-usage-statusbar`）、`gitcode` 仅核对/恢复、`origin` = xhwxt 上游**只读**。PR 一律经 fork 提交。fork 的 main 已设最小分支保护：禁 force push、禁删除、enforce_admins（管理员同样受限）；普通快进推送与自合并 PR 不受影响，重置 main 须先经用户授权临时删保护（`gh api -X DELETE repos/ByteRax/zcode-token-usage-statusbar/branches/main/protection`）。两个渠道分支 `plugin-releases`、`plugin-releases-gitcode` 在 GitHub 上有同样的保护；GitCode 镜像整仓禁止强制推送（仓库推送规则 `deny_force_push`，仓库所有者不豁免）。因此对功能分支强推时 GitHub 段成功、GitCode 段被拒属预期，镜像上该分支停在旧历史直到删除；不要为此关规则或改用别的推送方式绕过。
 
 ## 1. 并行会话纪律（最高优先）
 
