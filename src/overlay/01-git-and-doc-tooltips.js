@@ -2049,20 +2049,54 @@
   ctxBkdTip.style.zIndex = "2147483647";
   ctxBkdTip.style.maxWidth = "380px";
   ctxBkdTip.style.minWidth = "280px";
-  /* 纯说明气泡、指针穿透，不挂任何指针/键盘监听：气泡挂在 document.body、不在宿主 hover-card 的
-   * DOM 子树里，指针一进入气泡宿主就判定「已离开」并关闭弹层（ZCode 4.0.0 真机实证：悬停第 2 行后
-   * 往上挪一行撞进气泡，宿主弹层直接消失）。路径只展示、不可点击。 */
-  ctxBkdTip.style.pointerEvents = "none";
   document.body.appendChild(ctxBkdTip);
   var ctxBkdTipFor = null;
   var ctxBkdHideTimer = 0;
+  var ctxBkdHovered = false;
   function cancelCtxBkdHide() {
     if (ctxBkdHideTimer) { clearTimeout(ctxBkdHideTimer); ctxBkdHideTimer = 0; }
   }
   function scheduleCtxBkdHide() {
-    if (ctxBkdHideTimer) return;
-    ctxBkdHideTimer = setTimeout(function () { ctxBkdHideTimer = 0; hideCtxBkdTip(); }, 180);
+    if (ctxBkdHovered || ctxBkdHideTimer) return;
+    ctxBkdHideTimer = setTimeout(function () { ctxBkdHideTimer = 0; if (!ctxBkdHovered) hideCtxBkdTip(); }, 350);
   }
+  ctxBkdTip.addEventListener("mouseenter", function () { ctxBkdHovered = true; cancelCtxBkdHide(); });
+  ctxBkdTip.addEventListener("mouseleave", function (e) {
+    ctxBkdHovered = false;
+    scheduleCtxBkdHide();
+    var hc = ctxBkdTipFor && ctxBkdTipFor.closest ? ctxBkdTipFor.closest('[data-slot="hover-card-content"]') : null;
+    var rt = e && e.relatedTarget;
+    if (hc && hc.isConnected && (!rt || !hc.contains(rt))) {
+      try {
+        hc.dispatchEvent(new PointerEvent("pointerout", { bubbles: true, cancelable: true, relatedTarget: rt || document.body }));
+        hc.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, cancelable: true, relatedTarget: rt || document.body }));
+      } catch (err) { }
+    }
+  });
+  function stopCtxHcLeave(e) {
+    if (ctxBkdTip.style.display === "none") return;
+    var t = e && e.target, rt = e && e.relatedTarget;
+    if (!t || !t.closest || !rt) return;
+    var hc = t.closest('[data-slot="hover-card-content"]');
+    if (!hc) return;
+    if (rt === ctxBkdTip || ctxBkdTip.contains(rt)) e.stopPropagation();
+  }
+  function onCtxBkdDocDown(e) {
+    if (ctxBkdTip.style.display === "none") return;
+    if (ctxBkdTip.contains(e && e.target)) return;
+    if (ctxBkdTipFor && !ctxBkdTipFor.isConnected && !ctxBkdHovered) hideCtxBkdTip();
+  }
+  document.addEventListener("pointerout", stopCtxHcLeave, true);
+  document.addEventListener("mouseout", stopCtxHcLeave, true);
+  document.addEventListener("pointerdown", onCtxBkdDocDown, true);
+  ctxBkdTip.addEventListener("pointerdown", function (e) {
+    var a = e.target && e.target.closest && e.target.closest(".cb-path");
+    if (!a) return;
+    e.stopPropagation();
+    e.preventDefault();
+    var p = a.getAttribute("data-cb-path");
+    if (p && typeof openProjFolder === "function") openProjFolder(p);
+  });
   var ZU_CTX_BKD_MAP = {
     "消息": "messages", "Messages": "messages",
     "其他": "meta_user_context", "Meta context": "meta_user_context",
@@ -2150,7 +2184,7 @@
     ".zusage-ctx-bkd-tip .cb-item{font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.45;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
     ".zusage-ctx-bkd-tip .cb-item b{color:var(--color-tooltip-foreground,#fafafa);font-weight:600;margin-right:4px}" +
     ".zusage-ctx-bkd-tip .cb-paths{display:flex;flex-wrap:wrap;gap:4px 8px;margin-top:3px;padding-left:10px}" +
-    ".zusage-ctx-bkd-tip .cb-path{display:inline-flex;align-items:center;gap:3px;color:var(--color-brand,#57c7ff);word-break:break-all;font-size:calc(var(--ui-font-size,14px) - 2px)}" +
+    ".zusage-ctx-bkd-tip .cb-path{display:inline-flex;align-items:center;gap:3px;color:var(--color-brand,#57c7ff);cursor:pointer;text-decoration:underline;text-underline-offset:2px;word-break:break-all;font-size:calc(var(--ui-font-size,14px) - 2px)}.zusage-ctx-bkd-tip .cb-path:hover{opacity:.85}" +
     ".zusage-ctx-bkd-tip .cb-tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px;padding-left:10px}" +
     ".zusage-ctx-bkd-tip .cb-tag{display:inline-block;padding:1px 6px;border-radius:4px;background:rgba(255,255,255,.07);color:var(--color-tooltip-foreground,#fafafa);font-size:calc(var(--ui-font-size,14px) - 2.5px)}" +
     ".zusage-ctx-bkd-tip.zu-light .cb-tag{background:rgba(0,0,0,.06)}" +
@@ -2320,16 +2354,25 @@
     ctxBkdTip.style.display = "block";
     var r = rowEl.getBoundingClientRect(), tw = ctxBkdTip.offsetWidth, th = ctxBkdTip.offsetHeight;
     var vw = window.innerWidth, vh = window.innerHeight;
-    var left = Math.max(8, Math.min(r.left, vw - tw - 8));
-    var top = r.top - th - 2;
-    if (top < 8) top = Math.min(r.bottom + 2, vh - th - 8);
+    var hc = rowEl.closest ? rowEl.closest('[data-slot="hover-card-content"]') : null;
+    var anchor = hc ? hc.getBoundingClientRect() : r;
+    var left = anchor.right - 4;
+    if (left + tw > vw - 8) left = anchor.left - tw + 4;
+    left = Math.max(8, Math.min(left, vw - tw - 8));
+    var top = Math.max(8, Math.min(r.top - 4, vh - th - 8));
     ctxBkdTip.style.left = Math.round(left) + "px";
     ctxBkdTip.style.top = Math.round(top) + "px";
     ctxBkdTipFor = rowEl;
   }
   function showCtxBkdTip(rowEl) {
     cancelCtxBkdHide();
-    if (stale() || !state.ctxBkd || !rowEl || !rowEl.isConnected) { hideCtxBkdTip(); return; }
+    if (stale() || !state.ctxBkd || !rowEl) { hideCtxBkdTip(); return; }
+    if (!rowEl.isConnected) {
+      if (ctxBkdHovered && rowEl === ctxBkdTipFor) return;
+      hideCtxBkdTip();
+      return;
+    }
+    if (ctxBkdHovered && ctxBkdTipFor && rowEl !== ctxBkdTipFor) return;
     var html = "";
     if (rowEl.getAttribute && rowEl.getAttribute("data-zusage-bkd-cache") === "1") {
       html = ctxBkdCacheTipHTML(rowEl.__zuBkdCache);
@@ -2337,14 +2380,16 @@
       html = ctxBkdTipHTML(rowEl.__zuBkdData);
     }
     if (!html) { hideCtxBkdTip(); return; }
+    var sameRow = (ctxBkdTip.style.display === "block" && ctxBkdTipFor === rowEl);
     if (ctxBkdTip.__zuTipSig !== html) {
       ctxBkdTip.innerHTML = html;
       ctxBkdTip.__zuTipSig = html;
     }
-    placeCtxBkdTip(rowEl);
+    if (!sameRow) placeCtxBkdTip(rowEl);
   }
   function hideCtxBkdTip() {
     cancelCtxBkdHide();
+    ctxBkdHovered = false;
     ctxBkdTip.style.display = "none";
     ctxBkdTipFor = null;
   }
@@ -2413,7 +2458,7 @@
     if (rstTipFor && !rstTipFor.isConnected) hideRstTip();   // v135：徽标随宿主重建 detach 的兜底收起
     if (tpsTipFor && !tpsTipFor.isConnected) hideTpsTip();   // v146：速率 chip 随宿主重建 detach 的兜底收起
     if (subTipFor && !subTipFor.isConnected) hideSubTip();   // v176：行内速率 chip 随宿主重建 detach 的兜底收起
-    if (ctxBkdTipFor && !ctxBkdTipFor.isConnected) hideCtxBkdTip();   // v487：上下文弹层关闭卸载时的兜底收起
+    if (ctxBkdTipFor && !ctxBkdTipFor.isConnected && !ctxBkdHovered) hideCtxBkdTip();   // v487：上下文弹层关闭卸载时的兜底收起
     scanPluginNotices();
     rateBindings = rateBindings.filter(function (binding) {
       if (state.rateLine && isRateLine(binding.el)) return true;
@@ -2461,6 +2506,9 @@
     spdLegendTipHide();
     spdLegendTip.remove();     // v281：档位说明浮层同链清理
     window.removeEventListener("scroll", hideTipsOnScroll, true);
+    document.removeEventListener("pointerout", stopCtxHcLeave, true);
+    document.removeEventListener("mouseout", stopCtxHcLeave, true);
+    document.removeEventListener("pointerdown", onCtxBkdDocDown, true);
     if (window.__zusageRateCleanup === cleanupRateTip) delete window.__zusageRateCleanup;
   }
   /* 捕获：任意容器滚动即收——仅速率行浮层需要（宿主在消息流正文内，滚动即移位，fixed 浮层
