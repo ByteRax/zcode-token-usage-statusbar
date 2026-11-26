@@ -64,6 +64,16 @@ python3 -B tests/plugin-commands-cli-smoke.py
 
 `plugin-commands-cli-smoke.py` 使用真实客户端 CLI 和临时 bundle 副本，验证三个裸名命令的 list/inspect、实际协议命令目录与纯文本参数展开，旧插件前缀名明确 not-found；还验证旧聊天安装/更新子命令只返回 Usage，以及短 MCP 服务键对应的模型工具名。只复制清单、命令和被测分派代码，不复制或运行 hook/安装器；不启动模型、NDJSON 会话或 UI，因此不是界面端到端测试。bundle 结构改变时会明确失败，不退回模拟实现。
 
+## 安装文案冒烟（macOS，联网）
+
+```bash
+python3 -B tests/install-prompt-smoke.py github    # 或 gitcode
+```
+
+需要已安装 `/Applications/ZCode.app`、macOS 自带 `sandbox-exec` 和网络。脚本在临时目录里模拟一台全新机器（独立 HOME；真实 HOME、仓库与任何 asar 不可读，临时目录外不可写，执行前先用探针证明隔离成立），按 README 安装文案里的命令原样走一遍：添加市场、安装插件、运行安装器，最后核对插件登记与状态条注入，并输出每一步的耗时。状态条注入打到临时目录里的假归档上，不触碰真实客户端。不调用模型、不读取凭据；它量的是「代理照做即可」的确定性部分，代理自己摸索的时间不在其中。
+
+文案与脚本的一致性由默认回归 `test_install_prompt_contract.py` 锁定：三份 README 的安装文案必须包含脚本实跑的每一条命令。改动文案里的命令后，先跑本脚本确认在全新环境里仍然装得上。
+
 ## 速度格实机量宽探针
 
 ```bash
