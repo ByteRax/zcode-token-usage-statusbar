@@ -350,8 +350,9 @@
      * → v476 精简速率 chip 会话均兜底面（用户裁定，承接 v475 排查时发现的相邻行为；原立账 v471，按合入顺序顺延）：有会话均而没有最近一段速度、也没有实时视图时，chip 面按 v298 裁定留空——chip 没有图标，留空就是任何档位都只有内边距的空壳（节点仍挂着，它是精简模式右键设置入口）。改为显示「均 X t/s」：11 分片回退态在最近一段速度为 0 且会话均大于 0 时给伪视图传 avgFace 并取会话均作数值，07 分片 zuSpeedFace 据 avgFace 出标签「均」（英文 Avg）、面对象带 avg、zuSpeedFaceHtml 给标签挂 zu-sp-avg 类；档位色按会话均，aria-label 写「生成速度 会话均 X t/s」。有最近一段速度时仍是 v298 的面（最后一轮真实速度、不带「均」）；tooltip 不变。紧张档去标签规则对 zu-sp-avg 不生效，窄窗显示「均X」，会话均不冒充最后一轮速度。状态条速度格同一状态仍是有图标无数值的格面，不动
      * → v477 速度格空数值位不占位（Windows 兼容审查实测；原立账 v477）：无计时面只有标签，空数值 span 却仍吃 .zu-live 的一个 5px gap。zh-CN Windows 上 system-ui 解析为微软雅黑 UI（拉丁字母与数字也走雅黑，不是 Segoe），英文动名词自然宽超过 v463 标定的 ≤ 约 55px@14px（Running 59.5px、Reading/Sending 57.5px、Loading/Starting 56.6px），11px 界面字号 + 药丸宽裕档标签可用 44.59px，「Running」「Sending」「Reading」被省略成「Runni…」，真实浏览器契约「untimed four-character labels are never clipped」在 Windows 上恒红（此前被 Chrome 夹具在 Windows 上起不来掩盖）。固定宽速度格里 .zu-sp-val:empty 与 .zu-sp-label:empty 同款 display:none，标签可用 49.59px；精简 chip（.zu-tsb）按内容定宽不动，带数值面没有空数值位，间距、格宽 6.6em、字体与档位判定都不变。带数值面的标签在雅黑下仍按 v459「放不下时收缩省略」（11px 界面字号下「思考 4:28」差约 0.9px），Windows 余量记入规格。规格 specs/speed-chip-stable-slot.md
      * → v478 窄档与药丸紧张档只在数值非空时去标签（v475 精简 chip 同款语义搬到条面，用户实报截图「速度格只剩扳手图标，其余全空」）：默认条窄档（.zu-narrow）与药丸紧张档（.zu-pill.zu-speed-tight）原规则无条件 display:none 标签与单位、只留数值——只有状态词、没有数值的面（后台子代理派发中的「正在派发」、工具未开跑的「正在执行」，正是 v475 在精简 chip 上修过的同一批面）数值为空，格面只剩图标+全空，分隔线紧贴图标。修复=两条去标签选择器加 :has(>.zu-sp-val:not(:empty)) 条件，无数值面保留标签（四字说法 v463 在最紧档放得下），有值面与计时面窄档行为不变；与 v477 的 .zu-sp-val:empty{display:none} 互补（:has 按 DOM 内容匹配、不看 display），空数值位不再悬 5px。活页面离屏夹具实证窄档/药丸紧张档「正在派发」显示、计时面与数值面不变
+     * → v479 本月视图月份导航（用户规格，specs/speed-tooltip-v3.md §28）：时间「本月」图表头右端的统计区间 chip 换成月份胶囊 .zu-sv3-mnav（前后切月；点月份文字唤起月历弹层 .zu-sv3-mpop 直接选月；皮肤参照宿主 EndDatePicker），可回看历史月份的日均生成速度。core：sel.mon 所选月；月窗右端收在月末 min(下月 1 日 0 点减 1 毫秒, now)——整体均值与模型分布从时间窗过滤后的整池算，历史月右端不收会把之后的月份一并算进去；an.mon 给出有效月份与导航下界 lo（全部范围取 speed_days 首个非空日行与轮表最早一轮的较早者——不是固定 550 天窗口起点，否则会让人翻到一串必空的月份；其余范围取范围过滤后池最早一轮；sel.mon 越界钳到最近可看月）；全部范围用混合数据源（用户裁定）：轮表完整覆盖所选月时只用轮表，覆盖不住（已截断且最早一轮不早于月首）才改用 speed_days 日行池，约 550 天可回看。view：胶囊只在月视图出现、原区间全文降为 title；空月不走空态接管（保留日历与导航，原因由通知行承载——否则胶囊随图表头被替换，用户困在空月上）；时间 Tab 与左卡标题带月份（跨年才带年份）、图表标题带年月。wire：四类动作的状态机 spd3MonthAct 单点实现（06 主卡链 spd3Activate 与 01 精简链 tpsSpd3Activate 共用，不各写一份），SPD3_MON 侧信道带出当前卡的有效月份，弹层锚定走 spd3MonthAnchor；焦点归位走 spd3MonthFocus 且只在键盘路径做（指针按下触发的重建后卡内焦点留不住，实机探针实证）；月历弹层与筛选弹层互斥（双向），点弹层与胶囊之外即收（被点控件照常处理，spd3MonthOutside），Esc 同层收起并把焦点归还月份文字；切 Tab 收弹层、所选月保留，整卡隐藏时弹层态复位，会话切换复位。顺带修复（实机取证）：「模型筛选」标签入口在两链委托白名单里按无人使用的类名匹配、自 v390 起点不开，没有「+N」时筛选弹层完全打不开——白名单改认 [data-sv3-fopen]。Python、快照协议、inject-main.cjs 零改动。
      */
-    var VERSION = "v478";
+    var VERSION = "v479";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -387,7 +388,10 @@
       speedSel = { range: "recent", period: "recent", dim: "time",
         /* v384 V3：模型筛选状态机/弹出层/分布展开（实例级，会话切换与 range/period 一同重置） */
         filt: (typeof spd3FilterAuto === "function" ? spd3FilterAuto() : { mode: "auto", keys: null }),
-        pop: { open: false, query: "" } },   // v254 双 Tab + 维度（实例级，会话切换重置）
+        pop: { open: false, query: "" },
+        /* v479 月份导航（spec §28.1）：mon=null 当前自然月 / {y,m} 所选月（月 0 基）；
+         * mpop=月历弹层开关与所示年份（与 pop 互斥）。实例级，会话切换一并复位 */
+        mon: null, mpop: { open: false, y: 0 } },   // v254 双 Tab + 维度（实例级，会话切换重置）
       speedInteractAt = 0,   // v254 最近一次 Tab/维度/柱 hover 交互时刻（updateLive 短冻结防打断）
       compactHid = false;   // v156：display:none 是否由精简模式设置（区分初载 none，避免切档前提前露条）
 
@@ -2858,6 +2862,7 @@
           (grp === "period" && SPD_PERIODS.indexOf(val) >= 0)) {
         speedSel[grp] = val;
         if (speedSel.pop) speedSel.pop.open = false;   /* v384：切 Tab 收起筛选弹出层 */
+        if (speedSel.mpop) speedSel.mpop.open = false;   /* v479：切 Tab 收起月历弹层（所选月保留） */
         speedChartHover = -1; speedInteractAt = Date.now();
         /* v272：维度切换移除，dim 恒 time，无需按范围归位 */
         speedRebuildNow();
@@ -2871,8 +2876,23 @@
     function spd3Activate(e) {
       if (!speedSel || typeof spd3FilterToggle !== "function" || typeof speedRebuildNow !== "function") return false;
       var el = e.target && e.target.closest ? e.target.closest(
-        ".zu-sv3-chip,.zu-sv3-chip-more,.zu-sv3-fopen,.zu-sv3-fpop-row,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-act]") : null;   /* v390：fsearch 退役，入口=+N/「模型筛选」标签（fopen）；v391+：分布表恒展开，data-sv3-more 折叠链退役 */
+        ".zu-sv3-chip,.zu-sv3-chip-more,[data-sv3-fopen],.zu-sv3-fpop-row,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-act]," +
+        "[data-sv3-mnav],[data-sv3-mlabel],[data-sv3-mpick],[data-sv3-myear]") : null;   /* v390：fsearch 退役，入口=+N/「模型筛选」标签（fopen）；v391+：分布表恒展开，data-sv3-more 折叠链退役；v479：月份导航四类元素 */
       if (!el) return false;
+      /* v479（spec §28.5）月份导航动作（前后切月/开关月历弹层/选月/切年）：状态机在 wire
+       * 的 spd3MonthAct 单点实现，01 精简链共用；本链负责重建、弹层锚定与焦点归位。
+       * 无动作（边界外）吞掉事件不重建。 */
+      if (typeof spd3MonthHit === "function" && spd3MonthHit(el)) {
+        var mAct6 = spd3MonthAct(speedSel, el, (typeof SPD3_MON !== "undefined" ? SPD3_MON : null));
+        if (!mAct6) return true;
+        if (mAct6 === "open") spd3MonthAnchor(speedSel.mpop, el, tip.querySelector(".zu-sv3-root"));
+        speedChartHover = -1; speedInteractAt = Date.now();
+        speedRebuildNow();
+        /* 焦点归位只走键盘路径（click 且 e.detail===0）：指针按下触发的重建后焦点留不住
+         * 卡内（见 wire spd3MonthFocus 注释），不白费一次聚焦 */
+        if (e.type !== "pointerdown") spd3MonthFocus(tip, mAct6);
+        return true;
+      }
       if (!speedSel.filt) speedSel.filt = (typeof spd3FilterAuto === "function") ? spd3FilterAuto() : { mode: "auto", keys: null };
       if (!speedSel.pop) speedSel.pop = { open: false, query: "" };
       var key = el.getAttribute("data-k");
@@ -2935,6 +2955,10 @@
       cancelTipGrace();
       lastTipDownAt = Date.now();
       speedInteractAt = Date.now();
+      /* v479（spec §28.5）点弹层之外即收：月历弹层开着且按在弹层与胶囊之外 → 先收弹层并
+       * 重绘。被点的控件（Tab/筛选 chips 等）照常由下面的分支处理——它们从已脱离的旧
+       * 节点读属性，不受这次重绘影响；胶囊本身与弹层内部不算「之外」，交给 spd3MonthAct。 */
+      if (typeof spd3MonthOutside === "function" && spd3MonthOutside(speedSel, e.target)) speedRebuildNow();
       if (projTipTabActivate(e)) return;
       if (projTipMoreActivate(e)) return;
       if (spd3Activate(e)) return;   /* v384 V3：筛选 chips/弹出层/展开按钮 pointerdown 先行 */
@@ -2947,6 +2971,7 @@
       if (!t || !t.closest) return;
       var interactive = t.closest(".zu-pj-more") || t.closest(".zu-pj-tab") || t.closest(".zu-sv-tab") || t.closest("[data-zu-sys-th]") ||
         t.closest(".zu-sv3-fbar") || (t.closest(".zu-sv3-fpop") && !t.classList.contains("zu-sv3-fpop-input")) ||
+        t.closest(".zu-sv3-mnav") || t.closest(".zu-sv3-mpop") ||   /* v479：月份导航胶囊与月历弹层 */
         t.closest(".zu-sv3-more") || t.closest(".zu-sv3-empty-wrap");   /* v384 筛选区 + v387 空态动作入名单；搜索输入框豁免 */
       if (interactive) {
         e.stopPropagation();
@@ -3013,6 +3038,13 @@
             return;
           }
         }
+      }
+      /* v479（spec §28.5）：月历弹层与筛选弹层同层（互斥，一次只有一个开着），焦点归还月份文字按钮 */
+      if (speedSel && speedSel.mpop && speedSel.mpop.open) {
+        speedSel.mpop.open = false;
+        speedRebuildNow();
+        if (typeof spd3MonthFocus === "function") spd3MonthFocus(tip, "close");
+        return;
       }
       /* v384 V3：筛选弹出层最先收（Esc 分层：弹出层→档位说明→费用→关卡），焦点归还搜索按钮 */
       if (speedSel && speedSel.pop && speedSel.pop.open) {

@@ -38,7 +38,9 @@
    * 打开时按 fbar 实测底缘内联覆写）、
    * 宽 340px、bottom 废除；dbar 轨道契约——min-width:2px 废除、段宽=真实 share、
    * Σ段宽恒 100%，Top6+「其他」聚合段（宽按原始 n 计数差），极小占比显 <0.1%
-   * 不显 0%，dbar aria 简化为「模型分布：N 个模型」（完整数据由下方表格承载）。 */
+   * 不显 0%，dbar aria 简化为「模型分布：N 个模型」（完整数据由下方表格承载）。
+   * v479 月份导航（spec §28）：本月视图图表头右端的区间 chip 换成月份胶囊 .zu-sv3-mnav
+   * （前后切月 + 月份文字唤起月历弹层 .zu-sv3-mpop），文案随所选月；空月不走空态接管。 */
   /* SPD_V3_VIEW_BEGIN */
   var SPD3_SVG_FUNNEL = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8v5l-4 2v-7L3 5Z"/></svg>';
   /* v403（§24 用户追加裁定）：SPD3_SVG_CUBE 随 count 图标删除（唯一消费者退役） */
@@ -46,6 +48,20 @@
   var SPD3_SVG_TREND = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4v16h18"/><path d="m7 14 4-5 3 3 5-7"/></svg>';
   /* v469：精简速率 chip 整卡的设置图标——与 06 分片状态条 .zu-gear 同款齿轮（路径串由 overlay-tps-chip 锁两处一致） */
   var SPD3_SVG_GEAR = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 2h5l.6 2.5 1.7 1 2.5-.7 2.5 4.4-1.9 1.8v2l1.9 1.8-2.5 4.4-2.5-.7-1.7 1-.6 2.5h-5l-.6-2.5-1.7-1-2.5.7-2.5-4.4L4.1 13v-2L2.2 9.2l2.5-4.4 2.5.7 1.7-1z"/><circle cx="12" cy="12" r="3.5"/></svg>';
+  /* v479（spec §28.4）：月份导航胶囊的 lucide Chevron（宿主 EndDatePicker 同款形状：
+     24 viewBox、stroke 2、圆头圆角）；显示尺寸由 CSS 给（.zu-sv3-mbtn svg 16px） */
+  var SPD3_SVG_CHEV_L = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>';
+  var SPD3_SVG_CHEV_R = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>';
+  /* v479：an.mon 缺席（手工构造的 an / 旧 core 切片）时按当前月、无更早月份处理 */
+  function spd3MonOfAn(an) {
+    var m = an && an.mon;
+    if (m && typeof m.y === "number" && typeof m.m === "number") {
+      var v = Math.floor(m.y) * 12 + Math.floor(m.m);
+      return { y: m.y, m: m.m, v: v, cur: !!m.cur, lo: typeof m.lo === "number" ? m.lo : v, hi: typeof m.hi === "number" ? m.hi : v };
+    }
+    var d = new Date(), dv = d.getFullYear() * 12 + d.getMonth();
+    return { y: d.getFullYear(), m: d.getMonth(), v: dv, cur: true, lo: dv, hi: dv };
+  }
   /* 数值格式沿用 V2 口径：整数直显、小数留 1 位、空值 em dash（绝不显 0 t/s） */
   function spd3FmtV(x) { return x == null ? "—" : (x % 1 ? x.toFixed(1) : String(x)); }
   /* §14.2 占比文本：share<0.001（即 <0.1%）显「<0.1%」不显 0%——分布表占比列与
@@ -112,7 +128,10 @@
     var rl = { recent: SPD_L("最近", "Recent"), session: SPD_L("会话", "Session"),
       project: SPD_L("项目", "Project"), all: SPD_L("全部", "All") };
     var pl = { recent: SPD_L("最近", "Recent"), today: SPD_L("今天", "Today"),
-      week: SPD_L("近 7 天", "7 days"), month: SPD_L("本月", "Month"), all: SPD_L("全部", "All") };
+      week: SPD_L("近 7 天", "7 days"), all: SPD_L("全部", "All") };
+    /* v479（spec §28.4）：切到历史月时时间 Tab 显示所选月（「10月」），与胶囊一致；
+     * 当前月仍是「本月」 */
+    pl.month = an.period === "month" && !spd3MonOfAn(an).cur ? spd3MonShort(spd3MonOfAn(an).v) : SPD_L("本月", "Month");
     return '<div class="zu-sv-head"><div class="zu-sv-title">' + SPD3_SVG_TREND +
       "<span>" + spdEsc(SPD_L("生成速度", "Generation speed")) + "</span>" + cfg + "</div>" +
       '<div class="zu-sv-filter"><span class="zu-sv-flabel">' + spdEsc(SPD_L("范围", "Scope")) + "</span>" +
@@ -253,10 +272,16 @@
    * 口径，live 参数随之退化为签名遗留不再消费。 */
   function spd3LeftTitle(an) {
     var n = an && an.items ? an.items.length : 0;
+    /* v479（spec §28.4）：本月视图历史月带月份（「10月平均速度」），年份由旁边的月份胶囊
+     * 与图表标题给出；跨年才带年份（「2025年12月平均速度」）。当前月不变。标题行要与
+     * 计数同行，带年份的写法在多模型下会被挤成「2026年10月平均…」（2026-11-26 实机）。 */
+    var mon = spd3MonOfAn(an);
+    var monTitle = mon.cur ? SPD_L("本月", "This month")
+      : Math.floor(mon.v / 12) === new Date().getFullYear() ? spd3MonShort(mon.v) : spd3MonLabel(mon.v);
     var t = an && an.period === "recent" ? SPD_L("最近 " + n + " 轮", "Last " + n + " turns")
       : an && an.period === "today" ? SPD_L("今天", "Today")
       : an && an.period === "week" ? SPD_L("近 7 天", "Last 7 days")
-      : an && an.period === "month" ? SPD_L("本月", "This month")
+      : an && an.period === "month" ? monTitle
       : SPD_L("历史", "History");   /* v384 S6-MINOR6：设计稿措辞「历史平均速度」 */
     return t + SPD_L("平均速度", " · average speed");
   }
@@ -438,7 +463,7 @@
     return "";
   }
   /* ==================== ⑥ 图表标题栏（V2 spdChartHeadHTML 同构：标题+t/s+档位入口+区间） ==================== */
-  function spd3ChartHeadHTML(an, sub) {
+  function spd3ChartHeadHTML(an, sub, nav) {
     an = an || {};
     var ico = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/></svg>';
     /* Speed Bands SVG（细圆环 + 三级递增速度柱）逐字沿用 V2，档位说明浮层链（spdLegendTip）不变 */
@@ -454,8 +479,53 @@
       '" aria-haspopup="true" aria-expanded="false" title="' + spdEsc(SPD_L("查看速度档位说明", "View speed bands")) +
       '" aria-label="' + spdEsc(SPD_L("查看速度档位说明", "View speed bands")) + '">' + qico + "</button>" +
       (sub ? '<span class="zu-sc-sub zu-hm-sub">' + spdEsc(sub) + "</span>" : "") +
-      '<span class="zu-sv-range" title="' + spdEsc(spdRangeFull(an.spanA, an.spanB)) + '">' + ico +
-      "<span>" + spdEsc(spdRangeText(an.spanA, an.spanB)) + "</span></span></div>";
+      /* v479（spec §28.4）：本月视图右端换月份导航胶囊，其余时间视图保持统计区间 chip */
+      (an.period === "month" ? spd3MonthNavHTML(an, !!(nav && nav.mpopOpen)) :
+        '<span class="zu-sv-range" title="' + spdEsc(spdRangeFull(an.spanA, an.spanB)) + '">' + ico +
+        "<span>" + spdEsc(spdRangeText(an.spanA, an.spanB)) + "</span></span>") + "</div>";
+  }
+  /* v479（spec §28.4）：月份导航胶囊——仅本月视图出现，整体取代图表头右端的统计区间
+   * chip：[‹ 上个月][2026年11月][下个月 ›]。到边界置灰（disabled：当前月无下个月、
+   * 下界月无上个月）；月份文字是真按钮（唤起月历弹层，aria-expanded 随 mpop.open），
+   * 原统计区间全文降级为 title（区间末取最后一个有数据桶的结束时刻——历史月不显示成
+   * 整月到 23:59:59；无数据时直接说明该月无请求）。 */
+  function spd3MonthNavHTML(an, mpopOpen) {
+    var m = spd3MonOfAn(an), v = m.v;
+    var hasData = !!(an.real && an.real.length);
+    var rangeTxt = hasData ? spdRangeFull(an.spanA, an.real[an.real.length - 1].b)
+      : SPD_L("该月无请求数据", "No requests in this month");
+    var prevOn = v > m.lo, nextOn = v < m.hi;
+    return '<div class="zu-sv3-mnav" role="group" aria-label="' + spdEsc(SPD_L("选择月份", "Choose month")) + '">' +
+      '<button type="button" class="zu-sv3-mbtn" data-sv3-mnav="prev" aria-label="' + spdEsc(SPD_L("上个月", "Previous month")) +
+        '" title="' + spdEsc(SPD_L("上个月", "Previous month")) + '"' + (prevOn ? "" : " disabled") + ">" + SPD3_SVG_CHEV_L + "</button>" +
+      '<button type="button" class="zu-sv3-mlabel" data-sv3-mlabel aria-haspopup="dialog" aria-expanded="' + (mpopOpen ? "true" : "false") +
+        '" title="' + spdEsc(rangeTxt) + '">' + spdEsc(spd3MonLabel(v)) + "</button>" +
+      '<button type="button" class="zu-sv3-mbtn" data-sv3-mnav="next" aria-label="' + spdEsc(SPD_L("下个月", "Next month")) +
+        '" title="' + spdEsc(SPD_L("下个月", "Next month")) + '"' + (nextOn ? "" : " disabled") + ">" + SPD3_SVG_CHEV_R + "</button></div>";
+  }
+  /* v479（spec §28.4）：月历弹层——年份 + 上一年/下一年（年界钳在可看范围内）+ 4×3
+   * 月份格。选中月 .on + aria-pressed（主色对）；当前月未选中时内描边；界外月份
+   * disabled。mon=an.mon（有效月份与下界），year=弹层正在展示的年份（sel.mpop.y，
+   * 非法/越界时钳进可看年份）。data-sv3-mpick=整数「年×12+月」。 */
+  function spd3MonthPopHTML(mon, year) {
+    var loY = Math.floor(mon.lo / 12), hiY = Math.floor(mon.hi / 12);
+    var y = (typeof year === "number" && isFinite(year)) ? Math.floor(year) : mon.y;
+    if (y < loY || y > hiY) y = Math.min(Math.max(y, loY), hiY);
+    var cells = "";
+    for (var i = 0; i < 12; i++) {
+      var v = y * 12 + i, on = v === mon.v, inRange = v >= mon.lo && v <= mon.hi;
+      cells += '<button type="button" class="zu-sv3-mpick' + (on ? " on" : "") + (v === mon.hi ? " zu-sv3-mpick-cur" : "") +
+        '" data-sv3-mpick="' + v + '"' + (on ? ' aria-pressed="true"' : ' aria-pressed="false"') +
+        (inRange ? "" : " disabled") + ">" + spdEsc(spd3MonShort(v)) + "</button>";
+    }
+    return '<div class="zu-sv3-mpop" role="dialog" aria-label="' + spdEsc(SPD_L("选择月份", "Choose month")) + '">' +
+      '<div class="zu-sv3-mpop-head"><span class="zu-sv3-mpop-y">' + spdEsc(SPD_L(y + "年", String(y))) + "</span>" +
+      '<span class="zu-sv3-mpop-nav">' +
+      '<button type="button" class="zu-sv3-mbtn" data-sv3-myear="-1" aria-label="' + spdEsc(SPD_L("上一年", "Previous year")) + '"' +
+        (y > loY ? "" : " disabled") + ">" + SPD3_SVG_CHEV_L + "</button>" +
+      '<button type="button" class="zu-sv3-mbtn" data-sv3-myear="1" aria-label="' + spdEsc(SPD_L("下一年", "Next year")) + '"' +
+        (y < hiY ? "" : " disabled") + ">" + SPD3_SVG_CHEV_R + "</button></span></div>" +
+      '<div class="zu-sv3-mpop-grid">' + cells + "</div></div>";
   }
   /* ==================== ⑦ 内联样式块（全部 .zu-sv3-root 作用域；.zu-light 祖先类切浅色） ==================== */
   function spd3StylesHTML() {
@@ -576,6 +646,52 @@
         "color:var(--color-tooltip-tag-foreground,#a6a6a6);white-space:nowrap}" +
       ".zu-sv3-chart .zu-sv-range svg{width:13px;height:13px;flex:0 0 auto;opacity:.75}" +
       ".zu-sv3-chart .zu-sv-range span{overflow:hidden;text-overflow:ellipsis}" +
+      /* ---- v479 月份导航胶囊（spec §28.4）：皮肤参照宿主 EndDatePicker/TimeOfDayPicker
+         的 pill（rounded-full + --color-hover 底、tabular-nums、hover 提亮）与 ghost 方形
+         图标按钮；配色全走宿主 --color-* 令牌（回退值=本卡既有深浅色阶）。仅本月视图
+         出现，margin-left:auto 接管原区间 chip 的右对齐位；高度 26px 与档位说明按钮同高，
+         图表头行高不变 ---- */
+      ".zu-sv3-root .zu-sv3-mnav{display:inline-flex;align-items:center;gap:2px;flex:0 0 auto;margin-left:auto;" +
+        "padding:1px 2px;border-radius:999px;background:var(--color-hover,rgba(255,255,255,.06));transition:background .12s}" +
+      ".zu-light .zu-sv3-root .zu-sv3-mnav{background:var(--color-hover,rgba(0,0,0,.06))}" +
+      ".zu-sv3-root .zu-sv3-mnav:hover{background:var(--color-selected,rgba(255,255,255,.09))}" +
+      ".zu-light .zu-sv3-root .zu-sv3-mnav:hover{background:var(--color-selected,rgba(0,0,0,.08))}" +
+      ".zu-sv3-root .zu-sv3-mbtn{appearance:none;border:0;background:transparent;color:var(--color-foreground,#e9edf4);" +
+        "width:24px;height:24px;padding:0;margin:0;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;" +
+        "cursor:pointer;flex:0 0 auto;transition:background .12s,opacity .12s}" +
+      ".zu-sv3-root .zu-sv3-mbtn svg{width:16px;height:16px}" +
+      ".zu-sv3-root .zu-sv3-mbtn:hover:not(:disabled){background:var(--color-menu-hover,rgba(255,255,255,.08))}" +
+      ".zu-light .zu-sv3-root .zu-sv3-mbtn:hover:not(:disabled){background:var(--color-menu-hover,rgba(0,0,0,.07))}" +
+      ".zu-sv3-root .zu-sv3-mbtn:disabled{opacity:.35;cursor:not-allowed}" +
+      ".zu-sv3-root .zu-sv3-mlabel{appearance:none;border:0;background:transparent;color:var(--color-foreground,#e9edf4);" +
+        "font-family:inherit;font-size:calc(var(--ui-font-size,14px) - 2px);line-height:20px;padding:0 5px;margin:0;" +
+        "border-radius:999px;font-variant-numeric:tabular-nums;white-space:nowrap;cursor:pointer}" +
+      ".zu-sv3-root .zu-sv3-mlabel:hover{background:var(--color-menu-hover,rgba(255,255,255,.08))}" +
+      ".zu-light .zu-sv3-root .zu-sv3-mlabel:hover{background:var(--color-menu-hover,rgba(0,0,0,.07))}" +
+      ".zu-sv3-root .zu-sv3-mbtn:focus-visible,.zu-sv3-root .zu-sv3-mlabel:focus-visible," +
+        ".zu-sv3-root .zu-sv3-mpick:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
+      /* ---- v479 月历弹层（spec §28.4）：卡内 absolute，表面同筛选弹出层；锚定胶囊正下方
+         （top/right 由打开入口 spd3MonthAnchor 写入 ctx.mpop 后内联覆写，CSS 默认值只是
+         兜底）；年份头 + 4×3 月份格。选中月=宿主主色对，当前月未选中=内描边 ---- */
+      ".zu-sv3-root .zu-sv3-mpop{position:absolute;right:13px;top:112px;z-index:6;width:252px;max-width:calc(100% - 16px);" +
+        "box-sizing:border-box;padding:10px;border-radius:12px;border:1px solid var(--color-popover-border,rgba(255,255,255,.16));" +
+        "background:var(--color-popover,#1c212b);box-shadow:0 8px 28px rgba(0,0,0,.35)}" +
+      ".zu-light .zu-sv3-root .zu-sv3-mpop{background:var(--color-popover,#ffffff);border-color:rgba(15,23,42,.16);" +
+        "box-shadow:0 8px 28px rgba(15,23,42,.18)}" +
+      ".zu-sv3-root .zu-sv3-mpop-head{display:flex;align-items:center;justify-content:space-between;height:28px;margin-bottom:8px}" +
+      ".zu-sv3-root .zu-sv3-mpop-y{font-size:calc(var(--ui-font-size,14px) - 2px);font-weight:500;color:var(--color-foreground,#e9edf4)}" +
+      ".zu-sv3-root .zu-sv3-mpop-nav{display:inline-flex;align-items:center;gap:2px}" +
+      ".zu-sv3-root .zu-sv3-mpop-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}" +
+      ".zu-sv3-root .zu-sv3-mpick{appearance:none;border:0;background:transparent;color:var(--color-foreground,#e9edf4);" +
+        "font-family:inherit;font-size:calc(var(--ui-font-size,14px) - 2px);font-variant-numeric:tabular-nums;" +
+        "height:34px;padding:0;margin:0;border-radius:8px;cursor:pointer;transition:background .12s,opacity .12s}" +
+      ".zu-sv3-root .zu-sv3-mpick:hover:not(:disabled){background:var(--color-menu-hover,rgba(255,255,255,.08))}" +
+      ".zu-light .zu-sv3-root .zu-sv3-mpick:hover:not(:disabled){background:var(--color-menu-hover,rgba(0,0,0,.06))}" +
+      ".zu-sv3-root .zu-sv3-mpick.on{background:var(--color-primary,#e9edf4);color:var(--color-primary-foreground,#1c212b)}" +
+      ".zu-light .zu-sv3-root .zu-sv3-mpick.on{background:var(--color-primary,#1c212b);color:var(--color-primary-foreground,#ffffff)}" +
+      ".zu-sv3-root .zu-sv3-mpick.zu-sv3-mpick-cur:not(.on){box-shadow:inset 0 0 0 1px var(--color-border-hover,rgba(255,255,255,.24))}" +
+      ".zu-light .zu-sv3-root .zu-sv3-mpick.zu-sv3-mpick-cur:not(.on){box-shadow:inset 0 0 0 1px var(--color-border-hover,rgba(15,23,42,.24))}" +
+      ".zu-sv3-root .zu-sv3-mpick:disabled{opacity:.35;cursor:not-allowed}" +
       /* ---- 左卡内部 ---- */
       ".zu-sv3-root .zu-sv3-title-row{display:flex;align-items:center;gap:6px;min-width:0}" +
       ".zu-sv3-root .zu-sv3-ltitle{font-weight:600;font-size:calc(var(--ui-font-size,14px) - 1px);" +
@@ -778,6 +894,13 @@
      * CSS 默认 87px——字号缩放/紧凑链下 fbar 高度变化安全 */
     if (pop && ctx.pop && spdNum(ctx.pop.top) > 0)
       pop = pop.replace('class="zu-sv3-fpop"', 'class="zu-sv3-fpop" style="top:' + spdNum(ctx.pop.top) + 'px"');
+    /* v479（spec §28.4）：月历弹层随 ctx.mpop={open,y,top,right} 携带，只在月视图渲染
+     * （精简链切 Tab 不收弹层态，不得泄漏到其它时间视图）；锚定值由打开入口
+     * （spd3MonthAnchor）写入，内联覆写 CSS 默认位置（同 fpop） */
+    var mpop = an.period === "month" && ctx.mpop && ctx.mpop.open ? spd3MonthPopHTML(spd3MonOfAn(an), ctx.mpop.y) : "";
+    if (mpop && spdNum(ctx.mpop.top) > 0)
+      mpop = mpop.replace('class="zu-sv3-mpop"', 'class="zu-sv3-mpop" style="top:' + spdNum(ctx.mpop.top) +
+        'px;right:' + spdNum(ctx.mpop.right) + 'px"');
     /* 真单模型池（§11.5→v396）：chips 池恰 1 个且非 missing——v396 起左卡单模型态改由
      * models.length===1 判定，本值仅作 spd3LeftHTML 第三参签名兼容传递（不被消费） */
     var poolSingle = pool.length === 1 && !pool[0].missing;
@@ -786,7 +909,15 @@
      * 字面）而非 perModel——降级帧（旧二元组）+筛选时 core 保留整行 out/ms（models
      * 置空），此时有真实数据与柱，绝不能误报「无数据」+伪造 0 轮（审查 MAJOR-1）。 */
     var empty = !(an.real && an.real.length) || !an.overall;
-    var chartSlot = empty ? spd3EmptyStateHTML(an, filt) : "<!--CHART-->";
+    /* v479（spec §28.4）：空月不走空态接管——胶囊在图表头里，被空态页替换后用户会困在
+     * 空月上（所选月留在状态里，切走再切回仍是它）。恒保留占位画日历（全灰格），
+     * 空态原因改由通知行承载 */
+    var monthCal = empty && an.period === "month" && !!(an.daysGrid && an.daysGrid.length);
+    var chartSlot = empty && !monthCal ? spd3EmptyStateHTML(an, filt) : "<!--CHART-->";
+    if (monthCal) {
+      var why = an.emptyReason || SPD_L("所选月份内暂无请求", "No requests in the selected month");
+      notice = notice ? notice + SPD_L(" · ", " · ") + why : why;
+    }
     /* §12.1 + §17：高度档位内联 height + data-h-tier（class/data-sv-key 相邻契约保持）。
      * v393 起用 height 取代 min-height：root 是 auto 高 flex 列容器，min-height 只抬下限、
      * 内容 flex-basis 计算仍会把 root 撑过档位（实测 all 日历式 6 行 492>450）；固定高后
@@ -802,6 +933,6 @@
         ctx.o && ctx.o.fmtTok) +
       '<div class="zu-speed-chart zu-sv3-chart" data-sv3-chart>' + chartSlot + "</div></div>" +
       (notice ? '<div class="zu-sv3-notice">' + spdEsc(notice) + "</div>" : "") +
-      pop + "</div>";
+      pop + mpop + "</div>";
   }
   /* SPD_V3_VIEW_END */

@@ -1037,3 +1037,191 @@ test('v457 tok 聚合与筛选重算: 未筛选=Σ行 tok；只选部分模型=�
   assert.equal(host(anMix.overall).tok, null, '降级分支（无模型级窗口）部分选中 → tok=null');
   assert.equal(host(anMix.overall).v, 100, '降级分支既有速度行为不变（整轮 600t/6s，不按所选模型缩放）');
 });
+
+// ---------- ⑯ v479 月份导航（spec §28） ----------
+const MO = (y, m) => y * 12 + m;   // 整数「年×12+月」（月 0 基），同 an.mon.lo/hi
+
+test('v479 历史月窗: 右端收在月末——10 月的整体均值/轮数不含 11 月数据；当月右端仍是 now', () => {
+  const ctx = makeCtx();
+  const h = fixture();   // 10-05（本会话 1000t/10s）+ 11-04 + 11-05×4（100/900/400/500）
+  const cur = analyze(ctx, h, null, { range: 'all', period: 'month', sid: 'sess_main' });
+  assert.equal(host(cur.overall).out, 3000 + 100 + 900 + 400 + 500, '当前月=既有行为（11 月 5 轮）');
+  assert.equal(cur.spanB, FIXED_NOW, '当前月右端=now（不变）');
+  assert.equal(cur.title, '本月 · 日均生成速度');
+  const oct = analyze(ctx, h, null, { range: 'all', period: 'month', sid: 'sess_main', mon: { y: 2026, m: 9 } });
+  assert.equal(oct.pool.length, 1, '10 月池只有 10-05 一轮');
+  assert.equal(host(oct.overall).out, 1000, '整体输出不含 11 月（右端不收会是 5900）');
+  assert.equal(host(oct.overall).ms, 10000);
+  assert.equal(host(oct.overall).v, 100);
+  assert.equal(host(oct.perModel).length, 1, '模型分布同样只含 10 月');
+  assert.equal(oct.real.length, 1, '有数据日桶只有 1 个');
+  const nov1 = new Date(2026, 10, 1).getTime();
+  assert.ok(oct.real.every(it => it.a < nov1 && it.b <= nov1), '日桶全部落在 10 月内');
+  assert.equal(host(oct.peak).v, 100, '峰/低/最新都只来自 10 月');
+  assert.equal(oct.spanA, new Date(2026, 9, 1).getTime(), '展示轴左端=10-01 00:00');
+  assert.equal(oct.spanB, nov1 - 1, '展示轴右端=10 月最后一毫秒');
+  assert.equal(oct.title, '2026年10月 · 日均生成速度', '历史月标题带年月');
+  // 日历格按所选月生成：10 月 31 天、只有 10-05 有聚合
+  assert.equal(oct.daysGrid.length, 31);
+  assert.equal(oct.daysGrid[0].t0, new Date(2026, 9, 1).getTime());
+  assert.equal(oct.daysGrid[30].t1, nov1);
+  assert.equal(host(oct.daysGrid[4].agg).v, 100);
+  assert.equal(oct.daysGrid[3].agg, null);
+  assert.equal(oct.daysGrid[30].agg, null);
+});
+
+test('v479 an.mon: 当前月 cur、下界=范围池最早一轮所在月（池空=当前月）、越界钳到最近可看月、非法 mon 回当前月', () => {
+  const ctx = makeCtx();
+  const h = fixture();
+  const cur = analyze(ctx, h, null, { range: 'all', period: 'month', sid: 'sess_main' });
+  assert.deepEqual(host(cur.mon), { y: 2026, m: 10, cur: true, lo: MO(2026, 9), hi: MO(2026, 10) },
+    '全部范围：最早一轮 10-05 → lo=10 月');
+  const other = analyze(ctx, h, null, { range: 'session', period: 'month', sid: 'sess_other' });
+  assert.equal(host(other.mon).lo, MO(2026, 10), '会话范围下界取本会话最早一轮（11-05）');
+  const none = analyze(ctx, h, null, { range: 'session', period: 'month', sid: 'sess_missing' });
+  assert.deepEqual(host(none.mon), { y: 2026, m: 10, cur: true, lo: MO(2026, 10), hi: MO(2026, 10) }, '池空=当前月');
+  const tooOld = analyze(ctx, h, null, { range: 'all', period: 'month', sid: 'sess_main', mon: { y: 2024, m: 0 } });
+  assert.deepEqual(host(tooOld.mon), { y: 2026, m: 9, cur: false, lo: MO(2026, 9), hi: MO(2026, 10) }, '早于下界 → 钳到下界月');
+  assert.match(tooOld.title, /2026年10月/, '钳制后的有效月进标题');
+  const tooNew = analyze(ctx, h, null, { range: 'all', period: 'month', sid: 'sess_main', mon: { y: 2027, m: 3 } });
+  assert.equal(host(tooNew.mon).cur, true, '晚于当前月 → 钳回当前月');
+  for (const bad of [{ y: 'x', m: 1 }, { y: 2026 }, 5]) {
+    const a = analyze(ctx, h, null, { range: 'all', period: 'month', sid: 'sess_main', mon: bad });
+    assert.deepEqual(host(a.mon), host(cur.mon), '非法 mon 按当前月');
+  }
+  // 范围从「全部」切到历史较短的会话：所选月落在会话下界之前 → 钳到会话最早月
+  const shrink = analyze(ctx, h, null, { range: 'session', period: 'month', sid: 'sess_other', mon: { y: 2026, m: 9 } });
+  assert.deepEqual(host(shrink.mon), { y: 2026, m: 10, cur: true, lo: MO(2026, 10), hi: MO(2026, 10) });
+  // 下界不随模型筛选变化（取自筛选前的池）
+  const filt = analyze(ctx, h, null, { range: 'all', period: 'month', sid: 'sess_main',
+    filt: { mode: 'sel', keys: [KEYS.b] } });
+  assert.equal(host(filt.mon).lo, MO(2026, 9), '筛到 11 月才出现的模型，下界仍是 10 月');
+  // 非 month 视图：sel.mon 不影响时间窗（an.mon 只是回显所选月，仅月视图消费）
+  const all = analyze(ctx, h, null, { range: 'all', period: 'all', sid: 'sess_main', mon: { y: 2026, m: 9 } });
+  assert.equal(all.pool.length, 6, '全部时间窗不受 sel.mon 影响');
+  assert.equal(all.title, '全部 · 历史生成速度');
+  assert.equal(all.daysGrid, undefined, '非 month 视图不产 daysGrid');
+});
+
+test('v479 混合数据源（spec §28.3）: 轮表完整覆盖时只用轮表；覆盖不住时全部×本月改用 speed_days 日行池', () => {
+  const ctx = makeCtx();
+  // speed_days：08-01 起覆盖到今天（97 天），09-10 与 10-10 各一个日桶
+  const start = new Date(2026, 7, 1).getTime();
+  const days = [];
+  for (let i = 0; i < 97; i++) days.push([0, 0, 0, 0, 0, 0]);
+  days[40] = [700, 7000, 2, 1, 0, [[0, 400, 4000, 1, 1], [1, 300, 3000, 1, 1]]];   // 09-10
+  days[70] = [800, 8000, 1, 1, 0, [[0, 800, 8000, 1, 1]]];                          // 10-10
+  const sd = { v: 1, source: 'local', start, days, mnames: ['GLM-A', 'Claude-B'], mkeys: [KEYS.a, KEYS.b], truncated: 1 };
+  // 轮表已截断且最早一轮 11-04：10 月、11 月都覆盖不住
+  const hTrunc = fixture();
+  hTrunc.truncated = true;
+  hTrunc.turns = hTrunc.turns.slice(1);
+  hTrunc.turns[0].t = new Date(2026, 10, 4, 15).getTime();   // 首轮 delta 基准重算
+  const oct = analyze(ctx, hTrunc, sd, { range: 'all', period: 'month', sid: 'sess_main', mon: { y: 2026, m: 9 } });
+  assert.equal(oct.pool.length, 1, '10 月走日行池：只有 10-10 一个日桶');
+  assert.equal(oct.pool[0].t0, new Date(2026, 9, 10).getTime(), '日行 t0 在场（轮表行没有）');
+  assert.equal(host(oct.overall).out, 800);
+  assert.equal(host(oct.daysGrid[9].agg).v, 100, '日历格吃到日行数据');
+  assert.equal(oct.notice, '', '月视图走日行：不追加 speed_days 截断提示，也不再报轮表截断');
+  const sep = analyze(ctx, hTrunc, sd, { range: 'all', period: 'month', sid: 'sess_main', mon: { y: 2026, m: 8 } });
+  assert.equal(host(sep.overall).out, 700, '更早月份同样可回看（550 天内）');
+  assert.equal(host(sep.mon).lo, MO(2026, 8), '全部范围下界=首个有数据的日行所在月（9-10），不是固定 550 天窗口起点 8 月');
+  const aug = analyze(ctx, hTrunc, sd, { range: 'all', period: 'month', sid: 'sess_main', mon: { y: 2026, m: 7 } });
+  assert.equal(host(aug.mon).m, 8, '窗口起点早于首个有数据日：8 月无数据不可达，被钳到 9 月');
+  assert.equal(host(aug.overall).out, 700);
+  assert.equal(host(sep.mon).cur, false);
+  // 轮表未截断（全史在表）：即使有 speed_days 也只用轮表——费用等轮表字段保留
+  const novFull = analyze(ctx, fixture(), sd, { range: 'all', period: 'month', sid: 'sess_main' });
+  assert.ok(novFull.pool.length === 5 && novFull.pool.every(r => r.t0 === undefined), '未截断 → 当前月仍是纯轮表行');
+  assert.ok(novFull.pool.some(r => r.c !== null), '轮表行带费用');
+  const octFull = analyze(ctx, fixture(), sd, { range: 'all', period: 'month', sid: 'sess_main', mon: { y: 2026, m: 9 } });
+  assert.equal(octFull.pool.length, 1, '未截断 → 历史月同样只用轮表（最早一轮 10-05 晚于月首，但全史在表）');
+  assert.equal(host(octFull.overall).out, 1000);
+  assert.equal(host(octFull.mon).lo, MO(2026, 8), '下界取全部来源中最早的有数据时刻（日行 9-10 早于轮表 10-05）');
+  // 已截断但最早一轮早于月首：该月仍由轮表覆盖
+  const hTrunc2 = fixture();
+  hTrunc2.truncated = true;
+  const novCov = analyze(ctx, hTrunc2, sd, { range: 'all', period: 'month', sid: 'sess_main' });
+  assert.ok(novCov.pool.length === 5 && novCov.pool.every(r => r.t0 === undefined), '已截断但最早一轮（10-05）早于 11-01 → 11 月仍只用轮表');
+  assert.match(novCov.notice, /历史较长，仅统计最近可用轮次/, '轮表截断披露不变');
+  // 会话/项目范围：日行无会话身份，恒只用轮表（覆盖不住也不借日行）
+  const sess = analyze(ctx, hTrunc2, sd, { range: 'session', period: 'month', sid: 'sess_main', mon: { y: 2026, m: 9 } });
+  assert.equal(sess.pool.length, 1, '会话范围 10 月只有轮表里的 10-05 一轮（不借 10-10 日行）');
+  assert.equal(host(sess.overall).out, 1000);
+  assert.equal(host(sess.mon).lo, MO(2026, 9), '会话下界=本会话最早一轮所在月');
+  // 「全部×全部」的合并池与截断提示不变
+  const allAll = analyze(ctx, hTrunc, sd, { range: 'all', period: 'all', sid: 'sess_main' });
+  assert.match(allAll.notice, /已截断 · 仅显示最近 97 天/, '全部×全部仍报 speed_days 截断');
+  // 无 speed_days（精简帧/旧 Python）：全部范围同样只用轮表——轮表够不到的月份不可达
+  const noSd = analyze(ctx, hTrunc, null, { range: 'all', period: 'month', sid: 'sess_main', mon: { y: 2026, m: 9 } });
+  assert.deepEqual(host(noSd.mon), { y: 2026, m: 10, cur: true, lo: MO(2026, 10), hi: MO(2026, 10) },
+    '下界收成轮表最早一轮所在月（11 月），10 月被钳到 11 月');
+  assert.equal(noSd.pool.length, 5, '钳到 11 月后是 11 月的轮表池');
+});
+
+test('v479 memo: 所选月进 spd3AnalyzeCached 签名（同帧不同月得不同 an）；月份文案 zh/en', () => {
+  const ctx = makeCtx();
+  const h = fixture();
+  ctx.__h = h; ctx.__sd = null;
+  ctx.__s1 = { range: 'all', period: 'month', sid: 'sess_main' };
+  ctx.__s2 = { range: 'all', period: 'month', sid: 'sess_main', mon: { y: 2026, m: 9 } };
+  assert.deepEqual(JSON.parse(vm.runInContext(`JSON.stringify([
+    spd3AnalyzeCached(__h, __sd, __s1) === spd3AnalyzeCached(__h, __sd, __s1),
+    spd3AnalyzeCached(__h, __sd, __s1) === spd3AnalyzeCached(__h, __sd, __s2),
+    spd3AnalyzeCached(__h, __sd, __s2).mon.m, spd3AnalyzeCached(__h, __sd, __s1).mon.m])`, ctx)),
+  [true, false, 9, 10], '同签名复用同对象；换月即失配');
+  ctx.__s3 = { range: 'all', period: 'month', sid: 'sess_main', mon: { y: 2026, m: 10 } };
+  const a1 = vm.runInContext('spd3AnalyzeCached(__h, __sd, __s3)', ctx);
+  ctx.__s3.mon.m = 9;
+  const a2 = vm.runInContext('spd3AnalyzeCached(__h, __sd, __s3)', ctx);
+  assert.notEqual(a1, a2, '原地改 sel.mon 即失配（filt 同款纪律）');
+  assert.equal(host(a2.mon).m, 9);
+  ctx.__v = MO(2026, 9);
+  assert.equal(vm.runInContext('spd3MonLabel(__v) + "|" + spd3MonShort(__v)', ctx), '2026年10月|10月');
+  const en = makeCtx(FIXED_NOW, 'en');
+  en.__v = MO(2026, 9);
+  assert.equal(vm.runInContext('spd3MonLabel(__v) + "|" + spd3MonShort(__v)', en), 'Oct 2026|Oct');
+});
+
+test('v479 历史月空态原因: 「所选月份内暂无请求」先于会话/项目通用句；筛选原因仍最优先；当前月文案不变', () => {
+  const ctx = makeCtx();
+  // 一轮=月份序号（0 基）；会话须有早于所选月的轮，否则下界钳制会让该月不可达
+  const mk = months => ({ sid: 's', source: 'local', truncated: false, sids: ['s'], snames: ['S'], pids: [['p', 'P']],
+    mnames: ['GLM-A'], mkeys: [KEYS.a],
+    turns: months.map((month, i) => ({ s: 0, t: new Date(2026, month, 5, 9).getTime() - (i ? new Date(2026, months[i - 1], 5, 9).getTime() : 0),
+      b: 0, out: 100, ms: 1000, i: 80, o: 100, n: 1, msl: [[0, 100, 1000, 1]] })) });
+  const oct = analyze(ctx, mk([8, 10]), null, { range: 'session', period: 'month', sid: 's', mon: { y: 2026, m: 9 } });
+  assert.equal(host(oct.mon).m, 9, '会话最早一轮在 9 月 → 10 月可达');
+  assert.equal(oct.real.length, 0);
+  assert.equal(oct.emptyReason, '所选月份内暂无请求', '不是「当前会话暂无已完成请求」（会话有请求，只是不在该月）');
+  assert.equal(oct.daysGrid.length, 31, '空月仍产全日格（供日历铺灰格）');
+  assert.equal(oct.title, '2026年10月 · 日均生成速度');
+  const filt = analyze(ctx, mk([8, 10]), null, { range: 'session', period: 'month', sid: 's', mon: { y: 2026, m: 9 },
+    filt: { mode: 'sel', keys: [KEYS.b] } });
+  assert.equal(filt.emptyReason, '已选模型在当前范围暂无有效速度记录', '筛选原因优先级不变');
+  const curEmpty = analyze(ctx, mk([8]), null, { range: 'session', period: 'month', sid: 's' });
+  assert.equal(curEmpty.emptyReason, '当前会话暂无已完成请求', '当前月仍是既有通用句');
+  const en = makeCtx(FIXED_NOW, 'en');
+  const octEn = analyze(en, mk([8, 10]), null, { range: 'session', period: 'month', sid: 's', mon: { y: 2026, m: 9 } });
+  assert.equal(octEn.emptyReason, 'No requests in the selected month');
+  assert.equal(octEn.title, 'Oct 2026 · daily generation speed');
+});
+
+test('v479 范围最近×历史月: 时间窗先切、再取该月内最近 18 轮', () => {
+  const ctx = makeCtx();
+  const turns = [];
+  let prev = 0, sum = 0;
+  for (let i = 0; i < 22; i++) {
+    const t = new Date(2026, 9, 1 + i, 9).getTime();
+    turns.push({ s: 0, t: t - prev, b: t - 60000, out: 100 + i, ms: 1000, i: 80, o: 100, n: 1, msl: [[0, 100 + i, 1000, 1]] });
+    prev = t;
+    if (i >= 4) sum += 100 + i;
+  }
+  const h = { sid: 's', source: 'local', truncated: false, sids: ['s'], snames: ['S'], pids: [['p', 'P']],
+    mnames: ['GLM-A'], mkeys: [KEYS.a], turns };
+  const an = analyze(ctx, h, null, { range: 'recent', period: 'month', sid: 's', mon: { y: 2026, m: 9 } });
+  assert.equal(an.items.length, 18, '该月内最近 18 轮');
+  const oct1 = new Date(2026, 9, 1).getTime(), nov1 = new Date(2026, 10, 1).getTime();
+  assert.ok(an.items.every(it => it.a >= oct1 && it.a < nov1), '全部落在 10 月');
+  assert.equal(host(an.overall).out, sum, '整体=这 18 轮之和（不补更早的轮）');
+});

@@ -483,7 +483,8 @@
     for (var r2 = 0; r2 < rows; r2++)
       body += '<div role="row" style="display:contents">' + flat.slice(r2 * 7, r2 * 7 + 7).join("") + "</div>";
     return '<div class="zu-speed-chart zu-sv-chart zu3-hm">' + spd3HeatStyle() +
-      spd3ChartHeadHTML(an, SPD_L("按日聚合", "aggregated by day")) +
+      /* v479：月历弹层开态透传给月份胶囊的 aria-expanded（spec §28.4） */
+      spd3ChartHeadHTML(an, SPD_L("按日聚合", "aggregated by day"), { mpopOpen: !!(o && o.mpopOpen) }) +
       '<div class="zu-sc-wrap"><div class="zu3-hm-week">' + spd3WeekRow() + "</div>" +
       '<div class="zu3-hm-grid" role="grid" style="--zu-hm-rows:' + rows + '">' + body + "</div></div></div>";
   }

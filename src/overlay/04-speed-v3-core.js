@@ -3,6 +3,9 @@
    * （旧二元组兼容）+ 帧级 mkeys 身份表；新顶层 speed_days 全历史按日聚合（生产端
    * 本地日界、550 天上限）。v457（spec §25）起轮级可选键 tk / 日桶第 7 位 tk 携带每模型
    * Token 总消耗，解包为行 tok 与模型分量 tt（未知为 null，筛选重算据此保持精确）。
+   * v479（spec §28）起 sel.mon 携带本月视图所选月，an.mon 给出有效月份与导航下界；
+   * 月窗右端收在月末（历史月不得把之后的月份算进来），全部范围在轮表覆盖不住所选月
+   * 时改用 speed_days 日行池（混合数据源）。
    * 本分片只做解包/筛选状态机/聚合/管线，是 view/charts/heat
    * （spec §5-§7，另分片实现）唯一的数据上游：消费入口 spd3Analyze(h, sd, sel) → an。
    * 口径铁律（spec §0）：速度恒 = Σ有效输出 ÷ Σ有效生成窗口，绝不逐轮/逐模型算术
@@ -317,18 +320,40 @@
     ml.sort(function (a, b) { return b.out - a.out; });
     return ml;
   }
+  /* ==================== ⑤b 月份导航助手（spec §28） ====================
+   * 月份用整数「年×12+月」比较（月为 0 基），日期一律本地日历构造（DST 日 23h/25h
+   * 与生产端日界一致，禁固定毫秒步长）。文案三件套供 core 标题与 view 的胶囊/弹层/
+   * Tab/左卡共用（zh「2026年11月」「11月」，en「Nov 2026」「Nov」）。 */
+  var SPD3_MONTH_EN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  function spd3MonOf(t) { var d = spdDate(t); return d.getFullYear() * 12 + d.getMonth(); }
+  function spd3MonY(v) { return Math.floor(v / 12); }
+  function spd3MonM(v) { return ((v % 12) + 12) % 12; }
+  function spd3MonLabel(v) {
+    return SPD_L(spd3MonY(v) + "年" + (spd3MonM(v) + 1) + "月", SPD3_MONTH_EN[spd3MonM(v)] + " " + spd3MonY(v));
+  }
+  function spd3MonShort(v) { return SPD_L((spd3MonM(v) + 1) + "月", SPD3_MONTH_EN[spd3MonM(v)]); }
+  function spd3MonStart(v) { return new Date(spd3MonY(v), spd3MonM(v), 1).getTime(); }
+  /* 轮表是否完整覆盖某时刻起的月份（spec §28.3 混合数据源）：未截断=全史在表恒覆盖；
+   * 已截断则只有最早一轮早于该时刻才算覆盖住（否则该月只有起点之后的数据）。 */
+  function spd3TurnsCover(u, t) {
+    if (!u) return false;
+    if (!u.truncated) return true;
+    return !!(u.turns.length && u.turns[0].t < t);
+  }
   /* ==================== ⑥ 聚合管线（spec §4，20 组合唯一入口） ====================
    * 顺序固定（PRD 4.2）：范围池 → 自然时间窗 → 最近 N 轮（SPD_BARS_MAX=18，沿用
    * 现值）→ 模型筛选 → 聚合。筛选只删分量不缩窗口：range=recent 先取最近 18 轮
    * 窗口，再在窗口内按筛选分量重算（PRD 4.3，不向更早历史补轮）。
    * 入参：h=speed_history 帧（可 null）、sd=speed_days 帧（可 null）、
-   * sel={range,period,sid,remote?,filt?,focus?}。sid 由调用点从本窗口/分栏可信身份
+   * sel={range,period,sid,remote?,filt?,focus?,mon?}。sid 由调用点从本窗口/分栏可信身份
    * 注入（同一帧推给所有窗，绝不用帧里 sid——纪律同 V2）；filt 是 spd3Filter* 维护
-   * 的同一可变对象（原地改属性后无需重建 sel）。
+   * 的同一可变对象（原地改属性后无需重建 sel）；mon={y,m}（月 0 基，v479 spec §28）
+   * =本月视图所选月，缺席=当前自然月。
    * 返回 an（view/charts/heat 的唯一上游契约，结果只读不得原地改）：
    * { items, real, overall(+modelNames/models[].tps), perModel(+share), peak, low,
    *   latest, unit("turn"|"hour"|"day"), title, range, period, spanA, spanB, notice,
-   *   truncated, msAvail, pool, selMissing, daysGrid?(仅 month) }
+   *   truncated, msAvail, pool, selMissing, daysGrid?(仅 month),
+   *   mon: {y,m,cur,lo,hi}(有效月份与导航下界，lo/hi 为整数「年×12+月」闭区间) }
    * items 每项 = spd3Aggregate 结果 + {label,full,a,b}，空桶 {v:null,...,empty:true}
    * 不显 0 t/s；real=非空 items；peak/low/latest 按 real 的 v/last。 */
   function spd3Analyze(h, sd, sel) {
@@ -347,17 +372,37 @@
     if (remote && range === "all") range = "session";
     var notices = [];
     if (remote && sel.range === "all") notices.push(SPD_L("远端会话仅显示本会话历史", "Remote pane: local session history only"));
+    /* v479（spec §28.1）月份导航：所选月 sel.mon={y,m} 折成整数「年×12+月」（缺席/非法=
+     * 当前自然月）与导航下界 lo=本范围**有数据**的最早时刻所在月。全部范围的下界取全部
+     * 来源最早者——轮表覆盖不住的月份由 speed_days 日行承接（见下 useDays），下界必须与
+     * 「切过去之后看得到什么」一致，否则弹层会把可看的月份置灰；日行取首个非空日
+     * （daysRows.start 是固定 550 天窗口起点，早于首个有数据日时照取会让人翻到一串必定
+     * 全空的月份——2026-11-26 实机取证）；其余范围在范围过滤后对池重算。sel.mon 落在
+     * 界外时钳到最近的可看月份（monEff）。 */
+    var dNow = new Date(now);
+    var monCur = dNow.getFullYear() * 12 + dNow.getMonth();
+    var monSel = (sel.mon && typeof sel.mon.y === "number" && typeof sel.mon.m === "number" &&
+      isFinite(sel.mon.y) && isFinite(sel.mon.m)) ? Math.floor(sel.mon.y) * 12 + Math.floor(sel.mon.m) : monCur;
+    var monLoT = (range === "all" && daysRows && daysRows.rows.length) ? daysRows.rows[0].t0 : Infinity;
+    if (range === "all" && u && u.turns.length && u.turns[0].t < monLoT) monLoT = u.turns[0].t;
+    var monLo = isFinite(monLoT) ? spd3MonOf(monLoT) : monCur;
+    var monEff = Math.min(Math.max(monSel, monLo), monCur);
     /* 数据池组装（spec §1.2 防重叠）：全部×全部 且 speed_days 可用 → 日行 + 晚于
      * 覆盖末日次日日历零点（daysRows.end，B1/S10 日历化接缝）的轮表行；日行 t 恒 <
      * 该分界，轮表行按 t >= 分界并入，无重叠无遗漏——固定 864e5 接缝在跨 DST 帧会
-     * 漂进覆盖末日，把末日内晚轮双重计数。其余组合池=轮表行。 */
-    var useDays = range === "all" && period === "all" && !!daysRows;
+     * 漂进覆盖末日，把末日内晚轮双重计数。其余组合池=轮表行。
+     * v479（spec §28.3 混合数据源，用户裁定）：全部×本月 在轮表覆盖不住所选月时
+     * 同样走日行池（可回看约 550 天）；轮表完整覆盖时照旧只用轮表（日卡预估费用与
+     * 每模型 token 仍由轮表行提供，现状零变化）。 */
+    var useDays = range === "all" && !!daysRows &&
+      (period === "all" || (period === "month" && !spd3TurnsCover(u, spd3MonStart(monEff))));
     var pool;
     if (useDays) {
       var endMs = daysRows.end;
       pool = daysRows.rows.slice();
       if (u) for (var pi = 0; pi < u.turns.length; pi++) if (u.turns[pi].t >= endMs) pool.push(u.turns[pi]);
-      if (daysRows.truncated) notices.push(SPD_L("已截断 · 仅显示最近 " + daysRows.days + " 天",
+      /* 月视图走日行时不追加截断提示：导航下界已保证所选月在覆盖内（spec §28.3） */
+      if (daysRows.truncated && period === "all") notices.push(SPD_L("已截断 · 仅显示最近 " + daysRows.days + " 天",
         "Truncated · last " + daysRows.days + " days only"));
     } else {
       pool = u ? u.turns : [];
@@ -380,16 +425,26 @@
       if (!panePid) notices.push(SPD_L("当前会话不在历史中，项目范围无数据", "Current session not found in history; project scope is empty"));
       pool = panePid ? pool.filter(function (r) { return r.pid === panePid; }) : [];
     }
+    /* v479：会话/项目/最近范围的下界=范围过滤后轮表池最早一轮所在月（池空=当前月），
+     * 钳制随之重算（取自模型筛选前的池：下界不随筛选变化） */
+    if (range !== "all") {
+      var loT = Infinity;
+      for (var mi2 = 0; mi2 < pool.length; mi2++) if (pool[mi2].t < loT) loT = pool[mi2].t;
+      monLo = isFinite(loT) ? spd3MonOf(loT) : monCur;
+      monEff = Math.min(Math.max(monSel, monLo), monCur);
+    }
     /* 自然时间窗：today/week/month 用本地日历运算（零点/当月一号），不减固定毫秒数
      * （weekStart 同样日历化：today-6 个本地日，DST 日 23h/25h 与桶归属一致，M3/S8；
      * 桶归属仍走 spdBucket 本地日历）。 */
-    var a = 0, b = 0, dNow = new Date(now);
+    var a = 0, b = 0;
     var todayStart = new Date(dNow.getFullYear(), dNow.getMonth(), dNow.getDate()).getTime();
     var weekStart = new Date(dNow.getFullYear(), dNow.getMonth(), dNow.getDate() - 6).getTime();
-    var monthStart = new Date(dNow.getFullYear(), dNow.getMonth(), 1).getTime();
+    var monthStart = spd3MonStart(monEff);
     if (period === "today") { a = todayStart; b = now; }
     else if (period === "week") { a = weekStart; b = now; }
-    else if (period === "month") { a = monthStart; b = now; }
+    /* v479（spec §28.2）：右端收在月末——整体均值/模型分布/峰低新都从本窗过滤后的
+     * 整池算，历史月右端不收会把之后的月份一并算进去；当月仍是 now（既有行为） */
+    else if (period === "month") { a = monthStart; b = Math.min(spdNextBucket(monthStart, "month") - 1, now); }
     if (a) pool = pool.filter(function (r) { return r.t >= a && r.t <= b; });
     /* 最近 N 轮：时间窗先行、N 轮上限在后（沿用 V2）；range=recent 与 period=recent
      * 两处各切一次（同值幂等）——范围「最近」在该周期过滤之后取最近 18 个有效轮。 */
@@ -483,13 +538,15 @@
         }
       }
       if (period === "month") {
-        /* 当月每日键集（本地日历天数，含今天之后的未来日）：agg=null=空日/未来日，
-         * 热力格状态由渲染层区分（spec §5：未来遮罩/空日灰/有记录色阶/今天描边） */
+        /* 所选月每日键集（本地日历天数，当月含今天之后的未来日）：agg=null=空日/未来
+         * 日，热力格状态由渲染层区分（spec §5：未来遮罩/空日灰/有记录色阶/今天描边）；
+         * v479 起月份取 monEff（历史月无今天、无未来日，今天判定仍在渲染层按真实时钟） */
         daysGrid = [];
-        var dim = new Date(dNow.getFullYear(), dNow.getMonth() + 1, 0).getDate();
+        var mY = spd3MonY(monEff), mM = spd3MonM(monEff);
+        var dim = new Date(mY, mM + 1, 0).getDate();
         for (var dd = 1; dd <= dim; dd++) {
-          var g0 = new Date(dNow.getFullYear(), dNow.getMonth(), dd).getTime();
-          var g1 = new Date(dNow.getFullYear(), dNow.getMonth(), dd + 1).getTime();
+          var g0 = new Date(mY, mM, dd).getTime();
+          var g1 = new Date(mY, mM, dd + 1).getTime();
           var grows = buckets[g0] || [];
           daysGrid.push({ t0: g0, t1: g1, agg: grows.length ? spd3Aggregate(grows) : null });
         }
@@ -500,7 +557,9 @@
     var title = period === "recent" ? SPD_L("最近 " + items.length + " 轮 · 生成速度", "Last " + items.length + " turns · generation speed")
       : period === "today" ? SPD_L("今天 · 按小时生成速度", "Today · hourly generation speed")
       : period === "week" ? SPD_L("近 7 天 · 每日平均速度", "Last 7 days · daily average speed")
-      : period === "month" ? SPD_L("本月 · 日均生成速度", "This month · daily generation speed")
+      /* v479（spec §28.4）：当前月保持「本月」，历史月带年月（「2026年10月 · 日均生成速度」） */
+      : period === "month" ? (monEff === monCur ? SPD_L("本月 · 日均生成速度", "This month · daily generation speed")
+        : spd3MonLabel(monEff) + SPD_L(" · 日均生成速度", " · daily generation speed"))
       : SPD_L("全部 · 历史生成速度", "All history · generation speed");
     /* v295 纪律沿用：顺序时间（旧→新，最新柱在最右）；real 与峰值/最低/最新按时间戳
      * 比较不受顺序影响；spanA/spanB 取自筛选后池（沿用 V2 取法：时间窗优先）。 */
@@ -558,7 +617,9 @@
       range: range, period: period, spanA: spanA, spanB: spanB,
       notice: notices.join(SPD_L(" · ", " · ")), truncated: !!(u && u.truncated),
       msAvail: msAvail, pool: pool, selMissing: selMissing,
-      axisA: axisA, axisB: axisB };   /* v389 §13.4：未筛选时间轴（heat 形态判定） */
+      axisA: axisA, axisB: axisB,   /* v389 §13.4：未筛选时间轴（heat 形态判定） */
+      /* v479（spec §28.1）：有效月份与导航下界（lo/hi 为整数「年×12+月」闭区间） */
+      mon: { y: spd3MonY(monEff), m: spd3MonM(monEff), cur: monEff === monCur, lo: monLo, hi: monCur } };
     /* v387 §11.4：空态原因分类（view 空态页据此给针对性提示与恢复动作，
      * 不再千篇一律「尝试更长时间范围」）。按池构成与筛选态判定，顺序即优先级。 */
     if (!real.length) {
@@ -566,6 +627,9 @@
       else if (!u) an.emptyReason = SPD_L("速度数据尚未加载", "Speed history not loaded yet");
       else if (filtering && !filt.keys.length) an.emptyReason = SPD_L("未选择任何模型", "No model selected");
       else if (filtering) an.emptyReason = SPD_L("已选模型在当前范围暂无有效速度记录", "Selected models have no rated turns in this range");
+      /* v479（spec §28.4）：历史月先按月说原因——范围=会话/最近的通用句「当前会话暂无
+       * 已完成请求」在这里是误报（会话有请求，只是不在该月） */
+      else if (period === "month" && monEff !== monCur) an.emptyReason = SPD_L("所选月份内暂无请求", "No requests in the selected month");
       else if (range === "session" || range === "recent") an.emptyReason = SPD_L("当前会话暂无已完成请求", "No completed turns in this session yet");
       else if (range === "project") an.emptyReason = SPD_L("当前项目暂无有效速度数据", "No rated data in this project yet");
       else if (a && b) an.emptyReason = SPD_L("当前时间范围内暂无请求", "No turns in this time range");
@@ -598,7 +662,8 @@
       if (!sdId) { sdId = SPD3_SD_NEXT++; SPD3_SD_IDS.set(sd, sdId); }
     }
     var sig = [sel.range || "", sel.period || "", sel.sid || "", sel.remote ? 1 : 0,
-      spd3FilterSig(sel.filt), sel.focus || "", spd3NowBucket(), sdId].join("\u0001");
+      spd3FilterSig(sel.filt), sel.focus || "", spd3NowBucket(), sdId,
+      sel.mon ? sel.mon.y + "-" + sel.mon.m : ""].join("\u0001");   /* v479：所选月进签名 */
     var n = (h && h.turns && typeof h.turns.length === "number") ? h.turns.length : -1;
     var memo = SPD3_MEMO.get(keyObj);
     if (memo) for (var i = 0; i < memo.length; i++)
