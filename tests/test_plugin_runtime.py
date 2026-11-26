@@ -472,6 +472,49 @@ class PluginRuntimeTests(unittest.TestCase):
         self.assertFalse((self.runtime / ".plugin-overlay-optout").exists())
         self.assertFalse((self.runtime / ".plugin-overlay-nudge").exists())
 
+    def test_install_passes_the_bridge_hook_only_to_capable_modules(self):
+        # 旧运行目录模块/替身没有 EXTRA_MODIFY=True：install() 的调用形状保持不变
+        for capable, extra in ((False, {}), (True, {"extra_modify": mock.ANY})):
+            with self.subTest(capable=capable):
+                patch_install = self.patch_install_stub()
+                patch_install.install.return_value = True
+                if capable:
+                    patch_install.EXTRA_MODIFY = True
+                with mock.patch.object(installer, "resolve_paths", return_value=(self.runtime, patch_install)):
+                    with self.assertRaises(SystemExit) as exit_code:
+                        self.run_main("install")
+                self.assertEqual(exit_code.exception.code, 0)
+                patch_install.install.assert_called_once_with(before_publish=mock.ANY, **extra)
+
+    def test_bridge_hook_is_wired_to_plan_deploy_and_deferred_to_the_installer(self):
+        patch_install = self.patch_install_stub()
+        patch_install.EXTRA_MODIFY = True
+        patch_install.install.return_value = True
+        with mock.patch.object(installer, "resolve_paths", return_value=(self.runtime, patch_install)), \
+                mock.patch.object(installer, "_plan_bridge", return_value={"planned": True}) as plan:
+            self.assertTrue(installer._install_overlay(self.runtime, patch_install))
+            plan.assert_not_called()   # 只有确需生成新包时 patch_install 才调用钩子
+            hook = patch_install.install.call_args.kwargs["extra_modify"]
+            self.assertEqual(hook(), {"planned": True})
+        plan.assert_called_once_with(patch_install)
+
+    def test_bridge_plan_failures_never_break_the_install(self):
+        planner = mock.Mock(side_effect=RuntimeError("planner exploded"))
+        for label, outcome in (("raises", planner), ("no plan", mock.Mock(return_value=None))):
+            with self.subTest(label=label):
+                patch_install = self.patch_install_stub()
+                patch_install.EXTRA_MODIFY = True
+                patch_install.install.return_value = True
+                errors = io.StringIO()
+                with mock.patch.dict(sys.modules, {"renderer_bridge": mock.Mock(plan_deploy=outcome)}), \
+                        mock.patch.object(installer, "resolve_paths",
+                                          return_value=(self.runtime, patch_install)), \
+                        contextlib.redirect_stderr(errors):
+                    self.assertTrue(installer._install_overlay(self.runtime, patch_install))
+                    hook = patch_install.install.call_args.kwargs["extra_modify"]
+                    self.assertIsNone(hook())
+                self.assertEqual("renderer bridge plan failed" in errors.getvalue(), label == "raises")
+
     def test_install_deploys_renderer_bridge_and_remove_strips_it(self):
         bridge = mock.Mock()
         bridge.ensure_deployed.return_value = {"status": "patched", "version": "3.16.1", "detail": ""}

@@ -1028,6 +1028,24 @@ def _inspect_deploy(asar_path):
                      asset_path, original, modified)
 
 
+def plan_deploy(asar_path):
+    """loader 安装事务的并入钩子（patch_install.install(extra_modify=...) 的数据来源）：
+    只读判定目标 asar 是否缺桥，缺则给出改写后的渲染资产与判定时的整包指纹。返回 None =
+    不并入（已带桥、布局无法验证或任何读档失败）——桥是旁路增强，绝不影响 loader 安装。
+    调用方只有在本指纹与其重打包来源一致时才并入（specs/asar-single-transaction.md）。"""
+    try:
+        asar_path = Path(asar_path)
+        kind, payload = _inspect_deploy(asar_path)
+        if kind != "patch":
+            return None
+        before, _base, _nodes, _header, _version, _auto, _derived, asset_path, _original, modified = payload
+        if not isinstance(asset_path, str) or not isinstance(modified, bytes) or not modified:
+            return None
+        return {"source": before, "modify": {asset_path: modified}}
+    except Exception:
+        return None
+
+
 def ensure_deployed(asar_path):
     """插件安装/更新链专用：确认目标 asar 带桥，没有则就地补打。
 

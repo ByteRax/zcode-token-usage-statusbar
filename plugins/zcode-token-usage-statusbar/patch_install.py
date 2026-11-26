@@ -85,6 +85,9 @@ ZUSAGE_LINE_RE = re.compile(
     rb'\(e\) => console\.error\("\[zusage\] load failed", e\)\);'
 )
 ZCODE_EXE = ZCODE_EXE_DEFAULT
+# install(extra_modify=...) 的能力标记：调用方（overlay_install）按此探测——旧运行目录里的
+# 模块或测试替身没有该常量时不传钩子，install() 的调用形状保持不变。
+EXTRA_MODIFY = True
 ALIGN = 4
 BLOCK = 4194304
 
@@ -643,8 +646,36 @@ def compute_integrity(data: bytes):
     }
 
 
+class _Digest:
+    """边写边算的整包摘要；size 记录喂入的字节数，对不上产物大小即不可信。"""
+
+    def __init__(self):
+        self.hash = hashlib.sha256()
+        self.size = 0
+
+    def update(self, data):
+        self.hash.update(data)
+        self.size += len(data)
+
+
+_REPACK_SINK = None   # _repack_digest() 持有期间的摘要接收方
+
+
+@contextmanager
+def _repack_digest():
+    """让其间的 repack() 边写边算产物的 SHA256。repack 被替身顶替或没写满时
+    sink.size 为 0 或小于产物，调用方回退整包回读。"""
+    global _REPACK_SINK
+    sink = _Digest()
+    _REPACK_SINK = sink
+    try:
+        yield sink
+    finally:
+        _REPACK_SINK = None
+
+
 def repack(src_path: Path, modify: dict, dst_path: Path):
-    """重建 asar。modify: {asar内路径: 新内容bytes}。流式拷贝未改动文件。"""
+    """重建 asar。modify: {asar内路径: 新内容bytes}。逐文件边读边写，未改动文件不落内存。"""
     with open(src_path, "rb") as src:
         header, base = read_header(src)
         header = json.loads(json.dumps(header))  # 深拷贝
@@ -652,8 +683,8 @@ def repack(src_path: Path, modify: dict, dst_path: Path):
         missing = set(modify) - set(nodes)
         assert not missing, f"paths not in asar: {missing}"
 
-        data_parts = []
-        offset = 0
+        # 第一遍只定新偏移：改写项记新内容，其余记源数据起点，都不读数据
+        plan, offset = [], 0
         for p, node in nodes.items():
             if node.get("unpacked"):
                 node["offset"] = "0"
@@ -664,24 +695,39 @@ def repack(src_path: Path, modify: dict, dst_path: Path):
                 data = modify[p]
                 node["size"] = len(data)
                 node["integrity"] = compute_integrity(data)
+                plan.append((None, data))
             else:
-                src.seek(base + int(node["offset"]))
-                data = src.read(node["size"])
+                plan.append((base + int(node["offset"]), node["size"]))
             node["offset"] = str(offset)
-            data_parts.append(data)
-            offset += len(data)
+            offset += node["size"]
 
-        payload = b"".join(data_parts)
         header_bytes = json.dumps(header, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         d = len(header_bytes)
         c = (d + 4 + ALIGN - 1) // ALIGN * ALIGN
         b_total = c + 4
-        with open(dst_path, "wb") as out:
-            out.write(struct.pack("<4I", 4, b_total, c, d))
-            out.write(header_bytes)
-            out.write(b"\0" * (c - d - 4))  # pickle 对齐：数据区从 8+b = 12+c 处开始
+        sink = _REPACK_SINK
+        with open(dst_path, "wb", buffering=BLOCK) as out:
+            def write(data):
+                out.write(data)
+                if sink is not None:
+                    sink.update(data)
+
+            write(struct.pack("<4I", 4, b_total, c, d))
+            write(header_bytes)
+            write(b"\0" * (c - d - 4))  # pickle 对齐：数据区从 8+b = 12+c 处开始
             assert out.tell() == 8 + b_total, f"header pad mismatch: {out.tell()} vs {8 + b_total}"
-            out.write(payload)
+            for start, payload in plan:
+                if start is None:
+                    write(payload)
+                    continue
+                src.seek(start)
+                remaining = payload
+                while remaining:
+                    chunk = src.read(min(BLOCK, remaining))
+                    if not chunk:
+                        raise OSError(f"source archive truncated: {src_path}")
+                    write(chunk)
+                    remaining -= len(chunk)
     return dst_path
 
 
@@ -975,11 +1021,16 @@ def monitor_instance_lock():
         os.close(fd)   # 释放即关闭句柄：显式解锁与关闭之间的窗口没有意义
 
 
-def _checked_tmp_metadata(path, source, operation):
+def _checked_tmp_metadata(path, source, operation, fingerprint=None):
     if operation not in ("install", "remove"):
         raise PendingTmpError("invalid pending operation")
     _same_stamp(ASAR, source)
-    before = source_fingerprint(path)
+    if fingerprint is None:
+        before = source_fingerprint(path)
+    else:
+        # 重打包边写边算的摘要：身份戳仍对得上才沿用，对不上按既有语义失败
+        _same_stamp(path, fingerprint)
+        before = fingerprint
     try:
         ok = self_check(path, expect=operation == "install") and syntax_check(path)
     except (ValueError, AssertionError, KeyError, struct.error) as e:
@@ -1074,10 +1125,11 @@ def _same_renamed_file(current, before):
     return all(current[key] == before[key] for key in ("size", "mtime_ns", "dev", "ino"))
 
 
-def _publish_pending(stage, source, operation, previous, *, validated_mobile=None):
-    """按 journal→原子发布→sidecar 落成 TMP。普通调用完整校验；手机只复用锁外校验的私有 stage。"""
+def _publish_pending(stage, source, operation, previous, *, validated_mobile=None, fingerprint=None):
+    """按 journal→原子发布→sidecar 落成 TMP。普通调用完整校验；手机只复用锁外校验的私有 stage。
+    fingerprint 是本进程重打包边写边算的 stage 指纹：有则免掉 stage 与落成后 TMP 的两次整包回读。"""
     mobile = validated_mobile is not None
-    meta = (_checked_tmp_metadata(stage, source, operation) if not mobile
+    meta = (_checked_tmp_metadata(stage, source, operation, fingerprint) if not mobile
             else dict(validated_mobile))
     # Two files cannot be atomically published together. Persist a cancelled
     # ownership journal first, so any interruption is safe and recoverable.
@@ -1099,7 +1151,12 @@ def _publish_pending(stage, source, operation, previous, *, validated_mobile=Non
                 raise PendingTmpError("published TMP does not match validated mobile stage")
             meta["tmp"] = dict(moved, sha256=meta["tmp"]["sha256"])
         else:
-            meta["tmp"] = source_fingerprint(TMP)
+            moved = file_stamp(TMP)
+            if fingerprint is None or not _same_renamed_file(moved, meta["tmp"]):
+                meta["tmp"] = source_fingerprint(TMP)
+            else:
+                # 同目录 rename 只动 ctime：内容未变，沿用写入期摘要，只换身份戳
+                meta["tmp"] = dict(moved, sha256=meta["tmp"]["sha256"])
         _same_stamp(ASAR, source)
         _atomic_tmp_metadata(meta)
     except BaseException:
@@ -1162,13 +1219,20 @@ def _archive_stage(*, mobile_only=False):
 
 
 def _repack_stage(stage, modify):
-    repack(ASAR, modify, stage)
+    with _repack_digest() as sink:
+        repack(ASAR, modify, stage)
     original_stat = ASAR.stat()
     if os.name != "nt":
         stage_stat = stage.stat()
         if (stage_stat.st_uid, stage_stat.st_gid) != (original_stat.st_uid, original_stat.st_gid):
             os.chown(stage, original_stat.st_uid, original_stat.st_gid)
     os.chmod(stage, stat.S_IMODE(original_stat.st_mode))
+    # 身份戳取在 chown/chmod 之后（ctime 属于身份戳）；摘要只在喂满整个 stage 时可用，
+    # repack 被替身顶替时 sink.size 为 0，返回 None 让调用方回退整包回读
+    stamp = file_stamp(stage)
+    if sink.size != stamp["size"]:
+        return None
+    return dict(stamp, sha256=sink.hash.hexdigest())
 
 
 @contextmanager
@@ -1214,8 +1278,8 @@ def _prepare_tmp(modify, operation="install", source=None):
     if TMP.exists() or TMP.is_symlink() or TMP_META.exists() or TMP_META.is_symlink():
         previous = _owned_tmp_metadata()
     with _archive_stage() as stage:
-        _repack_stage(stage, modify)
-        return _publish_pending(stage, source, operation, previous)
+        fingerprint = _repack_stage(stage, modify)
+        return _publish_pending(stage, source, operation, previous, fingerprint=fingerprint)
 
 
 def _mobile_pending_exists():
@@ -1515,10 +1579,36 @@ def _reusable_pending_install(new_entry, *, verified=None):
         return False
 
 
-def install(finalize=False, before_publish=None, mobile_only=False, *, record_mobile_intent=False):
+def _extra_modifications(hook, source):
+    """并入同一次重打包的旁路改写（渲染桥等）。返回 {} 表示不并入：未提供钩子、抛异常、
+    形态不符、不是基于同一份来源归档算出的、路径不在归档内、路径是外置/链接项，或触碰
+    主入口。旁路改写绝不影响 loader 安装。"""
+    if hook is None:
+        return {}
+    try:
+        planned = hook()
+        extra = planned.get("modify") if isinstance(planned, dict) else None
+        if not isinstance(extra, dict) or not extra or not _same_fingerprint(source, planned.get("source")):
+            return {}
+        with open(ASAR, "rb") as stream:
+            nodes = dict(iter_files(read_header(stream)[0]))
+        if any(not isinstance(path, str) or path == "/" + ENTRY or not isinstance(data, bytes)
+               or not data or path not in nodes or nodes[path].get("unpacked") or "link" in nodes[path]
+               for path, data in extra.items()):
+            return {}
+        return dict(extra)
+    except Exception:
+        return {}
+
+
+def install(finalize=False, before_publish=None, mobile_only=False, *, record_mobile_intent=False,
+            extra_modify=None):
     """Serialize install/remove/finalize; optional callback records a new package intent.
 
     mobile_only 仅供已有当前 loader 的 SessionStart 补装手机钩子，不改变 loader 路径。
+    extra_modify() 只在完整安装确需生成新包时调用：返回
+    {"source": <计算改写时的归档指纹>, "modify": {归档内路径: bytes}} 且来源指纹与本次一致时，
+    改写并入同一次重打包（specs/asar-single-transaction.md）；其余情形一律不并入。
     """
     global _LAST_MOBILE_STATUS
     if finalize:
@@ -1592,13 +1682,13 @@ def install(finalize=False, before_publish=None, mobile_only=False, *, record_mo
         return False
     try:
         with _target_lock():
-            return _install(before_publish=before_publish)
+            return _install(before_publish=before_publish, extra_modify=extra_modify)
     except OSError as e:
         print(L(f"安装锁获取失败：{e}", f"Cannot acquire install lock: {e}"))
         return False
 
 
-def _install(finalize=False, before_publish=None):
+def _install(finalize=False, before_publish=None, extra_modify=None):
     """返回 True=已安装/已指向当前目录，False=失败或待收尾。"""
     global _LAST_MOBILE_STATUS
     if finalize:
@@ -1641,25 +1731,33 @@ def _install(finalize=False, before_publish=None):
     new_entry = stripped + INJECT_LINE.encode()
     if stripped != entry:
         print(L("检测到旧注入行（可能指向旧目录），将替换为新路径。",
-                "Old injection line detected (possibly pointing at an old directory); it will be replaced with the new path."))
+                "Old injection line detected (possibly pointing to an old directory); it will be replaced with the new path."))
+    verified = {}
     if _reusable_pending_install(new_entry):
         # 客户端持续运行期间每次 SessionStart 自动安装都会走到这里：直接复用磁盘上
-        # 已排定的待收尾包，不再 307MB 重打包/重写（issue #120 的写放大）。不新建意图。
+        # 已排定的待收尾包，不再整包重打包/重写（issue #120 的写放大）。不新建意图。
         print(L("已有有效的待收尾包（内容一致），跳过重打包。",
                 "A valid identical pending package already exists; skipping the repack."))
     else:
-        print(L("重打包（307MB，约需十几秒）...", "repacking (307MB, takes ~10-20 seconds)..."))
+        print(L("重打包（约需十几秒）...", "repacking (takes ~10-20 seconds)..."))
         try:
             if before_publish is not None:
                 before_publish({"asar": str(ASAR.resolve()),
                                 "entryHash": hashlib.sha256(new_entry).hexdigest()})
-            _prepare_tmp({"/" + ENTRY: new_entry}, source=source)
+            modify = {"/" + ENTRY: new_entry}
+            modify.update(_extra_modifications(extra_modify, source))
+            _prepare_tmp(modify, source=source)
+            # 本进程刚生成并完整校验过待替换包，目标锁也全程未放：把 sidecar 登记进本进程
+            # 的校验缓存，紧随其后的替换只核对身份戳。读不回就按未校验处理，照常完整验包。
+            try:
+                verified["metadata"] = _load_tmp_metadata()
+            except PendingTmpError:
+                pass
         except (OSError, PendingTmpError) as e:
             if mobile_changed:
                 _LAST_MOBILE_STATUS = {"status": "skipped-error", "detail": str(e)}
             print(L(f"待替换包生成失败，未替换：{e}", f"Pending package preparation failed; not replaced: {e}"))
             return False
-    verified = {}
     if client_running():
         try:
             _replace_pending("install", verified=verified)
@@ -1787,14 +1885,20 @@ def _remove():
         cleanup_legacy_bak()
         return True
     print(L("重打包（剥离注入行，约需十几秒）...", "repacking (stripping the injection line, takes ~10-20 seconds)..."))
+    verified = {}
     try:
         _prepare_tmp({"/" + ENTRY: stripped}, operation="remove", source=source)
+        # 同 _install：本进程刚生成并完整校验过，替换前只核对身份戳
+        try:
+            verified["metadata"] = _load_tmp_metadata()
+        except PendingTmpError:
+            pass
     except (OSError, PendingTmpError) as e:
         print(L(f"卸载待替换包生成失败：{e}", f"Remove pending package preparation failed: {e}"))
         return False
     running = client_running()
     try:
-        _replace_pending("remove")
+        _replace_pending("remove", verified=verified)
     except PendingTmpError as e:
         print(L(f"卸载待替换包已失效，未替换：{e}", f"Remove pending package invalidated; not replaced: {e}"))
         return False

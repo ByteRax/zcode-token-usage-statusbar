@@ -838,10 +838,25 @@ def _nudge(output, message, label="安装提醒", detail="状态条安装尚未�
     return output
 
 
+def _plan_bridge(pi):
+    """并入 loader 安装事务的桥改写（renderer_bridge.plan_deploy）；任何失败都返回 None。"""
+    try:
+        from renderer_bridge import plan_deploy
+        return plan_deploy(pi.ASAR)
+    except Exception as e:  # noqa: BLE001 — 桥只是增强
+        print(f"[zusage-plugin] renderer bridge plan failed（已忽略）：{e}", file=sys.stderr)
+        return None
+
+
 def _install_overlay(runtime, pi):
     from restart_notice import record_restart
+    kwargs = {}
+    if getattr(pi, "EXTRA_MODIFY", False) is True:
+        # 已加载的 patch_install 支持把桥改写并入同一次重打包（specs/asar-single-transaction.md）；
+        # 旧运行目录模块或替身没有该能力时不传钩子，install() 的调用形状不变。
+        kwargs["extra_modify"] = lambda: _plan_bridge(pi)
     return pi.install(before_publish=lambda installation: record_restart(
-        runtime, {"state": "pending-install", "installation": installation}))
+        runtime, {"state": "pending-install", "installation": installation}), **kwargs)
 
 
 _MOBILE_LOCK_RETRY_BUDGET_S = 15.0
