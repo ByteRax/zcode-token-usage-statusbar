@@ -5,6 +5,7 @@
 这里锁定三份 README 的安装文案包含 tests/install-prompt-smoke.py 实跑的每一条命令，
 并且不再把「怎么执行安装」留给代理自己摸索。
 """
+import re
 from pathlib import Path
 import sys
 import unittest
@@ -15,11 +16,16 @@ from tests.helpers.py_test_support import load_module  # noqa: E402
 
 SMOKE = load_module("install_prompt_smoke_contract", ROOT / "tests" / "install-prompt-smoke.py")
 README = ("README.md", "README.zh-CN.md", "README.en.md")
+ANCHOR = "plugins marketplace add"
 
 
 def install_prompt(name):
-    """每个 README 里第一个 text 代码块就是安装文案。"""
-    return (ROOT / name).read_text(encoding="utf-8").split("```text", 2)[1]
+    """安装文案 = 含 plugins marketplace add 的那个 text 代码块（README 里另有别的 text 块）。"""
+    blocks = [block for block in re.findall(r"^```text\n(.*?)\n```", (ROOT / name).read_text(encoding="utf-8"),
+                                          re.S | re.M) if ANCHOR in block]
+    if len(blocks) != 1:
+        raise AssertionError("%s 里含 %r 的 text 代码块应有 1 个，实际 %d 个" % (name, ANCHOR, len(blocks)))
+    return blocks[0]
 
 
 class InstallPromptContractTests(unittest.TestCase):
@@ -27,17 +33,21 @@ class InstallPromptContractTests(unittest.TestCase):
         self.assertEqual((ROOT / "README.md").read_bytes(), (ROOT / "README.zh-CN.md").read_bytes())
 
     def test_prompt_contains_every_command_the_smoke_runs(self):
-        needles = (
-            "ELECTRON_RUN_AS_NODE=1",
-            "resources/glm/zcode.cjs",
-            SMOKE.ADD_COMMAND % SMOKE.CHANNELS["github"],
-            SMOKE.INSTALL_COMMAND,
-            SMOKE.CHANNELS["gitcode"],
-            '/overlay_install.py" install',
-        )
+        # 两条 plugins 命令在文案里各占一整行，整行相等才算数：只做子串包含的话，
+        # 脚本常量被改弱（如去掉 --json）时仍然会放行。
+        commands = (SMOKE.ADD_COMMAND % SMOKE.CHANNELS["github"], SMOKE.INSTALL_COMMAND)
+        # 安装器命令嵌在第 2 步的句子里，路径是占位符：除路径外逐字一致，同一行后面不能再跟别的参数
+        # （参数形如 --force、extra 或中文词，前面隔普通空格、制表符、不换行空格或反斜杠续行都算；
+        #   换行、括号、逗号等标点续写不算参数）
+        overlay = re.escape(SMOKE.OVERLAY_COMMAND).replace("%s", '[^"]*') + r"(?![^\S\r\n]*[\w\\-])"
+        needles = ("ELECTRON_RUN_AS_NODE=1", "resources/glm/zcode.cjs", SMOKE.CHANNELS["gitcode"])
         for name in README:
             with self.subTest(readme=name):
                 prompt = install_prompt(name)
+                lines = [line.strip() for line in prompt.splitlines()]
+                for command in commands:
+                    self.assertIn(command, lines, "%s 的安装文案里没有这一整行命令：%s" % (name, command))
+                self.assertRegex(prompt, overlay, "%s 的安装文案里没有安装器命令：%s" % (name, SMOKE.OVERLAY_COMMAND))
                 for needle in needles:
                     self.assertIn(needle, prompt, "%s 的安装文案缺少：%s" % (name, needle))
 

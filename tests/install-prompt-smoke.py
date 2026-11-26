@@ -80,8 +80,9 @@ class FreshMachine:
             "ZCODE_SESSION_DB_PATH": str(self.home / ".zcode" / "cli" / "db" / "db.sqlite"),
             "ZCODE_LOG_DIR": str(self.home / ".zcode" / "cli" / "log"),
             "ZCODE_ASAR": str(self.asar), "TMPDIR": str(self.root / "tmp"),
-            # 安装器用当前这个解释器跑（系统 python3 可能是没有命令行工具的存根）
-            "PATH": "%s:/usr/bin:/bin:/usr/sbin:/sbin" % shlex.quote(os.path.dirname(sys.executable)),
+            # 安装器用当前这个解释器跑（系统 python3 可能是没有命令行工具的存根）；
+            # PATH 只按 : 切分、不经 shell 解释，条目不能加引号
+            "PATH": "%s:/usr/bin:/bin:/usr/sbin:/sbin" % os.path.dirname(sys.executable),
             "LANG": "zh_CN.UTF-8", "PYTHONDONTWRITEBYTECODE": "1",
         }
         quote = json.dumps
@@ -146,6 +147,18 @@ class FreshMachine:
                         require(self.inside(row[key]), "登记路径越过临时目录: " + str(row[key]))
 
 
+def install_record(stdout, stderr):
+    """安装命令的成功输出必须恰是一条本插件的安装记录并带 installPath；形状不对时带上输出尾巴报错。"""
+    try:
+        records = json.loads(stdout)["installed"]
+        row = records[0]
+        valid = len(records) == 1 and row["id"] == PLUGIN_ID and isinstance(row["installPath"], str)
+    except (ValueError, KeyError, IndexError, TypeError):
+        valid = False
+    require(valid, "安装记录不是本插件或缺 installPath：%s%s" % (stdout.strip()[-300:], stderr.strip()[-300:]))
+    return row
+
+
 def install_as_documented(machine, variant):
     """按 README 文案的三步执行，返回逐步耗时。命令经 shlex.split 原样变成参数，不经 shell 二次解释。"""
     steps = {}
@@ -154,16 +167,14 @@ def install_as_documented(machine, variant):
         steps[label] = seconds
         require(code == 0, "%s 失败（exit=%s）：%s%s" % (label, code, stdout.strip()[-300:], stderr.strip()[-300:]))
         if label == "plugin install":
-            installed = json.loads(stdout)["installed"]
-            require(len(installed) == 1 and installed[0].get("id") == PLUGIN_ID, "安装记录不是本插件: " + stdout[-300:])
-            install_path = Path(installed[0]["installPath"])
-    code, seconds, stdout, stderr = machine.run(shlex.split(OVERLAY_COMMAND % str(install_path)))
+            record = install_record(stdout, stderr)
+    code, seconds, stdout, stderr = machine.run(shlex.split(OVERLAY_COMMAND % record["installPath"]))
     steps["overlay install"] = seconds
     require(code == 0, "安装器失败（exit=%s）：%s%s" % (code, stdout.strip()[-400:], stderr.strip()[-400:]))
     require(b"inject-main.cjs" in machine.asar.read_bytes(), "状态条没有注入到假归档")
     require((machine.home / ".zcode" / PLUGIN).is_dir(), "运行目录没有创建")
     require("完全退出" in stdout, "安装器没有给出完全退出的重启提醒")
-    return dict(steps, variant=variant, version=installed[0].get("version"))
+    return dict(steps, variant=variant, version=record.get("version"))
 
 
 def main(argv=None):
