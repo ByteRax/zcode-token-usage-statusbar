@@ -55,7 +55,7 @@
 | `renderer_bridge.py` | 渲染桥：按客户端版本指纹（HOST_TARGETS 登记 + derive 推导）向 SessionPane 节点写 scope 身份属性 |
 | `inject-main.cjs` | 主进程加载、窗口/工作区 IPC、查询泵、文件监听、快照推送、受限写操作与八个子模块热换循环（唯一冷文件） |
 | `install.py` | 独立安装/卸载、运行文件、配置、独立 MCP 与 `/usage` 注册 |
-| `patch_install.py` | 统一 app.asar 安装/卸载；loader 与手机 stash/uplink 使用同一入口、同一 stage 和一次替换；提供 install/remove/check，自检、归档校验与待替换处理（specs/asar-install.md） |
+| `patch_install.py` | 统一 app.asar 安装/卸载；loader 与手机 stash/uplink 使用同一入口、同一 stage 和一次替换；提供 install/remove/check，自检、归档校验与待替换处理（specs/asar-install.md）；完整安装经可选 `extra_modify` 钩子把渲染桥并入同一次重打包，待替换包摘要边写边算、同一次持锁内复用校验（specs/asar-single-transaction.md） |
 | `pending_zip_patch.py` | macOS pending 更新包清理自愈（v339/issue #298）：按改写账本 sha256 对账删除旧版预注入改写的 pending zip（宿主自动重下官方包）；无记录 zip 绝不碰，update-info.json 恒不读写（宿主缓存有效性判据）。旧「Squirrel 取包前改写预注入」已废除——改写改变包大小，与 MacUpdater 本地代理按下载完成时固化的官方 Content-Length 拉流冲突，导致更新静默失败 |
 | `install_monitor.py` | 重启提醒、加载诊断和 Windows 待替换收尾 |
 | `plugin-updater.cjs` / `plugin-release.cjs` | 宿主插件更新调度、正式 GitHub Release 与渠道校验、更新日志（Release 说明）拉取与缓存 |
@@ -78,7 +78,7 @@
 - 工作区/任务 IPC、活动 SID IPC 与配置/更新写操作的校验不同；不能概括全部桥接同等可信，写操作保留本地窗口验证和固定动作白名单。
 - MCP 与 CLI 使用查询库；插件 `.mcp.json` 经宿主预置 `zcode-python` 直接拉起包内 `usage_mcp.py`，不是统一 `run.py` 入口。
 - `hooks/session-start.py` 负责运行文件同步、更新/自动安装（恒开）与故障提示；正常安装/待重启不再注入会话文字，由 ⚙ 齿轮红点承载（v172）；`hooks/prompt-submit.py` 记录本会话提问时间并注入「上一条回复」背景行，**不再向模型下达统计指令**——逐问统计行由前端确定性渲染（依赖 renderer 桥），会话末尾经主桥 `turn-text` 通道调用包内 `token_rate.py --turn --current` 回推富文本；子代理窗格（`sess_subagent_*` 只读分栏，v458）由 03 分片的伪 owner 观察器认领，请求带页面轮号走 `--turn-ref`（specs/subagent-turn-stats-line.md）。
-- 专有入口是 `overlay_install.py`、`plugin_auto_update.py`、`restart_notice.py` 等；改变 hook 返回值应检查宿主 CLI 契约，不以手工执行代替自然事件验收。
+- 专有入口是 `overlay_install.py`、`plugin_auto_update.py`、`restart_notice.py` 等；改变 hook 返回值应检查宿主 CLI 契约，不以手工执行代替自然事件验收。`overlay_install.py doctor` 是只读体检（`/zusage-doctor` 背后就是它，specs/zusage-doctor.md）：只读取各模块的既有判定并给出修法，安装已排定时不再建议重跑安装。
 
 ## 3. 源文件、副本与正在运行的文件
 
@@ -232,7 +232,7 @@ python3 sync_plugin.py --check
 | 浮层/主桥 | `overlay-*.test.cjs`、`inject-*.test.cjs`、`plugin-loader.test.cjs`、`plugin-restart-boot.test.cjs`；语法检查，布局/多窗口需桌面验收 |
 | 桥/SSH 路由 | `test_renderer_bridge.py`、`test_bridge_pending.py`、`test_remote_targets.py`、`test_serve_stdio.py`、`inject-remote-recovery.test.cjs`、`overlay-remote-scope.test.cjs`；实机身份/重连与认证另验 |
 | 安装/更新/锁/解包 | `test_install_discovery.py`、`test_plugin_sudo_install.py`、`test_pending_asar.py`、`test_quiet_monitor.py`、`test_pending_zip_patch.py`、`test_config_transactions.py`、`test_plugin_upgrade.py`、`test_runtime_sync_guard.py`、`test_release*.py` 及 `plugin-*.test.cjs`、`runtime-lock.test.cjs`、`test_runtime_lock_windows.py` |
-| 插件命令/hooks/MCP | `test_command_frontmatter.py`、`test_plugin_contract.py`、`test_usage_mcp_stdio.py`（MCP 直启的 stdio 帧契约）、`test_plugin_package.py`、`test_plugin_runtime.py`、`test_session_start_channels.py`、`test_restart_notice.py`、`test_test_file_layout.py`（测试文件布局契约，新增测试文件后必跑）；共享文件同时同步并检查漂移 |
+| 插件命令/hooks/MCP | `test_command_frontmatter.py`、`test_plugin_contract.py`、`test_usage_mcp_stdio.py`（MCP 直启的 stdio 帧契约）、`test_plugin_package.py`、`test_plugin_runtime.py`、`test_session_start_channels.py`、`test_restart_notice.py`、`test_zusage_doctor.py`（体检命令）、`test_test_file_layout.py`（测试文件布局契约，新增测试文件后必跑）；共享文件同时同步并检查漂移 |
 | 文档/本地化 | 路径、相对链接/锚点、JSON 示例、双语对应与 manifest 一致性；涉及默认值/协议时加对应契约测试 |
 
 宿主真实 CLI 沙箱测试和交互演示见 [测试说明](tests/README.md)。它们使用真实 ZCode、认证和模型，可能联网/消耗 token，不属于默认纯隔离测试；测试对象必须指向自有临时 HOME、插件库存与夹具。

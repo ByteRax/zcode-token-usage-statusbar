@@ -31,27 +31,20 @@ A community toolkit for ZCode desktop: generation speed, token usage, context tr
 
 ### 安装方法
 
-把下面这段话发给 ZCode，安装或更新插件：
+把下面这段话发给 ZCode，安装或更新插件（GitHub 连不上时，它会自动改用国内源重试，不用你再发一次）：
 
 ```text
 请安装或更新并启用 ZCode 插件：https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases
+GitHub 连不上时，自动改用 https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode 重试，不用再问我。
 完成后，在 ZCode 对话中执行 /install-overlay；确认状态条安装成功后，提醒我完全退出并重新打开 ZCode（仅关闭窗口不算），不要自动重启。
 若安装失败，请说明原因；若当前会话无法执行该命令，请提示我手动执行，不要跳过这一步或声称安装成功。
 ```
 
-国内访问 GitHub 受限时，换成下面这段（地址中的 `.git` 不能省，本机需安装 [Git](https://git-scm.com/downloads)）：
-
-```text
-请安装或更新并启用 ZCode 插件：https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode
-完成后，在 ZCode 对话中执行 /install-overlay；确认状态条安装成功后，提醒我完全退出并重新打开 ZCode（仅关闭窗口不算），不要自动重启。
-若安装失败，请说明原因；若当前会话无法执行该命令，请提示我手动执行，不要跳过这一步或声称安装成功。
-```
-
-保留地址中的 `#plugin-releases` / `#plugin-releases-gitcode`，它们选择正式发布的稳定渠道。
+保留地址里的 `#plugin-releases` 与 `.git#plugin-releases-gitcode`，它们选择正式发布的稳定渠道。国内源要求本机装有 [Git](https://git-scm.com/downloads)（宿主通过 git 拉取渠道清单），而且地址里的 `.git` 不能省：宿主只把以 `.git` 结尾的地址当作仓库来源，否则会把它当成清单文件的直链去下载。
 
 > **注意**：状态条安装会修改 ZCode 的程序文件（`app.asar`），请先确认信任本项目。**首次注入成功后，须完全退出并重开 ZCode**（仅关闭窗口或重开会话不算），再检查状态条是否出现；安装失败或权限不足时，先排查原因，重启不能替代安装。
 
-如果安装成功并完全重启后仍看不到状态条，可把这句话发给 ZCode：
+如果安装成功并完全重启后仍看不到状态条，先新开一个会话运行只读体检 `/zusage-doctor`，按输出里的「建议动作」处理；需要进一步排查时，可把这句话发给 ZCode：
 
 ```text
 请排查 https://github.com/ByteRax/zcode-token-usage-statusbar 插件的状态条或工具栏 chip 未显示的原因，先检查插件启用状态、安装结果、实际加载路径及相关开关。修改客户端文件前先征求我确认；需要反馈时，整理脱敏后的复现步骤与诊断摘要，待我确认后再提交到 https://github.com/ByteRax/zcode-token-usage-statusbar/issues，不要上传凭据或完整本地日志。
@@ -68,6 +61,7 @@ A community toolkit for ZCode desktop: generation speed, token usage, context tr
 客户端升级可能覆盖注入补丁。保持插件启用，**新建或恢复会话**可触发自动安装/修复；仅在已打开的会话里发消息不保证触发。确认修复成功后，如提示待重启，再完全退出并重开 ZCode。权限不足或宿主结构变化仍可能使修复失败。
 
 - **插件安装/更新**：`/install-overlay`：打开 ZCode ，新开一个会话，输入 `/install-overlay`，然后回车，即可重新触发修复注入，确认成功后按提示完全重启。
+- **插件体检**：`/zusage-doctor`：状态条、工具栏 chip 或回答末尾的速率行不显示时，新开一个会话输入 `/zusage-doctor`；它只读、不改任何文件，逐项报告哪里不对并给出对应的修法。
 - **插件卸载**：① 在 ⚙ 关闭自动更新 → ② 在对话中执行 `/uninstall-overlay` 并确认成功 → ③ 打开 **设置 → 插件 → 已安装 →
   ZCode Token Usage Statusbar → ⋯ → 卸载** → ④ 完全退出并重开
   ZCode。切勿直接卸载插件而把状态条留在客户端中；清理配置与缓存残留见[彻底卸载指南](docs/user-guide.md#彻底卸载)。

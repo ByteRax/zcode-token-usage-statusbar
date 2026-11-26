@@ -23,7 +23,9 @@
 2. 新建或重新打开会话，插件会自动安装 / 修复状态条。**这一步会修改 `app.asar`，请确认信任此项目。**
 3. **完全退出并重开 ZCode。**
 
-自动安装始终开启（旧配置 `plugin_auto_install_overlay` 与环境变量 `ZUSAGE_PLUGIN_AUTO_INSTALL` 已不再读取）；`/uninstall-overlay` 会留下卸载豁免标记，是阻止自动重注入的唯一出口。待重启/有新版本时状态条 ⚙ 齿轮显示红点（点进 ⚙ 面板「插件更新」分区后消失），也可在该分区直接点「重启 ZCode」；不再注入会话内文字提醒（自动安装失败时的故障提示除外）。自动安装失败时执行 `/install-overlay` 按输出排查，成功后仍需完全重启。
+自动安装始终开启（旧配置 `plugin_auto_install_overlay` 与环境变量 `ZUSAGE_PLUGIN_AUTO_INSTALL` 已不再读取）；`/uninstall-overlay` 会留下卸载豁免标记，是阻止自动重注入的唯一出口。待重启/有新版本时状态条 ⚙ 齿轮显示红点（点进 ⚙ 面板「插件更新」分区后消失），也可在该分区直接点「重启 ZCode」；不再注入会话内文字提醒（自动安装失败时的故障提示除外）。自动安装失败时执行 `/install-overlay` 按输出排查，成功后仍需完全重启。状态条、工具栏 chip 或回答末尾的速率行不显示时，新开一个会话运行 `/zusage-doctor`：它只读、不改任何文件，逐项报告哪里不对并给出对应的修法。
+
+GitHub 访问受限时，改用 `https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode` 添加市场（同一份经过校验的正式 Release；需本机装有 Git，地址里的 `.git` 不能省）。
 
 ## 手机远控页面（当前源码功能）
 
