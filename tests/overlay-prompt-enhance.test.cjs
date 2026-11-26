@@ -845,7 +845,8 @@ test('issue501: a live bridge proven to belong to another editor is refused — 
   stripBridge(ui.editor);   // 本卡输入框在插件加载时就已没有自己的桥：没有东西可记
   const enh = mountEnh(h, ui);
   const other = openSecondEditor(h, '别栏草稿');
-  Object.defineProperty(ui.editor, '__zcodeLexicalInputE2E', { configurable: true, value: other.ui.editor.__zcodeLexicalInputE2E });   // 错绑现场：节点上挂着别栏的桥，标记仍是 ready
+  Object.defineProperty(ui.editor, '__zcodeLexicalInputE2E', { configurable: true, value: other.ui.editor.__zcodeLexicalInputE2E });   // 错绑现场：节点上被挂上别栏的桥
+  ui.editor.setAttribute('data-e2e-lexical-bridge', 'ready');   // 宿主挂桥时 ready 标记一并写上
   h.tick();   // 对账点在这一拍见过它
   clickButton(enh);
   assert.equal(enhanceRequests(h).length, 0, enh.getAttribute('aria-label'));
