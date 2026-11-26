@@ -264,12 +264,17 @@ def reconcile(repo, asset, manifest_path, published_asset, published_manifest_pa
             "catalog": str(catalog_out.resolve())}
 
 
-def channel_commit(root, catalog_path, version, parent=None):
+def channel_commit(root, catalog_path, version, parent=None, orphan=False):
     """把渠道清单做成只含 marketplace.json 与 LICENSE 的提交对象（specs/release-channel-slim.md）。
-    不动工作区与索引、不推送：推送由发布技能按独立授权执行。缺省是孤儿提交，用于把存量
-    渠道分支一次性换成精简分支；给定 parent 时是快进提交。"""
+    不动工作区与索引、不推送：推送由发布技能按独立授权执行。已有分支必须给 parent——市场克隆按
+    快进跟进分支，孤儿 tip 会让它们静默卡在旧清单（issue #497）；orphan=True 只用于首次创建分支。"""
     root = Path(root).resolve()
     require(isinstance(version, str) and re.fullmatch(SEMVER, version), "stable SEMVER required")
+    require(not (parent and orphan), "--parent and --orphan are mutually exclusive")
+    require(orphan or parent,
+            "channel-commit refuses to create an orphan commit: marketplace consumers fast-forward the "
+            "branch, an orphan tip silently strands them on the old manifest (issue #497); pass "
+            "--parent <remote tip> to build on the branch, or --orphan only when creating a new branch")
     catalog = read_file(Path(catalog_path), MAX_MANIFEST)
     parsed = json.loads(catalog)
     plugins = parsed.get("plugins") if isinstance(parsed, dict) else None
@@ -669,7 +674,9 @@ def main(argv=None):
     p.add_argument("--root", type=Path, default=Path.cwd())
     p.add_argument("--catalog", type=Path, required=True)
     p.add_argument("--version", required=True)
-    p.add_argument("--parent", help="commit to build on; omitted = orphan commit for the one-time switch")
+    p.add_argument("--parent", help="commit to build on (required unless --orphan); use the branch's remote tip")
+    p.add_argument("--orphan", action="store_true",
+                   help="create a parentless commit; only for creating a brand-new channel branch")
     args = parser.parse_args(argv)
     try:
         if args.command == "build":
@@ -681,7 +688,7 @@ def main(argv=None):
             result = reconcile(args.repo, args.zip, args.manifest, args.published_zip,
                                args.published_manifest, args.catalog_out)
         elif args.command == "channel-commit":
-            result = channel_commit(args.root, args.catalog, args.version, args.parent)
+            result = channel_commit(args.root, args.catalog, args.version, args.parent, args.orphan)
         else:
             result = publish(args.root.resolve(), args.repo, args.asset, args.manifest, args.publish, args.confirm,
                              notes_file=args.notes_file, gitcode_repo=args.gitcode_repo)
