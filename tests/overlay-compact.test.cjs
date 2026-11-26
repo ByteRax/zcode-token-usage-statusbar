@@ -116,9 +116,10 @@ function harness({ lang = 'zh', ls = null } = {}) {
     },
     elementFromPoint: () => panes[0] || body });
   const timers = new Map(), frames = new Map(), observers = []; let id = 0;
+  const lsWrites = {};   // localStorage.setItem 的落账（setItem 桩只记录不抛）
   const sandbox = vm.createContext({ window, document, console, innerHeight: 800, innerWidth: 1000,
     location: { href: 'file:///Applications/ZCode.app/Contents/Resources/app.asar/out/renderer/index.html' },
-    localStorage: { getItem: k => (k === 'zusage3.lang' && lang === 'en' ? 'en' : (ls && ls[k] != null ? ls[k] : null)), setItem() {} },
+    localStorage: { getItem: k => (k === 'zusage3.lang' && lang === 'en' ? 'en' : (ls && ls[k] != null ? ls[k] : null)), setItem: (k, v) => { lsWrites[k] = String(v); } },
     getComputedStyle: () => ({ borderTopWidth: '1px', backgroundColor: 'black', opacity: '1', display: 'block', visibility: 'visible' }),
     setTimeout: (fn, ms) => { timers.set(++id, { fn, ms, interval: false }); return id; },
     clearTimeout: n => timers.delete(n),
@@ -249,7 +250,7 @@ function harness({ lang = 'zh', ls = null } = {}) {
   function mutateBody() { for (const o of [...observers]) if (o.connected && o.target === body) o.fn([]); }
   function keyDownLast() { const fns = document.listeners.get('keydown'); return fns && fns.length ? fns[fns.length - 1] : null; }
   return { window, document, body, inject, tick, boot, flushTimeouts, pumpFrames, buildComposer, buildSubmitChain, buildHoverCard,
-    compactBtnOf, dlgEl, bkdTipEl, findIn, mutateBody, keyDownLast, observers, frames, hoverCards };
+    compactBtnOf, dlgEl, bkdTipEl, findIn, mutateBody, keyDownLast, observers, frames, hoverCards, lsWrites };
 }
 
 test('胶囊按钮注入在命中率行下、「剩余额度」段前，重复同步幂等', () => {
@@ -805,6 +806,8 @@ test('v487 悬停大白话说明：7 类中英标签均能识别，mouseover 弹
   assert.equal(tip.style.display, 'block', '保活桥窗口内暂不收起');
   h.flushTimeouts(180);
   assert.equal(tip.style.display, 'none', '到期后隐藏');
+  h.tick();
+  assert.equal(tip.style.display, 'none', '隐藏后的下一拍对账不把气泡重新拉起');
 
   // 再次悬停后模拟 Radix 卸载弹层，500ms 健康检查兜底收起
   ui.body.dispatch('mouseover', { target: ui.bkdRows[0].row });
@@ -913,7 +916,7 @@ test('v487 结构化明细增强：从 React Fiber 读取 taskUsage 原始字符
   assert.equal(tip.style.display, 'none');
 });
 
-test('v487 技能列表、其他路径、系统提示词名称与路径及点击打开文件夹', () => {
+test('v487 技能列表、其他路径、系统提示词名称与路径展示；气泡纯说明、指针穿透', () => {
   const h = harness();
   const opened = [];
   h.window.zcode = { openInFileManager: p => opened.push(p) };
@@ -950,7 +953,7 @@ test('v487 技能列表、其他路径、系统提示词名称与路径及点击
 
   // 1. 技能：列出已用技能和目录位置
   ui.body.dispatch('mouseover', { target: ui.bkdRows[0].row });
-  assert.match(tip.innerHTML, /本会话已用技能.*\(1\)/);
+  assert.match(tip.innerHTML, /近期已用技能.*\(1\)/);
   assert.match(tip.innerHTML, /zcode-review-fix-merge/);
   assert.match(tip.innerHTML, /\/Users\/alice\/\.zcode\/skills/);
   assert.match(tip.innerHTML, /\/Users\/alice\/Projects\/demo-app\/\.zcode\/skills/);
@@ -959,7 +962,8 @@ test('v487 技能列表、其他路径、系统提示词名称与路径及点击
   ui.body.dispatch('mouseover', { target: ui.bkdRows[1].row });
   assert.match(tip.innerHTML, /全局 AGENTS\.md/);
   assert.match(tip.innerHTML, /项目 AGENTS\.md/);
-  assert.match(tip.innerHTML, /MEMORY\.md/);
+  assert.match(tip.innerHTML, /\/\.zcode\/cli\/memories\/projects\/&lt;项目&gt;\/memory\/MEMORY\.md/, '记忆索引写宿主真实布局');
+  assert.doesNotMatch(tip.innerHTML, /\.zcode\/projects/, '不再出现不存在的 ~/.zcode/projects');
   assert.match(tip.innerHTML, /ToolSearch 公告/);
 
   // 3. 系统提示词：核心段名称 + 内置引擎路径
@@ -968,11 +972,204 @@ test('v487 技能列表、其他路径、系统提示词名称与路径及点击
   assert.match(tip.innerHTML, /guidelines（编码与执行规范）/);
   assert.match(tip.innerHTML, /\/Applications\/ZCode\.app\/Contents\/Resources\/glm\/zcode\.cjs/);
 
-  // 4. 点击路径打开文件夹：模拟 pointerdown 命中 .cb-path
+  // 4. 气泡纯说明、指针穿透：路径只展示，pointerdown / click / Enter 都不触发打开文件夹
+  //    （真机实证：气泡若拦截鼠标，指针一进入气泡宿主 hover-card 就判定离开并关闭弹层）
+  assert.equal(tip.style.pointerEvents, 'none', '气泡不拦截鼠标');
+  assert.doesNotMatch(tip.innerHTML, /role="button"|tabindex="0"/, '路径不是可聚焦控件');
+  assert.match(tip.innerHTML, /<span class="cb-path" data-cb-path="\/Applications\/ZCode\.app\/Contents\/Resources\/glm">/, '路径只作文本展示');
   const pathNode = new Element('span');
   pathNode.className = 'cb-path';
-  pathNode.setAttribute('data-cb-path', '/Applications/ZCode.app/Contents/Resources/glm');
   pathNode.closest = sel => sel === '.cb-path' ? pathNode : null;
   tip.dispatch('pointerdown', { target: pathNode });
-  assert.deepEqual(opened, ['/Applications/ZCode.app/Contents/Resources/glm']);
+  tip.dispatch('click', { target: pathNode });
+  tip.dispatch('keydown', { target: pathNode, key: 'Enter' });
+  assert.deepEqual(opened, [], '任何事件都不调用 openInFileManager');
+});
+
+/* ---------- v487 审查补测：折算边界、开关、定位、路径与生命周期 ---------- */
+
+test('v487 折算四舍五入、小数逗号百分比与降级：101×50.0%→51，「50,5 %」按 50.5 解析，已用量或百分比取不到不出数', () => {
+  const h = harness();
+  const comp = h.buildComposer('workspace-main', 'sid_main');
+  comp.btn.setAttribute('aria-label', '上下文已用 101 / 总量 1,000');
+  const ui = h.buildHoverCard({
+    withBorderT: true,
+    breakdown: [
+      { label: '消息', pct: '50.0%' },
+      { label: '其他', pct: '50,5 %' },
+      { label: '技能', pct: '—' },
+    ],
+  });
+  h.inject(); h.boot(); h.tick();
+  const tokOf = r => r.row.children.find(c => c.classList && c.classList.contains('zu-ctx-bkd-tok'));
+  assert.equal(tokOf(ui.bkdRows[0]).textContent, '51 · ', '50.5 四舍五入进位（截尾会得 50）');
+  assert.equal(tokOf(ui.bkdRows[1]).textContent, '51 · ', '小数逗号按 50.5 解析（截成 5 会得 5）');
+  assert.equal(tokOf(ui.bkdRows[2]), undefined, '百分比解析失败不出数');
+  ui.body.dispatch('mouseover', { target: ui.bkdRows[1].row });
+  assert.match(h.bkdTipEl().innerHTML, /占已用 50,5 %/, '气泡里的占比串照抄宿主原文');
+  comp.btn.setAttribute('aria-label', '上下文已用 0 / 总量 1,000');
+  h.tick();
+  assert.equal(tokOf(ui.bkdRows[0]), undefined, '已用量取不到时摘除已插入节点');
+});
+
+test('v487 开关：启动时 zusage3.ctxBkd="0" 不注入也不弹气泡；运行中开关落 0 后下一拍对账即摘除并收起', () => {
+  const off = harness({ ls: { 'zusage3.ctxBkd': '0' } });
+  const comp0 = off.buildComposer('workspace-main', 'sid_main');
+  comp0.btn.setAttribute('aria-label', '上下文已用 100,000 / 总量 1,000,000');
+  const ui0 = off.buildHoverCard({ withBorderT: true, breakdown: [{ label: '消息', pct: '60.0%' }] });
+  off.inject(); off.boot(); off.tick();
+  const hasTok = r => r.row.children.some(c => c.classList && c.classList.contains('zu-ctx-bkd-tok'));
+  assert.equal(off.window.compactTest.state().ctxBkd, 0, '启动读到显式 "0"');
+  assert.equal(hasTok(ui0.bkdRows[0]), false, '启动即不注入 Token 节点');
+  assert.equal(ui0.bkdRows[0].row.getAttribute('data-zusage-bkd'), null, '不打行标记');
+  ui0.body.dispatch('mouseover', { target: ui0.bkdRows[0].row });
+  assert.equal(off.bkdTipEl().style.display, 'none', '不弹气泡');
+
+  const h = harness();
+  const comp = h.buildComposer('workspace-main', 'sid_main');
+  comp.btn.setAttribute('aria-label', '上下文已用 100,000 / 总量 1,000,000');
+  const ui = h.buildHoverCard({ withBorderT: true, breakdown: [{ label: '消息', pct: '60.0%' }] });
+  h.inject(); h.boot(); h.tick();
+  const tip = h.bkdTipEl();
+  ui.body.dispatch('mouseover', { target: ui.bkdRows[0].row });
+  assert.equal(tip.style.display, 'block');
+  h.window.compactTest.state().ctxBkd = 0;   // 不经设置面板直接落 0：由对账分支兜底
+  h.tick();
+  assert.equal(tip.style.display, 'none', '对账发现开关关即收起在显气泡');
+  assert.equal(hasTok(ui.bkdRows[0]), false, '对账发现开关关即摘除');
+});
+
+test('v487 气泡定位与主题：贴行上方、上方放不下翻到行下方、左缘视口钳边，对账拍跟随行重锚定，浅色主题挂 zu-light', () => {
+  const h = harness();
+  const comp = h.buildComposer('workspace-main', 'sid_main');
+  comp.btn.setAttribute('aria-label', '上下文已用 100,000 / 总量 200,000');
+  const ui = h.buildHoverCard({ withBorderT: true, breakdown: [{ label: '消息', pct: '50.0%' }] });
+  h.inject(); h.boot(); h.tick();
+  const tip = h.bkdTipEl();
+  tip.offsetWidth = 200; tip.offsetHeight = 100;
+  const row = ui.bkdRows[0].row;
+  h.document.documentElement.classList.add('dark');
+  row._rect = { top: 600, bottom: 620, left: 100, right: 400, width: 300, height: 20 };
+  ui.body.dispatch('mouseover', { target: row });
+  assert.equal(tip.style.display, 'block');
+  assert.equal(tip.style.top, '498px', '气泡底边贴行上方 2px');
+  assert.equal(tip.style.left, '100px');
+  assert.ok(!tip.classList.contains('zu-light'), '深色主题不挂 zu-light');
+  row._rect = { top: 20, bottom: 40, left: 100, right: 400, width: 300, height: 20 };
+  h.tick();
+  assert.equal(tip.style.top, '42px', '上方放不下翻到行下方，并在对账拍跟随行位置');
+  row._rect = { top: 20, bottom: 40, left: 950, right: 990, width: 40, height: 20 };
+  h.tick();
+  assert.equal(tip.style.left, '792px', '左缘钳到 vw - tw - 8');
+  h.document.documentElement.classList.remove('dark');
+  h.tick();
+  assert.ok(tip.classList.contains('zu-light'), '浅色主题挂 zu-light');
+});
+
+test('v487 Windows 路径、技能去重与目录可信限制：同技能只列一次并补全目录，home 与工作区之外的目录不展示', () => {
+  const h = harness();
+  const comp = h.buildComposer('workspace-main', 'sid_main');
+  comp.btn.setAttribute('aria-label', '上下文已用 100,000 / 总量 1,000,000');
+  comp.btn['__reactFiber$fixture'] = {
+    memoizedProps: {
+      taskUsage: { used: 100000, size: 1000000 },
+      workspacePath: 'C:\\Users\\bob\\proj',
+      snapshot: {
+        rows: {
+          window: [
+            { kind: 'toolCall', toolName: 'Skill', inputText: '{"skill":"alpha"}' },   // 无 output：先登记，目录留空
+            { kind: 'toolCall', toolName: 'Skill', input: { skill: 'alpha' }, output: { text: 'Base directory for this skill: C:\\Users\\bob\\proj\\.zcode\\skills\\alpha\n' } },
+            { kind: 'toolCall', toolName: 'Skill', input: { skill: 'stray' }, output: { text: 'Base directory for this skill: D:\\elsewhere\\stray\n' } },
+          ],
+        },
+      },
+    },
+    return: null,
+  };
+  const ui = h.buildHoverCard({ withBorderT: true, breakdown: [{ label: '技能', pct: '1.2%' }, { label: '其他', pct: '17.5%' }] });
+  h.inject(); h.boot(); h.tick();
+  const tip = h.bkdTipEl();
+  const linkTargets = () => [...tip.innerHTML.matchAll(/data-cb-path="([^"]*)"/g)].map(m => m[1]);
+  ui.body.dispatch('mouseover', { target: ui.bkdRows[0].row });
+  assert.match(tip.innerHTML, /近期已用技能.*\(2\)/, '同名技能去重后 2 个（alpha、stray）');
+  assert.deepEqual(linkTargets(), ['C:\\Users\\bob\\proj\\.zcode\\skills\\alpha', 'C:\\Users\\bob\\.zcode\\skills', 'C:\\Users\\bob\\proj\\.zcode\\skills'],
+    '已用技能只在 home/工作区之下才展示目录；目录按反斜杠拼接');
+  assert.match(tip.innerHTML, /<span class="cb-tag">stray<\/span>/, 'home 与工作区之外的技能目录只列名称');
+  ui.body.dispatch('mouseover', { target: ui.bkdRows[1].row });
+  assert.ok(linkTargets().includes('C:\\Users\\bob\\.zcode\\cli\\memories\\projects'), '记忆索引路径指向真实布局');
+  assert.doesNotMatch(tip.innerHTML, /\.zcode\/projects/);
+});
+
+test('v487 英文弹层：其余五类英文标签与「Average cache hit rate」行均识别；aria-label 缺失时已用量取 taskUsage.used', () => {
+  const h = harness({ lang: 'en' });
+  const comp = h.buildComposer('workspace-main', 'sid_main');
+  comp.btn.removeAttribute('aria-label');
+  comp.btn['__reactFiber$fixture'] = {
+    memoizedProps: {
+      taskUsage: { used: 200000, size: 1000000, cache: { latestHitRate: 0.9, inputTokens: 100, cacheReadTokens: 90, hitRate: 0.8, totalInputTokens: 1000, totalCacheReadTokens: 800, hitRateRequestCount: 4 } },
+    },
+    return: null,
+  };
+  const ui = h.buildHoverCard({
+    withBorderT: true,
+    breakdown: [
+      { label: 'System tools', pct: '10.0%' }, { label: 'MCP tools', pct: '5.0%' }, { label: 'Skills', pct: '2.0%' },
+      { label: 'System prompt', pct: '1.0%' }, { label: 'Tool prompt', pct: '0.5%' },
+    ],
+  });
+  h.inject(); h.boot(); h.tick();
+  const keys = ['system_tool_schemas', 'mcp_tool_schemas', 'skills', 'system_prompt', 'tool_prompt'];
+  ui.bkdRows.forEach((r, i) => assert.equal(r.row.getAttribute('data-zusage-bkd'), keys[i], `英文第 ${i} 行 key`));
+  const tokOf = r => r.row.children.find(c => c.classList && c.classList.contains('zu-ctx-bkd-tok'));
+  assert.equal(tokOf(ui.bkdRows[0]).textContent, '20.0K · ', 'aria-label 缺失时用 taskUsage.used=200000 折算');
+  assert.equal(ui.cacheRow.getAttribute('data-zusage-bkd-cache'), '1', '英文缓存命中率行打标记');
+  ui.body.dispatch('mouseover', { target: ui.cacheRow });
+  assert.match(h.bkdTipEl().innerHTML, /Latest request/);
+});
+
+test('v487 热重载：弹层没关时重新注入，新一代仍能弹出气泡（委托标记带代际）', () => {
+  const h = harness();
+  const comp = h.buildComposer('workspace-main', 'sid_main');
+  comp.btn.setAttribute('aria-label', '上下文已用 100,000 / 总量 1,000,000');
+  const ui = h.buildHoverCard({ withBorderT: true, breakdown: [{ label: '消息', pct: '50.0%' }] });
+  h.inject(); h.boot(); h.tick();
+  ui.body.dispatch('mouseover', { target: ui.bkdRows[0].row });
+  assert.equal(h.bkdTipEl().style.display, 'block', '第一代正常弹出');
+  h.inject(); h.boot(); h.tick();   // 第二代注入（热重载）：宿主弹层没关，body 还是同一个
+  const tips = h.body.children.filter(e => e.classList.contains('zusage-ctx-bkd-tip'));
+  assert.equal(tips.length, 1, '旧代气泡被启动自清，只剩新一代');
+  assert.equal(tips[0].style.display, 'none');
+  ui.body.dispatch('mouseover', { target: ui.bkdRows[0].lbl });
+  assert.equal(tips[0].style.display, 'block', '新一代的委托已挂到同一个 body');
+});
+/* 未单测的一处：08 分片两处 `syncCompactBtn()` 重算调用（单位/语言切换时同拍刷新）。它们在 `render()`
+ * 尾部，只有收到过数据推送（`state.data`）才会进入；本夹具不推数据，覆盖不到。到不了它们时由 heavy()
+ * 的 600ms 兜底拍刷新，只影响时延、不影响结果（上面「切换强制 K/M/B」用例锁的就是兜底拍路径）。 */
+
+test('v487 开关持久化：⚙ 面板切换 .zu-ctx-bkd 后 localStorage 写入 zusage3.ctxBkd=0/1', () => {
+  const h = harness();
+  const comp = h.buildComposer('workspace-main', 'sid_main');
+  comp.btn.setAttribute('aria-label', '上下文已用 100,000 / 总量 1,000,000');
+  h.inject(); h.boot(); h.tick();
+  const panel = h.body.children.find(e => e.classList.contains('zu-settings'));
+  const box = panel.querySelector('.zu-ctx-bkd');
+  box.classList.add('zu-ctx-bkd');
+  box.checked = false; panel.dispatch('change', { target: box });
+  assert.equal(h.lsWrites['zusage3.ctxBkd'], '0', '关闭写入 "0"（下次启动读到即不注入）');
+  box.checked = true; panel.dispatch('change', { target: box });
+  assert.equal(h.lsWrites['zusage3.ctxBkd'], '1', '开启写入 "1"');
+});
+
+test('v487 整张弹层被宿主卸载后，500ms 健康检查兜底收起气泡（此时已无弹层可对账）', () => {
+  const h = harness();
+  const comp = h.buildComposer('workspace-main', 'sid_main');
+  comp.btn.setAttribute('aria-label', '上下文已用 100,000 / 总量 1,000,000');
+  const ui = h.buildHoverCard({ withBorderT: true, breakdown: [{ label: '消息', pct: '50.0%' }] });
+  h.inject(); h.boot(); h.tick();
+  const tip = h.bkdTipEl();
+  ui.body.dispatch('mouseover', { target: ui.bkdRows[0].row });
+  assert.equal(tip.style.display, 'block');
+  ui.hc.isConnected = false; ui.bkdRows[0].row.isConnected = false;   // Radix 卸载：卡片连同行一起离开文档
+  h.tick();
+  assert.equal(tip.style.display, 'none', '对账拍已看不到弹层，由健康检查收起');
 });

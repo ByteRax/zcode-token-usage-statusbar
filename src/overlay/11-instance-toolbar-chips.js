@@ -2371,8 +2371,11 @@
           }
         }
       }
-      if (!body.__zuBkdDelegated) {
-        body.__zuBkdDelegated = true;
+      /* 标记带代际：热重载后同一个弹层 body 还在，旧代的委托遇到代际失效只会隐藏，
+       * 新代必须再挂一份，否则气泡失效到弹层重开（切片测试里没有 MY_GEN 时退化为 0） */
+      var bkdGen = (typeof MY_GEN !== "undefined" ? MY_GEN : 0);
+      if (body.__zuBkdDelegated !== bkdGen) {
+        body.__zuBkdDelegated = bkdGen;
         body.addEventListener("mouseover", function (e) {
           if (!state.ctxBkd || typeof showCtxBkdTip !== "function") return;
           var r = bkdTargetRow(e && e.target, body);
@@ -2420,9 +2423,10 @@
             row.removeAttribute("data-zusage-bkd");
           }
           var pctRaw = String((pctEl && pctEl.textContent) || "").trim();
-          var pm = pctRaw.match(/([\d.]+)\s*%/);
-          var pctVal = pm ? parseFloat(pm[1]) : NaN;
-          row.__zuBkdPct = pm ? (pm[1] + "%") : "";
+          /* 小数逗号的 locale（如俄文「74,7 %」）按数值解析，否则会被截成 7%；展示串照抄宿主原文 */
+          var pm = pctRaw.match(/(\d+(?:[.,]\d+)?)\s*%/);
+          var pctVal = pm ? parseFloat(pm[1].replace(",", ".")) : NaN;
+          row.__zuBkdPct = pm ? pm[0] : "";
           var tokens = (used > 0 && isFinite(pctVal) && pctVal >= 0) ? Math.round(used * pctVal / 100) : null;
           if (tokens !== null && pctEl && pctEl !== tokEl) {
             var tokStr = fmt(tokens);

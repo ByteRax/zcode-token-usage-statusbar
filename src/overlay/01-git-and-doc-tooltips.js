@@ -2049,6 +2049,10 @@
   ctxBkdTip.style.zIndex = "2147483647";
   ctxBkdTip.style.maxWidth = "380px";
   ctxBkdTip.style.minWidth = "280px";
+  /* 纯说明气泡、指针穿透，不挂任何指针/键盘监听：气泡挂在 document.body、不在宿主 hover-card 的
+   * DOM 子树里，指针一进入气泡宿主就判定「已离开」并关闭弹层（ZCode 4.0.0 真机实证：悬停第 2 行后
+   * 往上挪一行撞进气泡，宿主弹层直接消失）。路径只展示、不可点击。 */
+  ctxBkdTip.style.pointerEvents = "none";
   document.body.appendChild(ctxBkdTip);
   var ctxBkdTipFor = null;
   var ctxBkdHideTimer = 0;
@@ -2059,22 +2063,6 @@
     if (ctxBkdHideTimer) return;
     ctxBkdHideTimer = setTimeout(function () { ctxBkdHideTimer = 0; hideCtxBkdTip(); }, 180);
   }
-  ctxBkdTip.addEventListener("mouseenter", cancelCtxBkdHide);
-  ctxBkdTip.addEventListener("mouseleave", scheduleCtxBkdHide);
-  ctxBkdTip.addEventListener("pointerdown", function (e) {
-    var a = e.target && e.target.closest && e.target.closest(".cb-path");
-    if (!a) return;
-    e.stopPropagation();
-    e.preventDefault();
-    var p = a.getAttribute("data-cb-path");
-    if (p && typeof openProjFolder === "function") openProjFolder(p);
-  });
-  ctxBkdTip.addEventListener("click", function (e) {
-    var a = e.target && e.target.closest && e.target.closest(".cb-path");
-    if (!a) return;
-    e.stopPropagation();
-    e.preventDefault();
-  });
   var ZU_CTX_BKD_MAP = {
     "消息": "messages", "Messages": "messages",
     "其他": "meta_user_context", "Meta context": "meta_user_context",
@@ -2162,8 +2150,7 @@
     ".zusage-ctx-bkd-tip .cb-item{font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.45;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
     ".zusage-ctx-bkd-tip .cb-item b{color:var(--color-tooltip-foreground,#fafafa);font-weight:600;margin-right:4px}" +
     ".zusage-ctx-bkd-tip .cb-paths{display:flex;flex-wrap:wrap;gap:4px 8px;margin-top:3px;padding-left:10px}" +
-    ".zusage-ctx-bkd-tip .cb-path{display:inline-flex;align-items:center;gap:3px;color:var(--color-brand,#57c7ff);text-decoration:underline;text-underline-offset:2px;cursor:pointer;word-break:break-all;font-size:calc(var(--ui-font-size,14px) - 2px)}" +
-    ".zusage-ctx-bkd-tip .cb-path:hover{opacity:.82}" +
+    ".zusage-ctx-bkd-tip .cb-path{display:inline-flex;align-items:center;gap:3px;color:var(--color-brand,#57c7ff);word-break:break-all;font-size:calc(var(--ui-font-size,14px) - 2px)}" +
     ".zusage-ctx-bkd-tip .cb-tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px;padding-left:10px}" +
     ".zusage-ctx-bkd-tip .cb-tag{display:inline-block;padding:1px 6px;border-radius:4px;background:rgba(255,255,255,.07);color:var(--color-tooltip-foreground,#fafafa);font-size:calc(var(--ui-font-size,14px) - 2.5px)}" +
     ".zusage-ctx-bkd-tip.zu-light .cb-tag{background:rgba(0,0,0,.06)}" +
@@ -2172,14 +2159,14 @@
   function ctxBkdEsc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
   function ctxBkdAttr(s) { return ctxBkdEsc(s).replace(/"/g, "&quot;"); }
   function ctxBkdInt(n) { return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
-  function ctxBkdPathLink(label, targetPath) {
+  function ctxBkdPathText(label, targetPath) {   /* 只展示路径文本，不可点击（见气泡创建处的说明） */
     if (!targetPath) return "";
-    return '<span class="cb-path" role="button" tabindex="0" data-cb-path="' + ctxBkdAttr(targetPath) + '" title="' + ctxBkdAttr(L("点击打开文件夹：", "Click to open folder: ") + targetPath) + '">' + ctxBkdEsc(label) + "</span>";
+    return '<span class="cb-path" data-cb-path="' + ctxBkdAttr(targetPath) + '">' + ctxBkdEsc(label) + "</span>";
   }
   function ctxBkdJoinPath(base, sub) {
     if (!base) return "";
     var sep = base.indexOf("\\") >= 0 && base.indexOf("/") < 0 ? "\\" : "/";
-    return base.replace(/[\\/]+$/, "") + sep + sub;
+    return base.replace(/[\\/]+$/, "") + sep + String(sub).replace(/[\\/]/g, sep);   // 子路径统一用同一分隔符，Windows 下不出混合斜杠
   }
   function ctxBkdExtraHtml(key, ctx) {
     if (!ctx) return "";
@@ -2189,32 +2176,44 @@
     var html = "";
     if (key === "skills") {
       var used = Array.isArray(ctx.usedSkills) ? ctx.usedSkills : [];
+      /* 清单取自会话快照的尾部窗口，不等于整个会话：标题写「近期」。
+       * 技能目录取自技能工具输出（模型可见的不可信数据）：只有落在 home 或工作区之下才展示该目录，
+       * 其余只列名称——不让工具输出把任意路径带进气泡 */
+      var dirTrusted = function (d) {
+        if (!d) return false;
+        return [home, ws].some(function (root) {
+          return !!root && (d === root || d.indexOf(root + "/") === 0 || d.indexOf(root + "\\") === 0);
+        });
+      };
       if (used.length) {
         var tags = used.map(function (sk) {
-          return sk.dir ? ctxBkdPathLink(sk.name, sk.dir) : '<span class="cb-tag">' + ctxBkdEsc(sk.name) + "</span>";
+          return dirTrusted(sk.dir) ? ctxBkdPathText(sk.name, sk.dir) : '<span class="cb-tag">' + ctxBkdEsc(sk.name) + "</span>";
         }).join("");
-        html += '<div class="cb-item"><b>· ' + ctxBkdEsc(L("本会话已用技能", "Used in session")) + " (" + used.length + ")</b>" +
+        html += '<div class="cb-item"><b>· ' + ctxBkdEsc(L("近期已用技能", "Recently used skills")) + " (" + used.length + ")</b>" +
           '<div class="cb-tags">' + tags + "</div></div>";
       } else {
-        html += '<div class="cb-item"><b>· ' + ctxBkdEsc(L("本会话已用技能", "Used in session")) + "</b>" +
-          ctxBkdEsc(L("本会话暂未调用技能（仅注入已加载技能的目录摘要）", "None invoked yet (only catalog summaries are loaded)")) + "</div>";
+        html += '<div class="cb-item"><b>· ' + ctxBkdEsc(L("近期已用技能", "Recently used skills")) + "</b>" +
+          ctxBkdEsc(L("近期未调用技能（仅注入已加载技能的目录摘要）", "None in recent history (only catalog summaries are loaded)")) + "</div>";
       }
       var skDirs = [];
-      if (home) skDirs.push(ctxBkdPathLink(L("全局技能目录", "Global skills") + " (" + ctxBkdJoinPath(home, ".zcode/skills") + ")", ctxBkdJoinPath(home, ".zcode/skills")));
-      if (ws) skDirs.push(ctxBkdPathLink(L("项目技能目录", "Project skills") + " (" + ctxBkdJoinPath(ws, ".zcode/skills") + ")", ctxBkdJoinPath(ws, ".zcode/skills")));
+      if (home) skDirs.push(ctxBkdPathText(L("全局技能目录", "Global skills") + " (" + ctxBkdJoinPath(home, ".zcode/skills") + ")", ctxBkdJoinPath(home, ".zcode/skills")));
+      if (ws) skDirs.push(ctxBkdPathText(L("项目技能目录", "Project skills") + " (" + ctxBkdJoinPath(ws, ".zcode/skills") + ")", ctxBkdJoinPath(ws, ".zcode/skills")));
       if (skDirs.length) html += '<div class="cb-item"><b>· ' + ctxBkdEsc(L("技能目录位置", "Skill directories")) + '</b><div class="cb-paths">' + skDirs.join("") + "</div></div>";
     } else if (key === "meta_user_context") {
       var instrLinks = [];
-      if (home) instrLinks.push(ctxBkdPathLink(L("全局 ", "Global ") + "AGENTS.md", ctxBkdJoinPath(home, ".zcode")));
+      if (home) instrLinks.push(ctxBkdPathText(L("全局 ", "Global ") + "AGENTS.md", ctxBkdJoinPath(home, ".zcode")));
       if (ws) {
-        instrLinks.push(ctxBkdPathLink(L("项目 ", "Project ") + "AGENTS.md", ws));
-        instrLinks.push(ctxBkdPathLink(".zcode/AGENTS.md", ctxBkdJoinPath(ws, ".zcode")));
+        instrLinks.push(ctxBkdPathText(L("项目 ", "Project ") + "AGENTS.md", ws));
+        instrLinks.push(ctxBkdPathText(".zcode/AGENTS.md", ctxBkdJoinPath(ws, ".zcode")));
       }
       if (instrLinks.length) html += '<div class="cb-item"><b>· ' + ctxBkdEsc(L("指令规则位置", "Instruction paths")) + '</b><div class="cb-paths">' + instrLinks.join("") + "</div></div>";
       if (home) {
-        var projDir = ctxBkdJoinPath(home, ".zcode/projects");
+        /* 记忆索引真实布局是 <home>/.zcode/cli/memories/projects/<工作区标识>/memory/MEMORY.md
+         * （宿主 memoryService；ZCode 4.0.0 实机核对，<home>/.zcode/projects 不存在）。
+         * 工作区标识与目录名不同，不逐项拼，链接打开 projects 目录 */
+        var memDir = ctxBkdJoinPath(home, ".zcode/cli/memories/projects");
         html += '<div class="cb-item"><b>· ' + ctxBkdEsc(L("记忆索引位置", "Memory index")) + '</b><div class="cb-paths">' +
-          ctxBkdPathLink(ctxBkdJoinPath(home, ".zcode/projects/<项目>/memory/MEMORY.md"), projDir) + "</div></div>";
+          ctxBkdPathText(ctxBkdJoinPath(memDir, "<项目>/memory/MEMORY.md"), memDir) + "</div></div>";
       }
       html += '<div class="cb-item"><b>· ' + ctxBkdEsc(L("动态系统提醒", "Dynamic reminders")) + "</b>" +
         ctxBkdEsc(L("每轮实时拼接：OS/Shell/工作目录、日期、Git 分支与改动、Todo 待办、子代理列表、ToolSearch 公告（无磁盘文件）",
@@ -2229,7 +2228,7 @@
       html += '<div class="cb-item"><b>· ' + ctxBkdEsc(L("核心段名称", "Core sections")) + '</b><div class="cb-tags">' + secTags + "</div></div>";
       if (appRes) {
         html += '<div class="cb-item"><b>· ' + ctxBkdEsc(L("内置引擎路径", "Built-in engine path")) + '</b><div class="cb-paths">' +
-          ctxBkdPathLink(ctxBkdJoinPath(appRes, "zcode.cjs"), appRes) + "</div></div>";
+          ctxBkdPathText(ctxBkdJoinPath(appRes, "zcode.cjs"), appRes) + "</div></div>";
       }
     }
     return html;
