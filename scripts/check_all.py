@@ -30,6 +30,7 @@ _TAP_COUNT = re.compile(r"^# (tests|pass|fail|skipped) (\d+)", re.M)
 _TAP_RESULT = re.compile(r"^( *)(not )?ok \d+ - (.*)$", re.M)
 _UT_RAN = re.compile(r"^Ran (\d+) tests? in", re.M)
 _UT_BAD = re.compile(r"^(FAIL|ERROR): (\S+) \((\S+)\)", re.M)
+_UT_END = re.compile(r"^(OK|FAILED)( \(.*\))?\s*$", re.M)
 _UT_SKIPPED = re.compile(r"skipped=(\d+)")
 
 
@@ -88,7 +89,9 @@ def parse_unittest(text):
         if (kind, name, cls) not in seen:
             seen.add((kind, name, cls))
             names.append(f"{kind}: {name} ({cls})")
-    skipped = _UT_SKIPPED.search(text[-600:])   # 末尾的 OK (skipped=N) 或 FAILED (… skipped=N)
+    # 汇总行后面可能还跟着某个用例子进程的残留输出，所以要找最后一条汇总行，不能只看末尾
+    ends = _UT_END.findall(text)
+    skipped = _UT_SKIPPED.search(ends[-1][1] or "") if ends else None
     return (int(ran.group(1)) if ran else 0), len(names), (int(skipped.group(1)) if skipped else 0), names
 
 

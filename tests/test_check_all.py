@@ -111,6 +111,11 @@ class CheckAllParseTests(unittest.TestCase):
         text = "...\n----\nRan 3 tests in 0.001s\n\nOK (skipped=1)\n"
         self.assertEqual(check_all.parse_unittest(text), (3, 0, 1, []))
 
+    def test_unittest_summary_found_even_when_a_child_process_trails_output(self):
+        # 2026-11-26 实测：有用例的子进程在汇总行之后又写了 5000 多个字符，只看末尾会把跳过数读成 0
+        text = "...\nRan 1531 tests in 68.2s\n\nOK (skipped=14)\n\n" + ("残留输出\n" * 900) + "完成。\n"
+        self.assertEqual(check_all.parse_unittest(text), (1531, 0, 14, []))
+
     def test_unittest_crash_before_running_is_a_failure(self):
         text = "E\n=====\nERROR: setUpModule (tests.test_y)\n----\nRan 0 tests in 0.000s\n\nFAILED (errors=1)\n"
         self.assertEqual(check_all.parse_unittest(text), (0, 1, 0, ["ERROR: setUpModule (tests.test_y)"]))
