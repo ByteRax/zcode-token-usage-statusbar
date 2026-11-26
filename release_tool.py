@@ -4,6 +4,7 @@ import argparse
 import base64
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -34,7 +35,8 @@ SOURCES = (*SYNC_FILES, "overlay_install.py", "plugin_auto_update.py",
            "restart_notice.py", ".mcp.json", "README.md", ".zcode-plugin/plugin.json",
            ".claude-plugin/plugin.json", "hooks/hooks.json", "hooks/session-start.py",
            "hooks/prompt-submit.py", "commands/usage.md", "commands/install-overlay.md",
-           "commands/uninstall-overlay.md", "skills/zcode-token-usage/SKILL.md")
+           "commands/uninstall-overlay.md", "commands/zusage-doctor.md",
+           "skills/zcode-token-usage/SKILL.md")
 NAMES = tuple(sorted(("LICENSE", "marketplace.json", *(PREFIX + p for p in SOURCES))))
 RELEVANT = ("LICENSE", "marketplace.json", "plugins", "release_tool.py", "sync_plugin.py", *SYNC_FILES)
 
@@ -212,6 +214,82 @@ def run(root, *args):
     require(result.returncode == 0, f"command failed: {' '.join(args)}\n" +
             result.stderr.decode("utf-8", errors="replace"))
     return result.stdout
+
+
+def run_input(root, args, data):
+    result = subprocess.run(args, cwd=root, input=data, capture_output=True, check=False)
+    require(result.returncode == 0, f"command failed: {' '.join(args)}\n" +
+            result.stderr.decode("utf-8", errors="replace"))
+    return result.stdout
+
+
+def zip_members(path):
+    with zipfile.ZipFile(io.BytesIO(read_file(path, MAX_ASSET))) as archive:
+        return [(member.filename, archive.read(member)) for member in archive.infolist()]
+
+
+def release_catalog(repo, version, asset_name, sha256, marketplace):
+    catalog = json.loads(marketplace)
+    require(isinstance(catalog, dict) and isinstance(catalog.get("plugins"), list)
+            and len(catalog["plugins"]) == 1, "marketplace catalog shape disagrees")
+    catalog["plugins"][0]["source"] = {
+        "source": "url", "type": "zip", "url":
+        f"https://github.com/{repo}/releases/download/v{version}/{asset_name}",
+        "sha256": sha256, "path": "plugins/" + PLUGIN, "stripRoot": False}
+    return json.dumps(catalog, indent=2, sort_keys=True) + "\n"
+
+
+def reconcile(repo, asset, manifest_path, published_asset, published_manifest_path, catalog_out):
+    """补推前的对账（specs/release-channel-slim.md）：重建包与线上发布包各自通过 verify 且身份
+    一致；字节相同直接通过，字节不同（打包机或压缩实现不同）时逐成员比对内容。渠道清单
+    必须指向真正托管的那份包，所以 sha256 恒取线上发布清单的值。"""
+    repo = repository(repo)
+    rebuilt = verify(asset, manifest_path, repo)
+    published = verify(published_asset, published_manifest_path, repo)
+    for key in ("repository", "version", "tag", "pluginId"):
+        require(rebuilt[key] == published[key], f"rebuilt release {key} disagrees with the published release")
+    require(rebuilt["asset"]["name"] == published["asset"]["name"], "rebuilt asset name disagrees")
+    rebuilt_bytes, published_bytes = read_file(asset, MAX_ASSET), read_file(published_asset, MAX_ASSET)
+    byte_identical = rebuilt_bytes == published_bytes
+    require(byte_identical or zip_members(asset) == zip_members(published_asset),
+            "rebuilt package differs from the published release")
+    catalog = release_catalog(repo, published["version"], published["asset"]["name"],
+                              published["asset"]["sha256"], dict(zip_members(published_asset))["marketplace.json"])
+    catalog_out.write_text(catalog, encoding="utf-8")
+    return {"byteIdentical": byte_identical, "version": published["version"],
+            "sha256": published["asset"]["sha256"], "rebuiltSha256": rebuilt["asset"]["sha256"],
+            "catalog": str(catalog_out.resolve())}
+
+
+def channel_commit(root, catalog_path, version, parent=None):
+    """把渠道清单做成只含 marketplace.json 与 LICENSE 的提交对象（specs/release-channel-slim.md）。
+    不动工作区与索引、不推送：推送由发布技能按独立授权执行。缺省是孤儿提交，用于把存量
+    渠道分支一次性换成精简分支；给定 parent 时是快进提交。"""
+    root = Path(root).resolve()
+    require(isinstance(version, str) and re.fullmatch(SEMVER, version), "stable SEMVER required")
+    catalog = read_file(Path(catalog_path), MAX_MANIFEST)
+    parsed = json.loads(catalog)
+    plugins = parsed.get("plugins") if isinstance(parsed, dict) else None
+    entry = plugins[0] if isinstance(plugins, list) and plugins else None
+    require(isinstance(entry, dict) and entry.get("name") == PLUGIN and entry.get("version") == version,
+            "channel catalog plugin/version disagrees")
+    source = entry.get("source")
+    require(isinstance(source, dict) and re.fullmatch("[0-9a-f]{64}", str(source.get("sha256", "")))
+            and str(source.get("url", "")).startswith("https://"), "channel catalog asset disagrees")
+    parent_sha = None
+    if parent:
+        parent_sha = run(root, "git", "rev-parse", "--verify", "--quiet", parent + "^{commit}").decode().strip()
+    entries = {"LICENSE": read_file(root / "LICENSE", MAX_MANIFEST), "marketplace.json": catalog}
+    tree_lines = []
+    for name in sorted(entries):
+        oid = run_input(root, ["git", "hash-object", "-w", "--stdin"], entries[name]).decode().strip()
+        tree_lines.append(f"100644 blob {oid}\t{name}")
+    tree = run_input(root, ["git", "mktree"], ("\n".join(tree_lines) + "\n").encode("utf-8")).decode().strip()
+    command = ["git", "commit-tree", tree, "-m", f"chore: 更新渠道清单 {version}"]
+    if parent_sha:
+        command[3:3] = ["-p", parent_sha]
+    return {"commit": run(root, *command).decode().strip(), "tree": tree, "parent": parent_sha,
+            "files": sorted(entries), "version": version}
 
 
 def gh_json(root, endpoint, *flags):
@@ -578,6 +656,17 @@ def main(argv=None):
             group.add_argument("--publish", action="store_true")
             group.add_argument("--dry-run", action="store_true")
             p.add_argument("--confirm", help="exact owner/repo/vVERSION; required with --publish")
+    p = sub.add_parser("reconcile", help="compare a rebuilt package with the published release and "
+                                         "emit the channel catalog bound to the published asset")
+    p.add_argument("--repo", required=True)
+    for name in ("zip", "manifest", "published-zip", "published-manifest", "catalog-out"):
+        p.add_argument("--" + name, dest=name.replace("-", "_"), type=Path, required=True)
+    p = sub.add_parser("channel-commit", help="create a commit holding only marketplace.json and LICENSE "
+                                               "(never pushes, never touches the worktree)")
+    p.add_argument("--root", type=Path, default=Path.cwd())
+    p.add_argument("--catalog", type=Path, required=True)
+    p.add_argument("--version", required=True)
+    p.add_argument("--parent", help="commit to build on; omitted = orphan commit for the one-time switch")
     args = parser.parse_args(argv)
     try:
         if args.command == "build":
@@ -585,6 +674,11 @@ def main(argv=None):
         elif args.command == "verify":
             result = {"zip": str(args.asset.resolve()), "manifest": str(args.manifest.resolve()),
                       **verify(args.asset, args.manifest, args.repo)}
+        elif args.command == "reconcile":
+            result = reconcile(args.repo, args.zip, args.manifest, args.published_zip,
+                               args.published_manifest, args.catalog_out)
+        elif args.command == "channel-commit":
+            result = channel_commit(args.root, args.catalog, args.version, args.parent)
         else:
             result = publish(args.root.resolve(), args.repo, args.asset, args.manifest, args.publish, args.confirm,
                              notes_file=args.notes_file, gitcode_repo=args.gitcode_repo)

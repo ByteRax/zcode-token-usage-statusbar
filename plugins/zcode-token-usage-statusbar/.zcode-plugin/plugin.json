@@ -28,6 +28,7 @@
       "plugins/zcode-token-usage-statusbar/README.md",
       "plugins/zcode-token-usage-statusbar/commands/install-overlay.md",
       "plugins/zcode-token-usage-statusbar/commands/uninstall-overlay.md",
+      "plugins/zcode-token-usage-statusbar/commands/zusage-doctor.md",
       "plugins/zcode-token-usage-statusbar/commands/usage.md",
       "plugins/zcode-token-usage-statusbar/engine-patch.cjs",
       "plugins/zcode-token-usage-statusbar/mobile-relay.cjs",

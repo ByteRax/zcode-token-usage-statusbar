@@ -6,6 +6,7 @@ CLI 用法（/install-overlay 与 /uninstall-overlay 背后就是它）：
   python3 overlay_install.py install   # 同步运行时文件 + 写入 asar 注入行（幂等）
   python3 overlay_install.py remove    # 剥离注入行，并写豁免标记（hook 不再提示/自动安装）
   python3 overlay_install.py check     # 查看注入状态、运行时目录与开关
+  python3 overlay_install.py doctor    # 只读体检：安装登记、注入、待替换、运行目录与更新，给出修法
 
 hook 用法：hooks/session-start.py 调 run_hook()，stdout 只输出 hook 协议 JSON。
 
@@ -95,6 +96,9 @@ def default_runtime():
 # 插件渠道已经提供 MCP，这里只清指向本插件脚本的遗留条目，绝不改用户其它 MCP 服务。
 LEGACY_MCP_NAMES = ("zcode-token-usage-statusbar", "token-usage", "zusage")
 LEGACY_MCP_ENTRY_KEYS = frozenset(("command", "args", "type", "enabled"))
+# 宿主里的插件与市场身份（与 plugin-updater.cjs 的 PLUGIN_ID、根 marketplace.json 的 name 同值）
+PLUGIN_ID = "zcode-token-usage-statusbar@zusage-marketplace"
+MARKETPLACE_ID = "zusage-marketplace"
 
 
 def host_cli_config():
@@ -838,10 +842,25 @@ def _nudge(output, message, label="安装提醒", detail="状态条安装尚未�
     return output
 
 
+def _plan_bridge(pi):
+    """并入 loader 安装事务的桥改写（renderer_bridge.plan_deploy）；任何失败都返回 None。"""
+    try:
+        from renderer_bridge import plan_deploy
+        return plan_deploy(pi.ASAR)
+    except Exception as e:  # noqa: BLE001 — 桥只是增强
+        print(f"[zusage-plugin] renderer bridge plan failed（已忽略）：{e}", file=sys.stderr)
+        return None
+
+
 def _install_overlay(runtime, pi):
     from restart_notice import record_restart
+    kwargs = {}
+    if getattr(pi, "EXTRA_MODIFY", False) is True:
+        # 已加载的 patch_install 支持把桥改写并入同一次重打包（specs/asar-single-transaction.md）；
+        # 旧运行目录模块或替身没有该能力时不传钩子，install() 的调用形状不变。
+        kwargs["extra_modify"] = lambda: _plan_bridge(pi)
     return pi.install(before_publish=lambda installation: record_restart(
-        runtime, {"state": "pending-install", "installation": installation}))
+        runtime, {"state": "pending-install", "installation": installation}), **kwargs)
 
 
 _MOBILE_LOCK_RETRY_BUDGET_S = 15.0
@@ -1365,6 +1384,307 @@ def run_hook():
         return out
 
 
+def _doctor_json(path):
+    """读一个 JSON 文件：返回 (对象, 错误文案)。文件不存在时两者都是 None。"""
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None, None
+    except (OSError, ValueError) as e:
+        return None, f"无法解析（{e.__class__.__name__}）"
+    return (value, None) if isinstance(value, dict) else (None, "不是 JSON 对象")
+
+
+def _doctor_storage():
+    """宿主插件存储根（…/cli/plugins），取值顺序同宿主：ZCODE_STORAGE_DIR、宿主 CLI 配置的
+    storage.dir、默认 ~/.zcode。项目级配置不参与，体检在任何工作目录下结果一致。"""
+    home = real_home()
+    directory = os.environ.get("ZCODE_STORAGE_DIR", "").strip()
+    if not directory:
+        config, _ = _doctor_json(host_cli_config())
+        storage = config.get("storage") if config else None
+        if isinstance(storage, dict) and isinstance(storage.get("dir"), str):
+            directory = storage["dir"].strip()
+    root = home / ".zcode"
+    if directory:
+        root = home / directory[2:] if directory.startswith("~/") else Path(directory).expanduser()
+        root = root if root.is_absolute() else home / root
+    return (root if root.name == "cli" else root / "cli") / "plugins"
+
+
+def _doctor_channel(source):
+    """市场登记的来源形态换算成更新渠道说明。"""
+    if not isinstance(source, dict):
+        return "无法识别"
+    kind, url = source.get("source"), str(source.get("url") or "")
+    if kind == "directory":
+        return "本地目录市场（宿主按目录内容直接更新）"
+    if kind == "url":
+        return "清单直链"
+    if kind in ("github", "git"):
+        ref = source.get("ref")
+        if ref == "plugin-releases":
+            return "正式 Release 渠道（GitHub）"
+        if ref == "plugin-releases-gitcode":
+            return "正式 Release 渠道（GitCode）"
+        where = "GitCode" if url.startswith("https://gitcode.com/") else "GitHub"
+        return f"仓库源码（跟随 {ref or '默认分支'}，{where}，不经发布包校验）"
+    return "无法识别"
+
+
+def doctor(runtime, pi):
+    """只读体检（/zusage-doctor 背后就是它，specs/zusage-doctor.md）：逐项给出
+    [OK]/[WARN]/[FAIL] 与建议动作。返回 (文本, 统计)；任何一项出错都只记成该组的 FAIL。"""
+    lines, counts, ranked = [], {"OK": 0, "WARN": 0, "FAIL": 0}, []
+    facts = {}
+
+    def add(level, item, detail, action=None, rank=4):
+        counts[level] += 1
+        lines.append(f"  [{level}] {item}: {detail}")
+        if action is not None and all(action != text for _, text in ranked):
+            ranked.append((rank, action))
+
+    def section(title, body):
+        lines.extend(("", title))
+        try:
+            body()
+        except Exception as e:  # noqa: BLE001 — 一组检查出错不挡其余各组
+            add("FAIL", title, f"这一组检查没能完成（{e.__class__.__name__}: {e}）")
+
+    restart = "完全退出 ZCode（从托盘退出，只关窗口不算）再重新打开"
+    reinstall = ("插件没有装上：按 README「安装方法」重新安装；GitHub 连不上时改用 "
+                 "https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode")
+
+    def environment():
+        add("OK", "Python", f"{sys.version_info[0]}.{sys.version_info[1]}（{PYEXE}）")
+        add("OK", "平台与运行目录", f"{sys.platform}；{runtime}"
+            + ("（已存在）" if runtime.is_dir() else "（尚未创建，首次安装时生成）"))
+
+    def registration():
+        version = _plugin_version()
+        add("OK", "当前插件版本", version or "读不到 manifest")
+        storage = _doctor_storage()
+        inventory, error = _doctor_json(storage / "installed_plugins.json")
+        record = next((item for item in (inventory or {}).get("plugins", [])
+                       if isinstance(item, dict) and item.get("id") == PLUGIN_ID), None)
+        if error or record is None:
+            add("FAIL", "插件安装登记", f"{storage} 里没有本插件的安装记录" if not error
+                else f"installed_plugins.json {error}", reinstall, rank=1)
+        else:
+            installed = Path(str(record.get("installPath") or ""))
+            present = installed.is_dir()
+            add("OK" if present else "FAIL", "插件安装登记",
+                f"v{record.get('version')}（{record.get('scope')}）{installed}" if present
+                else f"登记的安装目录不存在：{installed}", None if present else reinstall, rank=1)
+            if record.get("version") != version:
+                add("WARN", "插件版本", f"宿主登记 v{record.get('version')}，正在运行的副本 v{version}",
+                    restart + "，让宿主加载新版本")
+        config, error = _doctor_json(host_cli_config())
+        if error:
+            add("FAIL", "插件启用状态", f"宿主 CLI 配置 {error}，判断不了是否启用",
+                f"修复或移走 {host_cli_config()} 后重跑本命令", rank=1)
+            return
+        plugins = config.get("plugins") if config else None
+        plugins = plugins if isinstance(plugins, dict) else {}
+        enabled = plugins.get("enabledPlugins")
+        enabled = enabled.get(PLUGIN_ID) if isinstance(enabled, dict) else None
+        if plugins.get("enabled") is False:
+            add("FAIL", "插件启用状态", "宿主的插件总开关已关闭",
+                "在 ZCode 设置的插件管理里打开插件总开关，然后新建会话", rank=1)
+        elif enabled is False:
+            add("FAIL", "插件启用状态", "本插件已被禁用",
+                "在 ZCode 设置的插件管理里启用 ZCode Token Usage Statusbar，然后新建会话", rank=1)
+        else:
+            add("OK", "插件启用状态", "已启用" if enabled is True else "未显式设置，按默认启用")
+        known, error = _doctor_json(storage / "known_marketplaces.json")
+        market = next((item for item in (known or {}).get("marketplaces", [])
+                       if isinstance(item, dict) and item.get("id") == MARKETPLACE_ID), None)
+        if error or market is None:
+            add("WARN", "市场登记", "没有 zusage-marketplace 的登记，更新时找不到来源", reinstall)
+            return
+        channel = _doctor_channel(market.get("source"))
+        add("WARN" if channel.startswith("仓库源码") else "OK", "市场登记", channel,
+            "想跟随正式版时，在 ZCode 设置的插件管理里把市场来源换成 "
+            "https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases"
+            "（国内 https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode）"
+            if channel.startswith("仓库源码") else None)
+        failure = market.get("lastRefreshFailure")
+        if isinstance(failure, dict) and failure.get("message"):
+            add("WARN", "市场刷新", f"最近一次刷新失败：{str(failure['message'])[:200]}",
+                "检查网络后重新打开 ZCode 再试")
+
+    def client_and_injection():
+        if pi.ASAR is None:
+            facts["missing"] = True
+            add("FAIL", "客户端归档", "没有找到 ZCode 的 app.asar",
+                "确认 ZCode 桌面客户端的安装位置；装在非常见位置时，用环境变量 ZCODE_ASAR 指定 "
+                "app.asar 的完整路径后重跑本命令", rank=1)
+            return
+        add("OK", "客户端归档", str(pi.ASAR))
+        facts["version"] = _host_build(pi)
+        add("OK" if facts["version"] else "WARN", "客户端版本",
+            facts["version"] or "读不到归档内的 package.json")
+        entry = pi.entry_bytes_of(pi.ASAR)
+        loader_lines = [match.group() for match in pi.ZUSAGE_LINE_RE.finditer(entry)]
+        if loader_lines == [pi.INJECT_LINE.encode()]:
+            add("OK", "状态条注入", "已注入，指向当前运行目录")
+        elif loader_lines:
+            add("WARN", "状态条注入", "已注入，但指向另一个目录（下次安装会替换到当前运行目录）",
+                "运行 /install-overlay")
+        else:
+            # 安装已排定时重跑 /install-overlay 只会复用同一个待替换包（issue #120）：注入行只报
+            # 事实，该做的事由「待替换包」那一行给出
+            staged = pi.pending_operation() == "install"
+            add("FAIL", "状态条注入", "未注入（安装已排定，在等客户端退出，见下方待替换包）" if staged
+                else "未注入", None if staged else "运行 /install-overlay；新建或恢复会话也会自动安装", rank=2)
+        if pi.target_writable():
+            add("OK", "安装目录可写", "可写")
+        else:
+            add("FAIL" if not loader_lines else "WARN", "安装目录可写",
+                "当前身份写不了客户端安装目录（受保护目录）",
+                "运行 /install-overlay，权限不足时按它的提示以管理员身份或 sudo 重跑同一条命令", rank=2)
+        mobile = pi._mobile_check_status(pi.ASAR, entry)
+        add("OK" if mobile == "已注入" else "WARN", "手机远控补丁", mobile)
+        from renderer_bridge import _inspect_deploy
+        kind, payload = _inspect_deploy(pi.ASAR)
+        if kind == "patch":
+            add("WARN", "逐问速率行补丁", f"未打上（客户端 {payload[4]}）",
+                "运行 /install-overlay；状态条已注入时，新建或恢复会话也会自动补装")
+        elif payload.get("status") == "present":
+            add("OK", "逐问速率行补丁", "已部署")
+        else:
+            add("WARN", "逐问速率行补丁", f"{payload.get('status')}：{payload.get('detail')}")
+        # 宿主版本没进指纹表、但桥已按结构推导打上时不算是问题（与 hook 的兼容性提示同口径：
+        # 只在桥也打不上时才提醒）
+        registered = _host_registered(facts["version"])
+        adapted = registered or (kind != "patch" and payload.get("status") == "present")
+        add("OK" if adapted else "WARN", "客户端版本适配",
+            "当前插件已登记这个客户端版本" if registered else
+            "当前插件按结构推导适配这个客户端版本（未登记指纹表）" if adapted else
+            f"当前插件 v{_plugin_version() or '?'} 还没有登记 ZCode {facts['version']}",
+            None if adapted else "检查插件更新（状态条设置面板的「插件更新」）；宿主刚升级时等插件发适配版")
+
+    def pending_work():
+        running = pi.client_running()
+        add("OK", "客户端进程", "在运行" if running else "没检测到（按进程名探测，可能漏检）")
+        operation = pi.pending_operation()
+        if operation not in ("install", "remove"):
+            add("OK", "待替换包", "无")
+        else:
+            try:
+                pi.pending_tmp(operation)
+                validity = "待替换包有效"
+            except Exception:  # noqa: BLE001 — 校验没过的原因交给重跑安装解决
+                validity = "待替换包校验没通过，重跑安装会重建"
+            with pi.monitor_instance_lock() as free:
+                monitored = not free
+            if operation == "install":
+                add("FAIL", "待替换包", f"{validity}，安装在等客户端退出（收尾监控"
+                    f"{'在运行' if monitored else '没在运行'}）",
+                    "安装已排定：完全退出 ZCode（从托盘退出，只关窗口不算）让收尾监控完成替换，"
+                    "再重新打开；不需要重跑安装" if monitored else
+                    "安装已排定，但现在没有收尾监控：重新打开 ZCode 并新建会话会自动补拉；"
+                    "仍不生效时完全退出 ZCode 后，按 /install-overlay 输出里的命令手动收尾", rank=3)
+            else:
+                add("WARN", "待替换包", f"{validity}，卸载在等客户端退出",
+                    "完全退出 ZCode（从托盘退出，只关窗口不算）让收尾监控完成卸载", rank=3)
+        marker, error = _doctor_json(runtime / ".plugin-restart-required")
+        if error:
+            add("WARN", "待重启改动", f"标记读不出（{error}）", restart, rank=3)
+        elif marker:
+            version = f" v{marker['version']}" if isinstance(marker.get("version"), str) else ""
+            add("WARN", "待重启改动", f"有（{marker.get('state')}{version}）", restart, rank=3)
+        else:
+            add("OK", "待重启改动", "无")
+
+    def runtime_state():
+        record, error = _doctor_json(runtime / "plugin-runtime.json")
+        if error:
+            add("WARN", "同步记录", f"plugin-runtime.json {error}")
+        elif record:
+            add("OK", "同步记录", f"版本 {record.get('version')}，来源 {record.get('plugin_root')}")
+        else:
+            add("WARN", "同步记录", "还没有（运行目录尚未同步过）", "运行 /install-overlay")
+        missing, differ = [], []
+        for name in RUNTIME_FILES:
+            target, source = runtime / name, PLUGIN_ROOT / name
+            if not target.is_file():
+                missing.append(name)
+            elif not source.is_file() or target.read_bytes() != source.read_bytes():
+                differ.append(name)
+        if missing or differ:
+            detail = "；".join(part for part in (
+                f"缺失 {', '.join(missing)}" if missing else "",
+                f"与插件来源不同 {', '.join(differ)}" if differ else "") if part)
+            add("WARN", "运行文件", detail, "运行 /install-overlay 重新同步运行目录")
+        else:
+            add("OK", "运行文件", f"{len(RUNTIME_FILES)} 个文件与插件来源一致")
+        if (runtime / "config.json").exists() and load_runtime_config(runtime) is None:
+            add("FAIL", "配置文件", "config.json 损坏或不是 JSON 对象",
+                f"修复或移走 {runtime / 'config.json'} 后重跑本命令", rank=2)
+        else:
+            add("OK", "配置文件", "可解析" if (runtime / "config.json").exists()
+                else "使用默认值（还没有 config.json）")
+        if optout_marker(runtime).exists():
+            add("WARN", "自动安装豁免", "存在 .plugin-overlay-optout：不会再自动安装状态条",
+                "需要状态条时运行 /install-overlay")
+        else:
+            add("OK", "自动安装豁免", "无")
+        record, error = _doctor_json(runtime / "plugin-session-start.json")
+        if error:
+            add("WARN", "会话启动记录", f"plugin-session-start.json {error}")
+        elif record:
+            result = record.get("result") if isinstance(record.get("result"), dict) else {}
+            context = result.get("hookSpecificOutput") if isinstance(result.get("hookSpecificOutput"), dict) else {}
+            message = context.get("additionalContext") or result.get("systemMessage")
+            when = (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(record["time"]))
+                    if type(record.get("time")) in (int, float) else "时间未知")
+            if isinstance(message, str) and message:
+                add("WARN", "会话启动记录", f"{when}（{record.get('source') or '?'}）带着故障提示：{message}")
+            else:
+                host = record.get("host") if isinstance(record.get("host"), dict) else {}
+                add("OK", "会话启动记录",
+                    f"{when}（{record.get('source') or '?'}）宿主 {host.get('hostBuild')}，"
+                    f"插件 v{host.get('pluginVersion')}，注入 {host.get('injected')}，桥 {host.get('bridge')}")
+        else:
+            add("OK", "会话启动记录", "还没有（插件装好后第一次会话启动才写）")
+
+    def updates():
+        config = load_runtime_config(runtime)
+        automatic = isinstance(config, dict) and config.get("plugin_auto_update", True) is True
+        add("OK" if automatic else "WARN", "自动更新", "开启" if automatic else "已显式关闭",
+            None if automatic else "需要自动更新时在状态条设置面板里打开")
+        state, error = _doctor_json(runtime / "plugin-update.json")
+        if error:
+            add("WARN", "更新记录", f"plugin-update.json {error}")
+        elif not state:
+            add("OK", "更新记录", "还没有（第一次检查更新后才有）")
+        else:
+            failure = state.get("lastError")
+            if isinstance(failure, dict) and failure.get("message"):
+                add("WARN", "更新记录", f"最近一次检查或安装失败：{str(failure['message'])[:200]}",
+                    "检查网络（GitHub 连不上时可改用 GitCode 渠道地址）后，在状态条设置面板手动检查更新")
+            else:
+                add("OK", "更新记录", f"当前 v{state.get('currentVersion')}，最新 v{state.get('latestVersion')}"
+                    if state.get("currentVersion") else "尚无版本记录")
+
+    lines.append(f"zcode-token-usage-statusbar 体检（只读）  {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    section("运行环境", environment)
+    section("插件登记", registration)
+    section("客户端与注入", client_and_injection)
+    section("待替换与重启", pending_work)
+    section("运行目录", runtime_state)
+    section("更新", updates)
+    lines.extend(("", f"体检结果: OK {counts['OK']} / WARN {counts['WARN']} / FAIL {counts['FAIL']}"))
+    if ranked:
+        ranked.sort(key=lambda pair: pair[0])
+        lines.append("建议动作:")
+        lines.extend(f"  {number}. {text}" for number, (_, text) in enumerate(ranked, 1))
+    else:
+        lines.append("未发现需要处理的问题。")
+    return "\n".join(lines), counts
+
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "check"
     if cmd == "sync":
@@ -1377,6 +1697,14 @@ def main():
         print(json.dumps(result, ensure_ascii=False))
         return
     runtime, pi = resolve_paths()
+    if cmd == "doctor":
+        try:
+            report, _ = doctor(runtime, pi)
+        except Exception as e:  # noqa: BLE001 — 体检自身出错必须可辨，不能带着半份报告正常退出
+            print(f"[zusage-plugin] 体检未能完成：{e.__class__.__name__}: {e}", file=sys.stderr)
+            sys.exit(1)
+        print(report)
+        return
     if cmd == "install":
         sync_runtime(runtime, pi.ASAR)
     if pi.ASAR is None:

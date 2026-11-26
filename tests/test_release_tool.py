@@ -3,6 +3,7 @@ import base64
 import contextlib
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -1228,6 +1229,152 @@ print("bounded unclosed notes completed")
         with self.assertRaisesRegex(tool.ReleaseError, "HTTP 500") as caught:
             self.run_gitcode_publish(fail=fail)
         self.assertNotIn(sentinel, str(caught.exception))
+
+    # ---- 渠道分支精简与重建对账（specs/release-channel-slim.md）----
+
+    def published(self):
+        out = self.base / "out"
+        return out / self._asset_name, out / "release-manifest.json", out / "marketplace-release.json"
+
+    def rebuilt(self, name, alter=None):
+        """把已构建的包换成另一种压缩方式重写：字节不同、成员内容相同；alter 可改写一个成员。"""
+        asset, manifest_path, _ = self.published()
+        manifest = json.loads(manifest_path.read_text())
+        target = self.base / name
+        target.mkdir()
+        with zipfile.ZipFile(asset) as original, zipfile.ZipFile(
+                target / self._asset_name, "w", zipfile.ZIP_DEFLATED) as rebuilt_zip:
+            for member in original.infolist():
+                method = (zipfile.ZIP_DEFLATED if member.compress_type == zipfile.ZIP_STORED
+                          else zipfile.ZIP_STORED)
+                info = zipfile.ZipInfo(member.filename, date_time=(1980, 1, 1, 0, 0, 0))
+                info.create_system = 3
+                info.external_attr = member.external_attr
+                content = original.read(member)
+                rebuilt_zip.writestr(info, alter(member.filename, content) if alter else content,
+                                     compress_type=method)
+        payload = (target / self._asset_name).read_bytes()
+        manifest["asset"].update(size=len(payload), sha256=hashlib.sha256(payload).hexdigest())
+        (target / "release-manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        return target / self._asset_name, target / "release-manifest.json"
+
+    def git(self, *args):
+        return subprocess.check_output(["git", *args], cwd=self.root, stderr=subprocess.PIPE).decode()
+
+    def test_reconcile_passes_when_the_rebuild_is_byte_identical(self):
+        asset, manifest_path, catalog_path = self.published()
+        out = self.base / "reconciled.json"
+        result = tool.reconcile(REPO, asset, manifest_path, asset, manifest_path, out)
+        self.assertTrue(result["byteIdentical"])
+        self.assertEqual(result["sha256"], json.loads(manifest_path.read_text())["asset"]["sha256"])
+        self.assertEqual(out.read_bytes(), catalog_path.read_bytes(), "再生清单与 build 输出逐字节一致")
+
+    def test_reconcile_accepts_same_contents_packaged_with_different_bytes(self):
+        asset, manifest_path, catalog_path = self.published()
+        rebuilt_asset, rebuilt_manifest = self.rebuilt("rebuilt")
+        self.assertNotEqual(rebuilt_asset.read_bytes(), asset.read_bytes())
+        out = self.base / "reconciled.json"
+        result = tool.reconcile(REPO, rebuilt_asset, rebuilt_manifest, asset, manifest_path, out)
+        self.assertFalse(result["byteIdentical"])
+        self.assertNotEqual(result["rebuiltSha256"], result["sha256"])
+        self.assertEqual(result["sha256"], json.loads(manifest_path.read_text())["asset"]["sha256"],
+                         "清单必须指向线上托管的那份包")
+        self.assertEqual(out.read_bytes(), catalog_path.read_bytes())
+
+    def test_reconcile_rejects_content_drift_and_writes_no_catalog(self):
+        asset, manifest_path, _ = self.published()
+        rebuilt_asset, rebuilt_manifest = self.rebuilt(
+            "rebuilt", alter=lambda name, content: b"tampered\n" if name == "LICENSE" else content)
+        out = self.base / "reconciled.json"
+        with self.assertRaisesRegex(tool.ReleaseError, "differs from the published release"):
+            tool.reconcile(REPO, rebuilt_asset, rebuilt_manifest, asset, manifest_path, out)
+        self.assertFalse(out.exists())
+
+    def test_reconcile_requires_both_sides_to_verify(self):
+        asset, manifest_path, _ = self.published()
+        forged = self.base / "forged"
+        forged.mkdir()
+        shutil.copyfile(asset, forged / self._asset_name)
+        manifest = json.loads(manifest_path.read_text())
+        manifest["pluginId"] = "someone-else@evil"
+        (forged / "release-manifest.json").write_text(json.dumps(manifest))
+        out = self.base / "reconciled.json"
+        with self.assertRaisesRegex(tool.ReleaseError, "identity disagrees"):
+            tool.reconcile(REPO, forged / self._asset_name, forged / "release-manifest.json",
+                           asset, manifest_path, out)
+        self.assertFalse(out.exists())
+
+    def test_channel_commit_creates_a_minimal_orphan_commit_without_touching_the_worktree(self):
+        _, _, catalog_path = self.published()
+        before = (self.git("status", "--porcelain"), self.git("rev-parse", "HEAD"),
+                  self.git("for-each-ref"), self.git("count-objects", "-v"))
+        result = tool.channel_commit(self.root, catalog_path, "1.2.3")
+        after = (self.git("status", "--porcelain"), self.git("rev-parse", "HEAD"),
+                 self.git("for-each-ref"), self.git("count-objects", "-v"))
+        self.assertEqual(result["files"], ["LICENSE", "marketplace.json"])
+        self.assertIsNone(result["parent"])
+        tree = self.git("ls-tree", result["commit"]).splitlines()
+        self.assertEqual([line.split("\t")[1] for line in tree], ["LICENSE", "marketplace.json"])
+        self.assertEqual(subprocess.check_output(["git", "show", result["commit"] + ":marketplace.json"],
+                                                 cwd=self.root), catalog_path.read_bytes())
+        self.assertEqual(subprocess.check_output(["git", "show", result["commit"] + ":LICENSE"],
+                                                 cwd=self.root), (self.root / "LICENSE").read_bytes())
+        self.assertEqual(self.git("rev-list", "--count", result["commit"]).strip(), "1")
+        self.assertEqual(after[:3], before[:3], "工作区、HEAD 与引用都不变")
+        self.assertNotEqual(after[3], before[3], "只往对象库写入新对象")
+        self.assertIn("更新渠道清单 1.2.3", self.git("log", "-1", "--format=%B", result["commit"]))
+
+    def test_channel_commit_with_parent_builds_a_fast_forward_commit(self):
+        _, _, catalog_path = self.published()
+        head = self.git("rev-parse", "HEAD").strip()
+        result = tool.channel_commit(self.root, catalog_path, "1.2.3", parent="HEAD")
+        self.assertEqual(result["parent"], head)
+        self.assertEqual(self.git("rev-list", "--count", result["commit"]).strip(), "2")
+        self.assertEqual(self.git("rev-parse", result["commit"] + "^").strip(), head)
+        self.assertEqual([line.split("\t")[1] for line in self.git("ls-tree", result["commit"]).splitlines()],
+                         ["LICENSE", "marketplace.json"], "精简分支上每次都是只有这两个文件")
+
+    def test_channel_commit_rejects_catalogs_it_cannot_trust(self):
+        _, _, catalog_path = self.published()
+        catalog = json.loads(catalog_path.read_text())
+        bad = self.base / "bad.json"
+        objects = self.git("count-objects", "-v")
+        for label, mutate, version in (
+                ("version", lambda c: None, "9.9.9"),
+                ("sha256", lambda c: c["plugins"][0]["source"].update(sha256="zz"), "1.2.3"),
+                ("url", lambda c: c["plugins"][0]["source"].update(url="http://evil.invalid/x.zip"), "1.2.3"),
+                ("plugin", lambda c: c["plugins"][0].update(name="someone-else"), "1.2.3"),
+                ("not a catalog", lambda c: c.clear(), "1.2.3")):
+            with self.subTest(label=label):
+                data = json.loads(json.dumps(catalog))
+                mutate(data)
+                bad.write_text(json.dumps(data))
+                with self.assertRaises(tool.ReleaseError):
+                    tool.channel_commit(self.root, bad, version)
+        self.assertEqual(self.git("count-objects", "-v"), objects, "被拒的清单不留下任何对象")
+
+    def test_reconcile_and_channel_commit_cli_print_json(self):
+        asset, manifest_path, catalog_path = self.published()
+        out, errors = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(errors):
+            code = tool.main(["reconcile", "--repo", REPO, "--zip", str(asset), "--manifest", str(manifest_path),
+                              "--published-zip", str(asset), "--published-manifest", str(manifest_path),
+                              "--catalog-out", str(self.base / "cli.json")])
+            committed = tool.main(["channel-commit", "--root", str(self.root), "--catalog", str(catalog_path),
+                                   "--version", "1.2.3"])
+            rejected = tool.main(["channel-commit", "--root", str(self.root), "--catalog", str(catalog_path),
+                                  "--version", "9.9.9"])
+        self.assertEqual((code, committed, rejected), (0, 0, 1))
+        # 输出是多行缩进 JSON：按对象逐个解码
+        text, reports = out.getvalue().lstrip(), []
+        while text:
+            report, end = json.JSONDecoder().raw_decode(text)
+            reports.append(report)
+            text = text[end:].lstrip()
+        self.assertEqual([sorted(report) for report in reports],
+                         [["byteIdentical", "catalog", "rebuiltSha256", "sha256", "version"],
+                          ["commit", "files", "parent", "tree", "version"]])
+        self.assertIn("channel catalog plugin/version disagrees", errors.getvalue())
 
 
 if __name__ == "__main__":

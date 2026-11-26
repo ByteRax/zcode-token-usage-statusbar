@@ -50,7 +50,39 @@ python3 .worktrees/rebuild-vX.Y.Z/release_tool.py build \
   --out /tmp/zusage-rebuild-vX.Y.Z --version X.Y.Z
 ```
 
-重建后先对账再推送：重建 ZIP 的 sha256 必须等于 Release 资产 digest（上一节第二段命令的 `.digest`），`release-manifest.json` 应与线上资产逐字节一致。不一致说明检出或工具有变，停止并报告，不得把可疑清单推上渠道。对账通过后，把 `/tmp/zusage-rebuild-vX.Y.Z` 当作上面的 `/new/artifact-directory` 走同一推送与回读流程。GitCode 渠道欠账时先补镜像（直接调用 `gitcode_mirror`，见 [发布失败与回退](publish-failures.md#已公开但核验不符)），再用其生成的 `marketplace-release-gitcode.json` 推 `plugin-releases-gitcode`。
+重建后先对账再推送。对账用工具做（[渠道分支精简与重建对账](../../../../specs/release-channel-slim.md)）：重建包与线上包各自通过 `verify` 且身份一致；字节相同直接通过，字节不同（打包机或压缩实现不同）时逐成员比对内容；通过后把清单重新生成并绑定到**线上资产**的 sha256。任一步不一致都停止并报告，不得把可疑清单推上渠道：
+
+```bash
+OUT=$(mktemp -d)
+gh release download vX.Y.Z --repo OWNER/REPO -D "$OUT" -p 'zcode-token-usage-statusbar-vX.Y.Z.zip' -p 'release-manifest.json'
+python3 release_tool.py reconcile --repo OWNER/REPO \
+  --zip /tmp/zusage-rebuild-vX.Y.Z/zcode-token-usage-statusbar-vX.Y.Z.zip \
+  --manifest /tmp/zusage-rebuild-vX.Y.Z/release-manifest.json \
+  --published-zip "$OUT/zcode-token-usage-statusbar-vX.Y.Z.zip" \
+  --published-manifest "$OUT/release-manifest.json" \
+  --catalog-out /tmp/zusage-rebuild-vX.Y.Z/marketplace-release.json
+```
+
+对账通过后，把 `/tmp/zusage-rebuild-vX.Y.Z` 当作上面的 `/new/artifact-directory` 走同一推送与回读流程。GitCode 渠道欠账时先补镜像（直接调用 `gitcode_mirror`，见 [发布失败与回退](publish-failures.md#已公开但核验不符)），再用其生成的 `marketplace-release-gitcode.json` 推 `plugin-releases-gitcode`；补镜像时传 `$OUT` 里的线上发布包与线上 manifest，不要传重建包——两台主机必须托管同一份字节，否则同一版本在两条渠道上的 sha256 不一致。
+
+## 渠道分支精简
+
+渠道分支是全体用户的更新入口：宿主每次添加市场、每次刷新市场都按 ref 下载整份归档，所以分支里只放 `marketplace.json`（和 `LICENSE`），不带源码树。提交对象由 `release_tool.py channel-commit` 生成，它不动工作区、不推送；快进推送属于阶段 E，授权范围以发布技能为准。
+
+存量分支换成精简分支是一次性动作，要强推，默认全链不含强推，须用户针对这个动作明确授权：
+
+```bash
+git fetch -q fork plugin-releases
+git show fork/plugin-releases:marketplace.json      # 远端原清单的版本：新清单版本不得低于它
+OLD=$(git rev-parse fork/plugin-releases)
+python3 release_tool.py channel-commit --catalog /new/artifact-directory/marketplace-release.json --version X.Y.Z
+git push --force-with-lease=plugin-releases:"$OLD" fork <上一步输出的 commit>:refs/heads/plugin-releases
+```
+
+- 不给 `--parent` 时生成的是孤儿提交，与旧分支没有共同祖先，必须带 `--force-with-lease=<分支>:<远端旧提交>` 推送；远端在核对之后被别人更新过就会拒绝，被拒就重新读取远端并停止。
+- 两台主机上的旧提交不同时 `fork` 的双推送会在其中一段被拒：按 [仓库协作流程规则](../../../rules/repo-workflow.md) §3 的做法用显式仓库 URL 分别推送，不要去掉 lease 强推。
+- 精简分支上之后的每次发版不必再建 worktree：`python3 release_tool.py channel-commit --catalog … --version X.Y.Z --parent fork/plugin-releases`，再普通推送 `<commit>:refs/heads/plugin-releases`（快进，禁止强推）；上一节带 worktree 的写法在精简分支上照样可用。
+- GitCode 渠道分支同理：清单换成 `marketplace-release-gitcode.json`，分支名换成 `plugin-releases-gitcode`，远端 refspec 写法与「分支只在部分主机存在」的处理见下一节。
 
 ## GitCode 渠道
 

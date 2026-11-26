@@ -1,5 +1,9 @@
+import contextlib
 import hashlib
+import importlib.util
+import io
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -1013,5 +1017,117 @@ VM_ASSERTIONS = r'''
 '''.replace('setTimeout(resolve,0)', 'Promise.resolve().then(resolve)')
 
 
-if __name__ == '__main__':
+class PlanDeployTests(unittest.TestCase):
+    """并入钩子 renderer_bridge.plan_deploy（specs/asar-single-transaction.md）：loader 与桥
+    落进同一次重打包，桥在任何不利情形下都只是不并入。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='bridge-plan-')
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+        self.target = self.root / 'app.asar'
+        archive(self.target, extra={'/out/main/index.js': b"console.log('official');"})
+        self.pin = patch.object(bridge, 'HOST_TARGETS', [synthetic_target(bridge.NEWEST, MINI)])
+        self.pin.start()
+        self.addCleanup(self.pin.stop)
+        # 私有模块实例：不动全局 patch_install 的 ASAR/RUNTIME 状态
+        spec = importlib.util.spec_from_file_location(
+            'plan_deploy_patch_install', Path(__file__).resolve().parents[1] / 'patch_install.py')
+        self.pi = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.pi)
+        runtime = self.root / 'runtime'
+        runtime.mkdir()
+        (runtime / 'inject-main.cjs').write_text('// fixture', encoding='utf-8')
+        self.pi.set_target(self.target)
+        self.pi.set_runtime(runtime)
+        self.pi._LANG = 'en'
+        environment = patch.dict(os.environ, {'ZUSAGE_NO_MONITOR': '1', 'ZUSAGE_MONITOR_QUIET': '1'})
+        environment.start()
+        self.addCleanup(environment.stop)
+        for target, kwargs in (('client_running', {'return_value': False}),
+                               ('syntax_check', {'return_value': True}),
+                               ('launch_monitor', {'return_value': None})):
+            patched = patch.object(self.pi, target, **kwargs)
+            patched.start()
+            self.addCleanup(patched.stop)
+        quiet = contextlib.redirect_stdout(io.StringIO())
+        quiet.__enter__()
+        self.addCleanup(quiet.__exit__, None, None, None)
+
+    def rebuild(self):
+        """换一份内容不同的归档（mtime 显式前移，身份戳必然变）。"""
+        archive(self.target, extra={'/out/main/index.js': b"console.log('official v2');"})
+        st = self.target.stat()
+        os.utime(self.target, ns=(st.st_atime_ns, st.st_mtime_ns + 2_000_000_000))
+
+    def install_with_plan(self, repack):
+        return self.pi.install(extra_modify=lambda: bridge.plan_deploy(self.target))
+
+    def test_missing_bridge_is_planned_without_touching_the_archive(self):
+        before, mtime = self.target.read_bytes(), self.target.stat().st_mtime_ns
+        planned = bridge.plan_deploy(self.target)
+        self.assertEqual(sorted(planned), ['modify', 'source'])
+        self.assertEqual(planned['source'], asar.source_fingerprint(self.target))
+        self.assertEqual(list(planned['modify']), [bridge.ASSET])
+        self.assertEqual(planned['modify'][bridge.ASSET], patched_module(MINI, bridge.NEWEST))
+        self.assertNotIn(bridge.MARKER, read(self.target))
+        self.assertEqual((self.target.read_bytes(), self.target.stat().st_mtime_ns), (before, mtime),
+                         'plan_deploy 只读')
+
+    def test_present_bridge_is_not_planned(self):
+        self.assertEqual(bridge.ensure_deployed(self.target)['status'], 'patched')
+        self.assertIsNone(bridge.plan_deploy(self.target))
+
+    def test_unknown_host_layout_is_not_planned(self):
+        archive(self.target, module=b'console.log("no renderer shape here");')
+        self.assertIsNone(bridge.plan_deploy(self.target))
+
+    def test_unreadable_archive_is_not_planned(self):
+        self.assertIsNone(bridge.plan_deploy(self.root / 'missing.asar'))
+
+    def test_loader_install_and_bridge_land_in_one_repack(self):
+        with patch.object(self.pi, 'repack', wraps=self.pi.repack) as repack:
+            self.assertTrue(self.install_with_plan(repack))
+            self.assertEqual(bridge.ensure_deployed(self.target)['status'], 'present')
+        self.assertEqual(repack.call_count, 1, 'loader 与桥只重打包一次')
+        self.assertIn(self.pi.INJECT_LINE.encode(), self.pi.entry_bytes_of(self.target))
+        self.assertIn(bridge.MARKER, read(self.target))
+        self.assertEqual(read(self.target, '/other.txt'), b'third party bytes\0\xff', '第三方资产原样保留')
+        self.assertEqual(metadata(self.target)['/alias'], {'link': 'other.txt'}, '链接项原样保留')
+        self.assertTrue(metadata(self.target)['/external'].get('unpacked'), '外置项原样保留')
+
+    def test_stale_plan_falls_back_to_the_separate_bridge_pass(self):
+        planned = bridge.plan_deploy(self.target)
+        self.rebuild()
+        with patch.object(self.pi, 'repack', wraps=self.pi.repack) as repack, \
+                patch.object(bridge, '_rewrite_to', wraps=bridge._rewrite_to) as bridge_writes:
+            self.assertTrue(self.pi.install(extra_modify=lambda: planned))
+            self.assertEqual(bridge.ensure_deployed(self.target)['status'], 'patched',
+                             '过期计划没有并入：桥由事后的独立补装落下')
+        self.assertEqual(repack.call_count, 1, 'loader 只重打包一次，且这次不带桥')
+        self.assertNotIn(bridge.MARKER, self.pi.entry_bytes_of(self.target))
+        self.assertEqual(bridge_writes.call_count, 1, '桥走原来的独立写入')
+
+    def test_merged_package_survives_a_pending_swap(self):
+        real_replace = os.replace
+
+        def locked(src, dst):
+            if Path(dst) == self.target:
+                raise PermissionError(13, 'The process cannot access the file')
+            return real_replace(src, dst)
+        with patch.object(self.pi, 'client_running', return_value=True), \
+                patch.object(self.pi.os, 'replace', side_effect=locked), \
+                patch.object(self.pi, 'repack', wraps=self.pi.repack) as repack:
+            self.assertFalse(self.install_with_plan(repack))
+            self.assertEqual(self.pi.pending_tmp('install')['operation'], 'install')
+            self.assertIn(bridge.MARKER, read(self.pi.TMP))
+        # 客户端退出后收尾（client_running 回到夹具默认的 False）：监控所在的另一进程完整验包
+        with patch.object(self.pi, 'repack', wraps=self.pi.repack) as repack:
+            self.assertTrue(self.pi.install(finalize=True))
+            self.assertEqual(bridge.ensure_deployed(self.target)['status'], 'present')
+        self.assertEqual(repack.call_count, 0, '排定与收尾之间没有第二次重打包')
+        self.assertIn(self.pi.INJECT_LINE.encode(), self.pi.entry_bytes_of(self.target))
+
+
+if __name__ == "__main__":
     unittest.main()

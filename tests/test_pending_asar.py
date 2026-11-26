@@ -1200,5 +1200,269 @@ class ProtectedLockOrderAndSyntaxTests(ProtectedTargetTests):
         self.assertIn("syntax check failed to run", buf.getvalue())
 
 
+ASSET = "/renderer/assets/styles-abc.js"
+ASSET_BYTES = b"original renderer asset"
+
+
+class SingleTransactionTests(unittest.TestCase):
+    """归档单事务（specs/asar-single-transaction.md）：写入期摘要、进程内校验复用与旁路改写并入。"""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()   # macOS 的 /var 是符号链接，set_target 会 resolve
+        self.home = self.root / "home"
+        self.home.mkdir()
+        env = mock.patch.dict(os.environ, {"HOME": str(self.home), "USERPROFILE": str(self.home),
+                                           "ZUSAGE_NO_MONITOR": "1", "ZUSAGE_MONITOR_QUIET": ""})
+        env.start()
+        self.addCleanup(env.stop)
+        spec = importlib.util.spec_from_file_location("single_transaction_test", ROOT / "patch_install.py")
+        self.pi = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.pi)
+        self.asar = self.root / "app.asar"
+        make_asar(self.asar, files={"out/main/index.js": b"console.log('official v1');",
+                                    ASSET.lstrip("/"): ASSET_BYTES})
+        self.runtime = self.root / "runtime"
+        self.runtime.mkdir()
+        (self.runtime / "inject-main.cjs").write_text("// fixture", encoding="utf-8")
+        self.pi.set_target(self.asar)
+        self.pi.set_runtime(self.runtime)
+        self.pi._LANG = "en"
+        output = contextlib.redirect_stdout(io.StringIO())
+        output.__enter__()
+        self.addCleanup(output.__exit__, None, None, None)
+        for target, kwargs in (("client_running", {"return_value": False}),
+                               ("syntax_check", {"return_value": True}),
+                               ("launch_monitor", {"return_value": None})):
+            patched = mock.patch.object(self.pi, target, **kwargs)
+            patched.start()
+            self.addCleanup(patched.stop)
+
+    def reset(self, files=None, unpacked=False):
+        """还原成未注入的夹具归档：mtime 显式前移，免得同尺寸重写逃过身份戳比对。"""
+        for leftover in self.root.glob("app.asar.zusage.tmp*"):
+            leftover.unlink()
+        make_asar(self.asar, files=files if files is not None else {
+            "out/main/index.js": b"console.log('official v1');", ASSET.lstrip("/"): ASSET_BYTES}, unpacked=unpacked)
+        st = self.asar.stat()
+        os.utime(self.asar, ns=(st.st_atime_ns, st.st_mtime_ns + 2_000_000_000))
+
+    def entry(self):
+        return self.pi.entry_bytes_of(self.asar)
+
+    def packed(self, path, archive=None):
+        with open(archive or self.asar, "rb") as stream:
+            header, base = self.pi.read_header(stream)
+            node = dict(self.pi.iter_files(header))[path]
+            stream.seek(base + int(node["offset"]))
+            return stream.read(node["size"])
+
+    def plan(self, modify=None, source=None):
+        """与本次来源一致的合法钩子返回值。"""
+        return lambda: {"source": self.pi.source_fingerprint(self.asar) if source is None else source,
+                        "modify": {ASSET: b"bridge bytes"} if modify is None else modify}
+
+    def test_repack_streams_same_bytes_as_reference(self):
+        files = {"out/main/index.js": b"console.log('official v1');", "package.json": b'{"name":"@zcode/desktop"}',
+                 "a/b/big.bin": bytes(range(256)) * 30000,   # 大于 BLOCK，走分块读
+                 "a/small.txt": b"tiny", "z/last.js": b"export const q=1;"}
+        make_asar(self.asar, files=files)
+        modify = {"/a/small.txt": b"replaced contents", "/a/b/big.bin": b"now small"}
+        # 参考实现 = 改动前的算法：整包拼在内存里、头写完后一次写出
+        with open(self.asar, "rb") as src:
+            header, base = self.pi.read_header(src)
+            header = json.loads(json.dumps(header))
+            nodes = dict(self.pi.iter_files(header))
+            parts, offset = [], 0
+            for p, node in nodes.items():
+                if p in modify:
+                    data = modify[p]
+                    node["size"] = len(data)
+                    node["integrity"] = self.pi.compute_integrity(data)
+                else:
+                    src.seek(base + int(node["offset"]))
+                    data = src.read(node["size"])
+                node["offset"] = str(offset)
+                parts.append(data)
+                offset += len(data)
+            raw = json.dumps(header, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        d = len(raw)
+        c = (d + 4 + self.pi.ALIGN - 1) // self.pi.ALIGN * self.pi.ALIGN
+        reference = struct.pack("<4I", 4, c + 4, c, d) + raw + b"\0" * (c - d - 4) + b"".join(parts)
+        out = self.root / "repacked.asar"
+        self.assertEqual(self.pi.repack(self.asar, modify, out), out)
+        self.assertEqual(out.read_bytes(), reference)
+
+    def test_repack_digest_matches_file_without_reread(self):
+        out = self.root / "repacked.asar"
+        with self.pi._repack_digest() as sink:
+            self.pi.repack(self.asar, {ASSET: b"bridge bytes"}, out)
+        self.assertEqual(sink.size, out.stat().st_size)
+        self.assertEqual(sink.hash.hexdigest(), hashlib.sha256(out.read_bytes()).hexdigest())
+        # 摘要接收方只在持有期间有效：其后的 repack 不再喂
+        with self.pi._repack_digest() as second:
+            pass
+        self.pi.repack(self.asar, {}, self.root / "second.asar")
+        self.assertEqual(second.size, 0)
+
+    def test_prepare_hashes_only_the_source_archive(self):
+        with mock.patch.object(self.pi, "source_fingerprint", wraps=self.pi.source_fingerprint) as hashes:
+            meta = self.pi.prepare_tmp({"/" + self.pi.ENTRY: self.entry() + self.pi.INJECT_LINE.encode()})
+        self.assertEqual([Path(call.args[0]) for call in hashes.call_args_list], [self.asar])
+        digest = hashlib.sha256(self.pi.TMP.read_bytes()).hexdigest()
+        self.assertEqual(meta["tmp"]["sha256"], digest)
+        sidecar = json.loads(self.pi.TMP_META.read_text())
+        self.assertEqual(sidecar["tmp"]["sha256"], digest)
+        self.assertEqual(sidecar["tmp"]["ino"], self.pi.TMP.stat().st_ino, "身份戳须是 rename 之后的 TMP")
+
+    def test_digest_falls_back_when_repack_is_a_stand_in(self):
+        real = self.pi.repack
+        prebuilt = self.root / "prebuilt.asar"
+        real(self.asar, {"/" + self.pi.ENTRY: self.entry() + self.pi.INJECT_LINE.encode()}, prebuilt)
+
+        def stand_in(src, modify, dst):   # 不经写入期摘要：直接搬一份预先生成好的包
+            shutil.copyfile(prebuilt, dst)
+        with mock.patch.object(self.pi, "repack", side_effect=stand_in), \
+                mock.patch.object(self.pi, "source_fingerprint", wraps=self.pi.source_fingerprint) as hashes:
+            meta = self.pi.prepare_tmp({"/" + self.pi.ENTRY: self.entry() + self.pi.INJECT_LINE.encode()})
+        hashed = [Path(call.args[0]) for call in hashes.call_args_list]
+        self.assertEqual(len(hashed), 3, "来源、stage、落成后的 TMP 各整包回读一次")
+        self.assertIn(self.pi.TMP, hashed)
+        self.assertEqual(meta["tmp"]["sha256"], hashlib.sha256(self.pi.TMP.read_bytes()).hexdigest())
+
+    def test_stage_touched_after_digest_is_rejected(self):
+        real_stage = self.pi._repack_stage
+
+        def stage_then_touch(stage, modify):
+            fingerprint = real_stage(stage, modify)
+            with open(stage, "ab") as stream:
+                stream.write(b"\0")
+            return fingerprint
+        with mock.patch.object(self.pi, "_repack_stage", side_effect=stage_then_touch), \
+                mock.patch.object(self.pi.os, "replace") as replace:
+            with self.assertRaises(self.pi.PendingTmpError):
+                self.pi.prepare_tmp({"/" + self.pi.ENTRY: self.entry() + self.pi.INJECT_LINE.encode()})
+        replace.assert_not_called()
+        self.assertFalse(self.pi.TMP.exists())
+        self.assertFalse(self.pi.TMP_META.exists())
+        self.assertNotIn(self.pi.INJECT_LINE.encode(), self.entry())
+
+    def test_install_hashes_source_once_and_repacks_once(self):
+        with mock.patch.object(self.pi, "source_fingerprint", wraps=self.pi.source_fingerprint) as hashes, \
+                mock.patch.object(self.pi, "repack", wraps=self.pi.repack) as repack, \
+                mock.patch.object(self.pi.os, "replace", wraps=os.replace) as replace:
+            self.assertTrue(self.pi.install())
+        self.assertEqual([Path(call.args[0]) for call in hashes.call_args_list], [self.asar])
+        self.assertEqual(repack.call_count, 1)
+        self.assertEqual((Path(replace.call_args.args[0]), Path(replace.call_args.args[1])), (self.pi.TMP, self.asar))
+        self.assertIn(self.pi.INJECT_LINE.encode(), self.entry())
+        self.assertFalse(self.pi.TMP_META.exists())
+
+    def test_reused_pending_package_is_fully_verified_before_replace(self):
+        self.pi.prepare_tmp({"/" + self.pi.ENTRY: self.entry() + self.pi.INJECT_LINE.encode()})
+        with mock.patch.object(self.pi, "source_fingerprint", wraps=self.pi.source_fingerprint) as hashes, \
+                mock.patch.object(self.pi, "repack", side_effect=AssertionError("must not repack")):
+            self.assertTrue(self.pi.install())
+        # 复用的包不是本进程生成的：来源指纹之外，替换前仍整包验来源与 TMP
+        self.assertEqual([Path(call.args[0]) for call in hashes.call_args_list],
+                         [self.asar, self.asar, self.pi.TMP])
+        self.assertIn(self.pi.INJECT_LINE.encode(), self.entry())
+
+    def test_remove_hashes_source_once_after_a_fresh_package(self):
+        self.assertTrue(self.pi.install())
+        with mock.patch.object(self.pi, "source_fingerprint", wraps=self.pi.source_fingerprint) as hashes, \
+                mock.patch.object(self.pi, "repack", wraps=self.pi.repack) as repack:
+            self.assertTrue(self.pi.remove())
+        self.assertEqual([Path(call.args[0]) for call in hashes.call_args_list], [self.asar])
+        self.assertEqual(repack.call_count, 1)
+        self.assertNotIn(self.pi.INJECT_LINE.encode(), self.entry())
+
+    def test_install_merges_extra_modify_into_the_same_repack(self):
+        with mock.patch.object(self.pi, "repack", wraps=self.pi.repack) as repack:
+            self.assertTrue(self.pi.install(extra_modify=self.plan()))
+        self.assertEqual(repack.call_count, 1)
+        modify = repack.call_args.args[1]
+        self.assertEqual(modify[ASSET], b"bridge bytes")
+        self.assertEqual(modify["/" + self.pi.ENTRY].count(self.pi.INJECT_LINE.encode()), 1)
+        self.assertEqual(self.packed(ASSET), b"bridge bytes")
+        self.assertIn(self.pi.INJECT_LINE.encode(), self.entry())
+
+    def test_install_ignores_extra_modify_it_cannot_trust(self):
+        entry = "/" + self.pi.ENTRY
+        other = self.pi.source_fingerprint(self.asar)
+
+        def raises():
+            raise RuntimeError("bridge planner exploded")
+        cases = {
+            "no plan": lambda: None,
+            "not a dict": lambda: [ASSET],
+            "raises": raises,
+            "modify not a dict": lambda: {"source": other, "modify": "nope"},
+            "modify empty": lambda: {"source": other, "modify": {}},
+            "source missing": lambda: {"modify": {ASSET: b"bridge bytes"}},
+            "source sha differs": lambda: {"source": dict(other, sha256="0" * 64), "modify": {ASSET: b"bridge bytes"}},
+            "source is another file": self.plan(source=self.pi.source_fingerprint(self.runtime / "inject-main.cjs")),
+            "path missing from archive": self.plan(modify={"/nope/styles.js": b"bridge bytes"}),
+            "path touches the entry": self.plan(modify={entry: b"evil entry"}),
+            "entry smuggled next to a good path": self.plan(modify={ASSET: b"bridge bytes", entry: b"evil entry"}),
+            "content is not bytes": self.plan(modify={ASSET: "text"}),
+            "content is empty": self.plan(modify={ASSET: b""}),
+        }
+        for label, hook in cases.items():
+            with self.subTest(label=label):
+                self.reset()
+                with mock.patch.object(self.pi, "repack", wraps=self.pi.repack) as repack:
+                    self.assertTrue(self.pi.install(extra_modify=hook))
+                modify = repack.call_args.args[1]
+                self.assertEqual(set(modify), {entry}, "只有入口改写进入重打包")
+                self.assertIn(self.pi.INJECT_LINE.encode(), modify[entry])
+                self.assertEqual(self.packed(ASSET), ASSET_BYTES)
+                self.assertIn(self.pi.INJECT_LINE.encode(), self.entry())
+
+    def test_extra_modify_skips_unpacked_paths(self):
+        self.reset(files={"out/main/index.js": b"console.log('official v1');", "package.json": b'{"name":"x"}'},
+                   unpacked=True)
+        with mock.patch.object(self.pi, "repack", wraps=self.pi.repack) as repack:
+            self.assertTrue(self.pi.install(extra_modify=self.plan(modify={"/package.json": b"{}"})))
+        self.assertEqual(set(repack.call_args.args[1]), {"/" + self.pi.ENTRY})
+
+    def test_extra_modify_not_consulted_on_early_return_or_reuse(self):
+        forbidden = mock.Mock(side_effect=AssertionError("must not plan"))
+        self.pi.prepare_tmp({"/" + self.pi.ENTRY: self.entry() + self.pi.INJECT_LINE.encode()})
+        with mock.patch.object(self.pi, "repack", side_effect=AssertionError("must not repack")):
+            self.assertTrue(self.pi.install(extra_modify=forbidden))   # 复用磁盘上的待替换包
+        forbidden.assert_not_called()
+        self.assertTrue(self.pi.install())                             # 落盘后再次安装
+        with mock.patch.object(self.pi, "repack", side_effect=AssertionError("must not repack")):
+            self.assertTrue(self.pi.install(extra_modify=forbidden))   # 已安装早退
+        forbidden.assert_not_called()
+        # 手机补装只处理手机钩子（夹具没有 package.json，按布局无法验证返回 False），同样不问钩子
+        self.pi.install(mobile_only=True, extra_modify=forbidden)
+        forbidden.assert_not_called()
+
+    def test_merged_package_becomes_pending_while_the_client_holds_the_archive(self):
+        real_replace = os.replace
+
+        def locked(src, dst):
+            if Path(dst) == self.asar:
+                raise PermissionError(13, "The process cannot access the file")
+            return real_replace(src, dst)
+        with mock.patch.object(self.pi, "client_running", return_value=True), \
+                mock.patch.object(self.pi.os, "replace", side_effect=locked), \
+                mock.patch.object(self.pi, "repack", wraps=self.pi.repack) as repack:
+            self.assertFalse(self.pi.install(extra_modify=self.plan()))
+        self.assertEqual(repack.call_count, 1)
+        meta = self.pi.pending_tmp("install")
+        self.assertEqual(self.packed(ASSET, self.pi.TMP), b"bridge bytes")
+        self.assertIn(self.pi.INJECT_LINE.encode(), self.pi.entry_bytes_of(self.pi.TMP))
+        self.assertTrue(meta["validated"])
+        # 客户端退出后收尾：监控所在的另一进程完整验包，一次替换同时落下 loader 与桥
+        self.assertTrue(self.pi.install(finalize=True))
+        self.assertEqual(self.packed(ASSET), b"bridge bytes")
+        self.assertIn(self.pi.INJECT_LINE.encode(), self.entry())
+        self.assertFalse(self.pi.TMP.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -23,7 +23,9 @@ See model speed, token usage, context size, plan quota, and Git status while you
 2. Open (or reopen) a session. The plugin then installs / repairs the status bar automatically. **This modifies `app.asar` — only proceed if you trust this project.**
 3. **Fully quit and reopen ZCode.**
 
-Auto-install is always on (the legacy `plugin_auto_install_overlay` config key and `ZUSAGE_PLUGIN_AUTO_INSTALL` env var are no longer read); `/uninstall-overlay` leaves an opt-out marker — the only way to block re-injection. When a restart is pending or a new version is available, the status-bar gear shows a red dot (cleared by opening the ⚙ "Plugin updates" section, which also offers a "Restart ZCode" button); no in-session text notices are injected anymore (failure guidance excepted). If automatic install fails, run `/install-overlay` and follow its output; a full restart is still required.
+Auto-install is always on (the legacy `plugin_auto_install_overlay` config key and `ZUSAGE_PLUGIN_AUTO_INSTALL` env var are no longer read); `/uninstall-overlay` leaves an opt-out marker — the only way to block re-injection. When a restart is pending or a new version is available, the status-bar gear shows a red dot (cleared by opening the ⚙ "Plugin updates" section, which also offers a "Restart ZCode" button); no in-session text notices are injected anymore (failure guidance excepted). If automatic install fails, run `/install-overlay` and follow its output; a full restart is still required. If the status bar, a toolbar chip or the per-answer rate line is missing, run `/zusage-doctor` in a new session: it is read-only, changes no files, and lists what is wrong together with the fix for each item.
+
+Where GitHub is unreachable, add the marketplace with `https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode` instead (same verified release; needs local Git, and the `.git` suffix cannot be dropped).
 
 ## Mobile remote page (current source feature)
 

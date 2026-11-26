@@ -145,6 +145,7 @@ python3 -B -m unittest discover -s tests -p 'test_*.py'
 - 正式 Release 验收通过后，默认接着（默认全链已含本阶段，用户调用时排除 E 的才跳过）将生成清单作为 `marketplace.json` 发布到同一仓库明确 ref `plugin-releases`，GitCode 版清单发布到 `plugin-releases-gitcode`；预演只展示动作。
 - 在项目根用独立 worktree 操作，不切换或清理脏开发工作区；已有分支从远端 tip 派生，新分支从已验证 tag 派生；仅提交清单。正常推送，禁止强推；推送前先核对清单 sha256 等于 Release 资产的 digest，推送后从远端读取并核对版本、完整 ZIP URL/hash/path 与本次资产（推送后的多主机/多分支回读与真实下载资产的升级链复验可同轮并行派发只读 subagent 执行）。渠道未成功时不能声称远端更新可用。
 - 新用户注册 `OWNER/REPO#plugin-releases`；已有注册不会自动切换，不修改用户市场注册。完整命令（detached worktree 的推送写法、GitCode 渠道、更新端验证）见 [发布后收尾](references/post-release.md)。
+- 渠道分支只放 `marketplace.json` 与 `LICENSE`（宿主每次刷新市场都整份下载该分支）：提交对象用 `release_tool.py channel-commit` 生成，不从源码树提交。把存量分支换成精简分支是一次性的带 lease 强推，默认全链不含强推，须用户针对这个动作明确授权；步骤见 [发布后收尾](references/post-release.md#渠道分支精简)。
 
 ## 发布后合并源码 PR
 

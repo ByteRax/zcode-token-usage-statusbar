@@ -29,27 +29,20 @@ Promotional image with staged UI and demonstration data; the actual interface va
 
 ### Installation
 
-Send this to ZCode to install or update the plugin:
+Send this to ZCode to install or update the plugin (when GitHub is unreachable it retries through the mirror on its own, so you do not have to send anything again):
 
 ```text
 Please install or update and enable this ZCode plugin: https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases
+If GitHub is unreachable, retry with https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode on your own; do not ask me again.
 Then run /install-overlay in the ZCode chat. Once you confirm the status bar installation succeeded, remind me to quit ZCode completely and reopen it (closing the window is not enough); do not restart it automatically.
 If installation fails, explain why. If you cannot run the command in the current session, ask me to run it manually; do not skip this step or claim installation succeeded.
 ```
 
-If GitHub is unreachable, use this instead (keep `.git` in the URL; this route requires local [Git](https://git-scm.com/downloads)):
-
-```text
-Please install or update and enable this ZCode plugin: https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode
-Then run /install-overlay in the ZCode chat. Once you confirm the status bar installation succeeded, remind me to quit ZCode completely and reopen it (closing the window is not enough); do not restart it automatically.
-If installation fails, explain why. If you cannot run the command in the current session, ask me to run it manually; do not skip this step or claim installation succeeded.
-```
-
-Keep `#plugin-releases` / `#plugin-releases-gitcode` in the URLs: they select the project's stable release channels.
+Keep `#plugin-releases` and `.git#plugin-releases-gitcode` in the URLs: they select the project's stable release channels. The mirror route needs local [Git](https://git-scm.com/downloads) (the host fetches the channel manifest through git), and the `.git` suffix cannot be dropped: the host treats only URLs ending in `.git` as repository sources and would otherwise download the page as if it were the manifest.
 
 > **Important:** installing the bar modifies ZCode's program files (`app.asar`), so proceed only if you trust the project. **After the first successful injection, quit ZCode completely and reopen it** (closing the window or reopening a session is not enough), then check that the bar appears. If installation fails or permissions are insufficient, diagnose that first; restarting does not replace installation.
 
-If the bar is still missing after a successful installation and full restart, send this to ZCode:
+If the bar is still missing after a successful installation and full restart, run the read-only check-up `/zusage-doctor` in a new session and follow its suggested actions; to investigate further, send this to ZCode:
 
 ```text
 Please investigate why the status bar or toolbar chips from https://github.com/ByteRax/zcode-token-usage-statusbar are missing. Check whether the plugin is enabled, installation succeeded, the actual loaded path is correct, and the relevant switches are on. Ask for my confirmation before modifying client files. If a report is needed, prepare redacted reproduction steps and a diagnostic summary, then wait for my approval before submitting to https://github.com/ByteRax/zcode-token-usage-statusbar/issues. Do not upload credentials or complete local logs.
@@ -66,6 +59,7 @@ The install link serves a published snapshot from the root of `main`, which can 
 Client upgrades can overwrite injection patches. Keep the plugin enabled and **start or resume a session** to trigger automatic installation/repair; sending another message in an already-open session does not guarantee a trigger. Confirm repair succeeded, then fully quit and reopen ZCode if a restart is required. Insufficient permissions or changes to the host's structure can still prevent repair.
 
 - **Plugin install/update**: `/install-overlay`: open ZCode, start a new session, type `/install-overlay` and press Enter to re-trigger the repair injection; after confirming success, fully restart as instructed.
+- **Plugin check-up**: `/zusage-doctor`: when the status bar, toolbar chips or the per-answer rate line are missing, start a new session and type `/zusage-doctor`. It is read-only, changes no files, and lists what is wrong together with the fix for each item.
 - **Plugin uninstall**: ① turn off auto-update in ⚙ → ② run `/uninstall-overlay` in chat and confirm success → ③ open **Settings → Plugins → Installed → ZCode Token Usage Statusbar → ⋯ → Uninstall** → ④ fully quit and reopen ZCode. Never uninstall only the plugin and leave the bar injected; for configuration and cache cleanup, see the [full uninstall guide](docs/user-guide.md#彻底卸载) (Chinese).
 
 - [Installation guide](docs/user-guide.md#插件安装) (Chinese)

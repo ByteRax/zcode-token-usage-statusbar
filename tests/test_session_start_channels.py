@@ -171,7 +171,7 @@ class SessionStartChannelTests(unittest.TestCase):
                     self.assertEqual(json.loads(self.config.read_text())["plugin_auto_install_overlay"], "false")
 
     def test_unfinished_auto_install_nudge_restores_monitor_flags_and_redirects_logs(self):
-        def unfinished(before_publish):
+        def unfinished(before_publish, extra_modify):
             self.assertEqual(os.environ["ZUSAGE_NO_MONITOR"], "1")
             self.assertEqual(os.environ["ZUSAGE_MONITOR_QUIET"], "1")
             print("fixture install unfinished")
@@ -190,7 +190,7 @@ class SessionStartChannelTests(unittest.TestCase):
         # issue #120：客户端运行中、待收尾包已排定的失败，重试 /install-overlay 无法
         # 前进（只会再 repack 一次再失败）；提示必须指向「完全退出 ZCode 等自动收尾」，
         # 并保留卸载豁免出口，不能继续引导无效重试。
-        self.install.side_effect = lambda before_publish: False
+        self.install.side_effect = lambda before_publish, extra_modify: False
         with mock.patch.object(self.pi, "pending_tmp", return_value={"operation": "install"}) as pending, \
                 mock.patch.object(self.pi, "client_running", return_value=True):
             output, _ = self.invoke()
@@ -208,7 +208,7 @@ class SessionStartChannelTests(unittest.TestCase):
     def test_pending_nudge_names_host_incompatibility_when_build_unregistered(self):
         # issue #247：已装版本未登记适配当前宿主 build 时，反复「已排定」必须讲清为什么
         # 排定也修不好（需要升级插件），且自动更新绕过 1h 限频立即尝试。
-        self.install.side_effect = lambda before_publish: False
+        self.install.side_effect = lambda before_publish, extra_modify: False
         with mock.patch.object(self.installer, "_host_build", return_value="3.17.2"), \
                 mock.patch.object(self.installer, "_host_registered", return_value=False), \
                 mock.patch.object(self.pi, "pending_tmp", return_value={"operation": "install"}), \
@@ -221,7 +221,7 @@ class SessionStartChannelTests(unittest.TestCase):
 
     def test_protected_dir_nudge_also_carries_the_compat_note(self):
         # issue #247 review：受保护目录提示分支同样要补兼容性说明
-        self.install.side_effect = lambda before_publish: False
+        self.install.side_effect = lambda before_publish, extra_modify: False
         with mock.patch.object(self.installer, "_host_build", return_value="3.17.2"), \
                 mock.patch.object(self.installer, "_host_registered", return_value=False), \
                 mock.patch.object(self.pi, "pending_tmp", return_value={"operation": "install"}), \
@@ -234,7 +234,7 @@ class SessionStartChannelTests(unittest.TestCase):
 
     def test_generic_retry_nudge_also_carries_the_compat_note(self):
         # issue #247 review：普通安装失败提示分支同样要补兼容性说明
-        self.install.side_effect = lambda before_publish: False
+        self.install.side_effect = lambda before_publish, extra_modify: False
         with mock.patch.object(self.installer, "_host_build", return_value="3.17.2"), \
                 mock.patch.object(self.installer, "_host_registered", return_value=False):
             output, _ = self.invoke()
@@ -266,7 +266,7 @@ class SessionStartChannelTests(unittest.TestCase):
     def test_pending_without_running_client_keeps_retry_hint(self):
         # 待收尾包有效但客户端未在跑（如杀软瞬时占用的 POSIX 场景）：重试仍然有意义，
         # 维持原有提示。
-        self.install.side_effect = lambda before_publish: False
+        self.install.side_effect = lambda before_publish, extra_modify: False
         with mock.patch.object(self.pi, "pending_tmp", return_value={"operation": "install"}), \
                 mock.patch.object(self.pi, "client_running", return_value=False):
             output, _ = self.invoke()
@@ -297,7 +297,9 @@ class SessionStartChannelTests(unittest.TestCase):
 
     def test_successful_auto_install_stays_silent(self):
         # v172：自动安装成功同样不注入文字（红点由 marker → restartRequired 推送驱动）。
-        def install(before_publish):
+        def install(before_publish, extra_modify):
+            # 真实 patch_install 模块带并入能力：hook 链会把桥钩子交给安装器（specs/asar-single-transaction.md）
+            self.assertTrue(callable(extra_modify), "支持并入能力的模块应收到桥钩子")
             import runtime_lock
             installation = {"asar": str(self.asar), "entryHash": "a" * 64}
             before_publish(installation)
