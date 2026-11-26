@@ -1,6 +1,6 @@
 # 发布后收尾：渠道清单、GitCode 渠道、更新端验证
 
-前提都是正式 Release 的正文与资产已验收，渠道分支推送已获得独立授权。推进某个渠道前，先完成 [更新日志交付](update-log-delivery.md#5-发布前与发布后验证) 的该渠道正文核对；未就绪则暂停该渠道清单，不扩大到未经授权的镜像写入。下面的命令在**项目根目录**执行（不是发布 worktree 内，相对路径 `.worktrees/…` 在发布 worktree 里会嵌套建在它里面）；每个渠道 worktree 的路径都带版本号，收尾时清理。
+前提都是正式 Release 的正文与资产已验收；渠道分支推送在发布技能的默认全链内（用户调用时排除了 E 的除外）。推进某个渠道前，先完成 [更新日志交付](update-log-delivery.md#5-发布前与发布后验证) 的该渠道正文核对；未就绪则暂停该渠道清单，不扩大到未经授权的镜像写入。下面的命令在**项目根目录**执行（不是发布 worktree 内，相对路径 `.worktrees/…` 在发布 worktree 里会嵌套建在它里面）；每个渠道 worktree 的路径都带版本号，收尾时清理。
 
 ## 渠道清单（plugin-releases）
 
@@ -41,7 +41,7 @@ git fetch -q fork plugin-releases && git show FETCH_HEAD:marketplace.json | diff
 
 ## 补推（Release 已发、渠道清单未更新）
 
-阶段 E 与发布（D）是两步授权，E 没跟上时市场渠道注册用户收不到新版本（v1.5.17 实例，issue #308；`publish --publish` 结束时会输出 `channelLag` 并在 stderr 亮警告，收尾报告必须如实转述）。原 `build` 输出目录可能已被清理，此时从正式 tag 的独立 detached worktree 确定性重建即可再生清单，无需原产物：
+阶段 E 默认紧跟发布（D），E 没跟上时市场渠道注册用户收不到新版本（v1.5.17 实例，issue #308；`publish --publish` 结束时会输出 `channelLag` 并在 stderr 亮警告，收尾报告必须如实转述）。原 `build` 输出目录可能已被清理，此时从正式 tag 的独立 detached worktree 确定性重建即可再生清单，无需原产物：
 
 ```bash
 git worktree add --detach .worktrees/rebuild-vX.Y.Z vX.Y.Z
@@ -54,9 +54,9 @@ python3 .worktrees/rebuild-vX.Y.Z/release_tool.py build \
 
 ## GitCode 渠道
 
-GitCode Release 的创建与上传属于发布动作，须在 D 阶段的授权语里点名 `--gitcode-repo` 与 GitCode 仓库，因为它和 GitHub 发布是**同一条命令**：`publish --publish` 追加 `--gitcode-repo tanranran/zcode-token-usage-statusbar`，并先设置环境变量 `GITCODE_TOKEN`（令牌走 query 参数，不落盘、不进日志）。维护者本机的令牌来源：钥匙串里 gitcode 的 git 凭据即该 API 令牌，用 `git credential fill`（host=gitcode.com）取 password 导出为 `GITCODE_TOKEN`，取值过程不回显。缺该变量时 `--publish` 在创建 draft 之前就整体失败（`--dry-run` 不检查）。工具在 GitHub 发布验收后创建或复用同 tag 的 GitCode Release、上传同一字节的 ZIP 与 manifest、回读比对，并在资产目录生成 `marketplace-release-gitcode.json`。该清单形状同上，只是 `url` 指向 GitCode Release 资产；同样不上传、不入 ZIP。
+GitCode Release 的创建与上传属于发布动作，在发布技能的默认全链内，因为它和 GitHub 发布是**同一条命令**：`publish --publish` 追加 `--gitcode-repo tanranran/zcode-token-usage-statusbar`，并先设置环境变量 `GITCODE_TOKEN`（令牌走 query 参数，不落盘、不进日志）。维护者本机的令牌来源：钥匙串里 gitcode 的 git 凭据即该 API 令牌，用 `git credential fill`（host=gitcode.com）取 password 导出为 `GITCODE_TOKEN`，取值过程不回显。缺该变量时 `--publish` 在创建 draft 之前就整体失败（`--dry-run` 不检查）。工具在 GitHub 发布验收后创建或复用同 tag 的 GitCode Release、上传同一字节的 ZIP 与 manifest、回读比对，并在资产目录生成 `marketplace-release-gitcode.json`。该清单形状同上，只是 `url` 指向 GitCode Release 资产；同样不上传、不入 ZIP。
 
-把该清单发布为 `plugin-releases-gitcode` 分支根目录的 `marketplace.json`（这一步属于阶段 E，须另行授权），流程同上，区别如下：
+把该清单发布为 `plugin-releases-gitcode` 分支根目录的 `marketplace.json`（这一步属于阶段 E，默认全链内），流程同上，区别如下：
 
 - 该分支两端都可能尚不存在，先确认：`git ls-remote fork 'refs/heads/plugin-releases-gitcode'`（只读 GitHub）与 `git ls-remote gitcode 'refs/heads/plugin-releases-gitcode'`（GitCode）。都不存在时没有可派生的分支，改从已验证的正式 tag 建 worktree：`git worktree add --detach .worktrees/channel-gitcode-vX.Y.Z vX.Y.Z`，推送写 `HEAD:refs/heads/plugin-releases-gitcode`。
 - 只有一端存在（常见于此前 `git push fork` 的 GitCode 段失败）：以存在的那一端为准派生。GitHub 端有就用 `fork/plugin-releases-gitcode`；只有 GitCode 端有，先 `git fetch gitcode plugin-releases-gitcode`，再从 `gitcode/plugin-releases-gitcode` 建 worktree。之后 `git push fork HEAD:refs/heads/plugin-releases-gitcode` 会把两端补齐（两段推送都幂等）。
