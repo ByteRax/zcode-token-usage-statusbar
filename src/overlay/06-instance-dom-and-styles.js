@@ -349,8 +349,9 @@
      * → v475 精简速率 chip 紧张档不空白（用户实报截图「精简模式下，如果空间不够了，可以折叠 git chip、而不是把速度 chip 给隐藏了」；原立账 v470，按合入顺序顺延；排查证实速度 chip 没有被摘除，窄窗下它落在紧张档，而紧张档无条件去掉状态词与单位：只有状态词、没有数值的面——后台智能体在跑时合成的「正在派发」、工具已启动未开始计时的「正在执行」等——只剩左右内边距，成了约 12px 宽的空壳；截图像素量得「电脑操作」到 Git 图标的空隙 34~37px，等于空壳 chip 的 33px、不等于无 chip 的 17px）：06 分片紧张档拆成两条规则——单位照旧隐藏，状态词只在数值非空时隐藏（.zu-live:has(>.zu-sp-val:not(:empty))），数值为空保留状态词；四字说法整枚 chip 约 69px，在 6.6em 上限内，不多占空间，Git chip 等级与档位判定不变；长标签顶到上限照旧省略。速度 chip 不新增「空间不够就摘除」的路径
      * → v476 精简速率 chip 会话均兜底面（用户裁定，承接 v475 排查时发现的相邻行为；原立账 v471，按合入顺序顺延）：有会话均而没有最近一段速度、也没有实时视图时，chip 面按 v298 裁定留空——chip 没有图标，留空就是任何档位都只有内边距的空壳（节点仍挂着，它是精简模式右键设置入口）。改为显示「均 X t/s」：11 分片回退态在最近一段速度为 0 且会话均大于 0 时给伪视图传 avgFace 并取会话均作数值，07 分片 zuSpeedFace 据 avgFace 出标签「均」（英文 Avg）、面对象带 avg、zuSpeedFaceHtml 给标签挂 zu-sp-avg 类；档位色按会话均，aria-label 写「生成速度 会话均 X t/s」。有最近一段速度时仍是 v298 的面（最后一轮真实速度、不带「均」）；tooltip 不变。紧张档去标签规则对 zu-sp-avg 不生效，窄窗显示「均X」，会话均不冒充最后一轮速度。状态条速度格同一状态仍是有图标无数值的格面，不动
      * → v477 速度格空数值位不占位（Windows 兼容审查实测；原立账 v477）：无计时面只有标签，空数值 span 却仍吃 .zu-live 的一个 5px gap。zh-CN Windows 上 system-ui 解析为微软雅黑 UI（拉丁字母与数字也走雅黑，不是 Segoe），英文动名词自然宽超过 v463 标定的 ≤ 约 55px@14px（Running 59.5px、Reading/Sending 57.5px、Loading/Starting 56.6px），11px 界面字号 + 药丸宽裕档标签可用 44.59px，「Running」「Sending」「Reading」被省略成「Runni…」，真实浏览器契约「untimed four-character labels are never clipped」在 Windows 上恒红（此前被 Chrome 夹具在 Windows 上起不来掩盖）。固定宽速度格里 .zu-sp-val:empty 与 .zu-sp-label:empty 同款 display:none，标签可用 49.59px；精简 chip（.zu-tsb）按内容定宽不动，带数值面没有空数值位，间距、格宽 6.6em、字体与档位判定都不变。带数值面的标签在雅黑下仍按 v459「放不下时收缩省略」（11px 界面字号下「思考 4:28」差约 0.9px），Windows 余量记入规格。规格 specs/speed-chip-stable-slot.md
+     * → v478 窄档与药丸紧张档只在数值非空时去标签（v475 精简 chip 同款语义搬到条面，用户实报截图「速度格只剩扳手图标，其余全空」）：默认条窄档（.zu-narrow）与药丸紧张档（.zu-pill.zu-speed-tight）原规则无条件 display:none 标签与单位、只留数值——只有状态词、没有数值的面（后台子代理派发中的「正在派发」、工具未开跑的「正在执行」，正是 v475 在精简 chip 上修过的同一批面）数值为空，格面只剩图标+全空，分隔线紧贴图标。修复=两条去标签选择器加 :has(>.zu-sp-val:not(:empty)) 条件，无数值面保留标签（四字说法 v463 在最紧档放得下），有值面与计时面窄档行为不变；与 v477 的 .zu-sp-val:empty{display:none} 互补（:has 按 DOM 内容匹配、不看 display），空数值位不再悬 5px。活页面离屏夹具实证窄档/药丸紧张档「正在派发」显示、计时面与数值面不变
      */
-    var VERSION = "v477";
+    var VERSION = "v478";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -639,7 +640,7 @@
       ".zusage-root.zu-pill .zu-main>.it.zu-speed{margin-right:7px}" +
       ".zusage-root.zu-pill.zu-speed-mid .zu-main>.it.zu-speed{padding-left:4px;padding-right:0;margin-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}" +
       ".zusage-root.zu-pill.zu-speed-tight .zu-main>.it.zu-speed{padding-left:4px;padding-right:0;margin-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}" +
-      ".zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-label,.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-unit{display:none}" +
+      ".zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live:has(>.zu-sp-val:not(:empty))>.zu-sp-label,.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-unit{display:none}" +
       ".zusage-root .zu-main>.it.zu-speed[data-zu-speed-min='1']{width:2.75em}" +
       /* 完成态（面没有状态词）：任何档位都保留单位 */
       ":is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live{display:flex;flex:1 1 auto;min-width:0;align-items:baseline}" +
@@ -660,7 +661,10 @@
       /* v461 子代理面「子·X」（用户规格）：间隔点在标签末尾、与数值贴紧——负外边距抵消 .zu-live 的 gap:5px
        * （.zu-live 的 gap 只此一处定义、各档位都是 5px；改 gap 时这里一起动）。子代理面（glue）由 07 分片加 zu-sp-glue */
       ".zusage-root .it.zu-speed>.zu-live>.zu-sp-label.zu-sp-glue,.zu-tsb>.zu-live>.zu-sp-label.zu-sp-glue{margin-right:-5px}" +
-      ".zusage-root.zu-narrow .it.zu-speed>.zu-live>.zu-sp-label,.zusage-root.zu-narrow .it.zu-speed>.zu-live>.zu-sp-unit{display:none}" +
+      /* v478：窄档只在数值非空时去标签（v475 精简 chip 同款语义搬到条面）——只有状态词、没有数值的面
+       * （后台智能体合成的「正在派发」、工具未开跑的「正在执行」等）无条件去标签会剩图标+全空
+       * （格面没有任何承载状态的内容），用户实报截图；数值在时仍去标签留数值（原窄档语义不变）。 */
+      ".zusage-root.zu-narrow .it.zu-speed>.zu-live:has(>.zu-sp-val:not(:empty))>.zu-sp-label,.zusage-root.zu-narrow .it.zu-speed>.zu-live>.zu-sp-unit{display:none}" +
       /* 完成态在窄档、药丸紧张档也保留单位（空标签本就不占位） */
       ".zusage-root.zu-narrow .it.zu-speed:has(>.zu-live>.zu-sp-label:empty)>.zu-live>.zu-sp-unit{display:block}" +
       ".zusage-root.zu-pill.zu-speed-tight .it.zu-speed:has(>.zu-live>.zu-sp-label:empty)>.zu-live>.zu-sp-unit{display:block}" +

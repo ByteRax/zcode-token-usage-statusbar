@@ -947,11 +947,11 @@ test('速度格占位 CSS：全部格面固定宽 6.6em、右内边距 0、右�
     /* v477 空数值位不占位：只作用于固定宽速度格，无计时面的标签拿回被空 span 吃掉的 5px gap */
     '.zusage-root .it.zu-speed>.zu-live>.zu-sp-val:empty{display:none}',
     ':is(.zusage-root .it.zu-speed,.zu-tsb)>.zu-live>.zu-sp-val{flex:0 0 auto;white-space:nowrap;text-align:left}',
-    ".zusage-root.zu-narrow .it.zu-speed>.zu-live>.zu-sp-label,.zusage-root.zu-narrow .it.zu-speed>.zu-live>.zu-sp-unit{display:none}",
+    ".zusage-root.zu-narrow .it.zu-speed>.zu-live:has(>.zu-sp-val:not(:empty))>.zu-sp-label,.zusage-root.zu-narrow .it.zu-speed>.zu-live>.zu-sp-unit{display:none}",
     ".zusage-root .zu-main>.it.zu-speed[data-zu-speed-min='1']>.zu-live{display:none}",
     '.zusage-root.zu-pill.zu-speed-mid .zu-main>.it.zu-speed{padding-left:4px;padding-right:0;margin-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}',
     '.zusage-root.zu-pill.zu-speed-tight .zu-main>.it.zu-speed{padding-left:4px;padding-right:0;margin-right:4px;gap:3px;font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)))}',
-    '.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-label,.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-unit{display:none}',
+    '.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live:has(>.zu-sp-val:not(:empty))>.zu-sp-label,.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-unit{display:none}',
   ]) assert.ok(css.includes(rule), rule);
   /* v477 的反向锁：精简 chip（.zu-tsb）按内容定宽，空数值位不挤标签，不得被这条规则带走。
    * 源码是 JS 字符串拼接：逐字符扫描，只收字符串字面量（单引号、双引号、反引号都算）并拼回 CSS，
@@ -990,6 +990,10 @@ test('速度格占位 CSS：全部格面固定宽 6.6em、右内边距 0、右�
   }).map(rule => rule.trim());
   assert.deepEqual(emptyValueHidden,
     ['.zusage-root .it.zu-speed>.zu-live>.zu-sp-val:empty{display:none}'], 'v477 empty-value rule is scoped to the fixed-width speed cell only');
+  /* v478：无数值状态词面（正在派发/正在执行等）在窄档与药丸紧张档必须保留标签——无条件去标签会剩图标+全空
+   * （用户实报截图；v475 精简 chip 同款语义）。旧的无条件选择器不得回潮。 */
+  assert.ok(!css.includes('.zusage-root.zu-narrow .it.zu-speed>.zu-live>.zu-sp-label,'), '窄档去标签必须带数值非空条件');
+  assert.ok(!css.includes('.zusage-root.zu-pill.zu-speed-tight .it.zu-speed>.zu-live>.zu-sp-label,'), '药丸紧张档去标签必须带数值非空条件');
   /* v462 左内边距 0（用户指示「左侧的 padding 也去掉」）只作用于默认条：规则必须带 :not(.zu-pill)——药丸有底色与 12px 圆角，
    * 图标靠左内边距（宽裕 7px 来自基础 .it，中等/紧张 4px）离边缘；也不能做成「左内边距改左外边距」（中等/紧张档的 4px 左内边距
    * 抵消不了，会多推 7px）。仅图标档保留两侧内边距（图标靠左，不居中）。 */

@@ -2488,6 +2488,12 @@ test('speed slot through the live data chain (isolated fixture)', { skip: skipRe
       if (!snap.value) continue;
       assert.equal(left(snap.val), left(snap.live), `${label}: value starts right after the icon (${snap.label}|${snap.value})`);
     }
+    /* v478：窄档只在数值非空时去标签——无数值状态词面（naked）保留标签且标签紧跟图标
+     * （旧断言按「窄档全藏标签」的旧契约写，会让「正在读取」在窄档剩图标+全空） */
+    if (!labelShown) {
+      assert.ok(g.naked.labelRect[2] > 0, `${label}: valueless status faces keep their label in the narrow tier (v478)`);
+      assert.equal(left(g.naked.labelRect), left(g.naked.live), `${label}: naked label starts right after the icon (v478)`);
+    }
     for (const snap of [...g.estimateTicks, g.estimate2]) assert.equal(left(snap.val), left(g.estimate.val), `${label}: value left edge fixed for the same label (${snap.value})`);
     for (const snap of all) {
       const last = snap.unitRect && snap.unitRect[2] > 0 ? snap.unitRect : snap.val;
