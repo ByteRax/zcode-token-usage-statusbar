@@ -163,6 +163,30 @@ class PluginPackageTests(unittest.TestCase):
         for name in ("release_tool.py", "release_unpack.py"):
             self.assertTrue((ROOT / name).is_file())
 
+    def test_release_skill_keeps_channel_branches_fast_forward_only(self):
+        # issue #497（#308、#247 同类）：渠道分支被改成无父提交并强推后，市场渠道用户静默卡在旧版本。
+        # 技能与规则必须保住「只进不退 + 从用户位置验收」，且不得再出现渠道分支的强推许可或
+        # 「宿主整份下载分支」这类未经验证的前提。
+        skill = ROOT / ".zcode" / "skills" / "zcode-github-release"
+        text = (skill / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("## 渠道分支不变量（硬约束）\n", text)
+        invariant = text.split("## 渠道分支不变量（硬约束）\n", 1)[1].split("\n## ", 1)[0]
+        for requirement in ("只进不退", "授权也不能豁免", "消费者验收", "--ff-only", "先取证"):
+            self.assertIn(requirement, invariant)
+        stage_e = text.split("## 发布更新渠道清单（阶段 E）\n", 1)[1].split("\n## ", 1)[0]
+        for requirement in ("记录旧 tip", "消费者验收", "渠道分支不变量"):
+            self.assertIn(requirement, stage_e)
+        for stale in ("带 lease 强推", "整份下载该分支"):
+            self.assertNotIn(stale, text)
+        post = (skill / "references" / "post-release.md").read_text(encoding="utf-8")
+        self.assertIn("### 消费者验收（渠道分支）\n", post)
+        forced = [block for block in re.findall(r"(?ms)^```[a-z]*\n(.*?)^```", post)
+                  if "plugin-releases" in block and re.search(r"--force[^ \n]*", block)]
+        self.assertEqual(forced, [], "渠道分支的命令块里不得出现强推")
+        rules = (ROOT / ".zcode" / "rules" / "repo-workflow.md").read_text(encoding="utf-8")
+        self.assertNotIn("唯一允许的非快进推送", rules)
+        self.assertIn("只进不退", rules)
+
 
 class ReleaseLedgerTests(unittest.TestCase):
     def run_check(self, root):

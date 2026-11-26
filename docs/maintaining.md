@@ -144,7 +144,7 @@ python3 release_tool.py verify --repo OWNER/REPO \
 
 正式发布还需明确 `--publish` 与 `--confirm OWNER/REPO/v版本号`，先上传草稿并核验下载字节，再发布。提交、tag 推送、Release 和渠道清单推送分别需要授权；用户调用[发布技能](../.zcode/skills/zcode-github-release/SKILL.md)发版时按该技能的默认全链执行（提交与 tag 推送、GitHub Release 与 GitCode 镜像、两个渠道清单、源码 PR 合并，不再逐项询问），此外默认不替用户执行。
 
-GitHub 自动更新要求已注册市场的 `marketplace.json` 指向同一个 Release ZIP/hash。维护者应将生成的 `marketplace-release.json` 作为渠道分支上的 `marketplace.json` 发布。[ByteRax 的 `plugin-releases` 渠道](https://github.com/ByteRax/zcode-token-usage-statusbar/tree/plugin-releases) 已发布 `v1.4.0` 一致清单，新用户注册 `ByteRax/zcode-token-usage-statusbar#plugin-releases`。未来发版须同步更新该清单，不能只上传 Release（`publish` 结束时会输出 `channelLag` 并在 stderr 警告清单滞后；发布目录已清理时可从正式 tag 确定性重建清单，见发布技能的[发布后收尾](../.zcode/skills/zcode-github-release/references/post-release.md)）；渠道分支只放清单与 `LICENSE`，提交对象由 `release_tool.py channel-commit` 生成（不推送），补推时用 `release_tool.py reconcile` 按成员内容对账而不要求重建包与线上包字节相同；不要擅自切换用户已有来源。
+GitHub 自动更新要求已注册市场的 `marketplace.json` 指向同一个 Release ZIP/hash。维护者应将生成的 `marketplace-release.json` 作为渠道分支上的 `marketplace.json` 发布。[ByteRax 的 `plugin-releases` 渠道](https://github.com/ByteRax/zcode-token-usage-statusbar/tree/plugin-releases) 已发布 `v1.4.0` 一致清单，新用户注册 `ByteRax/zcode-token-usage-statusbar#plugin-releases`。未来发版须同步更新该清单，不能只上传 Release（`publish` 结束时会输出 `channelLag` 并在 stderr 警告清单滞后；发布目录已清理时可从正式 tag 确定性重建清单，见发布技能的[发布后收尾](../.zcode/skills/zcode-github-release/references/post-release.md)）；渠道分支只放清单与 `LICENSE`，提交对象由 `release_tool.py channel-commit` 生成（不推送），补推时用 `release_tool.py reconcile` 按成员内容对账而不要求重建包与线上包字节相同；不要擅自切换用户已有来源。渠道分支只能快进（宿主的市场克隆按 `pull --ff-only` 跟进，改写历史会让用户静默卡在旧版本），推送之后从停在旧提交的克隆做一次快进验证，见发布技能的[渠道分支不变量](../.zcode/skills/zcode-github-release/SKILL.md#渠道分支不变量硬约束)。
 
 ### GitCode 更新渠道
 

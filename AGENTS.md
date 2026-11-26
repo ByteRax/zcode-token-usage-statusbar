@@ -262,6 +262,7 @@ python3 sync_plugin.py --check
 - `publish --dry-run` 不是离线检查：仍有 GitHub 只读 preflight，要求已提交源码、本地/远端 tag 与目标提交一致、Release 不存在及非空 UTF-8 更新说明。预演不授予正式发布权限。
 - 更新渠道由 `readChannel` 按注册来源**和市场缓存清单**共同判定：清单为 zip 源的 GitHub/GitCode 来源是 Release 渠道（ZIP、manifest、版本一致，安装后由 `verifyCommittedRelease` 复核宿主安装记录）；清单为源码路径的仓库来源判为 `market` 渠道，与本地目录来源同链，由宿主插件管理器按清单直接更新。原「市场清单必须与 Release 一致」的安装前校验门（`validateCatalog`）已按维护者决定移除，不要重新加回。不静默切换用户市场来源，不启用被禁用插件；渠道判定陷阱见 [.zcode/rules/install-release.md](.zcode/rules/install-release.md)。
 - `--publish`/`--confirm` 是工具安全门，不是用户授权的替代。提交、推送、tag、创建 Release、渠道写入均按**当前明确授权**执行，本指南不授予持续发布权限；用户调用[发布技能](.zcode/skills/zcode-github-release/SKILL.md)时，授权范围以该技能写明的默认全链为准。
+- 渠道分支（`plugin-releases`、`plugin-releases-gitcode`）只进不退：tip 只能从远端当前 tip 快进，禁止孤儿提交、强推、换根（用户授权也不豁免）；任何会话推送之后都做消费者验收——两端 tip 一致、旧 tip 是新 tip 的祖先、停在旧 tip 的克隆 `pull --ff-only` 后清单版本正确。宿主的市场克隆按快进跟进，断链即全体渠道用户静默卡在旧版（issue #497）。改渠道的交付方式，或在规格/规则里写下「宿主如何消费渠道」之前先取证；细则见[发布技能](.zcode/skills/zcode-github-release/SKILL.md#渠道分支不变量硬约束)。
 - 实际目标仓库先检查 `git remote -v`，不要混用 fork/上游；源码/渠道 branch、tag、Release 必须分别确认。
 - `fork` 配置双 push URL：`git push fork` 同时推送 GitHub（ByteRax）与 GitCode 镜像（gitcode.com/tanranran/zcode-token-usage-statusbar）；`gitcode` 远程仅用于单独核对或恢复，`origin` 仍只读。GitCode 承载国内更新渠道：`plugin-releases-gitcode` 分支清单 + 同 tag Release 资产，由 `release_tool.py publish --gitcode-repo`（需 `GITCODE_TOKEN`）在 GitHub 发布验收后生成，见[双远程同步](docs/maintaining.md#双远程同步)。更新器的双渠道校验必须一起改并有测试锁定；GitCode 段推送认证未配置时该段失败属预期，不代表 GitHub 段失败。
 - 维护文档旧 CRLF 修复步骤含破坏性重新检出命令，**不要执行**；保存已有修改，用独立工作树/新检出验证字节。也不要把安装 `--dry-run` 概括为完全无本地副作用。
