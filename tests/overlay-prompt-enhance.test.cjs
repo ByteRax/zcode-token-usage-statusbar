@@ -626,6 +626,256 @@ test('issue477: after the bound input is back in the card a new click issues a f
   assert.equal(second.text, '原草稿');
 });
 
+/* ---------- issue #501：输入桥记忆与归属凭证（v480） ----------
+ * 报告：v1.5.24 上输入框有可见文字，点增强提示「输入框暂不可读」——节点找到了，桥没了。
+ * 宿主 4.0.0 渲染包（styles-*.js）静态核实：Lexical registerRootListener 注销时回调 (null, 当前根)，
+ * E2ELexicalInputBridgePlugin 的 effect 清理因此先把自己的桥挂到「页面首个输入框」再删掉——卸载任一
+ * 编辑器都会误伤幸存的那一个（编辑器还活着、文字还在，桥对象与 ready 标记都没了）。
+ * 下面两个夹具逐句复刻这两段宿主逻辑，用来在测试里确定性制造报告现场。 */
+/* Lexical 编辑器替身：registerRootListener 的回调约定与 4.0.0 包内实现一致 */
+function mkLexicalEditor(rootEl) {
+  const rootListeners = new Set();
+  const editor = {
+    root: rootEl, state: {}, draft: '', setTextCalls: 0,
+    getRootElement: () => editor.root,
+    getEditorState: () => editor.state,
+    registerRootListener(listener) {
+      rootListeners.add(listener);
+      listener(editor.root, null);   // 注册即回调一次 (root, null)
+      return () => { rootListeners.delete(listener); listener(null, editor.root); };   // 注销回调 (null, 当前根)
+    },
+  };
+  return editor;
+}
+/* E2ELexicalInputBridgePlugin 的 effect 体复刻；返回值即 effect 的清理函数 */
+function hostMountBridge(editor, doc) {
+  const inputTestId = 'v4-composer-input';
+  const bridge = {
+    getEditorState: () => editor.getEditorState(),
+    getText: () => editor.draft,
+    setText: t => { editor.draft = String(t); editor.setTextCalls += 1; },
+  };
+  let attachedInput = null;
+  const detachBridge = input => {
+    if (input && input.__zcodeLexicalInputE2E === bridge) delete input.__zcodeLexicalInputE2E;
+    if (input) input.removeAttribute('data-e2e-lexical-bridge');
+  };
+  const attachBridge = input => {
+    if (attachedInput && attachedInput !== input) detachBridge(attachedInput);
+    attachedInput = input;
+    if (input) {
+      Object.defineProperty(input, '__zcodeLexicalInputE2E', { configurable: true, value: bridge });
+      input.setAttribute('data-e2e-lexical-bridge', 'ready');
+    }
+  };
+  const resolveInput = root => (root && root.getAttribute('data-testid') === inputTestId ? root : doc.querySelector(`[data-testid="${inputTestId}"]`));
+  const unregisterRoot = editor.registerRootListener((root, prev) => { if (prev !== root) detachBridge(prev); attachBridge(resolveInput(root)); });
+  return () => { unregisterRoot(); detachBridge(attachedInput); };
+}
+/* React fiber 替身：输入节点的 fiber 链上溯到 LexicalComposer 的 context Provider（真机 4.0.0 实测第 5 层），
+ * memoizedProps.value = [editor, config] */
+function attachComposerFiber(inputEl, editor, { hops = 5, config = { getTheme() {} } } = {}) {
+  let f = { memoizedProps: { value: [editor, config] }, return: null };
+  for (let i = 0; i < hops; i++) f = { memoizedProps: {}, return: f };
+  inputEl.__reactFiber$fixture = f;
+  return f;
+}
+/* 把夹具里的主输入框换成「宿主挂好桥的 Lexical 编辑器」：lex.draft 即草稿 */
+function ownLexInput(h, ui, draft) {
+  const lex = mkLexicalEditor(ui.editor);
+  hostMountBridge(lex, h.document);
+  attachComposerFiber(ui.editor, lex);
+  lex.draft = draft; ui.editor.textContent = draft;
+  return lex;
+}
+/* 再开一个共用 testid 的编辑器（相邻分栏）。close() = 节点先离开文档，再跑宿主 effect 清理（React 先摘 DOM、后跑 passive 清理） */
+function openSecondEditor(h, draft) {
+  const ui = h.buildComposer('workspace-right', 'sid_right', { ...ENH_PROVIDER, draft: '' });
+  const lex = mkLexicalEditor(ui.editor);
+  const cleanup = hostMountBridge(lex, h.document);
+  attachComposerFiber(ui.editor, lex);
+  lex.draft = draft; ui.editor.textContent = draft;
+  return { ui, lex, close() { ui.pane.remove(); h.candidates.splice(h.candidates.indexOf(ui.editor), 1); cleanup(); } };
+}
+/* 宿主清理过后的现场：桥对象与 ready 标记都没了，节点和编辑器都还在 */
+const stripBridge = el => { delete el.__zcodeLexicalInputE2E; el.removeAttribute('data-e2e-lexical-bridge'); };
+const bridgeGone = (el, name) => {
+  assert.equal(el.getAttribute('data-e2e-lexical-bridge'), null, name + ': ready marker is gone');
+  assert.equal(el.__zcodeLexicalInputE2E, undefined, name + ': bridge object is gone');
+};
+
+/* 夹具自证（与插件无关）：钉住对宿主清理的复刻——关掉任一编辑器，幸存输入框的桥与标记都被摘掉，
+ * 它的编辑器却仍以它为根。两个方向都验：宿主回退查找取的是页面首个输入框，谁靠前谁被波及。 */
+test('issue501 fixture: the host cleanup of one editor strips the surviving input\'s bridge and marker while its editor stays rooted there', () => {
+  for (const [name, closing] of Object.entries({ 'closing the later editor': 'b', 'closing the earlier editor': 'a' })) {
+    const h = harness();
+    const build = pid => {
+      const ui = h.buildComposer(pid, 'sid_' + pid, { ...ENH_PROVIDER, draft: '' });
+      const lex = mkLexicalEditor(ui.editor);
+      return { ui, lex, cleanup: hostMountBridge(lex, h.document) };
+    };
+    const w = { a: build('workspace-main'), b: build('workspace-right') };
+    const survivor = w[closing === 'a' ? 'b' : 'a'];
+    assert.equal(survivor.ui.editor.getAttribute('data-e2e-lexical-bridge'), 'ready', name + ': control — ready before the other editor closes');
+    w[closing].ui.pane.remove(); h.candidates.splice(h.candidates.indexOf(w[closing].ui.editor), 1);
+    w[closing].cleanup();
+    bridgeGone(survivor.ui.editor, name);
+    assert.equal(survivor.lex.getRootElement(), survivor.ui.editor, name + ': the surviving editor is still rooted at its input');
+  }
+});
+
+/* 主场景（3m/3n）：从未点击过增强，只靠按钮对账点见过就绪；别栏关闭后本卡桥被摘，点击仍读本卡草稿并写回本卡 */
+test('issue501: after another editor\'s cleanup strips the surviving input\'s bridge, enhance still reads and writes its own draft', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '' });
+  const lex = ownLexInput(h, ui, '幸存输入框的草稿');
+  const enh = mountEnh(h, ui);
+  const other = openSecondEditor(h, '被关闭一侧的草稿');
+  other.close();
+  bridgeGone(ui.editor, 'closing the other editor');
+  clickButton(enh);
+  const reqs = enhanceRequests(h);
+  assert.equal(reqs.length, 1, enh.getAttribute('aria-label'));
+  assert.equal(reqs[0].text, '幸存输入框的草稿');
+  h.respond(reqs[0].requestId, { ok: true, text: '增强结果' });
+  assert.equal(lex.draft, '增强结果', 'write-back lands on the surviving input');
+  assert.equal(lex.setTextCalls, 1);
+  assert.equal(other.lex.setTextCalls, 0, 'the closed editor is never written');
+  assert.equal(other.lex.draft, '被关闭一侧的草稿');
+  assert.equal(enh.getAttribute('aria-label'), '增强提示词');
+});
+
+/* 记忆是页面级的：桥先丢、随后浮层热更换代，新代从未见过这个输入框就绪也照样找回 */
+test('issue501: the remembered bridge survives an overlay re-inject — a new generation recovers a bridge lost before it loaded', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '' });
+  const lex = ownLexInput(h, ui, '本卡草稿');
+  mountEnh(h, ui);   // 旧代见过就绪
+  stripBridge(ui.editor);   // 桥先丢
+  h.inject();   // 再热更：新代从未见过它就绪
+  h.boot();
+  h.coordAttach(ui.editor, 'sid_main');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  clickButton(enh);
+  const reqs = enhanceRequests(h);
+  assert.equal(reqs.length, 1, enh.getAttribute('aria-label'));
+  assert.equal(reqs[0].text, '本卡草稿');
+  h.respond(reqs[0].requestId, { ok: true, text: '增强结果' });
+  assert.equal(lex.draft, '增强结果');
+});
+
+/* 凭证不成立不找回（3o）：找不到 fiber / 编辑器根不在本节点 / 节点已被另一个编辑器复用 */
+test('issue501: recovery requires the ownership proof — no fiber, an editor rooted elsewhere, or a bridge left by the node\'s previous editor', () => {
+  const cases = {
+    'no fiber on the node': (h, ui, lex) => { delete ui.editor.__reactFiber$fixture; },
+    'composer editor is rooted at another node': (h, ui, lex) => { lex.root = new Element(); },
+    'node reused by a new editor after the bridge was lost': (h, ui, lex) => {
+      stripBridge(ui.editor);
+      const next = mkLexicalEditor(ui.editor);   // 同一节点换了编辑器，它的桥还没挂上
+      attachComposerFiber(ui.editor, next);
+      next.draft = '新编辑器的草稿';
+    },
+  };
+  for (const [name, breakProof] of Object.entries(cases)) {
+    const h = harness();
+    const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '' });
+    const lex = ownLexInput(h, ui, '本卡草稿');
+    const enh = mountEnh(h, ui);
+    breakProof(h, ui, lex);
+    stripBridge(ui.editor);
+    clickButton(enh);
+    assert.equal(enhanceRequests(h).length, 0, name + ': ' + enh.getAttribute('aria-label'));
+    assert.match(enh.getAttribute('aria-label'), /输入框暂不可读/, name);
+    assert.equal(lex.setTextCalls, 0, name);
+    assert.equal(lex.draft, '本卡草稿', name);
+  }
+});
+
+/* 判明是别栏的桥（3p）：宿主回退错绑把别栏编辑器的桥挂到本卡输入框上。没记住过本节点自己的桥时不读、不发、
+ * 不写，提示与桥未就绪相同，也不记住它——之后桥被摘也不找回 */
+test('issue501: a live bridge proven to belong to another editor is refused — no request, nothing read or sent, and it is never remembered', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '' });
+  ownLexInput(h, ui, '本卡草稿');
+  stripBridge(ui.editor);   // 本卡输入框在插件加载时就已没有自己的桥：没有东西可记
+  const enh = mountEnh(h, ui);
+  const other = openSecondEditor(h, '别栏草稿');
+  Object.defineProperty(ui.editor, '__zcodeLexicalInputE2E', { configurable: true, value: other.ui.editor.__zcodeLexicalInputE2E });   // 错绑现场：节点上挂着别栏的桥，标记仍是 ready
+  h.tick();   // 对账点在这一拍见过它
+  clickButton(enh);
+  assert.equal(enhanceRequests(h).length, 0, enh.getAttribute('aria-label'));
+  assert.match(enh.getAttribute('aria-label'), /输入框暂不可读/);
+  assert.equal(other.lex.setTextCalls, 0, 'the other editor is never written');
+  stripBridge(ui.editor);
+  clickButton(enh);
+  assert.equal(enhanceRequests(h).length, 0, 'a foreign bridge is never remembered for later recovery');
+  assert.match(enh.getAttribute('aria-label'), /输入框暂不可读/);
+});
+
+/* 同一现场的另一面：本节点自己的桥此前记住过——别栏的桥压上来之后点击，改用记住的那个，读写的仍是本卡草稿 */
+test('issue501: with a foreign bridge squatting on the input, the remembered own bridge is used instead — the other editor is never read or written', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '' });
+  const lex = ownLexInput(h, ui, '本卡草稿');
+  const enh = mountEnh(h, ui);   // 记住了本卡自己的桥
+  const other = openSecondEditor(h, '别栏草稿');
+  Object.defineProperty(ui.editor, '__zcodeLexicalInputE2E', { configurable: true, value: other.ui.editor.__zcodeLexicalInputE2E });
+  h.tick();
+  clickButton(enh);
+  const reqs = enhanceRequests(h);
+  assert.equal(reqs.length, 1, enh.getAttribute('aria-label'));
+  assert.equal(reqs[0].text, '本卡草稿', "the draft sent is this input's own, never the other editor's");
+  h.respond(reqs[0].requestId, { ok: true, text: '增强结果' });
+  assert.equal(lex.draft, '增强结果');
+  assert.equal(other.lex.draft, '别栏草稿');
+  assert.equal(other.lex.setTextCalls, 0, 'the other editor is never written');
+  assert.equal(enh.getAttribute('aria-label'), '增强提示词');
+});
+
+/* 无从判定（3q）：节点上就绪的桥照用（v472 以前口径不变），但不记住——桥丢了不找回 */
+test('issue501: when ownership cannot be decided the ready bridge is still used, but nothing is remembered', () => {
+  const cases = {
+    'no fiber on the node': (h, ui, lex) => { delete ui.editor.__reactFiber$fixture; },
+    'composer editor is rooted at another node': (h, ui, lex) => { lex.root = new Element(); },
+    'bridge without getEditorState': (h, ui, lex) => { delete ui.editor.__zcodeLexicalInputE2E.getEditorState; },
+  };
+  for (const [name, makeUndecidable] of Object.entries(cases)) {
+    const h = harness();
+    const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '' });
+    const lex = ownLexInput(h, ui, '本卡草稿');
+    const enh = mountEnh(h, ui);
+    makeUndecidable(h, ui, lex);
+    clickButton(enh);
+    const req = enhanceRequests(h)[0];
+    assert.ok(req, name + ': the ready bridge is still used — ' + enh.getAttribute('aria-label'));
+    assert.equal(req.text, '本卡草稿', name);
+    h.respond(req.requestId, { ok: true, text: '增强结果' });
+    assert.equal(lex.draft, '增强结果', name);
+    stripBridge(ui.editor);
+    clickButton(enh);
+    assert.equal(enhanceRequests(h).length, 0, name + ': nothing was remembered, so there is nothing to recover');
+    assert.match(enh.getAttribute('aria-label'), /输入框暂不可读/, name);
+  }
+});
+
+/* 在途时桥被摘（3r）：回包按凭证取回，草稿比对照常，结果写回同一节点 */
+test('issue501: a bridge lost while a request is in flight is recovered for the write-back when the proof holds', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { ...ENH_PROVIDER, draft: '' });
+  const lex = ownLexInput(h, ui, '原草稿');
+  const enh = mountEnh(h, ui);
+  clickButton(enh);
+  const req = enhanceRequests(h)[0];
+  assert.ok(req, 'request fired while the bridge was intact');
+  stripBridge(ui.editor);
+  h.respond(req.requestId, { ok: true, text: '增强结果' });
+  assert.equal(lex.draft, '增强结果');
+  assert.equal(lex.setTextCalls, 1);
+  assert.equal(enh.getAttribute('aria-label'), '增强提示词');
+});
+
 test('enhance disabled: button not mounted even when payload present', () => {
   const h = harness({ enhanceOn: false });
   const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '草稿' });
