@@ -130,12 +130,15 @@ def build(root, repo, out, version=None):
     require(not out.exists() and not out.is_symlink(), "output directory already exists")
     out.mkdir(parents=True, exist_ok=False)
     asset = out / zip_name(version)
-    with zipfile.ZipFile(asset, "x", compression=zipfile.ZIP_STORED) as archive:
+    # 成员一律 DEFLATE-9：在野解包器自 v1.4.0 起接受该压缩方式，体积约为不压缩时的三分之一。
+    # 压缩字节可能随打包机的 zlib 实现变化，补推对账因此按内容比（reconcile），不按字节比。
+    with zipfile.ZipFile(asset, "x", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for name in NAMES:
             info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
             info.create_system = 3
             info.external_attr = (stat.S_IFREG | 0o644) << 16
-            archive.writestr(info, data[name])
+            archive.writestr(info, data[name], compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
     payload = read_file(asset, MAX_ASSET)
     manifest = {"schemaVersion": 1, "repository": repo, "version": version, "tag": "v" + version,
                 "pluginId": PLUGIN_ID, "asset": {"name": asset.name, "size": len(payload),

@@ -21,7 +21,7 @@
 | `marketplace.json` | 本地源码市场入口 |
 | `plugins/zcode-token-usage-statusbar/` | 可独立分发的插件包、命令、技能、钩子与运行文件副本 |
 | `sync_plugin.py` | 从根运行文件同步插件副本，`--check` 检查漂移 |
-| `release_tool.py` | 确定性打包、校验和需授权的 GitHub 发布 |
+| `release_tool.py` | 打包（成员 DEFLATE-9 压缩，文件集与内容确定）、校验和需授权的 GitHub 发布 |
 | `config.example.json` | 运行设置模板；真实 `config.json` 不入库 |
 | `tests/` | 隔离回归、真实宿主 CLI 沙箱测试和交互演示 |
 
