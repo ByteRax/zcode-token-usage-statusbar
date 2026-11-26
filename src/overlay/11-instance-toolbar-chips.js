@@ -2210,6 +2210,260 @@
       if (cw > 0) return L("自动压缩 ~" + Math.round(v / cw * 100) + "%（" + fmt(v) + " token）", "Auto-compact at ~" + Math.round(v / cw * 100) + "% (" + fmt(v) + " tokens)");
       return L("自动压缩阈值 " + fmt(v) + " token", "Auto-compact threshold " + fmt(v) + " tokens");
     }
+    /* v487 上下文容量弹层分项构成增强（specs/context-breakdown-enhance.md）：
+     * 从就近上下文触发器 aria-label 读已用总量 used，按每项百分比折算估算 Token 数
+     * （fmt(round(used*pct/100)) + " · "）插在百分比节点前；给各分项行打 data-zusage-bkd
+     * 并在 body 容器委托 mouseover/mouseout 弹出大白话说明气泡。开关关闭即还原。 */
+    function bkdTargetRow(el, stopEl) {
+      while (el && el !== stopEl) {
+        if (el.getAttribute && (el.getAttribute("data-zusage-bkd") || el.getAttribute("data-zusage-bkd-cache"))) return el;
+        el = el.parentElement;
+      }
+      return null;
+    }
+    function fiberContextOf(el) {
+      var out = { taskUsage: null, workspacePath: "", snapshot: null };
+      try {
+        var ks = Object.keys(el), fk = "";
+        for (var i = 0; i < ks.length; i++) {
+          if (ks[i].indexOf("__reactFiber$") === 0) { fk = ks[i]; break; }
+        }
+        if (!fk) return out;
+        var f = el[fk], n = 0;
+        while (f && n++ < 65) {
+          var p = f.memoizedProps;
+          if (p && typeof p === "object") {
+            if (!out.taskUsage && p.taskUsage && typeof p.taskUsage === "object") out.taskUsage = p.taskUsage;
+            if (!out.workspacePath && typeof p.workspacePath === "string" && p.workspacePath) out.workspacePath = p.workspacePath;
+            if (!out.snapshot && p.snapshot && typeof p.snapshot === "object") out.snapshot = p.snapshot;
+          }
+          if (out.taskUsage && out.workspacePath && out.snapshot) break;
+          f = f.return;
+        }
+      } catch (e) { }
+      return out;
+    }
+    function bkdHomeFromPath(p) {
+      var m = String(p || "").match(/^(\/Users\/[^\/]+|\/home\/[^\/]+|[A-Za-z]:\\Users\\[^\\]+)/);
+      return m ? m[1] : "";
+    }
+    function bkdAppResourcesDir() {
+      try {
+        var href = String((typeof location !== "undefined" && location && location.href) || "");
+        var m = href.match(/^file:\/\/(\/[A-Za-z]:)?(\/.*?)\/app\.asar(?:\/|$)/i);
+        if (!m) return "";
+        var p = decodeURIComponent((m[1] ? m[1].slice(1) : "") + m[2]);
+        return p.replace(/[\\/]+$/, "") + (p.indexOf("\\") >= 0 ? "\\glm" : "/glm");
+      } catch (e) { return ""; }
+    }
+    function bkdUsedSkills(snap) {
+      var win = snap && snap.rows && Array.isArray(snap.rows.window) ? snap.rows.window : null;
+      if (!win || !win.length) return [];
+      var seen = {}, list = [];
+      for (var i = 0; i < win.length; i++) {
+        var r = win[i];
+        if (!r || r.toolName !== "Skill") continue;
+        var name = "";
+        if (r.input && typeof r.input.skill === "string") name = r.input.skill;
+        else if (typeof r.inputText === "string") {
+          try { var parsed = JSON.parse(r.inputText); if (parsed && typeof parsed.skill === "string") name = parsed.skill; } catch (e) { }
+        }
+        name = String(name || "").trim();
+        if (!name) continue;
+        var dir = "";
+        var outTxt = r.output && typeof r.output.text === "string" ? r.output.text : "";
+        if (outTxt) {
+          var dm = outTxt.match(/Base directory for this skill:\s*([^\r\n]+)/);
+          if (dm && dm[1]) dir = dm[1].trim();
+        }
+        if (seen[name]) {
+          if (dir && !seen[name].dir) seen[name].dir = dir;
+        } else {
+          var entry = { name: name, dir: dir };
+          seen[name] = entry;
+          list.push(entry);
+        }
+      }
+      return list;
+    }
+    function syncCtxBreakdown(body) {
+      if (!body || !body.children) return;
+      var grid = null, cacheRow = null;
+      for (var i = 0; i < body.children.length; i++) {
+        var sec = body.children[i];
+        var al = sec && sec.getAttribute ? (sec.getAttribute("aria-label") || "") : "";
+        if (!grid && (al === "上下文来源" || al === "Context sources")) {
+          grid = sec.children && sec.children[0] ? sec.children[0] : null;
+        } else if (!grid && sec && sec.classList && sec.classList.contains("space-y-1.5") && sec.children && sec.children.length === 1) {
+          var g0 = sec.children[0];
+          if (g0 && g0.classList && g0.classList.contains("grid")) grid = g0;
+        }
+        if (!cacheRow && sec && sec.children && sec.children.length >= 2) {
+          var c0Txt = String((sec.children[0] && sec.children[0].textContent) || "").trim();
+          if (c0Txt === "平均缓存命中率" || c0Txt === "Average cache hit rate") cacheRow = sec;
+        }
+      }
+      if (!state.ctxBkd) {
+        if (grid && grid.children) {
+          for (var r0 = 0; r0 < grid.children.length; r0++) {
+            var row0 = grid.children[r0];
+            if (!row0) continue;
+            if (row0.removeAttribute) row0.removeAttribute("data-zusage-bkd");
+            row0.__zuBkdTok = "";
+            row0.__zuBkdPct = "";
+            row0.__zuBkdData = null;
+            if (row0.children) {
+              for (var c0 = row0.children.length - 1; c0 >= 0; c0--) {
+                var ch0 = row0.children[c0];
+                if (ch0 && ch0.classList && ch0.classList.contains("zu-ctx-bkd-tok")) ch0.remove();
+              }
+            }
+          }
+        }
+        if (cacheRow) {
+          if (cacheRow.removeAttribute) cacheRow.removeAttribute("data-zusage-bkd-cache");
+          cacheRow.__zuBkdCache = null;
+        }
+        if (typeof hideCtxBkdTip === "function") hideCtxBkdTip();
+        return;
+      }
+      var used = 0, totalSize = 0, tu = null, fctx = { taskUsage: null, workspacePath: "", snapshot: null };
+      try {
+        var trig = nearestByRect(body, ZU_CTX_TRIGGER);
+        var nat = trig ? parseNativeCtxLabel(trig.getAttribute("aria-label")) : null;
+        if (nat) {
+          if (nat.used > 0) used = nat.used;
+          if (nat.total > 0) totalSize = nat.total;
+        }
+        fctx = trig ? fiberContextOf(trig) : fctx;
+        tu = fctx.taskUsage;
+        if (tu) {
+          if (!(used > 0) && typeof tu.used === "number" && tu.used > 0) used = tu.used;
+          if (!(totalSize > 0) && typeof tu.size === "number" && tu.size > 0) totalSize = tu.size;
+        }
+      } catch (e) { }
+      var wsPath = fctx.workspacePath || "";
+      if (!wsPath) {
+        try {
+          var sc0 = api && api.getScope ? api.getScope() : null;
+          if (sc0 && sc0.workspacePath) wsPath = sc0.workspacePath;
+        } catch (e) { }
+      }
+      var homeDir = bkdHomeFromPath(wsPath);
+      var appResourcesDir = bkdAppResourcesDir();
+      var usedSkills = bkdUsedSkills(fctx.snapshot);
+      if (!usedSkills.length && typeof bridge !== "undefined" && bridge && bridge.handle && bridge.handle.snap) {
+        usedSkills = bkdUsedSkills(bridge.handle.snap);
+      }
+      var bkdCtx = {
+        workspacePath: wsPath,
+        homeDir: homeDir,
+        appResourcesDir: appResourcesDir,
+        usedSkills: usedSkills
+      };
+      var charsBySource = {}, totalChars = 0;
+      if (tu && Array.isArray(tu.breakdown)) {
+        for (var bi = 0; bi < tu.breakdown.length; bi++) {
+          var bitem = tu.breakdown[bi];
+          if (bitem && bitem.source && typeof bitem.chars === "number" && isFinite(bitem.chars) && bitem.chars > 0) {
+            charsBySource[bitem.source] = (charsBySource[bitem.source] || 0) + bitem.chars;
+            totalChars += bitem.chars;
+          }
+        }
+      }
+      /* 标记带代际：热重载后同一个弹层 body 还在，旧代的委托遇到代际失效只会隐藏，
+       * 新代必须再挂一份，否则气泡失效到弹层重开（切片测试里没有 MY_GEN 时退化为 0） */
+      var bkdGen = (typeof MY_GEN !== "undefined" ? MY_GEN : 0);
+      if (body.__zuBkdDelegated !== bkdGen) {
+        body.__zuBkdDelegated = bkdGen;
+        body.addEventListener("mouseover", function (e) {
+          if (!state.ctxBkd || typeof showCtxBkdTip !== "function") return;
+          var r = bkdTargetRow(e && e.target, body);
+          if (r) showCtxBkdTip(r);
+        });
+        body.addEventListener("mouseout", function (e) {
+          if (typeof hideCtxBkdTip !== "function") return;
+          var r = bkdTargetRow(e && e.target, body);
+          if (!r) return;
+          var to = bkdTargetRow(e && e.relatedTarget, body);
+          if (to === r) return;
+          if (to && state.ctxBkd && typeof showCtxBkdTip === "function") showCtxBkdTip(to);
+          else if (typeof scheduleCtxBkdHide === "function") scheduleCtxBkdHide();
+          else hideCtxBkdTip();
+        });
+      }
+      if (cacheRow) {
+        if (tu && tu.cache && typeof tu.cache === "object") {
+          if (cacheRow.getAttribute("data-zusage-bkd-cache") !== "1") cacheRow.setAttribute("data-zusage-bkd-cache", "1");
+          cacheRow.__zuBkdCache = { cache: tu.cache, fmtTok: fmt };
+        } else {
+          if (cacheRow.removeAttribute) cacheRow.removeAttribute("data-zusage-bkd-cache");
+          cacheRow.__zuBkdCache = null;
+        }
+      }
+      if (grid && grid.children) {
+        for (var r = 0; r < grid.children.length; r++) {
+          var row = grid.children[r];
+          if (!row || !row.children || row.children.length < 3) continue;
+          var labelEl = null, pctEl = null, tokEl = null;
+          for (var c = 0; c < row.children.length; c++) {
+            var ch = row.children[c];
+            if (!ch || !ch.classList) continue;
+            if (ch.classList.contains("zu-ctx-bkd-tok")) tokEl = ch;
+            else if (ch.classList.contains("truncate")) labelEl = ch;
+            else if (ch.classList.contains("ml-auto") || ch.classList.contains("tabular-nums")) pctEl = ch;
+          }
+          if (!labelEl) labelEl = row.children[1];
+          if (!pctEl) pctEl = row.children[row.children.length - 1];
+          var labelTxt = String((labelEl && labelEl.textContent) || "").trim();
+          var key = (typeof ZU_CTX_BKD_MAP === "object" && ZU_CTX_BKD_MAP[labelTxt]) || "";
+          if (key) {
+            if (row.getAttribute("data-zusage-bkd") !== key) row.setAttribute("data-zusage-bkd", key);
+          } else if (row.getAttribute && row.getAttribute("data-zusage-bkd")) {
+            row.removeAttribute("data-zusage-bkd");
+          }
+          var pctRaw = String((pctEl && pctEl.textContent) || "").trim();
+          /* 小数逗号的 locale（如俄文「74,7 %」）按数值解析，否则会被截成 7%；展示串照抄宿主原文 */
+          var pm = pctRaw.match(/(\d+(?:[.,]\d+)?)\s*%/);
+          var pctVal = pm ? parseFloat(pm[1].replace(",", ".")) : NaN;
+          row.__zuBkdPct = pm ? pm[0] : "";
+          var tokens = (used > 0 && isFinite(pctVal) && pctVal >= 0) ? Math.round(used * pctVal / 100) : null;
+          if (tokens !== null && pctEl && pctEl !== tokEl) {
+            var tokStr = fmt(tokens);
+            var disp = tokStr + " · ";
+            row.__zuBkdTok = tokStr;
+            if (!tokEl) {
+              tokEl = document.createElement("span");
+              tokEl.className = "zu-ctx-bkd-tok";
+              row.insertBefore(tokEl, pctEl);
+            } else if (tokEl.nextElementSibling !== pctEl) {
+              row.insertBefore(tokEl, pctEl);
+            }
+            if (tokEl.textContent !== disp) tokEl.textContent = disp;
+          } else {
+            row.__zuBkdTok = "";
+            if (tokEl) tokEl.remove();
+          }
+          row.__zuBkdData = key ? {
+            key: key,
+            pctOfUsed: isFinite(pctVal) ? pctVal : null,
+            pctStr: row.__zuBkdPct,
+            used: used,
+            size: totalSize,
+            tokens: tokens,
+            tokFmt: row.__zuBkdTok,
+            pctOfWindow: (tokens !== null && totalSize > 0) ? (tokens / totalSize * 100) : null,
+            chars: charsBySource[key] || 0,
+            totalChars: totalChars,
+            ctx: bkdCtx,
+            fmtTok: fmt
+          } : null;
+        }
+      }
+      if (typeof ctxBkdTipFor !== "undefined" && ctxBkdTipFor && body.contains && body.contains(ctxBkdTipFor) && typeof showCtxBkdTip === "function") {
+        showCtxBkdTip(ctxBkdTipFor);
+      }
+    }
     function syncCompactBtn() {
       if (inactive()) return;
       var hcs = [];
@@ -2222,6 +2476,7 @@
           body = hcs[i].querySelector("div.space-y-3");
         } catch (e) { continue; }
         if (!body) continue;
+        try { syncCtxBreakdown(body); } catch (eBkd) { }
         try {
           for (var j = 0; j < body.children.length; j++) {
             /* 「剩余额度」段=border-t+pt-2（CodingPlanContextUsage/StartPlanContextBalance 的

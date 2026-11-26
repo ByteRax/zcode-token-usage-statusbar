@@ -70,7 +70,7 @@
    * 确定性历史行（[data-zusage-deterministic]，挂在消息流 turn 容器末尾）一并自清。
    * v80：面板（.zusage-panel）挂 body 不随条走，清理选择器单列。 */
   try {
-    document.querySelectorAll(".zusage-root,.zusage-tip-root,.zusage-exc,.zusage-rate-tip,.zusage-quota-tip,.zu-quota,.zu-git,.zu-tsb,.zu-compact-btn,.zu-ac-info,.zu-ac-hint,.zu-compact-dlg,.zu-rot-pk-dlg,.zusage-git-tip,.zusage-panel,.zu-mp-host,.zu-mp-ov,[data-zusage-deterministic],[data-zusage-loading-status],.zu-more-panel,.zu-subrate,.zu-wfrun,.zu-substat,.zu-enhance,.zu-sysm,.zusage-sysmon-tip,.zusage-upd-note-tip").forEach(function (el) { el.remove(); });
+    document.querySelectorAll(".zusage-root,.zusage-tip-root,.zusage-exc,.zusage-rate-tip,.zusage-quota-tip,.zu-quota,.zu-git,.zu-tsb,.zu-compact-btn,.zu-ac-info,.zu-ac-hint,.zu-compact-dlg,.zu-ctx-bkd-tok,.zu-rot-pk-dlg,.zusage-git-tip,.zusage-panel,.zu-mp-host,.zu-mp-ov,[data-zusage-deterministic],[data-zusage-loading-status],.zu-more-panel,.zu-subrate,.zu-wfrun,.zu-substat,.zu-enhance,.zu-sysm,.zusage-sysmon-tip,.zusage-upd-note-tip").forEach(function (el) { el.remove(); });
   } catch (e) { }
 
   try {
@@ -86,7 +86,7 @@
   } catch (e) { }
 
   /* ---------- 共享状态（多实例一致）：显示项/语言/上下文覆盖/最近一次数据 ---------- */
-  var LS = { show: "zusage3.show", devKeepTip: "zusage3.devKeepTip", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum", sec: "zusage3.sec", rstCdh: "zusage3.rstCdh", projPath: "zusage3.projPath", theme: "zusage3.theme", ctxEnh: "zusage3.ctxEnh", cmdkW: "zusage3.cmdkW", cmpAnn: "zusage3.cmpAnn", updSeen: "zusage3.updSeen", forceKmb: "zusage3.forceKmb", ctxCpt: "zusage3.ctxCpt", cost: "zusage3.cost", barJust: "zusage3.barJust", barOrder: "zusage3.barOrder", barPriority: "zusage3.barPriority", autoCompact: "zusage3.autoCompact", tipClick: "zusage3.tipClick", tipHoverMs: "zusage3.tipHoverMs", quotaRemain: "zusage3.quotaRemain", sysmonCfg: "zusage3.sysmonCfg" };
+  var LS = { show: "zusage3.show", devKeepTip: "zusage3.devKeepTip", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum", sec: "zusage3.sec", rstCdh: "zusage3.rstCdh", projPath: "zusage3.projPath", theme: "zusage3.theme", ctxEnh: "zusage3.ctxEnh", ctxBkd: "zusage3.ctxBkd", cmdkW: "zusage3.cmdkW", cmpAnn: "zusage3.cmpAnn", updSeen: "zusage3.updSeen", forceKmb: "zusage3.forceKmb", ctxCpt: "zusage3.ctxCpt", cost: "zusage3.cost", barJust: "zusage3.barJust", barOrder: "zusage3.barOrder", barPriority: "zusage3.barPriority", autoCompact: "zusage3.autoCompact", tipClick: "zusage3.tipClick", tipHoverMs: "zusage3.tipHoverMs", quotaRemain: "zusage3.quotaRemain", sysmonCfg: "zusage3.sysmonCfg" };
   /* 状态条排序与优先级只作用于条面八个项目，不改变工具行 Git/额度等宿主按钮。 */
   var ZU_BAR_KEYS = ["speed", "turn", "win", "today", "proj", "tools", "sub", "sysmon"];
   /* 缺省优先级按「状态栏显示升级」设计稿：速度/本轮=高、会话/今日/项目=普通、工具/子代理=低。
@@ -580,6 +580,10 @@
     /* v156 原生上下文按钮增强开关（环填充/档位色/百分比）：缺省开启，仅显式 "0" 关闭；
        纯渲染端展示偏好存 localStorage，不涉及主进程查询；重置卡徽标不受此开关影响 */
     ctxEnh: 1,
+    /* v487 「上下文容量」弹层分项构成增强开关（specs/context-breakdown-enhance.md）：
+       在各构成项右侧补充估算 Token 数（24.3万 · 74.7%），悬停显示大白话说明与减负建议；
+       缺省开启，仅显式 "0" 关闭；纯渲染端展示偏好存 localStorage */
+    ctxBkd: 1,
     /* v200 「上下文容量」弹层内「压缩上下文」按钮开关（issue #174）：缺省开启，仅显式
        "0" 关闭；纯渲染端展示偏好存 localStorage；自动压缩阈值行不受影响（v179 独立开关） */
     ctxCpt: 1,
@@ -717,6 +721,7 @@
     if (ls(LS.cnNum, "") === "0") state.cnNum = 0;
     if (ls(LS.projPath, "") === "0") state.projPath = 0;
     if (ls(LS.ctxEnh, "") === "0") state.ctxEnh = 0;
+    if (ls(LS.ctxBkd, "") === "0") state.ctxBkd = 0;
     if (ls(LS.ctxCpt, "") === "0") state.ctxCpt = 0;
     if (ls(LS.cost, "") === "0") state.cost = 0;
     if (ls(LS.cmdkW, "") === "0") state.cmdkW = 0;
@@ -745,6 +750,7 @@
     lsSet(LS.cnNum, state.cnNum ? "1" : "0");
     lsSet(LS.projPath, state.projPath ? "1" : "0");
     lsSet(LS.ctxEnh, state.ctxEnh ? "1" : "0");
+    lsSet(LS.ctxBkd, state.ctxBkd ? "1" : "0");
     lsSet(LS.ctxCpt, state.ctxCpt ? "1" : "0");
     lsSet(LS.cost, state.cost ? "1" : "0");
     lsSet(LS.cmdkW, state.cmdkW ? "1" : "0");

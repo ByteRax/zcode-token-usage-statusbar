@@ -65,7 +65,7 @@ const NAMED_SLICES = {
   ctxBandOf: ['    var CTX_BANDS', '    function html(d) {'],
   updateLive: ['    function updateLive() {', '    /* v90：心跳'],
   autoCompactHelpers: ['    /* ---------- v179 自动压缩阈值（⚙ 面板渲染与提交的单一出口） ---------- */', '    function srcStatusText(sv) {'],
-  autoCompactInfoText: ['    /* v179 阈值行文案', '    function syncCompactBtn() {'],
+  autoCompactInfoText: ['    /* v179 阈值行文案', '    /* v487 上下文容量弹层分项构成增强'],
   paneScopeHelpers: ['  function collectSidWs()', '  /* ---------- 回复末尾速率行'],
   fiberSideIdHelpers: ['  function fiberSideIdOf(', '  function detSeenKey'],
   sidePaneKeyOf: ['    function sidePaneKeyOf(el) {', '    var SEL = '],
