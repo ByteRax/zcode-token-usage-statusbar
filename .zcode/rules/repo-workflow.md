@@ -1,6 +1,6 @@
 # 仓库协作流程规则
 
-适用范围：本仓库的一切 git 操作（提交、分支、worktree、推送、PR、issue/PR 处理）与并行会话协作。远程拓扑：`fork` = ByteRax（GitHub，活跃开发，双 push URL 同时推 GitCode 镜像 `gitcode.com/tanranran/zcode-token-usage-statusbar`）、`gitcode` 仅核对/恢复、`origin` = xhwxt 上游**只读**。PR 一律经 fork 提交。fork 的 main 已设最小分支保护：禁 force push、禁删除、enforce_admins（管理员同样受限）；普通快进推送与自合并 PR 不受影响，重置 main 须先经用户授权临时删保护（`gh api -X DELETE repos/ByteRax/zcode-token-usage-statusbar/branches/main/protection`）。
+适用范围：本仓库的一切 git 操作（提交、分支、worktree、推送、PR、issue/PR 处理）与并行会话协作。远程拓扑：`fork` = ByteRax（GitHub，活跃开发，双 push URL 同时推 GitCode 镜像 `gitcode.com/tanranran/zcode-token-usage-statusbar`）、`gitcode` 仅核对/恢复、`origin` = xhwxt 上游**只读**。PR 一律经 fork 提交。fork 的 main 已设最小分支保护：禁 force push、禁删除、enforce_admins（管理员同样受限）；普通快进推送与自合并 PR 不受影响，重置 main 须先经用户授权临时删保护（`gh api -X DELETE repos/ByteRax/zcode-token-usage-statusbar/branches/main/protection`）。两个渠道分支 `plugin-releases`、`plugin-releases-gitcode` 在 GitHub 上有同样的保护；GitCode 镜像整仓禁止强制推送（仓库推送规则 `deny_force_push`，仓库所有者不豁免）。因此对功能分支强推时 GitHub 段成功、GitCode 段被拒属预期，镜像上该分支停在旧历史直到删除；不要为此关规则或改用别的推送方式绕过。
 
 ## 1. 并行会话纪律（最高优先）
 
@@ -22,7 +22,7 @@
 - `--theirs` 前核对删除行归属；从共享工作树导出补丁后先过一遍全部变更行再 apply。
 - `.gitignore` 对 `.zcode/` 是**白名单制**（`.zcode/*` + 逐目录 `!` 例外）：`.zcode/skills/` 下新建技能目录若不加 `!.zcode/skills/<名>/` 会被静默忽略、永远进不了提交（git status 看不见、新会话也不报错），新建项目技能后先补例外再写内容。
 - 并行活跃期跑 `sync_plugin.py` 会把他人未提交的根文件改动扫进插件副本与运行目录（详见 [install-release.md](install-release.md)）；且它只构建并同步**所在工作树**的 `src/` 分片→根文件→插件副本（同时执行 `--verify-manifests` 校验 6 处分发清单）：共享文件改在哪个 worktree，就要在那个 worktree 内跑它的 `sync_plugin.py`——在主工作区跑既同步不到你的改动，还会把主工作区他人的未提交改动扫进副本。
-- 渠道分支按设计**直接推送、绝不开 PR 进 main**（PR 会用 ZIP URL 清单覆盖源码相对路径市场入口）：常驻的 `plugin-releases`，与发过 GitCode 渠道才有的 `plugin-releases-gitcode`（`--gitcode-repo` 在 D 内建 GitCode Release 并上传资产；对渠道分支只是把清单生成到本地资产目录，推成 `plugin-releases-gitcode` 分支是阶段 E 另行授权的动作；未发过则该分支不存在）；GitHub 的 "Compare & pull request" 提示忽略。detached worktree 推渠道分支必须写完整 ref：`git push fork HEAD:refs/heads/plugin-releases`（推本地分支名会因为落后的同名本地分支报 non-FF；写短名 `HEAD:plugin-releases` 在目标分支只在一端不存在时，缺该分支的那一端报 `not a full refname`，有该分支的一端照常更新，两台主机从此不一致）。渠道分支按设计只含 `marketplace.json` 与 `LICENSE`，提交对象用 `release_tool.py channel-commit` 生成（[渠道分支精简与重建对账](../../specs/release-channel-slim.md)），不从源码树提交；把存量分支换成精简分支的孤儿提交须带 `--force-with-lease=<分支>:<远端旧提交>`，这是渠道分支唯一允许的非快进推送，且须单独授权。
+- 渠道分支按设计**直接推送、绝不开 PR 进 main**（PR 会用 ZIP URL 清单覆盖源码相对路径市场入口）：常驻的 `plugin-releases`，与发过 GitCode 渠道才有的 `plugin-releases-gitcode`（`--gitcode-repo` 在 D 内建 GitCode Release 并上传资产；对渠道分支只是把清单生成到本地资产目录，推成 `plugin-releases-gitcode` 分支是阶段 E 另行授权的动作；未发过则该分支不存在）；GitHub 的 "Compare & pull request" 提示忽略。detached worktree 推渠道分支必须写完整 ref：`git push fork HEAD:refs/heads/plugin-releases`（推本地分支名会因为落后的同名本地分支报 non-FF；写短名 `HEAD:plugin-releases` 在目标分支只在一端不存在时，缺该分支的那一端报 `not a full refname`，有该分支的一端照常更新，两台主机从此不一致）。渠道分支按设计只含 `marketplace.json` 与 `LICENSE`，提交对象用 `release_tool.py channel-commit` 生成（[渠道分支精简与重建对账](../../specs/release-channel-slim.md)），不从源码树提交；**渠道分支只进不退**：tip 只能从两台主机当前的远端 tip 快进，禁止孤儿提交、强推、换根，用户授权也不豁免（宿主的市场克隆按 `pull --ff-only` 跟进，断链会让全体渠道用户静默卡在旧版，issue #497）；改树形态以远端 tip 为父做普通提交，任何推送之后都做发布技能的[消费者验收](../skills/zcode-github-release/references/post-release.md#消费者验收渠道分支)。
 
 ## 3. PR 工作流
 

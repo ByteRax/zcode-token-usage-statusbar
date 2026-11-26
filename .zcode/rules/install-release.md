@@ -62,6 +62,7 @@
 ## 6. 更新器与渠道
 
 - 更新渠道由 `readChannel` 按注册来源**和市场缓存清单**共同判定：清单为 zip 源的 GitHub/GitCode 来源是 Release 渠道（ZIP、manifest、版本一致，安装后 `verifyCommittedRelease` 复核宿主安装记录）；清单为源码路径的仓库来源判为 `market` 渠道，与本地目录来源同链，由宿主插件管理器按清单直接更新。源码清单的 `source` 是**相对路径字符串**（`"./plugins/..."`）不是对象，判定必须识别字符串形态；`readChannel` 读的是市场缓存清单而非注册来源，刚切源缓存未刷新会暂判旧渠道。安装前校验门 `validateCatalog` 已按维护者决定移除，不要加回。不静默切换用户市场来源，不启用被禁用插件。
+- **渠道落后察觉（[规格](../../specs/channel-lag-detection.md)，issue #497）**：market 渠道与 GitCode Release 渠道的版本源只有渠道清单，清单没跟上最新发布时用户原本只看到「已是最新」。这两条路径结论为 `current` 时交叉核对不依赖用户克隆的 Release 列表（GitHub flavor 问注册仓库，GitCode flavor 只问官方镜像），清单落后则写入 `lastError` 提示。只提示不换源；交叉核对失败静默；`available` 不核对；GitHub Release 渠道的清单兜底路径（API 刚失败）不核对，是已知缺口。改这里同步 `tests/plugin-release-updater.test.cjs` 的渠道落后用例。
 - GitHub Release 渠道的 API 检查失败（限流/不可达；「无正式版，不能安装开发分支」与分页上限是渠道健康信号，**不**兜底）自动退回注册 ref 的渠道清单：`githubReleaseFromCatalog` 与 GitCode 渠道同构，渠道身份不变，清单 sha256（`catalogSha256`）与下载 manifest 交叉比对。清单兜底意图的安装复核有三处同构实现（`plugin-updater.cjs` 的 `verifyCommittedRelease`、`verifyRuntimeSync`、`overlay_install.py` 内嵌 `migrate` 回退）——新增意图形状必须三处同改且 migrate 侧要带 `typeof` 守卫（运行目录 release 模块可能过旧）。**例外：仓库改名迁移意图与 GitHub 渠道镜像回退意图（`mirror:true` 行，specs/github-mirror-fallback.md）刻意不改 `migrate`——能写出这两种意图的 updater 必然导出可复核它们的 `verifyRuntimeSync`，migrate 永远见不到；改名例外理由另见下文「GitHub 仓库改名迁移」条目的「不改的两处」子条目。**
 - `PLUGIN_ID` 写死 `zcode-token-usage-statusbar@zusage-marketplace`，同名市场恰好一条记录（注册两个同名来源直接报错）。无 alpha/预发布通道：STABLE 正则 + prerelease 硬拒（`release_tool` 断言 prerelease 为 false），`compareVersions` 支持 pre 段但候选过滤不放行。
 - 手动检查在 `busy=true` 后、取锁前立即 publish `checking`；撞锁抛"另一个更新进程仍在运行"；auto/定时 tick 路径保持静默不闪 checking。立即更新卡有 downloading 阶段与下载/安装双进度条，缺 progress 的旧主进程自动隐藏。
@@ -83,7 +84,8 @@
 
 - 本地同步 ≠ 打包 ≠ 校验 ≠ 发布预演 ≠ 提交/tag/Release/渠道推送；源码改版、正式渠道发布、用户安装副本升级是不同步骤。
 - 两份 `plugin.json` 与根 `marketplace.json` 的插件身份/版本须一致；正式渠道清单是生成的 `marketplace-release.json`，不要覆盖源码市场入口。`release_tool.py build` 的输出目录须尚不存在，包只含枚举分发文件；`verify` 校验身份、文件集、SHA256 与安全解包。
-- 渠道分支只放渠道清单与 `LICENSE`，补推对账按内容而不是按字节：`release_tool.py channel-commit` 生成提交对象（不动工作区、不推送），`release_tool.py reconcile` 把重建包与线上包逐成员对账、并把清单绑定到线上资产的 sha256（[渠道分支精简与重建对账](../../specs/release-channel-slim.md)）。发布包的字节可能随打包机与压缩实现变化，对账不能再要求重建包与线上包字节相同；补 GitCode 镜像时传线上发布包，不传重建包。
+- 渠道分支只放渠道清单与 `LICENSE`，补推对账按内容而不是按字节：`release_tool.py channel-commit` 生成提交对象（不动工作区、不推送），`release_tool.py reconcile` 把重建包与线上包逐成员对账、并把清单绑定到线上资产的 sha256（[渠道分支精简与重建对账](../../specs/release-channel-slim.md)）。发布包用 DEFLATE-9 压缩成员，字节可能随打包机的 zlib 实现变化，对账不能再要求重建包与线上包字节相同；补 GitCode 镜像时传线上发布包，不传重建包。
+- 渠道分支只进不退，验收从用户位置做：tip 只能从两台主机当前的远端 tip 快进（禁孤儿提交与强推，用户授权也不豁免）；任何推送之后核对两端 tip 一致、旧 tip 是新 tip 的祖先、停在旧 tip 的克隆 `pull --ff-only` 后清单版本正确。宿主的市场克隆按快进跟进分支，断链时用户静默卡在旧版（issue #497，此前 #308、#247 同类）；改渠道的交付方式、或在文档里写下「宿主如何消费渠道」之前先取证。细则见发布技能[渠道分支不变量](../skills/zcode-github-release/SKILL.md#渠道分支不变量硬约束)。
 - `publish --dry-run` 不是离线检查：仍有 GitHub 只读 preflight，要求已提交源码、本地/远端 tag 与目标提交一致、Release 不存在及非空 UTF-8 更新说明；预演不授予发布权限。`publish --gitcode-repo`（需 `GITCODE_TOKEN`）在 GitHub 发布验收后生成 `plugin-releases-gitcode` 清单与同 tag 资产，镜像上须先有同一个 tag 且指向发布提交（创建 Release 的请求不带 `target_commitish`，见发布技能的 GitCode tag 闸门）；GitCode 段认证未配置时该段失败属预期，不代表 GitHub 段失败。镜像步骤的查询、创建与上传都带令牌：匿名查询走公共机器人账号的共享额度，会被限流 429，不要把查询改回匿名（[GitCode Release 镜像的接口鉴权](../../specs/gitcode-mirror-auth.md)）。
 - 覆盖/删除已有 Release 需用户明确指令，删除前 `gh release view --json body,assets` 存快照。`--publish`/`--confirm` 是工具安全门不是授权替代；提交、推送、tag、Release、渠道写入按当前明确授权执行。
 - 配置、数据库、诊断、本地热修不是发布素材；可信同步保护用户改动，解包保留路径穿越、链接、重复项与文件集限制。本地统计只读数据库不上传；远端查询用配置/宿主连接通道、插件更新联网下载代码，不能笼统宣称"不联网"。
