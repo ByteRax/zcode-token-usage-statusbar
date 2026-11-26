@@ -86,7 +86,7 @@ git push --force-with-lease=plugin-releases:"$OLD" fork <上一步输出的 comm
 
 ## GitCode 渠道
 
-GitCode Release 的创建与上传属于发布动作，在发布技能的默认全链内，因为它和 GitHub 发布是**同一条命令**：`publish --publish` 追加 `--gitcode-repo tanranran/zcode-token-usage-statusbar`，并先设置环境变量 `GITCODE_TOKEN`（令牌走 query 参数，不落盘、不进日志）。维护者本机的令牌来源：钥匙串里 gitcode 的 git 凭据即该 API 令牌，用 `git credential fill`（host=gitcode.com）取 password 导出为 `GITCODE_TOKEN`，取值过程不回显。缺该变量时 `--publish` 在创建 draft 之前就整体失败（`--dry-run` 不检查）。工具在 GitHub 发布验收后创建或复用同 tag 的 GitCode Release、上传同一字节的 ZIP 与 manifest、回读比对，并在资产目录生成 `marketplace-release-gitcode.json`。该清单形状同上，只是 `url` 指向 GitCode Release 资产；同样不上传、不入 ZIP。
+GitCode Release 的创建与上传属于发布动作，在发布技能的默认全链内，因为它和 GitHub 发布是**同一条命令**：`publish --publish` 追加 `--gitcode-repo tanranran/zcode-token-usage-statusbar`，并先设置环境变量 `GITCODE_TOKEN`（令牌走 query 参数，不落盘、不进日志）。维护者本机的令牌来源：钥匙串里 gitcode 的 git 凭据即该 API 令牌，用 `git credential fill`（host=gitcode.com）取 password 导出为 `GITCODE_TOKEN`，取值过程不回显。缺该变量时 `--publish` 在创建 draft 之前就整体失败（`--dry-run` 不检查）。工具在 GitHub 发布验收后创建或复用同 tag 的 GitCode Release、上传同一字节的 ZIP 与 manifest、回读比对，并在资产目录生成 `marketplace-release-gitcode.json`。镜像步骤的查询、创建与上传都带令牌——匿名查询走公共机器人账号的共享额度，会被限流 429（[GitCode Release 镜像的接口鉴权](../../../../specs/gitcode-mirror-auth.md)）；回读正文与资产列表同样用带令牌的查询。该清单形状同上，只是 `url` 指向 GitCode Release 资产；同样不上传、不入 ZIP。
 
 把该清单发布为 `plugin-releases-gitcode` 分支根目录的 `marketplace.json`（这一步属于阶段 E，默认全链内），流程同上，区别如下：
 

@@ -1099,9 +1099,12 @@ print("bounded unclosed notes completed")
         self.assertEqual(code, 1)
         self.assertEqual(self.calls(), [])
 
-    def gitcode_stub(self, token_sentinel, *, existing=False, zip_host="gitcode.com", fail=None):
+    def gitcode_stub(self, token_sentinel, *, existing=False, zip_host="gitcode.com", fail=None,
+                     anonymous_status=None, token_status=None):
         # Fake GitCode API/OBS/download surface; records calls and never touches the network.
-        state = {"created": [], "puts": [], "release": None}
+        # anonymous_status / token_status: the HTTP status every call without / with a token
+        # gets, answered with GitCode's real error body (429 = the anonymous pool is exhausted).
+        state = {"created": [], "puts": [], "release": None, "anonymous": []}
         tag, git_repo = "v1.2.3", "tanranran/zcode-token-usage-statusbar"
         zip_name, manifest_name = self.asset.name, self.manifest.name
         files = {zip_name: self.asset.read_bytes(), manifest_name: self.manifest.read_bytes()}
@@ -1119,6 +1122,15 @@ print("bounded unclosed notes completed")
             if fail:
                 raise fail
             self.assertEqual(path.startswith("/repos/" + git_repo + "/"), True, path)
+            if not token:
+                state["anonymous"].append(method + " " + path)
+            limited = token_status if token else anonymous_status
+            if limited is not None:
+                message = ("%d The number of times the user invokes this API is too large. "
+                           "Threshold: 10W times per user per hour. Limited account:p_repoRobot."
+                           % limited if limited == 429 else "%d rejected" % limited)
+                return limited, json.dumps({"error_code": limited, "error_message": message}).encode()
+            self.assertEqual(token, token_sentinel)
             if path.endswith("/releases/tags/" + tag) and method == "GET":
                 return (200, json.dumps(state["release"]).encode()) if state["release"] else (404, b"{}")
             if path.endswith("/releases") and method == "POST":
@@ -1160,10 +1172,13 @@ print("bounded unclosed notes completed")
         return state, fake_api, fake_put, fake_download
 
     def run_gitcode_publish(self, *, approved=True, existing=False, zip_host="gitcode.com",
-                            fail=None, token="SECRET-GITCODE-TOKEN"):
+                            fail=None, token="SECRET-GITCODE-TOKEN", anonymous_status=None,
+                            token_status=None):
         sentinel = token
         state, fake_api, fake_put, fake_download = self.gitcode_stub(
-            sentinel, existing=existing, zip_host=zip_host, fail=fail)
+            sentinel, existing=existing, zip_host=zip_host, fail=fail,
+            anonymous_status=anonymous_status, token_status=token_status)
+        self.gitcode_state = state  # readable by tests that expect publish() to raise
         put_patch = mock.patch.object(tool.urllib.request, "urlopen", side_effect=fake_put)
         with mock.patch.dict(os.environ, {"GITCODE_TOKEN": token}), \
                 mock.patch.object(tool, "gitcode_api", side_effect=fake_api), \
@@ -1201,10 +1216,38 @@ print("bounded unclosed notes completed")
         self.assertEqual(len(state["puts"]), 2)
         self.assertTrue(Path(plan["gitcode"]["catalog"]).exists())
 
+    # ---- GitCode Release 镜像的接口鉴权（specs/gitcode-mirror-auth.md）----
+
+    def test_gitcode_mirror_lookup_carries_token_when_anonymous_pool_is_limited(self):
+        # The release lookups used to go out anonymously and drew on GitCode's shared
+        # robot-account pool; at HTTP 429 the mirror step failed after the GitHub release
+        # was already public. One publish per test: the fake GitHub side keeps its state.
+        plan, state = self.run_gitcode_publish(anonymous_status=429)
+        self.assertEqual(state["anonymous"], [])
+        self.assertEqual(state["created"], ["v1.2.3"])
+        self.assertEqual(len(state["puts"]), 2)
+        self.assertTrue(Path(plan["gitcode"]["catalog"]).exists())
+
+    def test_gitcode_mirror_reread_carries_token_when_anonymous_pool_is_limited(self):
+        # The mirror already has the release: the lookup answers 200 and the reread after
+        # the uploads is the other call that used to go out anonymously.
+        plan, state = self.run_gitcode_publish(existing=True, anonymous_status=429)
+        self.assertEqual(state["anonymous"], [])
+        self.assertEqual(state["created"], [])
+        self.assertEqual(len(state["puts"]), 2)
+        self.assertTrue(Path(plan["gitcode"]["catalog"]).exists())
+
+    def test_gitcode_mirror_rejected_token_fails_at_lookup_before_any_write(self):
+        with self.assertRaisesRegex(tool.ReleaseError, "gitcode release lookup -> HTTP 401"):
+            self.run_gitcode_publish(token_status=401)
+        self.assertEqual(self.gitcode_state["anonymous"], [])
+        self.assertEqual(self.gitcode_state["created"], [])
+        self.assertEqual(self.gitcode_state["puts"], [])
+
     def test_gitcode_mirror_dry_run_only_plans(self):
         plan, state = self.run_gitcode_publish(approved=False)
         self.assertTrue(plan["dryRun"])
-        self.assertEqual(state, {"created": [], "puts": [], "release": None})
+        self.assertEqual(state, {"created": [], "puts": [], "release": None, "anonymous": []})
         self.assertIn("upload", " ".join(plan["gitcode"]["steps"]))
         self.assertFalse(Path(self.base / "out" / "marketplace-release-gitcode.json").exists())
 

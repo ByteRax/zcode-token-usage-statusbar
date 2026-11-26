@@ -406,7 +406,10 @@ def gitcode_mirror(asset, manifest_path, manifest, notes, tag, gitcode_repo, out
     def asset_bytes(path):
         return read_file(path, MAX_ASSET if path.suffix == ".zip" else MAX_MANIFEST)
 
-    status, payload = gitcode_api(f"/repos/{gitcode_repo}/releases/tags/{tag}")
+    # Lookups carry the token too: anonymous calls draw on a shared robot-account pool
+    # (HTTP 429 "Limited account:p_repoRobot" once it is exhausted), and this step runs
+    # only after the GitHub release is already public (specs/gitcode-mirror-auth.md).
+    status, payload = gitcode_api(f"/repos/{gitcode_repo}/releases/tags/{tag}", token=token)
     if status == 200:
         release = json.loads(payload)
         require(isinstance(release, dict) and release.get("tag_name") == tag,
@@ -441,7 +444,7 @@ def gitcode_mirror(asset, manifest_path, manifest, notes, tag, gitcode_repo, out
             detail = error.reason if isinstance(error, urllib.error.URLError) else error
             raise ReleaseError(f"gitcode asset upload for {path.name} failed: {detail}") from None
 
-    status, payload = gitcode_api(f"/repos/{gitcode_repo}/releases/tags/{tag}")
+    status, payload = gitcode_api(f"/repos/{gitcode_repo}/releases/tags/{tag}", token=token)
     require(status == 200, f"gitcode release reread -> HTTP {status}")
     release = json.loads(payload)
     assets = release.get("assets") or []
