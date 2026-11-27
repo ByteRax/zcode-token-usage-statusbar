@@ -2486,22 +2486,84 @@
             if (cls2 && cls2.contains("border-t") && cls2.contains("pt-2")) { anchor = body.children[j]; break; }
           }
         } catch (e) { }
-        var exist = null, acInfo = null, acHint = null;
+        var exist = null, extBtn = null, acInfo = null, acHint = null;
         for (var k = 0; k < body.children.length; k++) {
           var cls3 = body.children[k].classList;
           if (!cls3) continue;
           if (cls3.contains("zu-compact-btn")) exist = body.children[k];
+          else if (cls3.contains("zu-ext-ctx-btn")) extBtn = body.children[k];
           else if (cls3.contains("zu-ac-info")) acInfo = body.children[k];
           else if (cls3.contains("zu-ac-hint")) acHint = body.children[k];
+        }
+        if (!extBtn) {
+          extBtn = document.createElement("button");
+          extBtn.type = "button";
+          extBtn.className = "zu-ext-ctx-btn";
+          extBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>';
+          extBtn.appendChild(document.createTextNode(L("上下文明细", "Context details")));
+          var lastExtOpenAt = 0;
+          var onExtCtxOpen = function (e) {
+            e.stopPropagation();
+            e.preventDefault();
+            var now = Date.now();
+            if (now - lastExtOpenAt < 300) return;
+            lastExtOpenAt = now;
+            var trig = nearestByRect(body, ZU_CTX_TRIGGER);
+            var openedDirect = false;
+            try {
+              var navItem = document.querySelector('[data-extension-item$="/insights"]');
+              var itemAttr = navItem ? String(navItem.getAttribute("data-extension-item") || "") : "";
+              var plugId = itemAttr.length > 9 ? itemAttr.slice(0, -9) : "zcode-token-usage-statusbar@zusage-marketplace";
+              var startEl = trig || navItem || body;
+              if (startEl) {
+                var ks = Object.keys(startEl), fk = "";
+                for (var fi = 0; fi < ks.length; fi++) {
+                  if (ks[fi].indexOf("__reactFiber$") === 0) { fk = ks[fi]; break; }
+                }
+                var f = fk ? startEl[fk] : null, depth = 0;
+                while (f && depth++ < 220) {
+                  var mp = f.memoizedProps;
+                  if (mp && typeof mp === "object" && typeof mp.onOpenTab === "function") {
+                    var fullViewId = plugId + "/context";
+                    mp.onOpenTab({
+                      id: "extension-view:" + fullViewId,
+                      type: "extension-view",
+                      viewId: fullViewId,
+                      title: { "zh-CN": "上下文组成", "en-US": "Context" },
+                      icon: "pie-chart"
+                    });
+                    openedDirect = true;
+                    break;
+                  }
+                  f = f.return;
+                }
+              }
+            } catch (eOpen) { }
+            if (!openedDirect) {
+              var fc = trig ? fiberContextOf(trig) : null;
+              var rawSid = (fc && fc.snapshot && fc.snapshot.sessionId) || window.__zusageWantSid || "";
+              var sid = String(rawSid).indexOf("sess_") === 0 ? String(rawSid) : "";
+              pluginRequest("open-ext-view", { viewId: "context", sessionId: sid });
+            }
+          };
+          extBtn.addEventListener("pointerdown", onExtCtxOpen);
+          extBtn.addEventListener("click", onExtCtxOpen);
+          body.insertBefore(extBtn, exist || anchor);
+        } else {
+          var extRef = exist || anchor;
+          if (extRef ? extBtn.nextElementSibling !== extRef : body.children[body.children.length - 1] !== extBtn) {
+            body.insertBefore(extBtn, extRef);
+          }
         }
         /* v200 压缩按钮开关（issue #174）：关闭=摘除已注入按钮（弹层还原原生形态，阈值
          * 行顶到按钮原位）；开启=幂等重挂 + 位置兜回（紧贴「剩余额度」段上方，无则容器尾） */
         if (!state.ctxCpt) {
           if (exist) exist.remove();
           exist = null;
-        } else if (exist) {   // 幂等 + 位置兜回：紧贴「剩余额度」段上方（无则容器尾）
-          var misplaced = anchor ? exist.nextElementSibling !== anchor : body.lastElementChild !== exist;
+        } else if (exist) {   // 幂等 + 位置兜回：紧贴「剩余额度」段上方（无则容器尾），且紧跟在 extBtn 之后
+          var misplaced = anchor ? exist.nextElementSibling !== anchor : body.children[body.children.length - 1] !== exist;
           if (misplaced) body.insertBefore(exist, anchor);
+          if (extBtn && extBtn.nextElementSibling !== exist) body.insertBefore(extBtn, exist);
         } else {
           var b = document.createElement("button");
           b.type = "button";
@@ -2516,9 +2578,10 @@
           b.appendChild(document.createTextNode(L("压缩上下文", "Compact context")));
           b.addEventListener("click", onCompactClick);
           body.insertBefore(b, anchor);
+          if (extBtn && extBtn.nextElementSibling !== b) body.insertBefore(extBtn, b);
           exist = b;   // 首挂即回填：阈值行的位置钉靠它，不依赖 querySelector 兜底
         }
-        var acRef = exist || anchor;   // v200：按钮在=阈值行钉其上方；按钮关=顶到「剩余额度」段上方
+        var acRef = extBtn || exist || anchor;   // 阈值行钉在按钮行（extBtn 在左，exist 在右）上方
         /* v179 阈值行 → v189 移到压缩按钮上方：文本 + 下划线「调整」链接（点击打开
          * ⚙ 并高亮阈值数值行 3 秒）；v195 下方小字说明行（口径+后果，同生命周期）。
          * 配置变化原地改字（幂等），补丁未生效即摘除。

@@ -5856,6 +5856,35 @@ def main(argv):
             print(render_workspace(con, argv[1] if len(argv) > 1 else ""))
         elif cmd == "session":
             print(render_session_detail(con, argv[1] if len(argv) > 1 else ""))
+        elif cmd == "session-stats":
+            sid = argv[1] if len(argv) > 1 else ""
+            print(json.dumps(session_stats_json(con, sid), separators=(",", ":"), ensure_ascii=False))
+        elif cmd == "session-browser":
+            sid = argv[1] if len(argv) > 1 else ""
+            opts = {}
+            if len(argv) > 2 and argv[2].lstrip().startswith("{"):   # 选项以单个 JSON 位置参数传入（无 shell，不经转义）
+                try:
+                    opts = json.loads(argv[2])
+                except ValueError:
+                    opts = {}
+                if not isinstance(opts, dict):
+                    opts = {}
+                lim = _opt_int(opts.get("limit"), 80, 1, 300)
+                off = _opt_int(opts.get("offset"), 0, 0, 10 ** 9)
+            else:   # 旧的位置参数形态：<limit> <offset>
+                lim = _cli_count(argv[1:], 80) if len(argv) > 2 else 80
+                off = 0
+                if len(argv) > 3:
+                    try:
+                        off = max(0, int(argv[3]))
+                    except ValueError:
+                        off = 0
+            print(json.dumps(session_browser_json(
+                con, sid, limit=lim, offset=off, turn_id=opts.get("turnId"), before=opts.get("before"),
+            ), separators=(",", ":"), ensure_ascii=False))
+        elif cmd == "insights":
+            days = 0 if (len(argv) > 1 and argv[1] in ("0", "all")) else _cli_count(argv, 7)
+            print(json.dumps(insights_json(con, days=days), separators=(",", ":"), ensure_ascii=False))
         elif cmd == "watch":
             sec = _cli_count(argv, 5)
             while True:
@@ -5878,6 +5907,1336 @@ def main(argv):
                 "Update this plugin before querying; stored history is unaffected."))
         return 1
     return 0
+
+
+def _safe_json_loads(raw):
+    if not raw or not isinstance(raw, str):
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+def _cost_and_fx(groups):
+    cost_usd = 0.0
+    per_model = {}
+    fx = None
+    if _pricing is not None:
+        try:
+            cost_usd, per_model = _pricing.merge_model_costs(groups)
+        except Exception:
+            cost_usd, per_model = 0.0, {}
+        try:
+            fv = _pricing.fx_view()
+            if isinstance(fv, dict) and isinstance(fv.get("rate"), (int, float)):
+                fx = fv["rate"]
+        except Exception:
+            fx = None
+    return cost_usd, per_model, fx
+
+
+def _opt_int(v, dflt, lo, hi):
+    """CLI JSON 选项里的整数：非数字/非有限值给默认，再钳到 [lo, hi]。"""
+    try:
+        n = int(v)
+    except (TypeError, ValueError, OverflowError):   # int(float("inf")) 抛 OverflowError
+        return dflt
+    return max(lo, min(hi, n))
+
+
+def _capture_dir():
+    return Path.home() / ".zcode" / "zcode-token-usage-statusbar" / "req-capture"
+
+
+def _capture_lines(jpath):
+    try:
+        return jpath.read_text(encoding="utf-8", errors="replace").splitlines()[-200:]
+    except OSError:
+        return []
+
+
+def _session_is_main(con, session_id):
+    try:
+        prow = con.execute("SELECT parent_id FROM session WHERE id=?", (session_id,)).fetchone()
+        return not bool(prow and prow[0])
+    except sqlite3.Error:
+        return False
+
+
+def _session_traces(con, session_id):
+    try:
+        return {
+            r[0] for r in con.execute(
+                "SELECT DISTINCT trace_id FROM model_usage WHERE session_id=? "
+                "AND trace_id IS NOT NULL AND trace_id != ''", (session_id,),
+            ).fetchall()
+        }
+    except sqlite3.Error:
+        return set()
+
+
+def _read_req_capture(session_id, con=None, resolve=True):
+    """读取可选的引擎请求抓包记录（engine-patch.cjs 启用后落盘；只落 system 与工具 schema，不落消息正文）。
+
+    两种落盘形态：<会话id>.jsonl 全量读；全局滚动文件 requests.jsonl 按 trace 归并——
+    请求头只带 trace id（一次运行一个，父子会话可能共享），取本会话 model_usage 的
+    trace 集合，再用会话类型头把主会话与子代理分开。归并是近似的（同 trace 的兄弟
+    子代理分不开），消费端标「按 trace 归并」。resolve=False 只读元数据、不加载 blob。"""
+    safe_sid = re.sub(r"[^A-Za-z0-9_-]", "", str(session_id or ""))[:128]
+    if not safe_sid:
+        return []
+    cap_dir = _capture_dir()
+    records = []
+    for line in _capture_lines(cap_dir / f"{safe_sid}.jsonl"):
+        obj = _safe_json_loads(line)
+        if isinstance(obj, dict):
+            records.append(obj)
+    if con is not None:
+        traces = _session_traces(con, session_id)
+        if traces:
+            want = "main" if _session_is_main(con, session_id) else "subagent"
+            for line in _capture_lines(cap_dir / "requests.jsonl"):
+                obj = _safe_json_loads(line)
+                if (isinstance(obj, dict) and obj.get("trace") in traces
+                        and str(obj.get("sessionType") or "") == want):
+                    obj["traced"] = True
+                    records.append(obj)
+    if not resolve:
+        return records
+    blobs_dir = cap_dir / "blobs"
+    blob_cache = {}
+    for obj in records:
+        for key in ("systemHash", "toolsHash"):
+            h = obj.get(key)
+            if isinstance(h, str) and re.fullmatch(r"[0-9a-f]{16,64}", h):
+                if h not in blob_cache:
+                    bfile = blobs_dir / f"{h}.json"
+                    try:
+                        blob_cache[h] = json.loads(bfile.read_text(encoding="utf-8")) if bfile.is_file() else None
+                    except Exception:
+                        blob_cache[h] = None
+                if key == "systemHash" and blob_cache[h] is not None:
+                    obj["system"] = blob_cache[h]
+                elif key == "toolsHash" and blob_cache[h] is not None:
+                    obj["tools"] = blob_cache[h]
+    return records
+
+
+def _capture_baseline():
+    """全局抓包最近 200 条请求里 system / 工具 schema 的均摊 token（字符÷4 估算）；无记录返回 None。"""
+    rows = [o for o in (_safe_json_loads(x) for x in _capture_lines(_capture_dir() / "requests.jsonl"))
+            if isinstance(o, dict) and o.get("systemChars") is not None]
+    if not rows:
+        return None
+    n = len(rows)
+    return {
+        "requests": n,
+        "systemTokens": round(sum(int(o.get("systemChars") or 0) for o in rows) / n / 4),
+        "toolsTokens": round(sum(int(o.get("toolsChars") or 0) for o in rows) / n / 4),
+    }
+
+
+def _src_bucket(qs):
+    """query_source → main（主会话轮）/ sub（子代理与工作流子轮）/ aux（标题、压缩、校验等辅助请求）。"""
+    if qs == "main_turn":
+        return "main"
+    if qs in ("subagent", "workflow_child"):
+        return "sub"
+    return "aux"
+
+
+def _new_bucket():
+    return {"requests": 0, "tokens": 0, "inp": 0, "out": 0, "reas": 0, "cr": 0, "cw": 0,
+            "genMs": 0, "durMs": 0, "ttftMs": 0, "costUsd": 0.0, "tools": 0}
+
+
+def _bump(b, inp, outp, reas, cr, cw, gen_ms, dur, ttft, cost, tools=0):
+    b["tools"] += tools
+    b["requests"] += 1
+    b["tokens"] += inp + outp
+    b["inp"] += inp
+    b["out"] += outp
+    b["reas"] += reas
+    b["cr"] += cr
+    b["cw"] += cw
+    b["genMs"] += gen_ms
+    b["durMs"] += dur
+    b["ttftMs"] += ttft
+    b["costUsd"] += cost
+
+
+def _bucket_out(b):
+    """桶 → 对外形状：加权的 Σ输出÷Σ生成窗口（无有效窗口为 0，消费端显 —）。"""
+    out = {k: b[k] for k in ("requests", "tokens", "inp", "out", "reas", "cr", "cw", "durMs", "ttftMs", "genMs")}
+    out["toolCalls"] = b["tools"]
+    out["costUsd"] = round(b["costUsd"], 6)
+    out["tps"] = round(b["out"] / (b["genMs"] / 1000.0), 1) if (b["out"] > 0 and b["genMs"] > 0) else 0.0
+    out["cacheHitRate"] = round((b["cr"] / b["inp"]) * 100.0, 2) if b["inp"] > 0 else 0.0
+    return out
+
+
+def _token_split(inp, outp, reas, cr, cw):
+    """实测 token 五分：缓存读/写是 input 的子集（input 已含），扣除后不重复计。"""
+    return [
+        {"id": "cacheRead", "tokens": cr},
+        {"id": "cacheWrite", "tokens": cw},
+        {"id": "bareInput", "tokens": max(0, inp - cr - cw)},
+        {"id": "reasoning", "tokens": reas},
+        {"id": "answers", "tokens": max(0, outp - reas)},
+    ]
+
+
+def _percentile(sorted_vals, pct):
+    """已升序列表的百分位（最近秩）；空列表返回 0。"""
+    if not sorted_vals:
+        return 0
+    idx = int(pct / 100.0 * len(sorted_vals) + 0.999999) - 1
+    return sorted_vals[max(0, min(idx, len(sorted_vals) - 1))]
+
+
+def _compaction_row(pd, ts):
+    """压缩 part → 展示行：压缩前后 token、摘要/保留消息数、触发方式与下轮再压缩标记。"""
+    b = pd.get("compactBoundary") if isinstance(pd.get("compactBoundary"), dict) else {}
+
+    def _i(k):
+        try:
+            return int(b.get(k) or 0)
+        except Exception:
+            return 0
+
+    return {
+        "time": ts,
+        "trigger": str(pd.get("trigger") or b.get("trigger") or ""),
+        "auto": bool(pd.get("auto")),
+        "preTokens": _i("preCompactTokenCount"),
+        "postTokens": _i("truePostCompactTokenCount") or _i("postCompactTokenCount"),
+        "summarized": _i("summarizedMessageCount"),
+        "kept": _i("keptMessageCount"),
+        "willRetrigger": bool(b.get("willRetriggerNextTurn")),
+        "reason": str(pd.get("compactReason") or b.get("compactReason") or ""),
+    }
+
+
+def _error_summary(where, params, con):
+    """模型请求质量面：带错误的尝试按类型计数、最终失败/取消状态、重试次数。列缺失（旧库/夹具）按 0 降级。"""
+    out = {"requests": 0, "failedAttempts": 0, "failed": 0, "cancelled": 0, "retries": 0, "byType": {}}
+    try:
+        cols = {r[1] for r in con.execute("PRAGMA table_info(model_usage)").fetchall()}
+        retry_expr = "coalesce(retry_count,0)" if "retry_count" in cols else "0"
+        et_expr = "coalesce(error_type,'')" if "error_type" in cols else "''"
+        row = con.execute(
+            f"SELECT count(*), sum({retry_expr}), "
+            f"sum(CASE WHEN {et_expr} != '' THEN 1 ELSE 0 END), "
+            "sum(CASE WHEN status = 'error' THEN 1 ELSE 0 END), "
+            "sum(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) "
+            f"FROM model_usage WHERE {where}", params,
+        ).fetchone()
+        if row:
+            out["requests"] = int(row[0] or 0)
+            out["retries"] = int(row[1] or 0)
+            out["failedAttempts"] = int(row[2] or 0)
+            out["failed"] = int(row[3] or 0)
+            out["cancelled"] = int(row[4] or 0)
+        if "error_type" in cols:
+            for er in con.execute(
+                f"SELECT {et_expr} AS et, count(*) AS n FROM model_usage "
+                f"WHERE {where} AND {et_expr} != '' GROUP BY et ORDER BY n DESC", params,
+            ).fetchall():
+                out["byType"][er["et"]] = int(er["n"])
+    except sqlite3.Error:
+        pass
+    return out
+
+
+def _tool_quality(where, params, con):
+    """工具调用质量面：错误状态、非零退出、截断、只读/破坏性占比、耗时 P50/P95。列缺失按 0 降级。"""
+    out = {"total": 0, "errorStatus": 0, "nonZeroExit": 0, "truncated": 0, "readOnly": 0,
+           "destructive": 0, "p50Ms": 0, "p95Ms": 0, "avgMs": 0}
+    try:
+        cols = {r[1] for r in con.execute("PRAGMA table_info(tool_usage)").fetchall()}
+        ex = "coalesce(nullif(exit_code,''),0)" if "exit_code" in cols else "0"
+        ro = "coalesce(read_only,0)" if "read_only" in cols else "0"
+        de = "coalesce(destructive,0)" if "destructive" in cols else "0"
+        tr = "coalesce(truncated,0)" if "truncated" in cols else "0"
+        row = con.execute(
+            "SELECT count(*), "
+            "sum(CASE WHEN status IN ('error','failed') THEN 1 ELSE 0 END), "
+            f"sum(CASE WHEN {ex} != 0 THEN 1 ELSE 0 END), sum({tr}), sum({ro}), sum({de}), "
+            "sum(coalesce(duration_ms,0)) FROM tool_usage WHERE " + where, params,
+        ).fetchone()
+        if row and int(row[0] or 0) > 0:
+            n = int(row[0])
+            out["total"] = n
+            out["errorStatus"] = int(row[1] or 0)
+            out["nonZeroExit"] = int(row[2] or 0)
+            out["truncated"] = int(row[3] or 0)
+            out["readOnly"] = int(row[4] or 0)
+            out["destructive"] = int(row[5] or 0)
+            out["avgMs"] = round(int(row[6] or 0) / n)
+        durs = sorted(int(d[0]) for d in con.execute(
+            "SELECT duration_ms FROM tool_usage WHERE " + where + " AND duration_ms IS NOT NULL", params,
+        ).fetchall() if d[0] is not None and int(d[0]) >= 0)
+        out["p50Ms"] = _percentile(durs, 50)
+        out["p95Ms"] = _percentile(durs, 95)
+    except sqlite3.Error:
+        pass
+    return out
+
+
+def _turn_rows(con, session_id):
+    """turn_usage 逐轮行（轮结束才写，进行中的轮不在内）；只下发最后 200 轮，`n` 是会话里的绝对轮序；
+    列按库内实际存在的取，缺列按 0/空。"""
+    try:
+        cols = {r[1] for r in con.execute("PRAGMA table_info(turn_usage)").fetchall()}
+        want = ("status", "started_at", "completed_at", "duration_ms", "model_request_count",
+                "model_retry_count", "tool_call_count", "tool_error_count", "input_tokens",
+                "output_tokens", "reasoning_tokens", "cache_read_input_tokens",
+                "cancelled_by_user", "context_exceeded", "error_type")
+        sel = ", ".join(["turn_id"] + [c for c in want if c in cols])
+        when = [c for c in ("started_at", "completed_at") if c in cols]
+        order = "coalesce(" + ", ".join(when) + ", 0), rowid" if when else "rowid"   # 两列都缺的旧库按写入序
+        rows = con.execute(
+            f"SELECT {sel} FROM turn_usage WHERE session_id=? ORDER BY {order} ASC", (session_id,),
+        ).fetchall()
+        first = max(1, len(rows) - 199)   # 只保留最后 200 轮；序号仍是会话里的绝对轮序
+        rows = rows[-200:]
+    except sqlite3.Error:
+        return []
+    out = []
+    for i, r in enumerate(rows, first):
+        d = {k: r[k] for k in r.keys()}
+
+        def _i(k):
+            try:
+                return int(d.get(k) or 0)
+            except Exception:
+                return 0
+        out.append({
+            "n": i,
+            "turnId": d.get("turn_id") or "",
+            "status": str(d.get("status") or ""),
+            "startedAt": _i("started_at"),
+            "completedAt": _i("completed_at"),
+            "durationMs": _i("duration_ms"),
+            "requests": _i("model_request_count"),
+            "retries": _i("model_retry_count"),
+            "toolCalls": _i("tool_call_count"),
+            "toolErrors": _i("tool_error_count"),
+            "inputTokens": _i("input_tokens"),
+            "outputTokens": _i("output_tokens"),
+            "reasoningTokens": _i("reasoning_tokens"),
+            "cacheReadTokens": _i("cache_read_input_tokens"),
+            "cancelled": bool(d.get("cancelled_by_user")),
+            "contextExceeded": bool(d.get("context_exceeded")),
+            "errorType": str(d.get("error_type") or ""),
+        })
+    return out
+
+
+def _row_tps(out_tok, dur_ms, ttft_ms):
+    gen_ms = dur_ms - ttft_ms if (dur_ms > ttft_ms and ttft_ms > 0) else dur_ms
+    if out_tok > 0 and gen_ms > 0:
+        return round(out_tok / (gen_ms / 1000.0), 1)
+    return 0.0
+
+
+def _row_cost_usd(mid, pid, inp, outp, cr, cw):
+    if _pricing is None:
+        return 0.0
+    try:
+        return float(_pricing.compute_group_cost(mid, pid, inp, outp, cr, cw))
+    except Exception:
+        return 0.0
+
+
+def _current_fx():
+    if _pricing is None:
+        return None
+    try:
+        fv = _pricing.fx_view()
+        if isinstance(fv, dict) and isinstance(fv.get("rate"), (int, float)):
+            return fv["rate"]
+    except Exception:
+        pass
+    return None
+
+
+def session_stats_json(con, session_id):
+    """Phase 2: 会话级 Context Stats / Token Stats / Timing Stats / Fleet / Steps 全量指标。"""
+    if not session_id:
+        return {"ok": False, "error": "missing session_id"}
+    srow = None
+    try:
+        srow = con.execute(
+            "SELECT id, title, directory, time_created, time_updated, "
+            "coalesce(summary_additions,0) AS add_lines, coalesce(summary_deletions,0) AS del_lines, "
+            "coalesce(summary_files,0) AS files_changed FROM session WHERE id=?",
+            (session_id,),
+        ).fetchone()
+    except sqlite3.Error:
+        srow = None
+
+    mrows = []
+    try:
+        mu_cols = {r[1] for r in con.execute("PRAGMA table_info(model_usage)").fetchall()}
+        amid_sel = "assistant_message_id" if "assistant_message_id" in mu_cols else "'' AS assistant_message_id"
+        mrows = con.execute(
+            f"SELECT id, turn_id, {amid_sel}, query_source, provider_id, model_id, status, "
+            "started_at, first_token_at, completed_at, "
+            "coalesce(duration_ms,0) AS duration_ms, coalesce(time_to_first_token_ms,0) AS ttft_ms, "
+            "coalesce(tool_call_count,0) AS tool_calls, "
+            "coalesce(input_tokens,0) AS inp, coalesce(output_tokens,0) AS outp, "
+            "coalesce(reasoning_tokens,0) AS reas, "
+            "coalesce(cache_creation_input_tokens,0) AS cw, "
+            "coalesce(cache_read_input_tokens,0) AS cr "
+            "FROM model_usage WHERE session_id=? ORDER BY coalesce(started_at, completed_at, rowid) ASC, rowid ASC",
+            (session_id,),
+        ).fetchall()
+    except sqlite3.Error:
+        mrows = []
+
+    turns_set = set()
+    steps = []
+    per_model = {}
+    model_stats = {}   # 模型明细行：mid → {provider, b: {来源桶 → 计数}}（all=合计）
+    src_b = {}         # 会话级来源桶：main / sub / aux / all
+    tot_inp = tot_out = tot_reas = tot_cr = tot_cw = 0
+    tot_model_ms = tot_gen_ms = tot_ttft_ms = 0
+    ttft_cnt = 0
+    tot_tool_calls = 0
+    tot_cost = 0.0
+
+    for idx, r in enumerate(mrows):
+        tid = r["turn_id"] or ""
+        if tid:
+            turns_set.add(tid)
+        inp, outp, reas, cr, cw = int(r["inp"]), int(r["outp"]), int(r["reas"]), int(r["cr"]), int(r["cw"])
+        dur = int(r["duration_ms"] or 0)
+        ttft = int(r["ttft_ms"] or 0)
+        gen_ms = dur - ttft if (dur > ttft and ttft > 0) else dur
+        mid = r["model_id"] or ""
+        pid = r["provider_id"] or ""
+        rc = _row_cost_usd(mid, pid, inp, outp, cr, cw)
+        tot_cost += rc
+        src_key = _src_bucket(r["query_source"] or "")
+        if mid:
+            per_model[mid] = round(per_model.get(mid, 0.0) + rc, 8)
+            mst = model_stats.setdefault(mid, {"provider": pid, "b": {}})
+            for bk in (src_key, "all"):
+                _bump(mst["b"].setdefault(bk, _new_bucket()), inp, outp, reas, cr, cw, gen_ms, dur, ttft, rc,
+                      int(r["tool_calls"] or 0))
+        for bk in (src_key, "all"):
+            _bump(src_b.setdefault(bk, _new_bucket()), inp, outp, reas, cr, cw, gen_ms, dur, ttft, rc,
+                  int(r["tool_calls"] or 0))
+        tot_inp += inp
+        tot_out += outp
+        tot_reas += reas
+        tot_cr += cr
+        tot_cw += cw
+        tot_model_ms += dur
+        tot_gen_ms += gen_ms
+        tot_tool_calls += int(r["tool_calls"] or 0)
+        if ttft > 0:
+            tot_ttft_ms += ttft
+            ttft_cnt += 1
+        steps.append({
+            "step": idx + 1,
+            "id": r["id"],
+            "turnId": tid,
+            "assistantMessageId": r["assistant_message_id"] or "",
+            "querySource": r["query_source"] or "main_turn",
+            "modelId": mid,
+            "providerId": pid,
+            "status": r["status"] or "",
+            "startedAt": r["started_at"],
+            "completedAt": r["completed_at"],
+            "durationMs": dur,
+            "ttftMs": ttft,
+            "tps": _row_tps(outp, dur, ttft),
+            "inputTokens": inp,
+            "outputTokens": outp,
+            "reasoningTokens": reas,
+            "cacheReadTokens": cr,
+            "cacheCreationTokens": cw,
+            "toolCalls": int(r["tool_calls"] or 0),
+        })
+
+    turn_count = len(turns_set)
+    try:
+        tc_row = con.execute("SELECT count(*) FROM turn_usage WHERE session_id=?", (session_id,)).fetchone()
+        if tc_row and int(tc_row[0]) > turn_count:
+            turn_count = int(tc_row[0])
+    except sqlite3.Error:
+        pass
+
+    tools = []
+    tot_tool_ms = 0
+    tot_tool_errs = 0
+    tool_exec_count = 0
+    try:
+        trows = con.execute(
+            "SELECT tool_name, count(*) AS cnt, "
+            "sum(CASE WHEN status IN ('error','failed') OR coalesce(nullif(exit_code,''),0)!=0 THEN 1 ELSE 0 END) AS errs, "
+            "sum(coalesce(duration_ms,0)) AS dur_ms "
+            "FROM tool_usage WHERE session_id=? GROUP BY tool_name ORDER BY cnt DESC, dur_ms DESC",
+            (session_id,),
+        ).fetchall()
+        for tr in trows:
+            cnt = int(tr["cnt"] or 0)
+            errs = int(tr["errs"] or 0)
+            dms = int(tr["dur_ms"] or 0)
+            tool_exec_count += cnt
+            tot_tool_errs += errs
+            tot_tool_ms += dms
+            tools.append({"name": tr["tool_name"] or "unknown", "count": cnt, "errors": errs, "durationMs": dms})
+    except sqlite3.Error:
+        pass
+
+    # Parse message/part for user/answer counts, skill loads, file I/O counts, command programs, context events
+    user_msgs = 0
+    answers = 0
+    msg_role = {}   # message_id → role：parts 循环据此把用户正文与助手正文分开记
+    skill_loads = {}
+    io_counts = {"user": 0, "read": 0, "write": 0, "search": 0, "images": 0}
+    cmd_progs = {}
+    ctx_events = {"inject": 0, "compact": 0, "prune": 0}
+    char_buckets = {"user": 0, "skill": 0, "tool": 0, "reasoning": 0, "answer": 0}
+    compactions = []
+    tl_compact = 0
+
+    try:
+        for mr in con.execute("SELECT id, data FROM message WHERE session_id=?", (session_id,)):
+            md = _safe_json_loads(mr["data"]) or {}
+            role = md.get("role")
+            if mr["id"]:
+                msg_role[mr["id"]] = role
+            if role == "user":
+                user_msgs += 1
+            elif role == "assistant":
+                answers += 1
+        io_counts["user"] = user_msgs
+
+        for pr in con.execute("SELECT message_id, data, time_created FROM part WHERE session_id=?", (session_id,)):
+            pd = _safe_json_loads(pr["data"]) or {}
+            pt = pd.get("type")
+            if pt == "text":
+                # 用户消息的正文记 user，助手正文记 answer（都是字符数，÷4 才是估算 token）
+                if msg_role.get(pr["message_id"]) == "user":
+                    char_buckets["user"] += len(pd.get("text") or "")
+                else:
+                    char_buckets["answer"] += len(pd.get("text") or "")
+            elif pt == "reasoning":
+                char_buckets["reasoning"] += len(pd.get("text") or "")
+            elif pt == "file":
+                if str(pd.get("mime") or "").startswith("image/"):
+                    io_counts["images"] += 1
+            elif pt == "compaction":
+                # 真实压缩记录（带压缩前后 token 与摘要计数）；timeline 里的压缩事件只作兜底计数
+                compactions.append(_compaction_row(pd, int(pr["time_created"] or 0)))
+            elif pt == "timeline":
+                tt = str(pd.get("timelineType") or "").lower()
+                if "compact" in tt:
+                    tl_compact += 1
+                elif "prune" in tt:
+                    ctx_events["prune"] += 1
+                elif tt:
+                    ctx_events["inject"] += 1
+            elif pt == "tool":
+                tname = str(pd.get("tool") or "")
+                low_t = tname.lower()
+                st = pd.get("state") if isinstance(pd.get("state"), dict) else {}
+                tinp = st.get("input")
+                tout = st.get("output")
+                char_buckets["tool"] += len(str(tinp or "")) + len(str(tout or ""))
+                if low_t == "skill" and isinstance(tinp, dict):
+                    sk = str(tinp.get("skill") or tinp.get("name") or "skill")
+                    sk_e = skill_loads.setdefault(sk, {"name": sk, "count": 0, "lastAt": 0})
+                    sk_e["count"] += 1
+                    sk_e["lastAt"] = max(sk_e["lastAt"], int(pr["time_created"] or 0))
+                    char_buckets["skill"] += len(str(tout or ""))
+                if any(k in low_t for k in ("write", "edit", "replace", "patch")):
+                    io_counts["write"] += 1
+                elif any(k in low_t for k in ("grep", "glob", "find", "search")):
+                    io_counts["search"] += 1
+                elif any(k in low_t for k in ("read", "view", "cat")):
+                    io_counts["read"] += 1
+                if low_t in ("bash", "run_command", "exec", "shell", "terminal") or (isinstance(tinp, dict) and ("command" in tinp or "CommandLine" in tinp)):
+                    cmd_s = ""
+                    if isinstance(tinp, dict):
+                        cmd_s = str(tinp.get("command") or tinp.get("CommandLine") or "").strip()
+                    if cmd_s:
+                        prog = cmd_s.split()[0].split("/")[-1][:32]
+                        if prog:
+                            cmd_progs[prog] = cmd_progs.get(prog, 0) + 1
+    except sqlite3.Error:
+        pass
+
+    # Subagents (Fleet)
+    subagents = []
+    try:
+        subs = con.execute("SELECT id, title FROM session WHERE parent_id=?", (session_id,)).fetchall()
+        for sr in subs:
+            sid_sub = sr["id"]
+            sub_rows = con.execute(
+                "SELECT model_id, provider_id, coalesce(input_tokens,0) AS inp, coalesce(output_tokens,0) AS outp, "
+                "coalesce(cache_read_input_tokens,0) AS cr, coalesce(cache_creation_input_tokens,0) AS cw, "
+                "coalesce(duration_ms,0) AS dur, coalesce(time_to_first_token_ms,0) AS ttft "
+                "FROM model_usage WHERE session_id=?",
+                (sid_sub,),
+            ).fetchall()
+            if not sub_rows:
+                continue
+            s_tok = s_out = s_gen = 0
+            s_cost = 0.0
+            for r in sub_rows:
+                inp, outp, cr, cw = int(r["inp"]), int(r["outp"]), int(r["cr"]), int(r["cw"])
+                s_tok += inp + outp
+                s_out += outp
+                dur, ttft = int(r["dur"]), int(r["ttft"])
+                s_gen += dur - ttft if (dur > ttft and ttft > 0) else dur
+                s_cost += _row_cost_usd(r["model_id"] or "", r["provider_id"] or "", inp, outp, cr, cw)
+            subagents.append({
+                "id": sid_sub,
+                "title": sr["title"] or sid_sub[:12],
+                "steps": len(sub_rows),
+                "tokens": s_tok,
+                "costUsd": round(s_cost, 6),
+                "tps": round(s_out / (s_gen / 1000.0), 1) if (s_out > 0 and s_gen > 0) else 0.0,
+            })
+    except sqlite3.Error:
+        pass
+
+    fx = _current_fx()
+    bare_inp = max(0, tot_inp - tot_cr - tot_cw)
+    cache_hit = round((tot_cr / tot_inp) * 100.0, 1) if tot_inp > 0 else 0.0
+    sess_tps = round(tot_out / (tot_gen_ms / 1000.0), 1) if (tot_out > 0 and tot_gen_ms > 0) else 0.0
+
+    ctx_events["compact"] = max(len(compactions), tl_compact)
+    turns = _turn_rows(con, session_id)
+
+    # Token stats 8 分类：用户/技能/工具三类是正文字符÷4 的估算，思考与回复是实测值；
+    # system 与工具 schema 的 token 库内没有——启用抓包后按抓到的真实内容估算
+    # （basis=capture），否则按剩余输入的固定比例估算（basis=ratio）。
+    cap_rows = _read_req_capture(session_id, con, resolve=False)
+    cap_meta = None
+    if cap_rows:
+        cap_meta = {
+            "requests": len(cap_rows),
+            "systemTokens": round(sum(int(o.get("systemChars") or 0) for o in cap_rows) / len(cap_rows) / 4),
+            "toolsTokens": round(sum(int(o.get("toolsChars") or 0) for o in cap_rows) / len(cap_rows) / 4),
+            "traced": any(o.get("traced") for o in cap_rows),
+        }
+    ans_tok = max(0, tot_out - tot_reas)
+    est_tool_tok = round(char_buckets["tool"] / 4)
+    est_skill_tok = round(char_buckets["skill"] / 4)
+    est_user_tok = max(0, round(char_buckets["user"] / 4))
+    rem_inp = max(0, tot_inp - est_tool_tok - est_skill_tok - est_user_tok)
+    if cap_meta and cap_meta["systemTokens"]:
+        basis = "capture"
+        sys_tok, schema_tok = cap_meta["systemTokens"], cap_meta["toolsTokens"]
+        rem_inp = max(0, rem_inp - sys_tok - schema_tok)
+    else:
+        basis = "ratio"
+        sys_tok, schema_tok = round(rem_inp * 0.12), round(rem_inp * 0.45)
+        rem_inp = round(rem_inp * 0.43)
+    token_breakdown = [
+        {"id": "systemPrompt", "tokens": sys_tok},
+        {"id": "toolSchemas", "tokens": schema_tok},
+        {"id": "userMessages", "tokens": est_user_tok},
+        {"id": "injectedContext", "tokens": rem_inp},
+        {"id": "skillInjections", "tokens": est_skill_tok},
+        {"id": "toolCalls", "tokens": est_tool_tok},
+        {"id": "reasoning", "tokens": tot_reas},
+        {"id": "answers", "tokens": ans_tok},
+    ]
+
+    # Timing：全部实测。每行 dur = ttft + gen（无首字的行 gen=dur），三者相加即总活跃时长。
+    timing = {
+        "modelDurationMs": tot_model_ms,
+        "toolDurationMs": tot_tool_ms,
+        "totalDurationMs": tot_model_ms + tot_tool_ms,
+        "avgTtftMs": round(tot_ttft_ms / ttft_cnt) if ttft_cnt > 0 else 0,
+        "tps": sess_tps,
+        "ttftMs": tot_ttft_ms,
+        "genMs": tot_gen_ms,
+        "toolRunsMs": tot_tool_ms,
+    }
+
+    models_list = []
+    for mid, mst in sorted(model_stats.items(), key=lambda kv: (-kv[1]["b"].get("all", _new_bucket())["tokens"], kv[0]))[:12]:
+        entry = {"model": mid, "provider": mst["provider"], "bySource": {}}
+        for bk in ("all", "main", "sub", "aux"):
+            if bk in mst["b"]:
+                entry["bySource"][bk] = _bucket_out(mst["b"][bk])
+        base = entry["bySource"]["all"]
+        entry["tokens"] = base["tokens"]
+        entry["requests"] = base["requests"]
+        entry["avgTps"] = base["tps"]
+        entry["costUsd"] = base["costUsd"]
+        models_list.append(entry)
+
+    return {
+        "ok": True,
+        "session": {
+            "id": session_id,
+            "title": srow["title"] if srow else "",
+            "directory": srow["directory"] if srow else "",
+            "createdAt": srow["time_created"] if srow else None,
+            "updatedAt": srow["time_updated"] if srow else None,
+            "addLines": int(srow["add_lines"]) if srow else 0,
+            "delLines": int(srow["del_lines"]) if srow else 0,
+            "filesChanged": int(srow["files_changed"]) if srow else 0,
+        },
+        "kpi": {
+            "turns": turn_count,
+            "steps": len(steps),
+            "skillLoads": sum(x["count"] for x in skill_loads.values()),
+            "answers": answers,
+            "contextEvents": ctx_events,
+            "toolCalls": max(tot_tool_calls, tool_exec_count),
+            "toolErrors": tot_tool_errs,
+            "inputTokens": tot_inp,
+            "bareInputTokens": bare_inp,
+            "outputTokens": tot_out,
+            "reasoningTokens": tot_reas,
+            "cacheReadTokens": tot_cr,
+            "cacheCreationTokens": tot_cw,
+            "billedTokens": tot_inp + tot_out,
+            "cacheHitRate": cache_hit,
+            "tps": sess_tps,
+            "costUsd": round(tot_cost, 8),
+            "fx": fx,
+            "perModelCost": per_model,
+        },
+        "inputOutput": io_counts,
+        "skillLoadsList": sorted(skill_loads.values(), key=lambda x: x["count"], reverse=True)[:12],
+        "commandPrograms": [{"program": k, "count": v} for k, v in sorted(cmd_progs.items(), key=lambda kv: kv[1], reverse=True)[:12]],
+        "fleet": {
+            "self": {"tokens": tot_inp + tot_out, "costUsd": round(tot_cost, 6), "tps": sess_tps},
+            "subagents": subagents,
+        },
+        "models": models_list,
+        "tokenBreakdown": token_breakdown,
+        "tokenBreakdownBasis": basis,
+        "tokenSplit": _token_split(tot_inp, tot_out, tot_reas, tot_cr, tot_cw),
+        "timing": timing,
+        "split": {k: _bucket_out(v) for k, v in src_b.items()},
+        "errors": _error_summary("session_id=?", (session_id,), con),
+        "toolQuality": _tool_quality("session_id=?", (session_id,), con),
+        "compactions": compactions[-50:],
+        "turns": turns,
+        "capture": cap_meta,
+        "tools": tools,
+        "steps": steps[-1000:],   # 超长会话限幅：kpi.steps 仍是总数，step 序号不重编
+    }
+
+
+def session_browser_json(con, session_id, limit=80, offset=0, turn_id=None, before=None):
+    """Phase 3: 上下文浏览器（消息、推理、工具参数与结果、TPS、文件活动、命令执行、事件与可选抓包）。
+
+    分页默认最新在前（order=desc）：首页取最新 limit 条，「加载更多」带 before 游标
+    （上一页最老一条的 sequence/time_created/id 三元组，行值比较）取更老的一页，流式
+    新增消息不会让已加载的页错位；给 turn_id 时只取该轮的消息并按时间正序（order=asc）：
+    从该轮的用户消息起到下一轮用户消息之前。"""
+    if not session_id:
+        return {"ok": False, "error": "missing session_id"}
+    limit = max(1, min(int(limit or 80), 300))
+    offset = max(0, int(offset or 0))
+
+    msg_where = "session_id=?"
+    msg_params = [session_id]
+    order = "DESC"
+    if turn_id:
+        def _msg_time(mid):
+            if not mid:
+                return None
+            try:
+                r = con.execute("SELECT time_created FROM message WHERE id=?", (mid,)).fetchone()
+                return int(r[0]) if r and r[0] else None
+            except sqlite3.Error:
+                return None
+        try:
+            keys = {r[1] for r in con.execute("PRAGMA table_info(turn_usage)").fetchall()}
+            sel = "started_at" + (", user_message_id" if "user_message_id" in keys else "")
+            trow = con.execute(f"SELECT {sel} FROM turn_usage WHERE session_id=? AND turn_id=?", (session_id, turn_id)).fetchone()
+        except sqlite3.Error:
+            trow = None
+        if not trow or not trow["started_at"]:
+            return {"ok": False, "error": "turn_not_found"}
+        t0 = _msg_time(trow["user_message_id"]) if "user_message_id" in keys else None
+        if not t0:
+            t0 = int(trow["started_at"])
+        try:
+            nrow = con.execute(
+                f"SELECT {sel} FROM turn_usage WHERE session_id=? AND started_at > ? "
+                "ORDER BY started_at ASC LIMIT 1", (session_id, int(trow["started_at"])),
+            ).fetchone()
+        except sqlite3.Error:
+            nrow = None
+        t1 = None
+        if nrow:
+            t1 = (_msg_time(nrow["user_message_id"]) if "user_message_id" in keys else None) or int(nrow["started_at"])
+        msg_where = "session_id=? AND time_created >= ?" + (" AND time_created < ?" if t1 is not None else "")
+        msg_params = [session_id, t0] + ([t1] if t1 is not None else [])
+        order = "ASC"
+    elif isinstance(before, dict) and before.get("s") is not None:
+        # 游标翻页：与下方 ORDER BY 同键（sequence, time_created, id）做行值比较
+        try:
+            cur = (int(before.get("s") or 0), int(before.get("t") or 0), str(before.get("id") or ""))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid_before"}
+        msg_where = "session_id=? AND (coalesce(sequence,0), time_created, id) < (?, ?, ?)"
+        msg_params = [session_id] + list(cur)
+
+    total_msgs = 0
+    msgs = []
+    try:
+        c_row = con.execute(f"SELECT count(*) FROM message WHERE {msg_where}", msg_params).fetchone()
+        total_msgs = int(c_row[0]) if c_row else 0
+        mrows = con.execute(
+            f"SELECT id, time_created, data, sequence FROM message WHERE {msg_where} "
+            f"ORDER BY coalesce(sequence, 0) {order}, time_created {order}, id {order} LIMIT ? OFFSET ?",
+            msg_params + [limit, offset],
+        ).fetchall()
+    except sqlite3.Error:
+        mrows = []
+
+    # Map assistant_message_id -> model_usage TPS/timing
+    msg_metrics = {}
+    try:
+        for mr in con.execute(
+            "SELECT assistant_message_id, coalesce(input_tokens,0) AS inp, "
+            "coalesce(cache_read_input_tokens,0) AS cr, "
+            "coalesce(output_tokens,0) AS outp, "
+            "coalesce(duration_ms,0) AS dur, coalesce(time_to_first_token_ms,0) AS ttft "
+            "FROM model_usage WHERE session_id=? AND assistant_message_id IS NOT NULL",
+            (session_id,),
+        ):
+            amid = mr["assistant_message_id"]
+            if amid:
+                msg_metrics[amid] = {
+                    "tps": _row_tps(int(mr["outp"]), int(mr["dur"]), int(mr["ttft"])),
+                    "durationMs": int(mr["dur"]),
+                    "ttftMs": int(mr["ttft"]),
+                    "outputTokens": int(mr["outp"]),
+                    "inputTokens": int(mr["inp"]),
+                    "cacheReadTokens": int(mr["cr"]),
+                }
+    except sqlite3.Error:
+        pass
+
+    msg_ids = [r["id"] for r in mrows]
+    parts_by_msg = {}
+    file_ops = {}
+    cmd_execs = []
+    events = []
+
+    if msg_ids:
+        placeholders = ",".join("?" for _ in msg_ids)
+        try:
+            prows = con.execute(
+                f"SELECT id, message_id, time_created, data, sequence FROM part "
+                f"WHERE session_id=? AND message_id IN ({placeholders}) "
+                f"ORDER BY coalesce(sequence,0) ASC, time_created ASC",
+                [session_id] + msg_ids,
+            ).fetchall()
+        except sqlite3.Error:
+            prows = []
+        for pr in prows:
+            pdata = _safe_json_loads(pr["data"]) or {}
+            ptype = pdata.get("type") or "unknown"
+            item = {"id": pr["id"], "type": ptype, "time": pr["time_created"]}
+            if ptype in ("text", "reasoning"):
+                txt = pdata.get("text") or ""
+                item["text"] = txt
+                item["chars"] = len(txt)
+                item["estTokens"] = max(1, round(len(txt) / 4)) if txt else 0
+            elif ptype == "tool":
+                st = pdata.get("state") if isinstance(pdata.get("state"), dict) else {}
+                tname = pdata.get("tool") or "unknown"
+                tinp = st.get("input")
+                tout = st.get("output")
+                terr = st.get("error")
+                tstat = st.get("status") or ""
+                inp_s = json.dumps(tinp, ensure_ascii=False) if isinstance(tinp, (dict, list)) else str(tinp or "")
+                out_s = json.dumps(tout, ensure_ascii=False) if isinstance(tout, (dict, list)) else str(tout or "")
+                item["toolName"] = tname
+                item["callId"] = pdata.get("callID") or ""
+                item["status"] = tstat
+                item["input"] = inp_s[:12000]
+                item["output"] = out_s[:16000]
+                item["error"] = str(terr or "")[:4000]
+                item["estTokens"] = max(1, round((len(inp_s) + len(out_s)) / 4)) if (inp_s or out_s) else 0
+                fpath = ""
+                if isinstance(tinp, dict):
+                    fpath = tinp.get("file_path") or tinp.get("path") or tinp.get("filePath") or tinp.get("target_file") or ""
+                low_t = tname.lower()
+                if fpath and isinstance(fpath, str):
+                    op_kind = "write" if any(k in low_t for k in ("write", "edit", "replace", "patch")) else ("search" if any(k in low_t for k in ("grep", "glob", "find", "search")) else "read")
+                    fo = file_ops.setdefault(fpath, {"path": fpath, "read": 0, "write": 0, "search": 0})
+                    fo[op_kind] += 1
+                is_cmd = low_t in ("bash", "run_command", "exec", "shell", "terminal") or (isinstance(tinp, dict) and ("command" in tinp or "CommandLine" in tinp))
+                item["cat"] = "command" if is_cmd else ("file" if fpath else "")
+                if is_cmd:
+                    cmd_str = ""
+                    if isinstance(tinp, dict):
+                        cmd_str = tinp.get("command") or tinp.get("CommandLine") or ""
+                    if cmd_str:
+                        cmd_execs.append({
+                            "command": str(cmd_str)[:500],
+                            "status": tstat or ("error" if terr else "completed"),
+                            "time": pr["time_created"],
+                        })
+            elif ptype == "file":
+                item["mime"] = pdata.get("mime") or ""
+                item["url"] = pdata.get("url") or ""
+            elif ptype == "timeline":
+                item["timelineType"] = pdata.get("timelineType") or ""
+                item["status"] = pdata.get("status") or ""
+                events.append({
+                    "kind": pdata.get("timelineType") or "timeline",
+                    "status": pdata.get("status") or "",
+                    "time": pr["time_created"],
+                })
+            elif ptype == "compaction":
+                item["compaction"] = _compaction_row(pdata, pr["time_created"])
+                events.append({"kind": "context_compaction", "status": "done", "time": pr["time_created"],
+                               "compaction": item["compaction"]})
+            elif ptype == "step-finish":
+                item["reason"] = pdata.get("reason") or ""
+                item["tokens"] = pdata.get("tokens")
+            parts_by_msg.setdefault(pr["message_id"], []).append(item)
+
+    for r in mrows:
+        mdata = _safe_json_loads(r["data"]) or {}
+        mm = msg_metrics.get(r["id"])
+        msgs.append({
+            "id": r["id"],
+            "sequence": r["sequence"],
+            "role": mdata.get("role") or "unknown",
+            "modelId": mdata.get("modelId") or (mdata.get("modelSelection") or {}).get("modelId") or "",
+            "time": r["time_created"],
+            "tps": mm["tps"] if mm else 0.0,
+            "durationMs": mm["durationMs"] if mm else 0,
+            "ttftMs": mm["ttftMs"] if mm else 0,
+            "inputTokens": mm["inputTokens"] if mm else 0,
+            "cacheReadTokens": mm["cacheReadTokens"] if mm else 0,
+            "outputTokens": mm["outputTokens"] if mm else 0,
+            "parts": parts_by_msg.get(r["id"], []),
+        })
+
+    captured = _read_req_capture(session_id, con)
+
+    return {
+        "ok": True,
+        "sessionId": session_id,
+        "order": "desc" if order == "DESC" else "asc",
+        "turnId": turn_id or "",
+        "cursor": (lambda m: {"s": m["sequence"] or 0, "t": m["time"], "id": m["id"]} if m and order == "DESC" else None)(msgs[-1] if msgs else None),
+        "totalMessages": total_msgs,
+        "hasMore": offset + len(msgs) < total_msgs,
+        "offset": offset,
+        "limit": limit,
+        "messages": msgs,
+        "fileActivity": sorted(file_ops.values(), key=lambda x: x["read"] + x["write"] + x["search"], reverse=True)[:100],
+        "commands": cmd_execs[:100],
+        "events": events,
+        "capturedRequests": captured,
+    }
+
+
+def insights_json(con, days=7):
+    """Phase 4: 跨会话上下文洞察总览（高性能单次遍历 + 完整 dsh-context 指标 + TPS）。"""
+    is_all = (days == 0 or days is None)
+    days = 0 if is_all else max(1, min(int(days), 365))
+    now_dt = datetime.now()
+    kpi_start_ms = 0 if is_all else _epoch_ms(_day_start() - timedelta(days=days - 1))
+    heat_start_ms = _epoch_ms(_day_start() - timedelta(days=55))
+    query_start_ms = 0 if is_all else min(kpi_start_ms, heat_start_ms)
+
+    mrows = []
+    try:
+        mu_cols = {r[1] for r in con.execute("PRAGMA table_info(model_usage)").fetchall()}
+        s_cols = {r[1] for r in con.execute("PRAGMA table_info(session)").fetchall()}
+        reas_sel = "coalesce(m.reasoning_tokens, 0) AS reas" if "reasoning_tokens" in mu_cols else "0 AS reas"
+        err_sel = "coalesce(m.error_type,'')" if "error_type" in mu_cols else "''"
+        arch_sel = "s.time_archived" if "time_archived" in s_cols else "NULL AS time_archived"
+        mrows = con.execute(
+            "SELECT m.session_id, m.provider_id, m.model_id, "
+            "coalesce(m.completed_at, m.started_at, 0) AS ts, "
+            "coalesce(m.duration_ms, 0) AS duration_ms, "
+            "coalesce(m.time_to_first_token_ms, 0) AS ttft_ms, "
+            "coalesce(m.input_tokens, 0) AS inp, coalesce(m.output_tokens, 0) AS outp, "
+            f"{reas_sel}, "
+            "coalesce(m.cache_creation_input_tokens, 0) AS cw, "
+            "coalesce(m.cache_read_input_tokens, 0) AS cr, "
+            "coalesce(m.tool_call_count, 0) AS tool_calls, "
+            f"m.turn_id, s.title, s.directory, s.time_created, s.time_updated, {arch_sel}, "
+            f"{err_sel} AS et, m.query_source "
+            "FROM model_usage m LEFT JOIN session s ON s.id = m.session_id "
+            "WHERE coalesce(m.completed_at, m.started_at, 0) >= ? "
+            "ORDER BY ts DESC",
+            (query_start_ms,),
+        ).fetchall()
+    except sqlite3.Error:
+        mrows = []
+
+    daily_map = {}
+    heat_map = {}
+    sess_map = {}
+    model_map = {}
+    src_b = {}   # 来源桶：main / sub / aux / all（主/子代理拆分）
+    src_sess = {}
+    kpi_sessions = set()
+    archived_sessions = set()
+    kpi_turns = set()
+    kpi_reqs = kpi_inp = kpi_out = kpi_reas = kpi_cr = kpi_cw = kpi_dur = kpi_gen_ms = kpi_ttft_ms = kpi_tools = 0
+    kpi_ttft_n = 0
+    kpi_cost = 0.0
+
+    for r in mrows:
+        ts = int(r["ts"] or 0)
+        if ts <= 0:
+            continue
+        day_str = datetime.fromtimestamp(ts / 1000.0).strftime("%Y-%m-%d")
+        inp, outp, reas, cr, cw = int(r["inp"]), int(r["outp"]), int(r["reas"]), int(r["cr"]), int(r["cw"])
+        billed = inp + outp
+        sid = r["session_id"] or ""
+        mid = r["model_id"] or "unknown"
+        pid = r["provider_id"] or ""
+        src_key = _src_bucket(r["query_source"] or "")
+        et = str(r["et"] or "")
+
+        if ts >= heat_start_ms:
+            hm = heat_map.setdefault(day_str, {"date": day_str, "tokens": 0, "sessions": set(), "out": 0, "genMs": 0})
+            hm["tokens"] += billed
+            if sid:
+                hm["sessions"].add(sid)
+            dur_h = int(r["duration_ms"] or 0)
+            ttft_h = int(r["ttft_ms"] or 0)
+            gen_h = dur_h - ttft_h if (dur_h > ttft_h and ttft_h > 0) else dur_h
+            if outp > 0 and gen_h > 0:
+                hm["out"] += outp
+                hm["genMs"] += gen_h
+
+        if ts >= kpi_start_ms:
+            rc = _row_cost_usd(mid, pid, inp, outp, cr, cw)
+            dur = int(r["duration_ms"] or 0)
+            ttft = int(r["ttft_ms"] or 0)
+            gen_ms = dur - ttft if (dur > ttft and ttft > 0) else dur
+            for bk in (src_key, "all"):
+                _bump(src_b.setdefault(bk, _new_bucket()), inp, outp, reas, cr, cw, gen_ms, dur, ttft, rc,
+                      int(r["tool_calls"] or 0))
+            if sid:
+                src_sess.setdefault(src_key, set()).add(sid)
+                src_sess.setdefault("all", set()).add(sid)
+
+            kpi_reqs += 1
+            kpi_inp += inp
+            kpi_out += outp
+            kpi_reas += reas
+            kpi_cr += cr
+            kpi_cw += cw
+            kpi_dur += dur
+            kpi_gen_ms += gen_ms
+            kpi_ttft_ms += ttft
+            if ttft > 0:
+                kpi_ttft_n += 1
+            kpi_tools += int(r["tool_calls"] or 0)
+            kpi_cost += rc
+            if sid:
+                kpi_sessions.add(sid)
+                if r["time_archived"]:
+                    archived_sessions.add(sid)
+            if r["turn_id"]:
+                kpi_turns.add((sid, r["turn_id"]))
+
+            dm = daily_map.setdefault(day_str, {"date": day_str, "tokens": 0, "costUsd": 0.0, "requests": 0, "sessions": set(),
+                                                "mainTokens": 0, "subTokens": 0, "mainCost": 0.0, "subCost": 0.0,
+                                                "errors": 0, "rateLimited": 0})
+            dm["tokens"] += billed
+            dm["costUsd"] += rc
+            dm["mainCost"] += rc if src_key == "main" else 0.0
+            dm["subCost"] += rc if src_key == "sub" else 0.0
+            dm["requests"] += 1
+            dm["mainTokens"] += billed if src_key == "main" else 0
+            dm["subTokens"] += billed if src_key == "sub" else 0
+            if et:
+                dm["errors"] += 1
+                if et == "rate_limited":
+                    dm["rateLimited"] += 1
+            if sid:
+                dm["sessions"].add(sid)
+
+            mm = model_map.setdefault(mid, {"modelId": mid, "providerId": pid, "b": {}})
+            for bk in (src_key, "all"):
+                _bump(mm["b"].setdefault(bk, _new_bucket()), inp, outp, reas, cr, cw, gen_ms, dur, ttft, rc,
+                      int(r["tool_calls"] or 0))
+
+            if sid:
+                sm = sess_map.get(sid)
+                if sm is None:
+                    sm = {
+                        "id": sid,
+                        "title": r["title"] or "",
+                        "directory": r["directory"] or "",
+                        "archived": bool(r["time_archived"]),
+                        "createdAt": int(r["time_created"] or 0),
+                        "endTime": int(r["time_updated"] or 0),
+                        "updatedAt": ts,
+                        "turns": set(),
+                        "steps": 0,
+                        "requests": 0,
+                        "tokens": 0,
+                        "outTokens": 0,
+                        "genMs": 0,
+                        "costUsd": 0.0,
+                        "lastContext": inp + outp,
+                        "models": set(),
+                    }
+                    sess_map[sid] = sm
+                sm["steps"] += 1
+                sm["requests"] += 1
+                sm["tokens"] += billed
+                sm["outTokens"] += outp
+                sm["genMs"] += gen_ms
+                sm["costUsd"] += rc
+                if r["turn_id"]:
+                    sm["turns"].add(r["turn_id"])
+                if ts > sm["updatedAt"]:
+                    sm["updatedAt"] = ts
+                    sm["lastContext"] = inp + outp
+                if mid:
+                    sm["models"].add(mid)
+
+    top_tools = []
+    tot_tool_ms = 0
+    tot_tool_cnt = 0
+    try:
+        trows = con.execute(
+            "SELECT tool_name, count(*) AS cnt, "
+            "sum(CASE WHEN status IN ('error','failed') OR coalesce(nullif(exit_code,''),0)!=0 THEN 1 ELSE 0 END) AS errs, "
+            "sum(coalesce(duration_ms,0)) AS dur_ms, "
+            "max(coalesce(completed_at, started_at, 0)) AS last_at "
+            "FROM tool_usage WHERE coalesce(completed_at, started_at, 0) >= ? "
+            "GROUP BY tool_name ORDER BY cnt DESC LIMIT 15",
+            (kpi_start_ms,),
+        ).fetchall()
+        for tr in trows:
+            cnt = int(tr["cnt"] or 0)
+            dms = int(tr["dur_ms"] or 0)
+            tot_tool_cnt += cnt
+            tot_tool_ms += dms
+            top_tools.append({
+                "name": tr["tool_name"] or "unknown",
+                "count": cnt,
+                "errors": int(tr["errs"] or 0),
+                "avgDurationMs": round(dms / cnt) if cnt > 0 else 0,
+                "lastAt": int(tr["last_at"] or 0),
+            })
+    except sqlite3.Error:
+        pass
+
+    # Recent skills & programs (bounded scan of recent tool parts in window)
+    top_skills = []
+    top_programs = []
+    try:
+        s_map = {}
+        p_map = {}
+        for pr in con.execute(
+            "SELECT data, time_created FROM part ORDER BY rowid DESC LIMIT 3000"
+        ):
+            ts_p = int(pr["time_created"] or 0)
+            if ts_p < kpi_start_ms:
+                continue
+            pd = _safe_json_loads(pr["data"]) or {}
+            if pd.get("type") != "tool":
+                continue
+            tname = str(pd.get("tool") or "")
+            low_t = tname.lower()
+            st = pd.get("state") if isinstance(pd.get("state"), dict) else {}
+            tinp = st.get("input")
+            if low_t == "skill" and isinstance(tinp, dict):
+                sk = str(tinp.get("skill") or tinp.get("name") or "skill")
+                se = s_map.setdefault(sk, {"name": sk, "count": 0, "lastAt": 0})
+                se["count"] += 1
+                if ts_p > se["lastAt"]:
+                    se["lastAt"] = ts_p
+            elif (low_t in ("bash", "run_command", "exec", "shell", "terminal") or (isinstance(tinp, dict) and ("command" in tinp or "CommandLine" in tinp))) and isinstance(tinp, dict):
+                cmd_s = str(tinp.get("command") or tinp.get("CommandLine") or "").strip()
+                if cmd_s:
+                    prog = cmd_s.split()[0].split("/")[-1][:32]
+                    if prog:
+                        pe = p_map.setdefault(prog, {"name": prog, "count": 0, "lastAt": 0})
+                        pe["count"] += 1
+                        if ts_p > pe["lastAt"]:
+                            pe["lastAt"] = ts_p
+        top_skills = sorted(s_map.values(), key=lambda x: x["count"], reverse=True)[:12]
+        top_programs = sorted(p_map.values(), key=lambda x: x["count"], reverse=True)[:12]
+    except sqlite3.Error:
+        pass
+
+    fx = _current_fx()
+    cache_hit = round((kpi_cr / kpi_inp) * 100.0, 2) if kpi_inp > 0 else 0.0
+    global_tps = round(kpi_out / (kpi_gen_ms / 1000.0), 1) if (kpi_out > 0 and kpi_gen_ms > 0) else 0.0
+
+    daily_span = 7 if (is_all or days <= 7) else min(days, 14)
+    daily_list = []
+    for i in range(daily_span - 1, -1, -1):
+        d = (now_dt - timedelta(days=i)).strftime("%Y-%m-%d")
+        dm = daily_map.get(d)
+        daily_list.append({
+            "date": d,
+            "tokens": dm["tokens"] if dm else 0,
+            "costUsd": round(dm["costUsd"], 6) if dm else 0.0,
+            "requests": dm["requests"] if dm else 0,
+            "sessions": len(dm["sessions"]) if dm else 0,
+            "mainTokens": dm["mainTokens"] if dm else 0,
+            "subTokens": dm["subTokens"] if dm else 0,
+            "mainCostUsd": round(dm["mainCost"], 6) if dm else 0.0,
+            "subCostUsd": round(dm["subCost"], 6) if dm else 0.0,
+            "errors": dm["errors"] if dm else 0,
+            "rateLimited": dm["rateLimited"] if dm else 0,
+        })
+
+    heatmap_list = []
+    for i in range(55, -1, -1):
+        d = (now_dt - timedelta(days=i)).strftime("%Y-%m-%d")
+        hm = heat_map.get(d)
+        heatmap_list.append({
+            "date": d,
+            "tokens": hm["tokens"] if hm else 0,
+            "sessions": len(hm["sessions"]) if hm else 0,
+            "avgTps": _rated_tps(hm["out"], hm["genMs"]) if hm else 0,
+        })
+
+    top_models = []
+    for mm in sorted(model_map.values(), key=lambda x: -x["b"].get("all", _new_bucket())["tokens"])[:12]:
+        entry = {"modelId": mm["modelId"], "providerId": mm["providerId"], "bySource": {}}
+        for bk in ("all", "main", "sub", "aux"):
+            if bk in mm["b"]:
+                entry["bySource"][bk] = _bucket_out(mm["b"][bk])
+        base = entry["bySource"]["all"]
+        entry["requests"] = base["requests"]
+        entry["tokens"] = base["tokens"]
+        entry["avgTps"] = base["tps"]
+        entry["costUsd"] = base["costUsd"]
+        top_models.append(entry)
+
+    sessions_list = []
+    for sm in sorted(sess_map.values(), key=lambda x: x["updatedAt"], reverse=True)[:100]:
+        stps = round(sm["outTokens"] / (sm["genMs"] / 1000.0), 1) if (sm["outTokens"] > 0 and sm["genMs"] > 0) else 0.0
+        sessions_list.append({
+            "id": sm["id"],
+            "title": sm["title"] or sm["id"][:14],
+            "directory": sm["directory"],
+            "archived": sm["archived"],
+            "createdAt": sm["createdAt"],
+            "endTime": sm["endTime"],
+            "updatedAt": sm["updatedAt"],
+            "turns": len(sm["turns"]),
+            "steps": sm["steps"],
+            "requests": sm["requests"],
+            "tokens": sm["tokens"],
+            "costUsd": round(sm["costUsd"], 6),
+            "tps": stps,
+            "lastContext": sm["lastContext"],
+            "models": sorted(sm["models"]),
+        })
+
+    # 8 分类 token 构成：思考与回复是实测值；其余六类库内没有，只能估算——system 与工具
+    # schema 有抓包时按抓到的真实内容均摊到每次请求（basis=capture），否则按固定比例
+    # （basis=ratio）；用户消息/注入/技能/工具结果按 2:8:4:73 分摊剩余输入。
+    cap = _capture_baseline()
+    if cap and cap["systemTokens"]:
+        basis = "capture"
+        sys_tok, schema_tok = cap["systemTokens"] * kpi_reqs, cap["toolsTokens"] * kpi_reqs
+    else:
+        basis = "ratio"
+        sys_tok, schema_tok = round(kpi_inp * 0.03), round(kpi_inp * 0.10)
+    ans_tok = max(0, kpi_out - kpi_reas)
+    rest = max(0, kpi_inp - sys_tok - schema_tok)
+    token_breakdown = [
+        {"id": "systemPrompt", "tokens": round(sys_tok)},
+        {"id": "toolSchemas", "tokens": round(schema_tok)},
+        {"id": "userMessages", "tokens": round(rest * 2 / 87)},
+        {"id": "injectedContext", "tokens": round(rest * 8 / 87)},
+        {"id": "skillInjections", "tokens": round(rest * 4 / 87)},
+        {"id": "toolCalls", "tokens": round(rest * 73 / 87)},
+        {"id": "reasoning", "tokens": kpi_reas},
+        {"id": "answers", "tokens": ans_tok},
+    ]
+    # Timing：全部实测。每行 dur = ttft + gen（无首字的行 gen=dur），三者相加即总活跃时长。
+    timing_breakdown = {
+        "ttftMs": kpi_ttft_ms,
+        "genMs": kpi_gen_ms,
+        "toolRunsMs": tot_tool_ms,
+        "modelMs": kpi_dur,
+        "avgTtftMs": round(kpi_ttft_ms / kpi_ttft_n) if kpi_ttft_n > 0 else 0,
+    }
+
+    # 真实压缩记录（窗口内全量，压缩是低频事件）
+    compactions = []
+    try:
+        for crow in con.execute(
+            "SELECT data, time_created FROM part WHERE time_created >= ? "
+            "AND json_extract(data,'$.type')='compaction' ORDER BY time_created DESC", (kpi_start_ms,),
+        ).fetchall():
+            pd = _safe_json_loads(crow["data"]) or {}
+            if isinstance(pd, dict) and pd.get("type") == "compaction":
+                compactions.append(_compaction_row(pd, int(crow["time_created"] or 0)))
+    except sqlite3.Error:
+        pass
+    cuts = [1 - c["postTokens"] / c["preTokens"] for c in compactions
+            if c["preTokens"] > 0 and 0 < c["postTokens"] <= c["preTokens"]]
+    compaction_health = {
+        "count": len(compactions),
+        "willRetrigger": sum(1 for c in compactions if c["willRetrigger"]),
+        "avgReductionPct": round(sum(cuts) / len(cuts) * 100, 1) if cuts else 0.0,
+        "latest": compactions[0] if compactions else None,
+    }
+    scope_where = "coalesce(completed_at, started_at, 0) >= ?"
+
+    return {
+        "ok": True,
+        "days": days,
+        "kpi": {
+            "sessions": len(kpi_sessions),
+            "archivedSessions": len(archived_sessions),
+            "turns": len(kpi_turns),
+            "requests": kpi_reqs,
+            "billedTokens": kpi_inp + kpi_out,
+            "inputTokens": kpi_inp,
+            "outputTokens": kpi_out,
+            "cacheReadTokens": kpi_cr,
+            "cacheHitRate": cache_hit,
+            "costUsd": round(kpi_cost, 6),
+            "fx": fx,
+            "toolCalls": max(kpi_tools, tot_tool_cnt),
+            "toolDurationMs": tot_tool_ms,
+            "activeDurationMs": kpi_dur + tot_tool_ms,
+            "modelCalls": kpi_reqs,
+            "tps": global_tps,
+        },
+        "tokenBreakdown": token_breakdown,
+        "tokenBreakdownBasis": basis,
+        "tokenSplit": _token_split(kpi_inp, kpi_out, kpi_reas, kpi_cr, kpi_cw),
+        "timingBreakdown": timing_breakdown,
+        "split": {k: dict(_bucket_out(v), sessions=len(src_sess.get(k, ()))) for k, v in src_b.items()},
+        "errors": _error_summary(scope_where, (kpi_start_ms,), con),
+        "toolQuality": _tool_quality(scope_where, (kpi_start_ms,), con),
+        "compactions": compactions[:50],
+        "compactionHealth": compaction_health,
+        "capture": cap,
+        "daily": daily_list,
+        "heatmap": heatmap_list,
+        "topSkills": top_skills,
+        "topTools": top_tools,
+        "topPrograms": top_programs,
+        "topModels": top_models,
+        "sessions": sessions_list,
+    }
 
 
 def render_today(con):

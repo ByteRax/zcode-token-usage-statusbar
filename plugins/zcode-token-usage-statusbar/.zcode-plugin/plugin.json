@@ -17,6 +17,80 @@
   ],
   "commands": "commands",
   "skills": "skills",
+  "extension": {
+    "engines": {
+      "zcode": "^1.0.0"
+    },
+    "main": "./extension-main.cjs",
+    "activationEvents": [
+      "onAvailable"
+    ],
+    "contributes": {
+      "commands": [
+        {
+          "id": "open-insights",
+          "title": {
+            "zh-CN": "打开上下文洞察",
+            "en-US": "Open context insights"
+          }
+        },
+        {
+          "id": "open-context",
+          "title": {
+            "zh-CN": "打开上下文组成",
+            "en-US": "Open context dashboard"
+          }
+        }
+      ],
+      "views": [
+        {
+          "id": "insights",
+          "title": {
+            "zh-CN": "上下文洞察",
+            "en-US": "Context Insights"
+          },
+          "icon": "bar-chart-2",
+          "scope": "app"
+        },
+        {
+          "id": "context",
+          "title": {
+            "zh-CN": "上下文组成",
+            "en-US": "Context"
+          },
+          "icon": "pie-chart"
+        }
+      ]
+    }
+  },
+  "slots": {
+    "nav.primary": [
+      {
+        "id": "insights",
+        "icon": "bar-chart-2",
+        "title": {
+          "zh-CN": "上下文洞察",
+          "en-US": "Context Insights"
+        },
+        "target": {
+          "view": "insights"
+        }
+      }
+    ],
+    "sidePane.launcher": [
+      {
+        "id": "open-context",
+        "icon": "pie-chart",
+        "title": {
+          "zh-CN": "上下文组成",
+          "en-US": "Context"
+        },
+        "target": {
+          "view": "context"
+        }
+      }
+    ]
+  },
   "packageLayout": {
     "schemaVersion": 1,
     "files": [
@@ -26,11 +100,15 @@
       "plugins/zcode-token-usage-statusbar/.mcp.json",
       "plugins/zcode-token-usage-statusbar/.zcode-plugin/plugin.json",
       "plugins/zcode-token-usage-statusbar/README.md",
+      "plugins/zcode-token-usage-statusbar/commands/context.md",
       "plugins/zcode-token-usage-statusbar/commands/install-overlay.md",
       "plugins/zcode-token-usage-statusbar/commands/uninstall-overlay.md",
       "plugins/zcode-token-usage-statusbar/commands/zusage-doctor.md",
       "plugins/zcode-token-usage-statusbar/commands/usage.md",
       "plugins/zcode-token-usage-statusbar/engine-patch.cjs",
+      "plugins/zcode-token-usage-statusbar/extension-main.cjs",
+      "plugins/zcode-token-usage-statusbar/extension-view-context.js",
+      "plugins/zcode-token-usage-statusbar/extension-view-insights.js",
       "plugins/zcode-token-usage-statusbar/mobile-relay.cjs",
       "plugins/zcode-token-usage-statusbar/hooks/hooks.json",
       "plugins/zcode-token-usage-statusbar/hooks/prompt-submit.py",

@@ -28,6 +28,7 @@ A community toolkit for ZCode desktop: generation speed, token usage, context tr
 - **ZCode 桌面版**：支持 Windows 和 macOS（Linux 已做基础适配，未逐一测试所有发行版）。
 - **Python 3.8+**：系统自带或自行安装即可，**不需要装任何第三方库**，也不用单独装 Node.js。
 - **可选 MCP 查询**：`token_usage` 工具需要 **ZCode 3.19.0+**；更老版本依然可以使用状态条、`/usage` 命令和终端查询。
+- **上下文洞察面板（ZCode 4.0+）**：左侧导航「上下文洞察」看跨会话总览，右侧「上下文组成」看当前会话的构成、逐轮消息与错误/重试；对话里发 `/context` 可让 AI 汇总当前会话用量。详见[用户指南](docs/user-guide.md#上下文洞察与上下文组成)。
 
 ### 安装方法
 

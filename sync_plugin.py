@@ -56,10 +56,14 @@ PLUGIN_ONLY_FILES = (
     "hooks/hooks.json",
     "hooks/session-start.py",
     "hooks/prompt-submit.py",
+    "commands/context.md",
     "commands/usage.md",
     "commands/install-overlay.md",
     "commands/uninstall-overlay.md",
     "commands/zusage-doctor.md",
+    "extension-main.cjs",
+    "extension-view-context.js",
+    "extension-view-insights.js",
     "skills/zcode-token-usage/SKILL.md",
 )
 
