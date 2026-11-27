@@ -81,11 +81,11 @@
    ```json
    { "id": "<uuid>", "viewId": "context", "sessionId": "sess_...", "ts": 1700000000000 }
    ```
-3. **扩展进程（`extension-main.cjs`）**：监听运行目录（`fs.watch` 配合 `ts` 与 `id` 去重，忽略启动前超过 15 秒的陈旧请求（`STALE_OPEN_REQ_MS`）；`fs.watch` 报 error 后不再派发事件，另有每 3 秒比对请求文件 mtime 的轮询兜底，watcher 缺席时顺带重建；请求里的 `sessionId` 过与工具入参同一道正则门 `^sess_[A-Za-z0-9_-]{1,120}$`，不过则不带会话打开），读到新请求后立即消费并调用：
+3. **扩展进程（`extension-main.cjs`）**：监听运行目录（`fs.watch` 配合 `ts` 与 `id` 去重，忽略启动前超过 15 秒的陈旧请求（`STALE_OPEN_REQ_MS`）；`fs.watch` 报 error 后不再派发事件，另有每 3 秒比对请求文件 mtime 的轮询兜底（异步 `stat`，watcher 缺席时顺带重建），激活时已在的请求文件只取 mtime 作种子、不当成新请求——否则扩展进程在一次点击后 15 秒内重启会把那次打开重放一遍；请求里的 `sessionId` 过与工具入参同一道正则门 `^sess_[A-Za-z0-9_-]{1,120}$`，不过则不带会话打开），读到新请求后立即消费并调用：
    - `viewId === "context"`：`ctx.views.open("context", sessionId ? { sessionId } : undefined)`
    - `viewId === "insights"`：`ctx.views.open("insights", "app")`
 4. **降级与兜底**：若扩展未激活或宿主不支持 `views.open`（旧版 ZCode），`overlay.js` 提示用户“请在 ZCode 4.0+ 中启用本插件扩展能力”，不抛未捕获异常。
-5. **解释器定位（`runZusageCli`）**：与主桥 `readCfg()` 同源——运行目录 `config.json` 的 `python_path` 优先（安装与每次 SessionStart 都把 `sys.executable` 写回它，状态条与 hooks 走的就是它）；没有时按 hooks 的回退链（Windows：`python → python3 → py -3`，其它平台 `python3 → python → py -3`）。候选「不可用」不只是 ENOENT：Windows 上应用商店的 `python` 占位别名能启动、但退出码 9009 并提示去商店安装，`.cmd` / `.bat` 垫片不经 shell 执行报 EINVAL，都要让位给下一个候选；脚本自身的非零退出如实报错、不换解释器重跑。子进程带 `-X utf8`（`zusage.py` 只把 stdout 钉成 UTF-8，回溯里的本地化文字否则按区域代码页写 stderr、读进视图是乱码）。扩展进程按标准运行目录 `~/.zcode/zcode-token-usage-statusbar` 定位请求文件与配置；`--dev` 布局下主桥的运行目录是仓库根，唤起按钮无效，属开发者布局的已知边界。
+5. **解释器定位（`runZusageCli`）**：与主桥 `readCfg()` 同源——运行目录 `config.json` 的 `python_path` 优先（安装与每次 SessionStart 都把 `sys.executable` 写回它，状态条与 hooks 走的就是它）；没有时先试主桥的平台默认（Windows 是 `python`、其它是 `python3`），再按 hooks 的回退链（`hooks/hooks.json` 在所有平台都是 `python3 → python → py -3`）补齐其余候选。候选「不可用」不只是 ENOENT：没有执行权限（EACCES）、路径不是目录（ENOTDIR）、`.cmd` / `.bat` 垫片不经 shell 执行（EINVAL）、Windows 上应用商店的 `python` 占位别名能启动但退出码 9009，都要让位给下一个候选（`execFile` 的错误对象上，子进程非零退出的退出码是数值型的 `code`，没有 `status` 字段）；全部候选不可用时错误里带上各候选的原因；脚本自身的非零退出如实报错、不换解释器重跑。子进程带 `-X utf8`（`zusage.py` 只把 stdout 钉成 UTF-8，回溯里的本地化文字否则按区域代码页写 stderr、读进视图是乱码）。扩展进程按标准运行目录 `~/.zcode/zcode-token-usage-statusbar` 定位请求文件与配置（环境变量 `ZUSAGE_PLUGIN_RUNTIME` 可覆盖，与安装器的同名测试接缝一致，宿主的扩展进程不会带它）；`--dev` 布局下主桥的运行目录是仓库根，唤起按钮无效，属开发者布局的已知边界。
 
 ---
 

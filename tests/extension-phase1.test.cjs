@@ -8,6 +8,11 @@ const os = require("node:os");
 const path = require("node:path");
 const { createRequire } = require("node:module");
 const requirePlugin = createRequire(__filename);
+// 扩展进程按 ZUSAGE_PLUGIN_RUNTIME 定位运行目录（未设则用标准的 ~/.zcode/zcode-token-usage-statusbar）：
+// 测试指向临时目录，activate() 的 mkdir / watch / 轮询都不落在个人运行目录上（AGENTS.md §6）
+const RUNTIME_TMP = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-ext-runtime-"));
+process.env.ZUSAGE_PLUGIN_RUNTIME = RUNTIME_TMP;
+process.on("exit", () => { try { fs.rmSync(RUNTIME_TMP, { recursive: true, force: true }); } catch { /* ignore */ } });
 const { activate, enrichContextPaths, revealOrOpenFolder } = requirePlugin("../plugins/zcode-token-usage-statusbar/extension-main.cjs");
 
 test("extension.mjs phase 1: dot badge, views, context_snapshot and commands", async () => {
@@ -272,10 +277,12 @@ test("revealOrOpenFolder: a symlink inside the allowed root that resolves outsid
   const root = path.join(base, "root");
   const outside = path.join(base, "outside");
   const real = path.join(base, "root", "real");
+  // finally 里要摘这条链接：不能声明在 try 块内（块级作用域，finally 看不见，摘除会静默失败）
+  const link = path.join(root, "escape");
   fs.mkdirSync(root); fs.mkdirSync(outside); fs.mkdirSync(real);
   try {
     // Windows 建目录符号链接要特权，junction 免特权、同样被 realpath 解析：用它覆盖同一条越界守卫
-    fs.symlinkSync(outside, path.join(root, "escape"), process.platform === "win32" ? "junction" : "dir");
+    fs.symlinkSync(outside, link, process.platform === "win32" ? "junction" : "dir");
     const opened = [];
     const execFn = (cmd, args, opts, cb) => { opened.push(args[0]); cb(null); };
     const opts = { allowedRoots: [root], platform: "darwin", execFn, homeDir: base };
@@ -283,7 +290,12 @@ test("revealOrOpenFolder: a symlink inside the allowed root that resolves outsid
     assert.deepEqual(opened, [], "没有调用任何打开命令");
     assert.equal((await revealOrOpenFolder(real, opts)).ok, true, "对照：根内的真实目录照常打开");
     assert.equal(opened.length, 1);
-  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+  } finally {
+    // 先摘链接再递归清理：Node 的 rmSync(recursive) 在 Windows 上会把 junction 当目录、顺着它删目标内容，
+    // 清到悬空处半途放弃，每跑一次在 %TEMP% 留一份残骸（目标 outside 在 base 内，不会越界）
+    try { fs.unlinkSync(link); } catch { /* ignore */ }
+    fs.rmSync(base, { recursive: true, force: true });
+  }
 });
 
 test("insights_open_session rejects session ids that are not shaped like sess_<id>", async () => {
@@ -338,15 +350,17 @@ test("zusage CLI: interpreter candidates follow the main bridge (configured pyth
 
 test("zusage CLI: an unusable interpreter yields to the next candidate; a script failure does not", async () => {
   const { runZusageCli, interpreterUnusable } = requirePlugin("../plugins/zcode-token-usage-statusbar/extension-main.cjs");
-  for (const err of [{ code: "ENOENT" }, { code: "EINVAL" }, { code: "EACCES" }, { code: "ENOTDIR" }, { status: 9009 }]) {
+  // 错误对象照 execFile 的真实形状写（见下面的真进程用例）：拉不起来 code 是字符串，非零退出 code 是数值的退出码
+  for (const err of [{ code: "ENOENT" }, { code: "EINVAL" }, { code: "EACCES" }, { code: "ENOTDIR" }, { code: 9009 }]) {
     assert.equal(interpreterUnusable(err), true, "不可用：" + JSON.stringify(err));
   }
+  assert.equal(interpreterUnusable({ status: 9009 }), false, "退出码不在 status 上：这种形状不是 execFile 会给的");
   for (const err of [null, { status: 1 }, { code: 1, message: "boom" }, { status: 2 }]) {
     assert.equal(interpreterUnusable(err), false, "脚本自身失败：" + JSON.stringify(err));
   }
   const calls = [];
   // python、python3 不在 PATH；py 能启动但……；第 4 个候选（配置里的解释器）才真正跑起来
-  const replies = [{ err: { code: "ENOENT" } }, { err: { code: "ENOENT" } }, { err: { status: 9009, message: "Python was not found" } },
+  const replies = [{ err: { code: "ENOENT" } }, { err: { code: "ENOENT" } }, { err: { code: 9009, message: "Python was not found; run without arguments to install from the Microsoft Store" } },
                    { stdout: JSON.stringify({ ok: true, n: 1 }) }];
   const execFile = (file, args, opts, cb) => {
     calls.push({ file, args, opts });
@@ -364,8 +378,9 @@ test("zusage CLI: an unusable interpreter yields to the next candidate; a script
   assert.deepEqual(await runZusageCli(path.join(dirOf("plugin"), "dir"), ["session-stats", "s"], { execFile: failing, candidates }),
     { ok: false, error: "Traceback" }, "脚本自己失败：如实报错，不换解释器重跑");
   const missing = (_file, _args, _opts, cb) => setImmediate(() => cb({ code: "ENOENT" }, ""));
-  assert.deepEqual(await runZusageCli(path.join(dirOf("plugin"), "dir"), [], { execFile: missing, candidates: [["python"]] }),
-    { ok: false, error: "python not found" });
+  const gone = await runZusageCli(path.join(dirOf("plugin"), "dir"), [], { execFile: missing,
+    candidates: [["python"], ["python3"]] });
+  assert.deepEqual(gone, { ok: false, error: "python not found (python: ENOENT; python3: ENOENT)" }, "全部不可用时带上各候选的原因");
   function dirOf(name) { return process.platform === "win32" ? path.parse(process.cwd()).root + name : "/" + name; }
 });
 
@@ -395,4 +410,78 @@ test("atomic JSON write retries a transiently locked target and never leaves a .
     assert.throws(() => renameWithRetry(path.join(dir, ".other.tmp"), target), /ENOENT/);
     assert.deepEqual(fs.readdirSync(dir), ["ext-open-request.json"], "非瞬时错误不重试，临时文件同样清掉");
   } finally { fs.renameSync = realRename; fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("zusage CLI (real spawn, Windows): a candidate that exits 9009 yields to the next one", { skip: process.platform !== "win32" }, async () => {
+  // 替身用例里的错误形状是人写的，这里用真进程锁死：execFile 把非零退出的退出码放在 err.code（数值）上，
+  // 没有 status 字段——按 err.status 判 9009 的实现在替身用例里绿、在真机上不成立
+  const { runZusageCli } = requirePlugin("../plugins/zcode-token-usage-statusbar/extension-main.cjs");
+  const plugin = path.resolve("plugins/zcode-token-usage-statusbar");
+  const reply = path.join(RUNTIME_TMP, "reply.json");
+  fs.writeFileSync(reply, '{"ok":true}');
+  try {
+    const out = await runZusageCli(plugin, ["insights", "7"], { candidates: [
+      ["cmd.exe", "/c", "exit", "9009"],   // 应用商店占位别名的行为：能启动、退出码 9009
+      ["cmd.exe", "/c", "type", reply, "&", "rem"],   // 下一个候选：回一行合法 JSON，rem 吃掉后面的脚本参数
+    ] });
+    assert.deepEqual(out, { ok: true }, "9009 让位给下一个候选");
+    const gone = await runZusageCli(plugin, [], { candidates: [["cmd.exe", "/c", "exit", "9009"]] });
+    assert.deepEqual(gone, { ok: false, error: "python not found (cmd.exe: exit 9009)" });
+  } finally { fs.rmSync(reply, { force: true }); }
+});
+
+function minimalCtx(opened) {
+  return {
+    extension: { id: "zcode-token-usage-statusbar", version: "t", path: path.resolve("plugins/zcode-token-usage-statusbar"),
+      dataPath: fs.mkdtempSync(path.join(os.tmpdir(), "zusage-ext-poll-")) },
+    log: { info() {}, warn() {}, error() {} },
+    slots: { update() {} },
+    views: { register() { return { dispose() {} }; },
+      async open(id, scope) { opened.push(scope === undefined ? id : { id, sessionId: scope.sessionId }); } },
+    commands: { register() { return { dispose() {} }; } },
+    env: { async get() { return { locale: "zh-CN" }; }, onDidChange() { return { dispose() {} }; } },
+    workbench: { async visibleSessions() { return []; }, onDidChange() { return { dispose() {} }; } },
+    context: { async get() { return null; }, onDidChange() { return { dispose() {} }; } },
+  };
+}
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test("open-request bridge: a request file that predates activation is not replayed; later requests are picked up and gated by the sessionId shape; dispose stops the poll", async () => {
+  const { activate, runtimeDir } = requirePlugin("../plugins/zcode-token-usage-statusbar/extension-main.cjs");
+  assert.equal(runtimeDir, RUNTIME_TMP, "测试经 ZUSAGE_PLUGIN_RUNTIME 指向临时运行目录，不碰个人运行目录");
+  const reqPath = path.join(runtimeDir, "ext-open-request.json");
+  const opened = [];
+  const intervals = [];
+  const realSetInterval = global.setInterval, realClearInterval = global.clearInterval;
+  global.setInterval = (fn, ms) => { const id = { fn, ms, cleared: false }; intervals.push(id); return id; };
+  global.clearInterval = (id) => { if (id && typeof id === "object") id.cleared = true; };
+  let handle = null;
+  try {
+    fs.writeFileSync(reqPath, JSON.stringify({ id: "before-activate", viewId: "insights", ts: Date.now() }));
+    handle = await activate(minimalCtx(opened));
+    await sleep(250);   // 激活即取一次种子（异步 stat）
+    assert.deepEqual(opened, [], "激活前已在的请求文件只取 mtime 作种子，不重放");
+    const poll = intervals.find((i) => i.ms === 3000);
+    assert.ok(poll, "登记了 3 秒轮询");
+    const bump = (body) => {
+      fs.writeFileSync(reqPath, JSON.stringify({ ts: Date.now(), ...body }));
+      const later = new Date(Date.now() + 5000);
+      fs.utimesSync(reqPath, later, later);   // 文件系统时钟粒度粗时两次写入可能同 mtime：显式拨后
+    };
+    bump({ id: "after-1", viewId: "context", sessionId: "../x" });
+    poll.fn();
+    await sleep(150);
+    assert.deepEqual(opened, ["context"], "形状不对的 sessionId 不带会话打开");
+    bump({ id: "after-2", viewId: "context", sessionId: "sess_5f40506b-dfd2-4834-b948-844a9066f4e0" });
+    poll.fn();
+    await sleep(150);
+    assert.deepEqual(opened, ["context", { id: "context", sessionId: "sess_5f40506b-dfd2-4834-b948-844a9066f4e0" }]);
+    handle.dispose();
+    assert.equal(poll.cleared, true, "dispose 清掉轮询");
+  } finally {
+    if (handle) handle.dispose();
+    global.setInterval = realSetInterval;
+    global.clearInterval = realClearInterval;
+    try { fs.rmSync(reqPath, { force: true }); } catch { /* ignore */ }
+  }
 });

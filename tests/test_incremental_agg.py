@@ -13,12 +13,16 @@ def setUpModule():
         zusage._pricing.start_refresh = lambda *a, **k: None
 
 
-def _today_anchor(now_ms, seconds):
-    """now 之前 seconds 秒的时刻，但保证落在本地今天：「今天」用量的断言不能因为跑在零点之后的这一分钟
-    里就变红（审查 R3：00:00:00–00:00:51 之间必红）。零点刚过、不够减时，落在今天已过时间的四分之一处。"""
-    day_ms = zusage._epoch_ms(zusage._day_start())
-    ago = now_ms - seconds * 1000
-    return ago if ago >= day_ms else day_ms + max(1, (now_ms - day_ms) // 4)
+def _anchor(now_ms, seconds, span_ms=10_000):
+    """now 之前 seconds 秒的夹具锚点，并保证 [t0, t0+span] 整段落在同一个本地日内：「今天」用量的断言不能
+    因为跑在零点前后而变红。锚点前 60 秒贴着日界时，夹具行（最远 +9.2 秒）会跨到次日、today 桶只数到一部分，
+    这时把锚点挪回前一天。夹具行永远落在过去，不会被 _speed_days 当成未来时间戳丢掉。"""
+    t0 = now_ms - seconds * 1000
+    day = zusage._day_start(datetime.fromtimestamp(t0 / 1000.0))
+    day_end_ms = zusage._epoch_ms(day + timedelta(days=1))
+    if t0 + span_ms >= day_end_ms:
+        t0 = day_end_ms - max(span_ms, seconds * 1000) - 1000
+    return t0
 
 
 def _make_db(path):
@@ -109,8 +113,10 @@ class IncrementalAggTests(unittest.TestCase):
                      "_SPEED_CACHE", "_SPEED_WM", "_DAYS_CACHE", "_DAYS_WM"):
             getattr(zusage, name).clear()
 
-    def _snapshot_all(self, now_ms):
-        day = zusage._day_start()
+    def _snapshot_all(self, now_ms, anchor_ms=None):
+        # 「今天」的窗口按夹具行所在的本地日算（日界与产品 _day_start 同款），不按测试机此刻的日期：
+        # 零点后一分钟内跑时锚点已是昨天，按此刻取日界 today 桶恒空
+        day = zusage._day_start(datetime.fromtimestamp((anchor_ms if anchor_ms is not None else now_ms) / 1000.0))
         s_ms, e_ms = zusage._epoch_ms(day), zusage._epoch_ms(day + timedelta(days=1))
         return {
             "scan": sorted(tuple(r) for r in zusage._scan_session_ids(self.con)),
@@ -123,7 +129,7 @@ class IncrementalAggTests(unittest.TestCase):
 
     def test_incremental_matches_full_across_inserts_and_multi_step_turn(self):
         now_ms = int(datetime.now().timestamp() * 1000)
-        t0 = _today_anchor(now_ms, 60)
+        t0 = _anchor(now_ms, 60)
         self.con.execute(
             "INSERT INTO session VALUES (?,?,?,?,?)",
             ("s1", "proj_a", "/tmp/proj_a", None, "first"),
@@ -132,7 +138,7 @@ class IncrementalAggTests(unittest.TestCase):
         self.con.commit()
 
         # 首帧建基线
-        base_incr = self._snapshot_all(now_ms)
+        base_incr = self._snapshot_all(now_ms, t0)
         self.assertEqual(len(zusage._INCR_STATES), 1)
         st = next(iter(zusage._INCR_STATES.values()))
         self.assertEqual(st.last_rowid, 1)
@@ -150,13 +156,13 @@ class IncrementalAggTests(unittest.TestCase):
                       st=t0 + 7000, ft=t0 + 7200, ct=t0 + 9200, inp=800, outp=150)
 
         self._clear_outer_caches()
-        incr_res = self._snapshot_all(now_ms)
+        incr_res = self._snapshot_all(now_ms, t0)
         self.assertEqual(st.last_rowid, 4)
 
         # 禁用增量跑全量对照
         self._clear_outer_caches()
         with mock.patch.object(zusage, "_incr_get", return_value=None):
-            full_res = self._snapshot_all(now_ms)
+            full_res = self._snapshot_all(now_ms, t0)
 
         self.assertEqual(incr_res, full_res)
         self.assertEqual(incr_res["fbk"], "account:zai")
@@ -165,12 +171,12 @@ class IncrementalAggTests(unittest.TestCase):
 
     def test_delete_triggers_full_rebuild(self):
         now_ms = int(datetime.now().timestamp() * 1000)
-        t0 = _today_anchor(now_ms, 30)
+        t0 = _anchor(now_ms, 30)
         self.con.execute("INSERT INTO session VALUES (?,?,?,?,?)", ("s1", "p1", "/tmp/p1", None, "s1"))
         _insert_usage(self.con, "u1", "s1", "t1", st=t0, ft=t0 + 100, ct=t0 + 1100)
         _insert_usage(self.con, "u2", "s1", "t2", st=t0 + 2000, ft=t0 + 2100, ct=t0 + 3100)
 
-        self._snapshot_all(now_ms)
+        self._snapshot_all(now_ms, t0)
         st_old = next(iter(zusage._INCR_STATES.values()))
 
         # 删除第一行，max(rowid) 不变但 count(*) 减少
@@ -178,23 +184,23 @@ class IncrementalAggTests(unittest.TestCase):
         self.con.commit()
         self._clear_outer_caches()
 
-        res = self._snapshot_all(now_ms)
+        res = self._snapshot_all(now_ms, t0)
         st_new = next(iter(zusage._INCR_STATES.values()))
         self.assertIsNot(st_new, st_old)
         self.assertEqual(res["today"][0], 1)
 
     def test_session_metadata_change_reflected_without_rebuild(self):
         now_ms = int(datetime.now().timestamp() * 1000)
-        t0 = _today_anchor(now_ms, 20)
+        t0 = _anchor(now_ms, 20)
         self.con.execute("INSERT INTO session VALUES (?,?,?,?,?)", ("s1", "p1", "/tmp/alpha", None, "old-title"))
         _insert_usage(self.con, "u1", "s1", "t1", st=t0, ft=t0 + 100, ct=t0 + 1100)
-        self._snapshot_all(now_ms)
+        self._snapshot_all(now_ms, t0)
 
         self.con.execute("UPDATE session SET title='new-title', directory='/tmp/beta' WHERE id='s1'")
         self.con.commit()
         self._clear_outer_caches()
 
-        res = self._snapshot_all(now_ms)
+        res = self._snapshot_all(now_ms, t0)
         self.assertEqual(res["ap"]["projects"][0]["name"], "beta")
         self.assertEqual(res["sh"]["snames"][0], "new-title")
 

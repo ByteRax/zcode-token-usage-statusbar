@@ -490,6 +490,22 @@ class ContextQueriesRichTests(unittest.TestCase):
         cps = zusage.session_stats_json(self.con, "sess_c")["compactions"]
         self.assertEqual([c["postTokens"] for c in cps], [77000, 0, 0])
 
+    def test_command_program_first_word_forms(self):
+        cp = zusage._command_program
+        cases = [
+            ('"C:\\Program Files\\Git\\cmd\\git.exe" status --short', "git.exe"),   # 引号包裹的 Windows 绝对路径
+            ("C:\\Windows\\System32\\cmd.exe /c dir", "cmd.exe"),
+            ("/usr/bin/git log", "git"), ("git  status", "git"), ("  'git' log", "git"),     # 单引号、前导空白
+            ('& "C:\\Tools\\x y\\a.exe" -Flag', "a.exe"),                              # PowerShell 调用符
+            ("", ""), ("   ", ""), ('"', ""), ("''", ""), ("&", ""),                       # 没有首词
+            ("C:\\x\\", ""),                                                            # 尾分隔符之后是空串：调用方按空跳过
+        ]
+        for cmd, want in cases:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(cp(cmd), want)
+        # 引号没闭合：退化成引号后第一个空白前的词（不抛异常）
+        self.assertIsInstance(cp('"C:\\Program Files\\Git status'), str)
+
     def test_command_program_name_survives_windows_paths_and_quotes(self):
         # 审查 R3：程序名只按 / 切时，Windows 的绝对路径命令得到整条反斜杠路径，带引号带空格的被截成
         # "C:\Program——同一个程序按调用写法被拆成多项

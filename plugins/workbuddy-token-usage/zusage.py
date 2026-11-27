@@ -6070,13 +6070,17 @@ _PROGRAM_SPLIT_RE = re.compile(r"[\\/]")
 
 
 def _command_program(cmd_s):
-    """命令行首词里的程序名（上下文洞察的命令排行）。首词被引号包裹时取引号内的整段——Windows 上
-    带空格的绝对路径命令写成 "C:\\Program Files\\...\\git.exe"，按空白切只得到半截路径；再去掉两种
-    分隔符前的目录部分，同一程序的不同写法（/usr/bin/git、C:\\...\\git.exe）才不会被拆成多项。"""
-    first = cmd_s.split(None, 1)[0] if cmd_s.strip() else ""
+    """命令行首词里的程序名（上下文洞察的命令排行）。PowerShell 的调用符 & 先剥掉（& "C:\\x y\\a.exe"）；
+    首词被引号包裹时取引号内的整段——Windows 上带空格的绝对路径命令写成 "C:\\Program Files\\...\\git.exe"，
+    按空白切只得到半截路径；再去掉两种分隔符前的目录部分，同一程序的不同写法（/usr/bin/git、C:\\...\\git.exe）
+    才不会被拆成多项。"""
+    text = cmd_s.strip()
+    if text[:1] == "&":
+        text = text[1:].lstrip()
+    first = text.split(None, 1)[0] if text else ""
     if first[:1] in ("\"", "'"):
-        end = cmd_s.find(first[0], 1)
-        first = cmd_s[1:end] if end > 0 else first[1:]
+        end = text.find(first[0], 1)
+        first = text[1:end] if end > 0 else first[1:]
     return _PROGRAM_SPLIT_RE.split(first)[-1][:32]
 
 

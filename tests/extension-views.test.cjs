@@ -406,13 +406,18 @@ test("context browser: an older page that lands after a session switch is droppe
   assert.ok(!html.includes("third"), "迟到的旧会话页不能并进新会话的列表");
 });
 
-test("insights: the day filter uses local calendar days, survives bad timestamps and names Windows projects by their folder", async () => {
+test("insights: the day filter uses local calendar days, survives bad timestamps and names Windows projects by their folder", async (t) => {
   const pad = (n) => (n < 10 ? "0" : "") + n;
   const now = new Date();
   const dayKey = now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate());
-  // 东八区本地 00:30 的 UTC 日期还是前一天；负时区换成 23:30（UTC 已是次日）。取一个本地日与 UTC 日不同的时刻
-  const edgeHour = now.getTimezoneOffset() <= 0 ? 0 : 23;
-  const edge = new Date(now.getFullYear(), now.getMonth(), now.getDate(), edgeHour, 30).getTime();
+  // 取今天里一个「本地日 ≠ UTC 日」的时刻（东八区是 00:30、负时区是 23:30）：日筛选改回 toISOString 时
+  // 只有这种时刻能揭穿它。全天两者相同（UTC+0 的机器与 CI 容器）时本用例没有区分力，带因跳过而不是假绿
+  let edge = null;
+  for (let hour = 0; hour < 24 && edge === null; hour++) {
+    const cand = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, 30);
+    if (cand.getUTCDate() !== cand.getDate()) edge = cand.getTime();
+  }
+  if (edge === null) return t.skip("本地日与 UTC 日全天相同（UTC+0）：这条断言在本机没有区分力");
   const cell = { getAttribute: (n) => (n === "data-hday" ? dayKey : null), onclick: null };
   const snap = insightsSnap();
   snap.sessions = [

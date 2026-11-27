@@ -272,12 +272,15 @@ class CacheTests(unittest.TestCase):
         self.assertEqual((denied["left"], json.loads(Path(tp._CACHE_PATH).read_text(encoding="utf-8"))), (0, payload))
 
     def test_write_cache_gives_up_cleanly_when_the_target_stays_locked(self):
+        tp._write_cache({"version": 1, "pricing": {"zai/glm-5.3": {"input": 7, "output": 7}}, "pricing_at": 1})   # 先落一份旧缓存
+        before = Path(tp._CACHE_PATH).read_bytes()
         def locked(src, dst):
             raise PermissionError(13, "另一个程序正在使用此文件", dst)
         with mock.patch.object(tp.os, "replace", locked), mock.patch.object(tp.time, "sleep", lambda seconds: None):
-            tp._write_cache(self._payload(5))
-        self.assertFalse(Path(tp._CACHE_PATH).exists(), "替换始终被拒：旧缓存不动，也不抛异常")
+            tp._write_cache(self._payload(5))   # 替换始终被拒
+        self.assertEqual(Path(tp._CACHE_PATH).read_bytes(), before, "旧缓存原样保留")
         self.assertFalse(Path(str(tp._CACHE_PATH) + ".tmp").exists(), "临时文件要清掉")
+        self.assertEqual(tp.lookup("GLM-5.3", "account:zai-x")["input"], 7, "内存态仍是旧缓存，没有被没落盘的新价表替换")
 
 
 class RefreshTests(unittest.TestCase):
@@ -524,6 +527,20 @@ class PeakValleyTests(unittest.TestCase):
                 self.assertIs(tp._is_flash_promo(bad), False)
                 self.assertEqual(tp.glm_plan_peak_factor("glm-5.4", bad), 0.67, "活动判定为 False，按常规系数")
         self.assertIs(tp._is_flash_promo(tp._FLASH_PROMO_START), True, "活动起点含在窗口内")
+
+    def test_epoch_normalization_keeps_valid_inputs_and_bounds_the_representable_range(self):
+        n = tp._epoch_or_none
+        self.assertEqual(n("1700000000"), 1700000000, "数值字符串照常")
+        self.assertEqual(n(1700000000.9), 1700000000, "浮点截断")
+        self.assertEqual(n(-1), -1, "1970 年前")
+        self.assertEqual(n(True), 1, "bool 与 int() 一致")
+        self.assertEqual(n(tp._EPOCH_MIN), tp._EPOCH_MIN)
+        self.assertEqual(n(tp._EPOCH_MAX), tp._EPOCH_MAX)
+        self.assertIsNone(n(tp._EPOCH_MIN - 1))
+        self.assertIsNone(n(tp._EPOCH_MAX + 1))
+        for bad in (None, "abc", float("nan"), float("inf"), float("-inf"), 10 ** 30, -(10 ** 30)):
+            with self.subTest(value=bad):
+                self.assertIsNone(n(bad))
 
     def test_glm_plan_peak_factor(self):
         peak = self.bj(2026, 11, 26, 15, 0, 0)      # 周四 15:00 高峰（11.24–12.24 Flash 限时 50% 活动期内）

@@ -9,8 +9,9 @@ const path = require("node:path");
 
 const STATE_FILE = "ui-state.json";
 /* 标准运行目录（与主桥 inject-main.cjs 的 HERE 同一位置；--dev 布局下主桥写在仓库根，这里的唤起请求
- * 与 python_path 都读不到——开发者布局的已知边界）。 */
-const RUNTIME_DIR = path.join(os.homedir(), ".zcode", "zcode-token-usage-statusbar");
+ * 与 python_path 都读不到——开发者布局的已知边界）。ZUSAGE_PLUGIN_RUNTIME 与安装器的同名接缝一致：
+ * 宿主的扩展进程不会带它，只有测试用它把扩展指向临时目录（AGENTS.md §6：默认回归不碰个人运行目录）。 */
+const RUNTIME_DIR = process.env.ZUSAGE_PLUGIN_RUNTIME || path.join(os.homedir(), ".zcode", "zcode-token-usage-statusbar");
 const OPEN_REQ_DIR = RUNTIME_DIR;
 const OPEN_REQ_FILE = "ext-open-request.json";
 const CAPTURE_FILE = "req-capture.json";
@@ -30,9 +31,15 @@ function readJsonSafe(filePath) {
   }
 }
 
-/* 同步睡一小会儿：写入点都在异步流程里，最长不过百来毫秒，不值得把调用链改成 Promise。 */
+/* 同步睡一小会儿：写入点都在异步流程里，最长不过百来毫秒，不值得把调用链改成 Promise。
+ * Atomics.wait 在 Node 主线程与 worker 都可用；宿主若不允许（抛 TypeError），退化为忙等。 */
 function sleepSync(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    const until = Date.now() + ms;
+    while (Date.now() < until) { /* busy wait */ }
+  }
 }
 
 /* 覆盖已存在目标的 rename 在 Windows 上会被瞬时句柄（杀毒、搜索索引、并发读者）拒绝（EPERM / EBUSY /
@@ -415,9 +422,10 @@ function revealOrOpenFolder(rawPath, { allowedRoots = [], platform = process.pla
 
 /* 解释器候选与主桥同源（inject-main.cjs readCfg）：运行目录 config.json 的 python_path 优先——安装与
  * 每次 SessionStart 都把 sys.executable 写回它，一定指向带 sqlite3 的那个解释器，状态条与 hooks 走的
- * 就是它；配置里没有时按 hooks 的回退链（hooks/hooks.json：python3 → python → py -3）。此前这里是一套
- * 自写的 python → python3 且只认 ENOENT：Windows 上 PATH 里的 python 常是应用商店的占位别名——能启动、
- * 不报 ENOENT，退出码 9009 并提示去商店安装——于是状态条与 hooks 正常、洞察页和上下文页却没有数据。 */
+ * 就是它；配置里没有时先试主桥的平台默认（Windows 是 python、其它是 python3），再按 hooks 的回退链
+ * （hooks/hooks.json 在所有平台都是 python3 → python → py -3）补齐其余候选。此前这里是一套自写的
+ * python → python3 且只认 ENOENT：Windows 上 PATH 里的 python 常是应用商店的占位别名——能启动、不报
+ * ENOENT，退出码 9009 并提示去商店安装——于是状态条与 hooks 正常、洞察页和上下文页却没有数据。 */
 function pythonCandidates(runtimeDir, platform = process.platform) {
   const candidates = [];
   const cfg = readJsonSafe(path.join(runtimeDir, "config.json"));
@@ -431,10 +439,13 @@ function pythonCandidates(runtimeDir, platform = process.platform) {
 }
 
 /* 候选解释器「不可用」而不只是 ENOENT：没有执行权限；.cmd / .bat 垫片不经 shell 执行报 EINVAL；
- * 应用商店占位别名的退出码 9009。这些都要让位给下一个候选；脚本自身的非零退出不在此列。 */
+ * 应用商店占位别名的退出码 9009。这些都要让位给下一个候选；脚本自身的非零退出不在此列。
+ * execFile 的错误对象上：拉不起来的 code 是字符串（ENOENT 等），子进程非零退出的 code 是数值的退出码
+ * （没有 status 字段）——9009 必须按数值比。 */
 function interpreterUnusable(err) {
-  return !!(err && (err.code === "ENOENT" || err.code === "EACCES" || err.code === "EINVAL"
-    || err.code === "ENOTDIR" || err.status === 9009));
+  if (!err) return false;
+  return err.code === "ENOENT" || err.code === "EACCES" || err.code === "EINVAL" || err.code === "ENOTDIR"
+    || err.code === 9009;
 }
 
 function runZusageCli(pluginPath, args, hooks) {
@@ -443,9 +454,12 @@ function runZusageCli(pluginPath, args, hooks) {
   const pyCandidates = (hooks && hooks.candidates) || pythonCandidates(RUNTIME_DIR);
   return new Promise((resolve) => {
     let idx = 0;
+    const unusable = [];
     function tryNext() {
       if (idx >= pyCandidates.length) {
-        resolve({ ok: false, error: "python not found" });
+        // 带上各候选的不可用原因：只报 python not found 会丢掉真实原因（无权限 / 垫片 / 9009）
+        const error = "python not found" + (unusable.length ? " (" + unusable.join("; ") + ")" : "");
+        resolve({ ok: false, error });
         return;
       }
       const [py, ...preArgs] = pyCandidates[idx++];
@@ -458,6 +472,7 @@ function runZusageCli(pluginPath, args, hooks) {
         (err, stdout) => {
           if (err) {
             if (interpreterUnusable(err)) {
+              unusable.push(py + ": " + (typeof err.code === "number" ? "exit " + err.code : err.code || "unusable"));
               tryNext();
               return;
             }
@@ -490,6 +505,7 @@ async function activate(ctx) {
   let watcher = null;
   let watchTimer = null;
   let pollTimer = null;
+  let disposed = false;
   const warmTimers = new Set();   // 视图打开后的洞察预热定时器：停用时统一清掉，且不拖住进程
 
   const uiStatePath = path.join(ctx.extension.dataPath, STATE_FILE);
@@ -857,6 +873,7 @@ async function activate(ctx) {
   }
 
   let openReqMtime = -1;
+  let openReqSeeded = false;
   function scheduleOpenRequest() {
     if (watchTimer) clearTimeout(watchTimer);
     watchTimer = setTimeout(() => {
@@ -865,20 +882,24 @@ async function activate(ctx) {
     }, 30);
   }
   /* 轮询兜底：Windows 上 fs.watch 可能漏事件，报过 error 之后更是不再派发——每 3 秒比对一次请求文件的
-   * mtime（只 stat 一个文件），watcher 不在场时顺带重建。 */
+   * mtime（异步 stat，不阻塞扩展进程的事件循环），watcher 不在场时顺带重建。
+   * 激活时已在的请求文件只取它的 mtime 作种子、不当成新请求：processOpenRequestFile 只拒绝 15 秒前的
+   * 请求，而 lastHandledReqId 只在内存里，否则扩展进程在一次点击后 15 秒内重启会把那次打开重放一遍。 */
   function pollOpenRequest() {
-    if (!watcher) startOpenRequestWatcher();
-    try {
-      const mtime = fs.statSync(path.join(OPEN_REQ_DIR, OPEN_REQ_FILE)).mtimeMs;
-      if (mtime !== openReqMtime) {
-        openReqMtime = mtime;
-        scheduleOpenRequest();
-      }
-    } catch { /* 请求文件不在：无事可做 */ }
+    fs.stat(path.join(OPEN_REQ_DIR, OPEN_REQ_FILE), (err, st) => {
+      if (disposed) return;
+      if (!watcher) startOpenRequestWatcher(false);
+      const mtime = err || !st ? -1 : st.mtimeMs;
+      const first = !openReqSeeded;
+      openReqSeeded = true;
+      if (mtime === openReqMtime) return;
+      openReqMtime = mtime;
+      if (!first) scheduleOpenRequest();
+    });
   }
-  function startOpenRequestWatcher() {
+  function startOpenRequestWatcher(ensureDir) {
     try {
-      fs.mkdirSync(OPEN_REQ_DIR, { recursive: true });
+      if (ensureDir) fs.mkdirSync(OPEN_REQ_DIR, { recursive: true });
       const w = fs.watch(OPEN_REQ_DIR, (_eventType, filename) => {
         if (filename && filename !== OPEN_REQ_FILE) return;
         scheduleOpenRequest();
@@ -891,12 +912,14 @@ async function activate(ctx) {
       });
     } catch { /* 目录暂不可用：轮询时再试 */ }
   }
-  startOpenRequestWatcher();
+  startOpenRequestWatcher(true);
+  pollOpenRequest();   // 激活即取一次种子
   pollTimer = setInterval(pollOpenRequest, 3000);
   if (pollTimer.unref) pollTimer.unref();
 
   return {
     dispose() {
+      disposed = true;
       for (const t of warmTimers) clearTimeout(t);
       warmTimers.clear();
       if (watchTimer) {
@@ -923,4 +946,4 @@ function deactivate() {
 }
 
 module.exports = { activate, deactivate, enrichContextPaths, revealOrOpenFolder, readCaptureConfig, writeCaptureConfig, browserOptions,
-  pythonCandidates, interpreterUnusable, runZusageCli, renameWithRetry, readJsonSafe };
+  pythonCandidates, interpreterUnusable, runZusageCli, renameWithRetry, readJsonSafe, runtimeDir: RUNTIME_DIR };
