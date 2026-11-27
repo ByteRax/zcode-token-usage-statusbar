@@ -79,6 +79,7 @@ function loadPump(respond = () => ({}), children = {}) {
   const ipc = new EventEmitter();
   const sandbox = {
     __dirname: path.join(FX, "runtime"), console: { error() {} },
+    // process 替身有意不带 platform：缺省代表非 Linux（个别用例显式设 sandbox.process.platform 模拟 Linux）
     process: { resourcesPath: path.join(FX, "resources"), execPath: process.execPath, uptime: () => 1, env: {} },
     module: { exports: {} },
     setTimeout: (fn, ms) => { timers.set(++id, fn); return id; },

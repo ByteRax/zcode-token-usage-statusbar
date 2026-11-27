@@ -981,8 +981,8 @@ test("capture hook: real Node runtime — both host request shapes hit a local s
       assert.equal(fs.statSync(jsonl).mode & 0o777, 0o600, "requests.jsonl 0600");
       assert.equal(fs.statSync(blob).mode & 0o777, 0o600, "blob 0600");
     }
-    // 与平台无关的断言不进上面的权限位门：此前它在 Windows 上被一并静默跳过
-    assert.equal(typeof lines[0].messageChars, "number");
+    // 与平台无关的断言不进上面的权限位门：此前它在 Windows 上被一并静默跳过。断精确值而不只是类型
+    assert.equal(lines[0].messageChars, JSON.stringify(JSON.parse(body).messages[0]).length, "首条消息的字符数");
   } finally {
     await new Promise((r) => server.close(r));
     fs.rmSync(home, { recursive: true, force: true });
