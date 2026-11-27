@@ -15,6 +15,14 @@
      * 选中 ✓ 为 absolute right-2（pr-8 padding 区），徽标以文档流追加在行内徽标容器
      * （span.flex-1）末尾、margin-left:auto，右缘止于内容区与之零重叠。 */
     var ZU_PEAK_ROW_SEL = '[data-testid^="chat-model-select-item-"]';
+    var ZU_PEAK_DOC_URL = "https://docs.bigmodel.cn/cn/coding-plan/notice/usage-revision#%E4%B8%89%E3%80%81%E5%8E%86%E5%8F%B2%E5%A5%97%E9%A4%90%E7%94%A8%E9%87%8F%E8%AF%B4%E6%98%8E%E5%A4%87%E6%9F%A5";
+    function zuPeakOpenDoc() {
+      try {
+        var zc = typeof window !== "undefined" && window.zcode;
+        if (zc && typeof zc.openExternal === "function") zc.openExternal(ZU_PEAK_DOC_URL);
+        else if (typeof window !== "undefined" && typeof window.open === "function") window.open(ZU_PEAK_DOC_URL, "_blank", "noopener");
+      } catch (e) { }
+    }
     function zuPeakProviderOf(row) {
       /* 行级供应商 id：祖先分组键（剥 registry-provider: 前缀）→ testid value 首段 → null */
       try {
@@ -92,6 +100,77 @@
       var v = Number(n);
       return (isFinite(v) ? v.toFixed(2) : "") + "×";
     }
+    function zuPeakBannerAnchor(firstOkRow) {
+      var list = null;
+      try {
+        if (typeof document.querySelector === "function") list = document.querySelector("[data-composer-model-list]");
+      } catch (e) { }
+      if (list && list.parentNode) return { parent: list.parentNode, before: list };
+      if (firstOkRow && firstOkRow.parentNode && firstOkRow.parentNode !== firstOkRow) {
+        return { parent: firstOkRow.parentNode, before: firstOkRow };
+      }
+      return null;
+    }
+    function syncModelPeakBanner(isPeak, firstOkRow) {
+      var existing = null;
+      try {
+        if (typeof document.querySelector === "function") existing = document.querySelector("[data-zusage-peak-banner]");
+      } catch (e) { }
+      if (!isPeak) {
+        if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+        return;
+      }
+      var anchor = zuPeakBannerAnchor(firstOkRow);
+      if (!anchor || !anchor.parent || typeof anchor.parent.insertBefore !== "function") return;
+      if (existing && existing.isConnected && existing.parentNode === anchor.parent) return;
+      if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+      var banner = document.createElement("div");
+      banner.setAttribute("data-zusage-peak-banner", "1");
+      banner.setAttribute("tabindex", "0");
+      banner.className = "zu-peak-banner";
+      banner.setAttribute("title", "当前为高峰期 · 高峰时段：周一至五 14:00–18:00（北京时间），其余时段及周末为非高峰");
+      var lead = document.createElement("span");
+      lead.textContent = "⚡ 当前为高峰期";
+      var sub = document.createElement("span");
+      sub.className = "zu-peak-banner-sub";
+      sub.textContent = "高峰倍率生效中";
+      var pop = document.createElement("div");
+      pop.className = "zu-peak-pop";
+      var popT = document.createElement("div");
+      popT.className = "zu-peak-pop-t";
+      popT.textContent = "当前处于高峰期";
+      var popM = document.createElement("div");
+      popM.textContent = "高峰时段：周一至周五 14:00–18:00（北京时间）";
+      var popS = document.createElement("div");
+      popS.className = "zu-peak-pop-s";
+      popS.textContent = "其余时段及周末全天为非高峰，按低档倍率消耗额度。";
+      var popLink = document.createElement("span");
+      popLink.className = "zu-peak-pop-link";
+      popLink.setAttribute("role", "link");
+      popLink.setAttribute("tabindex", "0");
+      popLink.setAttribute("data-zusage-peak-doc", "1");
+      popLink.textContent = "来源：BigModel 官方套餐用量说明 ↗";
+      if (typeof popLink.addEventListener === "function") {
+        var stopEvt = function (e) {
+          if (e && e.stopPropagation) e.stopPropagation();
+          if (e && e.preventDefault) e.preventDefault();
+        };
+        popLink.addEventListener("pointerdown", stopEvt);
+        popLink.addEventListener("mousedown", stopEvt);
+        popLink.addEventListener("click", function (e) { stopEvt(e); zuPeakOpenDoc(); });
+        popLink.addEventListener("keydown", function (e) {
+          if (e && (e.key === "Enter" || e.key === " ")) { stopEvt(e); zuPeakOpenDoc(); }
+        });
+      }
+      pop.appendChild(popT);
+      pop.appendChild(popM);
+      pop.appendChild(popS);
+      pop.appendChild(popLink);
+      banner.appendChild(lead);
+      banner.appendChild(sub);
+      banner.appendChild(pop);
+      try { anchor.parent.insertBefore(banner, anchor.before); } catch (e) { }
+    }
     function syncModelPeakBadges() {
       if (inactive()) return;
       var seg = null;
@@ -101,6 +180,7 @@
       try { rows = document.querySelectorAll(ZU_PEAK_ROW_SEL); } catch (e) { return; }
       if (!rows || !rows.length) return;   // 弹层未开：一次查询早退
       var paneOk = null;   // 惰性：行级判定不出供应商时才询本 pane 身份
+      var firstOkRow = null;
       for (var i = 0; i < rows.length; i++) {
         var row = rows[i];
         var pid = zuPeakProviderOf(row);
@@ -114,6 +194,7 @@
           ok = paneOk;
         }
         if (!ok) continue;   // 非对称 no-op：绝不摘除（防多实例互踩）
+        if (!firstOkRow) firstOkRow = row;
         var pair = null;
         var name = "";
         try { name = String(zuPeakModelName(row) || "").toLowerCase(); } catch (e) { }
@@ -146,7 +227,12 @@
             "color:var(--color-foreground-subtle,#8791a3);white-space:nowrap;";
           try { cont.appendChild(badge); } catch (e) { continue; }
         }
+        var peakColor = seg.is_peak ? "var(--color-warning,#d97706)" : "var(--color-foreground-subtle,#8791a3)";
+        var peakWeight = seg.is_peak ? "500" : "400";
+        if (badge.style.color !== peakColor) badge.style.color = peakColor;
+        if (badge.style.fontWeight !== peakWeight) badge.style.fontWeight = peakWeight;
         if (badge.textContent !== txt) badge.textContent = txt;
         if (badge.getAttribute("title") !== tip) badge.setAttribute("title", tip);
       }
+      if (firstOkRow) syncModelPeakBanner(!!seg.is_peak, firstOkRow);
     }

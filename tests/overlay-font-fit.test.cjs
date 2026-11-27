@@ -50,7 +50,7 @@ test('sans surfaces keep tabular-nums so per-second number updates do not jitter
 
 test('tooltip surfaces (exc card/rateTip inline fallback and stat/project/sub/speed mono rows) use the sans token', () => {
   // 总数由 build 后 grep 校准；此处锁关键不可回退点
-  assert.equal(countOf(SANS), 40, 'sans 令牌总数（原 36 + v356 sysmon 两面 + v382 离屏测量探针 .zu-qmeasure + v384 速度 V3 卡一面；新增 sans 面时按惯例顺延并同步本断言）');
+  assert.equal(countOf(SANS), 41, 'sans 令牌总数（原 36 + v356 sysmon 两面 + v382 离屏测量探针 .zu-qmeasure + v384 速度 V3 卡一面 + .zu-peak-pop 一面；新增 sans 面时按惯例顺延并同步本断言）');
   assert.ok(source.includes('rateTip.style.cssText =\n    "position:fixed;display:none;background:var(--color-tooltip,#171717);" +\n    "border:1px solid var(--color-border,transparent);border-radius:10px;padding:10px 14px;" +\n    "' + SANS), 'rateTip 内联兜底应切 sans');
   for (const sel of ['.zu-sp-kpi .v{', '.zu-pj-v{', '.zu-stat-v{font-family:', '.zu-speed-main{', '.zu-sl-main{margin-top:8px;font-family:', '".panel{position:fixed']) {
     const at = source.indexOf(sel);

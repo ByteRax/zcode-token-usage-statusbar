@@ -360,8 +360,9 @@
      * → v487 上下文容量弹层分项构成增强（用户拍板「建议 1 加具体 token 数 + 建议 3 悬停大白话说明」，格式「24.28万 · 74.7%」（数值经实例 fmt() 输出），⚙ 通用独立开关；specs/context-breakdown-enhance.md）：①Token 数补充——从就近上下文触发器 aria-label 解析已用总量 used，按各构成行右侧百分比折算 round(used*pct/100) 并经实例 fmt() 格式化（自动跟随万/亿与强制 K/M/B），在百分比 span 前幂等插入 .zu-ctx-bkd-tok（弱化灰+tabular-nums，「24.28万 · 」）并由其接管 margin-left:auto；百分比按数值解析（兼容小数逗号的 locale，如「74,7 %」），展示串照抄宿主原文；②悬停大白话说明——按宿主 7 类构成标签（消息/其他/系统工具/MCP 工具/技能/系统提示词/工具提示词，中英双语）标记 data-zusage-bkd 并在 body 容器委托 mouseover/mouseout，悬停即在行上方/下方弹出文档级单例 .zusage-ctx-bkd-tip 说明该项真实构成与减负建议；③开关 zusage3.ctxBkd（⚙ 通用「上下文构成明细增强」.zu-ctx-bkd，缺省开，仅显式 "0" 关），关闭即摘除已注入节点与属性并收起气泡。气泡是纯说明、指针穿透（pointer-events:none，不挂指针/键盘监听）：它挂在 body、不在宿主 hover-card 的 DOM 子树里，拦截鼠标会让宿主在指针进入气泡时关闭弹层（真机实证，往上挪一行撞进气泡同样会关）；气泡里的路径（指令规则、技能目录、记忆索引 <home>/.zcode/cli/memories/projects、内置引擎）只展示、不可点击；技能目录取自技能工具输出，只有落在 home 或工作区之下才展示；「近期已用技能」取自会话快照尾部窗口，不等于整个会话；弹层 body 上的委托标记带代际，热重载后新代重挂。
      * → v488 上下文构成说明气泡侧边停靠与悬停保活桥接：气泡改为紧贴 [data-slot="hover-card-content"] 左右两侧（右优先 4px 重叠无缝隙、放不下放左侧），不再遮挡上方分项行；移除 pointer-events:none，恢复 .cb-path 点击调用 openProjFolder 打开对应目录；showCtxBkdTip 对同一行锁定坐标（防宿主关闭动画抖动甩出鼠标），捕获阶段拦截 pointerout/mouseout 向宿主隐藏「移入气泡」的离开事件（气泡 mouseleave 且离开主浮层时再补发离开事件），移入气泡时气泡与宿主上下文浮层均保持打开。
      * → v489 筛选弹层「点外即收」补实现（用户实报：点搜索模型浮层之外不关闭；spec §14.1 初稿「外点关闭（既有）」失真——v390 只落地 Esc 与 toggle，外点从未实现，规格一并改准）：wire 新增 spd3PopOutside（与 spd3MonthOutside 同构——筛选弹层开着且按下点在 .zu-sv3-fpop 与两枚 [data-sv3-fopen] 入口之外即置 open=false、清搜索词并返回 true，只改状态由调用链重绘），06 主卡链与 01 精简链 tip pointerdown 委托在月历外点判定之后接入并各自重绘，被点控件照常由各自分支处理；fopen 入口豁免（否则外点收起后 toggle 分支再翻转回打开）；整卡隐藏复位补齐（08 hideTip 与 01 hideTpsTip 在 mpop 复位旁同步复位 pop，重开不残留；搜索词仅在 Esc/外点/toggle 三个主动关闭路径清空，随卡隐藏保留）。
+     * → v490 模型选择器高峰期显著提示与时段/来源气泡（specs/model-peak-factor-badge.md）：当 is_peak 为真且弹层内有门控通过的 GLM 编码计划模型行时，在 [data-composer-model-list] 正上方（无该列表时回退首行前）挂载 .zu-peak-banner（「⚡ 当前为高峰期 · 高峰倍率生效中」），行右缘倍率同步高亮为 --color-warning + 500 字重（非高峰恢复弱化灰与 400 字重并摘除横条，门控不过实例保持 no-op）；悬停/聚焦横条弹出纯 CSS 显隐的内部气泡 .zu-peak-pop（带 ::before 悬停桥接，零新增监听器/零 body 浮层），标明高峰时段（周一至周五 14:00–18:00 北京时间）并附可点击来源链接「来源：BigModel 官方套餐用量说明 ↗」（走 window.zcode.openExternal 优先、window.open 兜底，阻止冒泡防关弹层）。
      */
-    var VERSION = "v489";
+    var VERSION = "v490";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -2132,6 +2133,25 @@
       "html:not(.dark) [data-zusage-bkd]:hover,html:not(.dark) [data-zusage-bkd-cache]:hover{background:rgba(0,0,0,.04)}" +
       ".zu-ctx-bkd-tok{margin-left:auto;flex-shrink:0;color:var(--color-foreground-subtle,#8791a3);font-variant-numeric:tabular-nums;white-space:pre}" +
       ".zu-ctx-bkd-tok+span{margin-left:0!important;min-width:0!important}" +
+      /* 模型选择器高峰期横条与悬停时段说明浮层（specs/model-peak-factor-badge.md） */
+      ".zu-peak-banner{position:relative;display:flex;align-items:center;justify-content:space-between;gap:6px;margin:2px 4px 4px;padding:4px 8px;border-radius:6px;" +
+      "color:var(--color-warning,#d97706);background:color-mix(in srgb,var(--color-warning,#d97706) 13%,transparent);" +
+      "border:1px solid color-mix(in srgb,var(--color-warning,#d97706) 32%,transparent);" +
+      "font-size:calc(var(--ui-font-size,14px) - 2px);font-weight:500;line-height:1.35;cursor:help;outline:none}" +
+      ".zu-peak-banner:focus-visible{box-shadow:0 0 0 2px color-mix(in srgb,var(--color-warning,#d97706) 45%,transparent)}" +
+      ".zu-peak-banner-sub{font-weight:400;opacity:.85;white-space:nowrap;font-size:calc(var(--ui-font-size,14px) - 3px)}" +
+      ".zu-peak-pop{display:none;position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:20;cursor:default;" +
+      "padding:8px 10px;border-radius:8px;background:var(--color-popover,var(--color-menu,#1e2028));" +
+      "color:var(--color-foreground,#e9edf4);border:1px solid var(--color-border,rgba(255,255,255,.14));" +
+      "box-shadow:0 8px 24px rgba(0,0,0,.28);font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);" +
+      "font-size:calc(var(--ui-font-size,14px) - 2px);font-weight:400;line-height:1.5;white-space:normal}" +
+      ".zu-peak-pop::before{content:'';position:absolute;left:0;right:0;top:-6px;height:6px}" +
+      ".zu-peak-banner:hover .zu-peak-pop,.zu-peak-banner:focus-within .zu-peak-pop{display:block}" +
+      ".zu-peak-pop-t{font-weight:600;color:var(--color-warning,#d97706);margin-bottom:2px}" +
+      ".zu-peak-pop-s{color:var(--color-foreground-subtle,#8791a3);margin-top:2px;font-size:calc(var(--ui-font-size,14px) - 3px)}" +
+      ".zu-peak-pop-link{display:inline-block;margin-top:5px;color:var(--color-brand,#57c7ff);text-decoration:underline;cursor:pointer;font-size:calc(var(--ui-font-size,14px) - 3px);outline:none}" +
+      ".zu-peak-pop-link:hover{opacity:.85}" +
+      ".zu-peak-pop-link:focus-visible{outline:2px solid var(--color-brand,#57c7ff);outline-offset:2px;border-radius:3px}" +
       /* v190：高亮改琥珀左条+淡底（--color-brand 在宿主主题可能是白色系，描边观感像输入框焦点） */
       ".zu-settings label.zu-ac-flash{background:rgba(245,185,68,.10);box-shadow:inset 3px 0 0 #f5b944;" +
       "border-radius:6px;transition:background .3s,box-shadow .3s}" +
