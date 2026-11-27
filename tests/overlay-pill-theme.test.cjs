@@ -2236,6 +2236,80 @@ test('pill layout safety browser regressions (isolated fixture)', { skip: skipRe
   });
 });
 
+// issue #517: the pill bar floats over the message timeline (ZCode 4.0 mounts
+// the composer as sticky inside the scrollable timeline), so content scrolls
+// behind the bar. The bar must clip the timeline below itself instead.
+test('pill bar clips timeline content below the floating bar (isolated fixture)', { skip: skipReason, timeout: 60000 }, async t => {
+  const b = await startBrowser(t);
+
+  // Build a ZCode-4.0-style pane: a scrollable [data-testid="v4-timeline"]
+  // whose content extends past the floating composer card and bar top.
+  async function buildTimeline() {
+    await b.evaluate(`(() => {
+      const pane = document.querySelector('#pane-a');
+      pane.setAttribute('data-testid', 'v4-pane-shell-a');
+      pane.style.height = '300px';
+      const tl = document.createElement('div');
+      tl.setAttribute('data-testid', 'v4-timeline');
+      tl.style.cssText = 'position:absolute;left:0;right:0;top:0;height:300px;overflow-y:auto';
+      tl.innerHTML = '<div style="height:2000px"></div>';
+      pane.insertBefore(tl, pane.firstChild);
+      const card = document.querySelector('#card-a');
+      Object.assign(card.style, { position: 'absolute', left: '8px', right: '8px', bottom: '80px' });
+    })()`);
+  }
+  const measure = `(() => {
+    const tl = document.querySelector('[data-testid="v4-timeline"]');
+    const bar = document.querySelector('.zusage-root');
+    const card = document.querySelector('#card-a');
+    const tr = tl.getBoundingClientRect(), br = bar.getBoundingClientRect(), cr = card.getBoundingClientRect();
+    return { clip: tl.style.clipPath, barTop: Math.round(br.top), barBottom: Math.round(br.bottom),
+      cardBottom: Math.round(cr.bottom), tlBottom: Math.round(tr.bottom), barDisplay: getComputedStyle(bar).display };
+  })()`;
+
+  await t.test('pill: timeline gets a clip-path ending at the card bottom', async () => {
+    await reset(b, { stored: 'pill', narrow: true });
+    await buildTimeline();
+    await b.waitFor(`document.querySelector('[data-testid="v4-timeline"]').style.clipPath.indexOf('inset') === 0`, 'timeline was not clipped in pill theme');
+    const m = await b.evaluate(measure);
+    assert.match(m.clip, /^inset\(0px 0px (\d+)px( 0px)?\)$/, JSON.stringify(m));   // Chrome 序列化省略末段 0
+    const cut = Number(m.clip.match(/^inset\(0px 0px (\d+)px(?: 0px)?\)$/)[1]);
+    assert.ok(Math.abs(cut - Math.round(m.tlBottom - Math.min(m.barTop, m.cardBottom))) <= 2, JSON.stringify(m));
+    assert.ok(m.barTop >= m.cardBottom - 1, `bar must stay below the card: ${JSON.stringify(m)}`);
+  });
+
+  await t.test('switching to default (bar inside card) removes the clip', async () => {
+    await choose(b, 'default', 0);
+    await b.waitFor(`document.querySelector('[data-testid="v4-timeline"]').style.clipPath === ''`, 'clip survived the theme switch');
+    const after = await b.evaluate(`(() => {
+      const bar = document.querySelector('.zusage-root'), card = document.querySelector('#card-a');
+      return { inCard: card.contains(bar), clip: document.querySelector('[data-testid="v4-timeline"]').style.clipPath };
+    })()`);
+    assert.equal(after.inCard, true, JSON.stringify(after));
+  });
+
+  await t.test('hiding the bar (host modal) removes the clip; both return with the bar', async () => {
+    await choose(b, 'pill', 0);
+    await b.waitFor(`document.querySelector('[data-testid="v4-timeline"]').style.clipPath.indexOf('inset') === 0`, 'clip did not return in pill theme');
+    await b.evaluate(`(() => {
+      const backdrop = document.createElement('div');
+      backdrop.id = 'host-modal-backdrop-517';
+      backdrop.style.cssText = 'position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.45)';
+      document.body.appendChild(backdrop);
+      const dialog = document.createElement('div');
+      dialog.id = 'host-alertdialog-517';
+      dialog.setAttribute('role', 'alertdialog');
+      dialog.setAttribute('aria-label', 'Host confirmation');
+      dialog.style.cssText = 'position:fixed;left:20px;top:80px;width:200px;height:120px;z-index:101;background:white';
+      document.body.appendChild(dialog);
+    })()`);
+    await b.waitFor(`getComputedStyle(document.querySelector('.zusage-root')).display === 'none'`, 'bar did not hide under host modal');
+    assert.equal(await b.evaluate(`document.querySelector('[data-testid="v4-timeline"]').style.clipPath`), '', 'clip must be cleared while the bar is hidden');
+    await b.evaluate(`document.querySelector('#host-alertdialog-517').remove(); document.querySelector('#host-modal-backdrop-517').remove();`);
+    await b.waitFor(`getComputedStyle(document.querySelector('.zusage-root')).display !== 'none' && document.querySelector('[data-testid="v4-timeline"]').style.clipPath.indexOf('inset') === 0`, 'bar/clip did not return after modal closed');
+  });
+});
+
 test('v146 compact theme browser behaviour (isolated fixture)', { skip: skipReason, timeout: 90000 }, async t => {
   const b = await startBrowser(t);
   // 精简模式装载（reset() 的可见等待不适用：条本就 display:none）
