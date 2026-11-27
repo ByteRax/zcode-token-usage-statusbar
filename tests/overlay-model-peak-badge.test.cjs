@@ -101,8 +101,11 @@ function makeCtx(rows, opts) {
   const seg = { is_peak: !!o.isPeak, next_change_at: 1,
     factors: [['glm-5.4', 0.67, 2.0], ['glm-5.3', 1.0, 3.0], ['glm-5.3-flash', 0.4, 1.2],
       ['glm-5.3-flashx', 1.0, 3.0]] };
+  if (o.factorsV3) seg.factors_v3 = o.factorsV3;
+  const data = o.data === undefined ? { peak: { glm_plan: seg } } : o.data;
+  if (data && o.quota !== undefined) data.quota = o.quota;
   return {
-    state: { data: o.data === undefined ? { peak: { glm_plan: seg } } : o.data },
+    state: { data: data },
     inactive: () => false,
     effectiveQuotaProvider: () => (o.paneProvider === undefined ? '' : o.paneProvider),
     document: {
@@ -368,4 +371,83 @@ test('非 GLM 弹层门控不过时对已有高峰横条保持 no-op 不摘除',
   const api = run(makeCtx([rOther], { isPeak: false, querySelector: findInPanel }));
   api.syncModelPeakBadges();
   assert.equal(foreignBanner.parentNode, panel, '门控不过实例绝不摘除横条');
+});
+
+test('区分套餐版本：V3 显示 1.00×/0.50×（Flash 限时 0.50×/0.25×），V1/V2/团队显示历史倍率', () => {
+  const factorsV3 = [
+    ['glm-5.4', 0.5, 1.0],
+    ['glm-5.3', 0.5, 1.0],
+    ['glm-5.3-flash', 0.25, 0.5],
+    ['glm-5.3-flashx', 0.5, 1.0],
+  ];
+  const panel = el('div');
+  const list = el('div');
+  list.setAttribute('data-composer-model-list', '');
+  const r53 = makeRow({ provider: PLAN, name: 'GLM-5.3' });
+  const r54 = makeRow({ provider: PLAN, name: 'GLM-5.4' });
+  const rFlash = makeRow({ provider: PLAN, name: 'GLM-5.3-Flash' });
+  list.appendChild(r53);
+  list.appendChild(r54);
+  list.appendChild(rFlash);
+  panel.appendChild(list);
+  const findInPanel = (sel) => {
+    const stack = [panel];
+    while (stack.length) {
+      const n = stack.pop();
+      for (const c of n.children) {
+        if (sel === '[data-composer-model-list]' && c.attrs['data-composer-model-list'] !== undefined) return c;
+        if (sel === '[data-zusage-peak-banner]' && c.attrs['data-zusage-peak-banner'] !== undefined) return c;
+        stack.push(c);
+      }
+    }
+    return null;
+  };
+  const opened = [];
+  // 1) 未知版本有 factors_v3 时默认按 V3 展示（含 Flash 限时 5 折提示）
+  const ctx = makeCtx([r53, r54, rFlash], { isPeak: true, factorsV3, querySelector: findInPanel });
+  ctx.state.data.peak.glm_plan.flash_promo = true;
+  ctx.window = { zcode: { openExternal: (u) => opened.push(u) } };
+  const api = run(ctx);
+  api.syncModelPeakBadges();
+  assert.equal(findBadge(r53).textContent, '1.00×');
+  assert.equal(findBadge(r54).textContent, '1.00×');
+  assert.equal(findBadge(rFlash).textContent, '0.50×');
+  assert.match(findBadge(r53).attrs.title, /V3 积分倍率/);
+  assert.match(findBadge(rFlash).attrs.title, /限时 5 折/);
+  const banner = findInPanel('[data-zusage-peak-banner]');
+  assert.ok(banner);
+  banner.children[2].children[3].listeners.click[0]({ stopPropagation() {}, preventDefault() {} });
+  assert.equal(opened[0], 'https://docs.bigmodel.cn/cn/coding-plan/overview#%E7%A7%AF%E5%88%86%E6%8A%B5%E6%89%A3%E8%AE%A1%E7%AE%97%E6%96%B9%E5%BC%8F');
+
+  // 2) 非高峰 V3 显示 0.50×（Flash 显示 0.25×）
+  ctx.state.data.quota = { sources: { bigmodel: { plan: { version: 'V3' } } } };
+  ctx.state.data.peak.glm_plan.is_peak = false;
+  api.syncModelPeakBadges();
+  assert.equal(findBadge(r53).textContent, '0.50×');
+  assert.equal(findBadge(r54).textContent, '0.50×');
+  assert.equal(findBadge(rFlash).textContent, '0.25×');
+
+  // 3) quota 识别为 V2：原位更新为 V2 历史倍率，横条来源切换 usage-revision
+  ctx.state.data.peak.glm_plan.is_peak = true;
+  ctx.state.data.quota = { sources: { bigmodel: { plan: { version: 'V2' } } } };
+  api.syncModelPeakBadges();
+  assert.equal(findBadge(r53).textContent, '3.00×');
+  assert.equal(findBadge(r54).textContent, '2.00×');
+  assert.match(findBadge(r53).attrs.title, /V2 套餐倍率/);
+  findInPanel('[data-zusage-peak-banner]').children[2].children[3].listeners.click[0]({ stopPropagation() {}, preventDefault() {} });
+  assert.equal(opened[1], 'https://docs.bigmodel.cn/cn/coding-plan/notice/usage-revision#%E4%B8%89%E3%80%81%E5%8E%86%E5%8F%B2%E5%A5%97%E9%A4%90%E7%94%A8%E9%87%8F%E8%AF%B4%E6%98%8E%E5%A4%87%E6%9F%A5');
+
+  // 4) quota 识别为 V1：同样按历史倍率展示（含 Flash 限时 5 折）
+  ctx.state.data.quota = { sources: { bigmodel: { plan: { version: 'V1' } } } };
+  api.syncModelPeakBadges();
+  assert.equal(findBadge(r53).textContent, '3.00×');
+  assert.match(findBadge(r53).attrs.title, /V1 套餐倍率/);
+  assert.ok(findInPanel('[data-zusage-peak-banner]'));
+
+  // 5) 团队套餐（providerId 含 team）：无需 quota 即按历史/团队表展示
+  const rTeam = makeRow({ provider: 'account:bigmodel-team-coding-plan', name: 'GLM-5.3' });
+  const apiTeam = run(makeCtx([rTeam], { isPeak: true, factorsV3 }));
+  apiTeam.syncModelPeakBadges();
+  assert.equal(findBadge(rTeam).textContent, '3.00×');
+  assert.match(findBadge(rTeam).attrs.title, /团队套餐倍率/);
 });

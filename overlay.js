@@ -27990,12 +27990,46 @@
      * （span.flex-1）末尾、margin-left:auto，右缘止于内容区与之零重叠。 */
     var ZU_PEAK_ROW_SEL = '[data-testid^="chat-model-select-item-"]';
     var ZU_PEAK_DOC_URL = "https://docs.bigmodel.cn/cn/coding-plan/notice/usage-revision#%E4%B8%89%E3%80%81%E5%8E%86%E5%8F%B2%E5%A5%97%E9%A4%90%E7%94%A8%E9%87%8F%E8%AF%B4%E6%98%8E%E5%A4%87%E6%9F%A5";
-    function zuPeakOpenDoc() {
+    var ZU_PEAK_V3_DOC_URL = "https://docs.bigmodel.cn/cn/coding-plan/overview#%E7%A7%AF%E5%88%86%E6%8A%B5%E6%89%A3%E8%AE%A1%E7%AE%97%E6%96%B9%E5%BC%8F";
+    function zuPeakOpenDoc(url) {
+      var target = url || ZU_PEAK_DOC_URL;
       try {
         var zc = typeof window !== "undefined" && window.zcode;
-        if (zc && typeof zc.openExternal === "function") zc.openExternal(ZU_PEAK_DOC_URL);
-        else if (typeof window !== "undefined" && typeof window.open === "function") window.open(ZU_PEAK_DOC_URL, "_blank", "noopener");
+        if (zc && typeof zc.openExternal === "function") zc.openExternal(target);
+        else if (typeof window !== "undefined" && typeof window.open === "function") window.open(target, "_blank", "noopener");
       } catch (e) { }
+    }
+    function zuPeakPlanVersion(pid) {
+      /* 区分套餐版本（V1/V2/V3/team）：team 从 providerId 判定；个人套餐读 quota 订阅元数据 */
+      var p = String(pid || "").toLowerCase();
+      if (p.indexOf("team") !== -1) return "team";
+      var q = null;
+      try {
+        var qa = state.data && state.data.quota;
+        if (qa && qa.sources) {
+          var sid = p.indexOf("bigmodel") !== -1 ? "bigmodel" : (p.indexOf("zai") !== -1 ? "zai" : "");
+          if (sid && qa.sources[sid]) q = qa.sources[sid];
+        } else if (qa) {
+          q = qa;
+        }
+      } catch (e) { }
+      var ver = q && q.plan && typeof q.plan.version === "string" ? q.plan.version.trim().toUpperCase() : "";
+      return (ver === "V1" || ver === "V2" || ver === "V3") ? ver : "";
+    }
+    function zuPeakResolveFactors(seg, ver) {
+      if (ver === "V1" || ver === "V2" || ver === "team") {
+        return { skip: false, factors: seg.factors, isV3: false,
+          label: ver === "team" ? "团队套餐倍率" : ver + " 套餐倍率" };
+      }
+      if (ver === "V3") {
+        return (seg.factors_v3 && seg.factors_v3.length)
+          ? { skip: false, factors: seg.factors_v3, isV3: true, label: "V3 积分倍率" }
+          : { skip: true, factors: null, isV3: true, label: "" };
+      }
+      if (seg.factors_v3 && seg.factors_v3.length) {
+        return { skip: false, factors: seg.factors_v3, isV3: true, label: "V3 积分倍率" };
+      }
+      return { skip: false, factors: seg.factors, isV3: false, label: "额度消耗倍率" };
     }
     function zuPeakProviderOf(row) {
       /* 行级供应商 id：祖先分组键（剥 registry-provider: 前缀）→ testid value 首段 → null */
@@ -28085,7 +28119,7 @@
       }
       return null;
     }
-    function syncModelPeakBanner(isPeak, firstOkRow) {
+    function syncModelPeakBanner(isPeak, firstOkRow, isV3) {
       var existing = null;
       try {
         if (typeof document.querySelector === "function") existing = document.querySelector("[data-zusage-peak-banner]");
@@ -28094,11 +28128,16 @@
         if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
         return;
       }
+      var docUrl = isV3 ? ZU_PEAK_V3_DOC_URL : ZU_PEAK_DOC_URL;
       var anchor = zuPeakBannerAnchor(firstOkRow);
       if (!anchor || !anchor.parent || typeof anchor.parent.insertBefore !== "function") return;
-      if (existing && existing.isConnected && existing.parentNode === anchor.parent) return;
+      if (existing && existing.isConnected && existing.parentNode === anchor.parent) {
+        existing.__zuPeakDocUrl = docUrl;
+        return;
+      }
       if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
       var banner = document.createElement("div");
+      banner.__zuPeakDocUrl = docUrl;
       banner.setAttribute("data-zusage-peak-banner", "1");
       banner.setAttribute("tabindex", "0");
       banner.className = "zu-peak-banner";
@@ -28131,9 +28170,9 @@
         };
         popLink.addEventListener("pointerdown", stopEvt);
         popLink.addEventListener("mousedown", stopEvt);
-        popLink.addEventListener("click", function (e) { stopEvt(e); zuPeakOpenDoc(); });
+        popLink.addEventListener("click", function (e) { stopEvt(e); zuPeakOpenDoc(banner.__zuPeakDocUrl); });
         popLink.addEventListener("keydown", function (e) {
-          if (e && (e.key === "Enter" || e.key === " ")) { stopEvt(e); zuPeakOpenDoc(); }
+          if (e && (e.key === "Enter" || e.key === " ")) { stopEvt(e); zuPeakOpenDoc(banner.__zuPeakDocUrl); }
         });
       }
       pop.appendChild(popT);
@@ -28149,40 +28188,50 @@
       if (inactive()) return;
       var seg = null;
       try { seg = state.data && state.data.peak && state.data.peak.glm_plan; } catch (e) { }
-      if (!seg || !seg.factors || !seg.factors.length) return;   // 段缺失先早退，免旧 Python/lean 页面每拍白查
+      if (!seg || ((!seg.factors || !seg.factors.length) && (!seg.factors_v3 || !seg.factors_v3.length))) return;   // 段缺失先早退，免旧 Python/lean 页面每拍白查
       var rows = null;
       try { rows = document.querySelectorAll(ZU_PEAK_ROW_SEL); } catch (e) { return; }
       if (!rows || !rows.length) return;   // 弹层未开：一次查询早退
       var paneOk = null;   // 惰性：行级判定不出供应商时才询本 pane 身份
+      var panePid = "";
       var firstOkRow = null;
+      var bannerV3 = false;
+      var hasV1Skip = false;
       for (var i = 0; i < rows.length; i++) {
         var row = rows[i];
         var pid = zuPeakProviderOf(row);
         var ok = zuPeakFamilyOk(pid);
         if (!ok && pid == null) {
           if (paneOk === null) {
-            var pp = "";
-            try { pp = effectiveQuotaProvider() || ""; } catch (e) { }
-            paneOk = zuPeakFamilyOk(pp);
+            try { panePid = effectiveQuotaProvider() || ""; } catch (e) { }
+            paneOk = zuPeakFamilyOk(panePid);
           }
           ok = paneOk;
+          if (ok) pid = panePid;
         }
         if (!ok) continue;   // 非对称 no-op：绝不摘除（防多实例互踩）
-        if (!firstOkRow) firstOkRow = row;
+        var resolved = zuPeakResolveFactors(seg, zuPeakPlanVersion(pid));
+        var badge = null;
+        try { badge = row.querySelector("[data-zusage-peak]"); } catch (e) { }
+        if (resolved.skip || !resolved.factors || !resolved.factors.length) {
+          if (badge && badge.parentNode) badge.parentNode.removeChild(badge);
+          hasV1Skip = true;
+          continue;
+        }
+        if (!firstOkRow) { firstOkRow = row; bannerV3 = resolved.isV3; }
         var pair = null;
         var name = "";
         try { name = String(zuPeakModelName(row) || "").toLowerCase(); } catch (e) { }
-        if (name) pair = zuPeakMatchFactor(name, seg.factors);
-        var badge = null;
-        try { badge = row.querySelector("[data-zusage-peak]"); } catch (e) { }
+        if (name) pair = zuPeakMatchFactor(name, resolved.factors);
         if (!pair) {
           if (badge && badge.parentNode) badge.parentNode.removeChild(badge);
           continue;
         }
         var val = seg.is_peak ? pair[2] : pair[1];
         var txt = zuPeakFormat(val);
+        var promoNote = (seg.flash_promo && name === "glm-5.3-flash") ? "，含 11.24–12.24 限时 5 折" : "";
         var tip = "高峰 " + zuPeakFormat(pair[2]) + " · 非高峰 " + zuPeakFormat(pair[1]) +
-                  "（额度消耗倍率，高峰：周一至五 14:00–18:00）";
+                  "（" + resolved.label + promoNote + "，高峰：周一至五 14:00–18:00）";
         /* 挂点=行内徽标容器（span.flex-1，视觉徽标所在）；无则退化整行末尾 */
         var cont = row;
         try {
@@ -28208,7 +28257,8 @@
         if (badge.textContent !== txt) badge.textContent = txt;
         if (badge.getAttribute("title") !== tip) badge.setAttribute("title", tip);
       }
-      if (firstOkRow) syncModelPeakBanner(!!seg.is_peak, firstOkRow);
+      if (firstOkRow) syncModelPeakBanner(!!seg.is_peak, firstOkRow, bannerV3);
+      else if (hasV1Skip) syncModelPeakBanner(false, null, false);
     }
     /* ---------- v80 in-card 挂载：条挂输入卡片内部、group/toolbar 工具行之后自占一行 ----------
      * 宿主 ChatPromptEditor 的工具行是卡片（flex-col gap-3）的最后一个子块；条作为其兄弟

@@ -4,18 +4,24 @@
 
 ## 产品规则
 
-- **显示条件（三者同时成立）**：① 本行供应商属 GLM 编码计划族（`account:bigmodel-*` / `account:zai-*` 且含 `-coding-plan`；start-plan 无官方系数，暂排除）；② 快照带 `peak.glm_plan` 段（旧 Python/非桌面链无此段→整体静默）；③ 模型名（小写化）与 `factors` 键**精确等值**命中（不用子串——`glm-5.3-flashx` 与 `glm-5.3-flash` 各命中自身键不串档；未收录模型如 Highspeed **不显示**，宁缺勿错）。
-- **显示内容**：按当前时段单值（快照生成时 Python 判定的 `is_peak`，**恒两位小数**如 `2.00×`/`0.67×`/`1.00×`——尾零裁剪会让各行宽窄不一、左缘参差，v484 真机反馈修正）；悬停 title 带双档全貌：`高峰 X× · 非高峰 Y×（额度消耗倍率，高峰：周一至五 14:00–18:00）`，双档同用两位小数格式化。弹层打开中跨 18:00 不实时变（维护者已拍板，2026-11-26）；快照泵刷新后由 heavy 对账更新。
+- **显示条件（三者同时成立）**：① 本行供应商属 GLM 编码计划族（`account:bigmodel-*` / `account:zai-*` 且含 `-coding-plan`；start-plan 无官方系数，暂排除）；② 快照带 `peak.glm_plan` 段（旧 Python/非桌面链无此段→整体静默）；③ 模型名（小写化）与当前套餐版本对应系数表键**精确等值**命中（不用子串——`glm-5.3-flashx` 与 `glm-5.3-flash` 各命中自身键不串档；未收录模型如 Highspeed **不显示**，宁缺勿错）。
+- **套餐版本区分**：
+  - 供应商 ID 含 `team` → 判定为 `team`（历史/团队倍率：`factors`）。
+  - 个人套餐 → 读取桌面快照 `quota.sources.<bigmodel|zai>.plan.version`（兼容顶层 `quota.plan.version`）：
+    - `V3` → 使用 `factors_v3`（基础积分制：高峰 `1.00×`、非高峰 `0.50×`；`glm-5.3-flash` 11.24–12.24 限时 50% 活动期为 `0.25×/0.50×`）；
+    - `V1` / `V2` → 使用 `factors`（历史套餐倍率：5.4 `0.67×/2.00×`、5.3 `1.00×/3.00×`、5.3-flash `0.40×/1.20×` 或限时 `0.20×/0.60×`、5.3-flashx `1.00×/3.00×`）；
+    - 订阅版本暂缺（quota 未就绪/关闭/Z.ai 无订阅端点）→ 若快照含 `factors_v3` 默认按现行官网 V3 口径（`factors_v3`）展示，旧 Python 无 `factors_v3` 时兼容回退 `factors`；一旦 `quota` 拉取到 `V1`/`V2`，由 `heavy()` 对账原位更新。
+- **显示内容**：按当前时段单值（快照生成时 Python 判定的 `is_peak`，**恒两位小数**如 `2.00×`/`0.67×`/`1.00×`/`0.50×`——尾零裁剪会让各行宽窄不一、左缘参差，v484 真机反馈修正）；悬停 title 带双档全貌：`高峰 X× · 非高峰 Y×（<版本口径说明>，高峰：周一至五 14:00–18:00）`，双档同用两位小数格式化。弹层打开中跨 18:00 不实时变（维护者已拍板，2026-11-26）；快照泵刷新后由 heavy 对账更新。
 - **高峰期显著标明与时段提示**：
   - **行级倍率视觉区分**：`is_peak` 为真时，行右缘倍率改用醒目警告色（`var(--color-warning, #d97706)`、`font-weight: 500`）；非高峰期维持弱化灰（`var(--color-foreground-subtle, #8791a3)`、`font-weight: 400`）。
-  - **弹层顶部显著横条（`[data-zusage-peak-banner]`）**：当 `is_peak` 为真且当前弹层存在至少一行门控通过的 GLM 编码计划模型时，在 `[data-composer-model-list]` 正上方（无该容器时回退首条门控通过行的父容器前）插入 `.zu-peak-banner` 横条，显著标明「⚡ 当前为高峰期」及「高峰倍率生效中」；`is_peak` 为假时由门控通过实例摘除（门控不过仍整体 no-op）。
-  - **悬停高峰时段提示**：鼠标悬停（或键盘聚焦）`.zu-peak-banner` 时，通过纯 CSS 显隐的内部浮层 `.zu-peak-pop`（带 `::before` 悬停桥接防滑入断触、随弹层销毁、不挂 `document.body`、不新增全局监听器）及原生 `title` 提示高峰时段：**周一至周五 14:00–18:00（北京时间）**，其余时段及周末全天为非高峰。气泡内附可点击来源链接（`来源：BigModel 官方套餐用量说明 ↗`），点击优先走 `window.zcode.openExternal`（兜底 `window.open`）打开官方说明页 `https://docs.bigmodel.cn/cn/coding-plan/notice/usage-revision#%E4%B8%89%E3%80%81%E5%8E%86%E5%8F%B2%E5%A5%97%E9%A4%90%E7%94%A8%E9%87%8F%E8%AF%B4%E6%98%8E%E5%A4%87%E6%9F%A5`。
+  - **弹层顶部显著横条（`[data-zusage-peak-banner]`）**：当 `is_peak` 为真且当前弹层存在至少一行门控通过的 GLM 编码计划模型时，在 `[data-composer-model-list]` 正上方（无该容器时回退首条门控通过行的父容器前）插入 `.zu-peak-banner` 横条，显著标明「⚡ 当前为高峰期」及「高峰倍率生效中」；`is_peak` 为假时由门控通过实例摘除（非 GLM 实例仍整体 no-op）。
+  - **悬停高峰时段提示**：鼠标悬停（或键盘聚焦）`.zu-peak-banner` 时，通过纯 CSS 显隐的内部浮层 `.zu-peak-pop`（带 `::before` 悬停桥接防滑入断触、随弹层销毁、不挂 `document.body`、不新增全局监听器）及原生 `title` 提示高峰时段：**周一至周五 14:00–18:00（北京时间）**，其余时段及周末全天为非高峰。气泡内附可点击来源链接（`来源：BigModel 官方套餐用量说明 ↗`），点击优先走 `window.zcode.openExternal`（兜底 `window.open`）打开对应官方说明页（V3 打开 `https://docs.bigmodel.cn/cn/coding-plan/overview#%E7%A7%AF%E5%88%86%E6%8A%B5%E6%89%A3%E8%AE%A1%E7%AE%97%E6%96%B9%E5%BC%8F`，V1/V2/团队打开 `https://docs.bigmodel.cn/cn/coding-plan/notice/usage-revision#%E4%B8%89%E3%80%81%E5%8E%86%E5%8F%B2%E5%A5%97%E9%A4%90%E7%94%A8%E9%87%8F%E8%AF%B4%E6%98%8E%E5%A4%87%E6%9F%A5`）。
 - **UI**（参考维护者提供的截图，v484 定稿）：行右缘成列对齐（`margin-left:auto` + 恒两位小数 + `font-variant-numeric:tabular-nums`）、字号**随行文本**（不缩小）、`var(--color-foreground-subtle)` 弱化灰、`padding-right:6px` 与选中 ✓（引擎为 `absolute right-2`，位于 `pr-8` padding 区）留呼吸空隙且零重叠；文档流内追加在行内徽标容器末尾。
 - **非对称多实例语义**：门控不过的实例对徽标**整体 no-op（绝不摘除）**——多个分栏多实例并发扫描同一弹层 DOM，防止非 GLM 窗格实例扯掉 GLM 窗格实例刚挂的徽标；摘除/更新只由门控通过的实例按数据失配驱动。
 
 ## 数据契约
 
-- 快照新增顶层 `peak` 段：`{"glm_plan": {"is_peak": bool, "next_change_at": int, "factors": [["glm-5.4",0.67,2.0],["glm-5.3",1.0,3.0],["glm-5.3-flash",0.4,1.2],["glm-5.3-flashx",1.0,3.0]]}}`。生产端 `token_pricing.peak_snapshot_segment()`（唯一事实源），经 `zusage.snapshot(include_peak=…)` 注入，`_peak_segment_safe` 宽捕获、异常省略字段不拖垮快照。
+- 快照新增顶层 `peak` 段：`{"glm_plan": {"is_peak": bool, "next_change_at": int, "factors": [["glm-5.4",0.67,2.0],["glm-5.3",1.0,3.0],["glm-5.3-flash",0.2,0.6],["glm-5.3-flashx",1.0,3.0]], "factors_v3": [["glm-5.4",0.5,1.0],["glm-5.3",0.5,1.0],["glm-5.3-flash",0.25,0.5],["glm-5.3-flashx",0.5,1.0]], "flash_promo": bool}}`（11.24–12.24 限时活动期 `glm-5.3-flash` 在 `factors` 为 `[0.2, 0.6]`、在 `factors_v3` 为 `[0.25, 0.5]`，活动外分别为 `[0.4, 1.2]` 与 `[0.5, 1.0]`）。生产端 `token_pricing.peak_snapshot_segment()`（唯一事实源），经 `zusage.snapshot(include_peak=…)` 注入，`_peak_segment_safe` 宽捕获、异常省略字段不拖垮快照。
 - 门控边界与 `speed_history` 完全同旗：serve 路径 `include_peak=not lean`、桌面 JSON 路径 `include_peak=desktop`；CLI 报表/MCP 不走 `snapshot()`（另链查询，零影响）；手机中继 lean 链不带该段（`mobile-relay.cjs` lean 语义已证）。远端子查询投影无 `peak` 键（契约测试锁定）。
 - 兼容性：旧 Python + 新 overlay → 段缺失静默；新 Python + 旧 overlay → 未知键被忽略。段内无凭据、无身份信息。
 

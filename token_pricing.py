@@ -630,27 +630,58 @@ def next_peak_change(time_sec, mode='deepseek'):
     return sec + 86400
 
 
-# GLM Coding Plan 峰谷额度消耗系数（官方说明，2026-11-26 提供）：系数乘在套餐
-# 额度扣减上，不是现金单价；高峰窗口同 'glm-plan' 口径。glm-5.3-flash 官方另有
-# 0.2/0.6 限时系数但未提供生效区间，暂按常规 0.4/1.2，拿到日期再补自动切换。
-# glm-5.3-flashx 为体验版本，按 flash 系数的 2.5 倍消耗（维护者 2026-11-26 提供）。
+# GLM Coding Plan 峰谷额度消耗系数（官方说明）：系数乘在套餐额度扣减上，不是现金单价；
+# 高峰窗口同 'glm-plan' 口径。
+# 1) 历史套餐（V2 个人版 / 团队版，usage-revision）：
+#    glm-5.3-flash 在 2026-11-24 ~ 2026-12-24（UTC+8）限时活动期间按原系数 50%（0.2/0.6）结算，
+#    活动外按常规 0.4/1.2；glm-5.3-flashx 为体验版按常规 flash×2.5（1.0/3.0）。
+# 2) V3 新版积分套餐（overview）：所有收录模型高峰期按基础积分 1.0 倍消耗，非高峰期按 0.5 倍消耗。
 GLM_PLAN_PEAK_FACTOR = {
     'glm-5.4': (0.67, 2.0),
     'glm-5.3': (1.0, 3.0),
     'glm-5.3-flash': (0.4, 1.2),
     'glm-5.3-flashx': (1.0, 3.0),
 }
+GLM_PLAN_V3_PEAK_FACTOR = {k: (0.5, 1.0) for k in GLM_PLAN_PEAK_FACTOR}
+_FLASH_PROMO_START = calendar.timegm((2026, 11, 24, 0, 0, 0)) - 8 * 3600   # 北京 2026-11-24 00:00:00
+_FLASH_PROMO_END = calendar.timegm((2026, 12, 25, 0, 0, 0)) - 8 * 3600     # 北京 2026-12-25 00:00:00（含 12.24 全天）
 # 模型名匹配用精确等值（小写化后比较），不用子串——防 GLM-5.3-FlashX 子串误命中
 # GLM-5.3-Flash；倍率徽标场景「未收录模型不显示」依赖这一语义（specs/peak-valley-time.md）
 
 
-def glm_plan_peak_factor(model, time_sec):
+def _is_flash_promo(time_sec):
+    try:
+        sec = int(time_sec)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return _FLASH_PROMO_START <= sec < _FLASH_PROMO_END
+
+
+def _glm_plan_pairs(time_sec, plan_version=None):
+    ver = str(plan_version or '').strip().lower()
+    promo = _is_flash_promo(time_sec)
+    if ver == 'v3':
+        if not promo:
+            return GLM_PLAN_V3_PEAK_FACTOR
+        pairs = dict(GLM_PLAN_V3_PEAK_FACTOR)
+        pairs['glm-5.3-flash'] = (0.25, 0.5)
+        return pairs
+    if not promo:
+        return GLM_PLAN_PEAK_FACTOR
+    pairs = dict(GLM_PLAN_PEAK_FACTOR)
+    pairs['glm-5.3-flash'] = (0.2, 0.6)
+    return pairs
+
+
+def glm_plan_peak_factor(model, time_sec, plan_version=None):
     """GLM Coding Plan 模型在指定时刻的额度消耗系数（float）。
 
-    按 is_peak_time(…, 'glm-plan') 选 (非高峰, 高峰) 两档；模型名（去空白小写化）
-    与系数表键精确等值匹配，未收录或名字为空按 1.0（无系数调整）。
+    按 is_peak_time(…, 'glm-plan') 与 plan_version（v3/v2/v1/team）选 (非高峰, 高峰) 两档；
+    模型名（去空白小写化）与系数表键精确等值匹配，未收录或名字为空按 1.0（无系数调整）。
     """
-    pair = GLM_PLAN_PEAK_FACTOR.get(str(model or '').strip().lower())
+    ver = str(plan_version or '').strip().lower()
+    pairs = _glm_plan_pairs(time_sec, plan_version=ver)
+    pair = pairs.get(str(model or '').strip().lower())
     if not pair:
         return 1.0
     return pair[1] if is_peak_time(time_sec, 'glm-plan') else pair[0]
@@ -660,14 +691,19 @@ def peak_snapshot_segment(time_sec=None):
     """桌面快照 peak 段（消费契约见 specs/model-peak-factor-badge.md）。
 
     返回 {"glm_plan": {"is_peak": bool, "next_change_at": int,
-    "factors": [[模型键, 非高峰, 高峰], …]}}；异常向上抛，由 zusage 侧
-    _peak_segment_safe 宽捕获后省略字段。time_sec 缺省取当前时刻。
+    "factors": [[模型键, 非高峰, 高峰], …], "factors_v3": [[模型键, 非高峰, 高峰], …],
+    "flash_promo": bool}}；异常向上抛，由 zusage 侧 _peak_segment_safe 宽捕获后省略字段。
+    time_sec 缺省取当前时刻。
     """
     sec = int(time.time() if time_sec is None else time_sec)
+    v2_pairs = _glm_plan_pairs(sec, plan_version='v2')
+    v3_pairs = _glm_plan_pairs(sec, plan_version='v3')
     return {"glm_plan": {
         "is_peak": is_peak_time(sec, 'glm-plan'),
         "next_change_at": next_peak_change(sec, 'glm-plan'),
-        "factors": [[key, pair[0], pair[1]] for key, pair in GLM_PLAN_PEAK_FACTOR.items()],
+        "factors": [[key, pair[0], pair[1]] for key, pair in v2_pairs.items()],
+        "factors_v3": [[key, pair[0], pair[1]] for key, pair in v3_pairs.items()],
+        "flash_promo": _is_flash_promo(sec),
     }}
 
 

@@ -489,35 +489,62 @@ class PeakValleyTests(unittest.TestCase):
                          self.bj(2026, 11, 30, 14, 0, 0))
 
     def test_glm_plan_peak_factor(self):
-        peak = self.bj(2026, 11, 26, 15, 0, 0)   # 周四 15:00 高峰
-        off = self.bj(2026, 11, 26, 10, 0, 0)    # 周四 10:00 非高峰（glm 口径）
-        sat = self.bj(2026, 11, 28, 15, 0, 0)    # 周六 15:00 非高峰
+        peak = self.bj(2026, 11, 26, 15, 0, 0)      # 周四 15:00 高峰（11.24–12.24 Flash 限时 50% 活动期内）
+        off = self.bj(2026, 11, 26, 10, 0, 0)       # 周四 10:00 非高峰（glm 口径）
+        sat = self.bj(2026, 11, 28, 15, 0, 0)       # 周六 15:00 非高峰
+        before_promo_off = self.bj(2026, 11, 20, 10, 0, 0)   # 活动前非高峰
+        after_promo_peak = self.bj(2026, 12, 25, 15, 0, 0)   # 活动后高峰（周五）
         self.assertEqual(tp.glm_plan_peak_factor('glm-5.4', off), 0.67)
         self.assertEqual(tp.glm_plan_peak_factor('glm-5.4', peak), 2.0)
         self.assertEqual(tp.glm_plan_peak_factor('glm-5.3', peak), 3.0)
         self.assertEqual(tp.glm_plan_peak_factor('glm-5.3', sat), 1.0)
-        # 精确等值：flash 命中自身档位；flashx 命中自身键（体验版=flash×2.5）不串档
-        self.assertEqual(tp.glm_plan_peak_factor('glm-5.3-flash', off), 0.4)
-        self.assertEqual(tp.glm_plan_peak_factor('glm-5.3-flash', peak), 1.2)
+        # 精确等值：flash 在限时活动期内按 0.2/0.6，活动外按 0.4/1.2；flashx 体验版 1.0/3.0 不串档
+        self.assertEqual(tp.glm_plan_peak_factor('glm-5.3-flash', off), 0.2)
+        self.assertEqual(tp.glm_plan_peak_factor('glm-5.3-flash', peak), 0.6)
+        self.assertEqual(tp.glm_plan_peak_factor('glm-5.3-flash', before_promo_off), 0.4)
+        self.assertEqual(tp.glm_plan_peak_factor('glm-5.3-flash', after_promo_peak), 1.2)
         self.assertEqual(tp.glm_plan_peak_factor('glm-5.3-flashx', off), 1.0)
         self.assertEqual(tp.glm_plan_peak_factor('glm-5.3-flashx', peak), 3.0)
+        # V3 新版积分套餐：常规 0.5×/1.0×，GLM-5.3-Flash 11.24–12.24 限时 50% 活动期为 0.25×/0.5×
+        for m in ('glm-5.4', 'glm-5.3', 'glm-5.3-flashx'):
+            self.assertEqual(tp.glm_plan_peak_factor(m, peak, plan_version='V3'), 1.0)
+            self.assertEqual(tp.glm_plan_peak_factor(m, off, plan_version='v3'), 0.5)
+        self.assertEqual(tp.glm_plan_peak_factor('glm-5.3-flash', peak, plan_version='V3'), 0.5)
+        self.assertEqual(tp.glm_plan_peak_factor('glm-5.3-flash', off, plan_version='v3'), 0.25)
+        self.assertEqual(tp.glm_plan_peak_factor('glm-5.3-flash', after_promo_peak, plan_version='V3'), 1.0)
+        self.assertEqual(tp.glm_plan_peak_factor('glm-5.3-flash', before_promo_off, plan_version='V3'), 0.5)
+        # V1 老套餐：与 V2 同款历史倍率（含 Flash 限时活动）
+        self.assertEqual(tp.glm_plan_peak_factor('glm-5.3', peak, plan_version='V1'), 3.0)
+        self.assertEqual(tp.glm_plan_peak_factor('glm-5.3-flash', off, plan_version='v1'), 0.2)
+        self.assertEqual(tp.glm_plan_peak_factor('glm-5.3-flash', after_promo_peak, plan_version='V1'), 1.2)
         # 未收录/空名 → 1.0（无系数调整）
         self.assertEqual(tp.glm_plan_peak_factor('glm-9.9', peak), 1.0)
         self.assertEqual(tp.glm_plan_peak_factor(None, peak), 1.0)
 
     def test_peak_snapshot_segment(self):
-        seg = tp.peak_snapshot_segment(self.bj(2026, 11, 26, 15, 0, 0))   # 周四 15:00 高峰
+        seg = tp.peak_snapshot_segment(self.bj(2026, 11, 26, 15, 0, 0))   # 周四 15:00 高峰（活动期）
         self.assertEqual(set(seg.keys()), {"glm_plan"})
         g = seg["glm_plan"]
         self.assertIs(g["is_peak"], True)
+        self.assertIs(g["flash_promo"], True)
         self.assertEqual(g["next_change_at"], self.bj(2026, 11, 26, 18, 0, 0))
         self.assertEqual([f[0] for f in g["factors"]],
                          ["glm-5.4", "glm-5.3", "glm-5.3-flash", "glm-5.3-flashx"])
         self.assertEqual(g["factors"][0], ["glm-5.4", 0.67, 2.0])
+        self.assertEqual(g["factors"][2], ["glm-5.3-flash", 0.2, 0.6])
         self.assertEqual(g["factors"][3], ["glm-5.3-flashx", 1.0, 3.0])
-        off = tp.peak_snapshot_segment(self.bj(2026, 11, 26, 10, 0, 0))["glm_plan"]   # glm 口径谷
+        self.assertEqual(g["factors_v3"], [
+            ["glm-5.4", 0.5, 1.0],
+            ["glm-5.3", 0.5, 1.0],
+            ["glm-5.3-flash", 0.25, 0.5],
+            ["glm-5.3-flashx", 0.5, 1.0],
+        ])
+        off = tp.peak_snapshot_segment(self.bj(2026, 12, 25, 10, 0, 0))["glm_plan"]   # 活动后谷
         self.assertIs(off["is_peak"], False)
-        self.assertEqual(off["next_change_at"], self.bj(2026, 11, 26, 14, 0, 0))
+        self.assertIs(off["flash_promo"], False)
+        self.assertEqual(off["factors"][2], ["glm-5.3-flash", 0.4, 1.2])
+        self.assertEqual(off["factors_v3"][2], ["glm-5.3-flash", 0.5, 1.0])
+        self.assertEqual(off["next_change_at"], self.bj(2026, 12, 25, 14, 0, 0))
         # 非法时刻按契约向上抛（zusage 侧 _peak_segment_safe 宽捕获后省略），本函数不吞
         with self.assertRaises(ValueError):
             tp.peak_snapshot_segment("abc")
