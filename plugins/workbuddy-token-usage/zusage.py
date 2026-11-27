@@ -669,6 +669,923 @@ _SESS_CACHE = {}
 _SESS_WM = {}
 
 
+# ---------- 进程内增量聚合引擎（specs/perf-lag-reduction.md §20） ----------
+# 针对 GB 级大库无 completed_at 索引导致水位变化后 7 项全表扫描冷帧 ~1s 的问题：
+# 常驻进程按 dbkey 维护增量累加器，仅拉取 model_usage WHERE rowid > last_rowid 的新行。
+# 发生 DELETE / 重建 / 跨日 / covers 变化 / 超期时自动全量重建；内存库或桩连接自动退回原全量路径。
+_INCR_STATES = {}
+_INCR_REBUILD_MS = 5 * 60 * 1000
+_INCR_MAX_STATES = 4
+_INCR_DELTA_COLS = (
+    "rowid, id, session_id, turn_id, model_id, provider_id, status, query_source, "
+    "input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, "
+    "cache_creation_input_tokens, computed_total_tokens, tool_call_count, retry_count, "
+    "duration_ms, time_to_first_token_ms, started_at, first_token_at, completed_at"
+)
+
+
+class _IncrState:
+    __slots__ = (
+        "dbkey", "built_at", "last_rowid", "last_rowid_id", "row_count",
+        "today_start_ms", "today_end_ms", "today_date", "covers", "ready",
+        "scan_map", "provfbk",
+        "today_agg", "today_rate_out", "today_rate_ms", "today_per_model",
+        "today_models", "today_mnames",
+        "ap_sess_agg", "ap_sess_groups", "ap_sess_mnames",
+        "ap_rate_out", "ap_rate_ms", "ap_per_model",
+        "sh_turns", "sh_truncated",
+        "sd_days", "sd_truncated", "sd_start_ms", "sd_start_date", "sd_today_date",
+    )
+
+    def __init__(self, dbkey, now_ms, last_rowid, last_rowid_id, row_count,
+                 today_start_ms, today_end_ms, today_date, covers):
+        self.dbkey = dbkey
+        self.built_at = now_ms
+        self.last_rowid = last_rowid
+        self.last_rowid_id = last_rowid_id
+        self.row_count = row_count
+        self.today_start_ms = today_start_ms
+        self.today_end_ms = today_end_ms
+        self.today_date = today_date
+        self.covers = covers
+        self.ready = set()
+        self.scan_map = None
+        self.provfbk = (-1, -1, "")
+        self.today_agg = None
+        self.today_rate_out = 0
+        self.today_rate_ms = 0
+        self.today_per_model = None
+        self.today_models = None
+        self.today_mnames = None
+        self.ap_sess_agg = None
+        self.ap_sess_groups = None
+        self.ap_sess_mnames = None
+        self.ap_rate_out = 0
+        self.ap_rate_ms = 0
+        self.ap_per_model = None
+        self.sh_turns = None
+        self.sh_truncated = False
+        self.sd_days = None
+        self.sd_truncated = 0
+        self.sd_start_ms = 0
+        self.sd_start_date = None
+        self.sd_today_date = None
+
+    def _probe(self, con):
+        mr = con.execute("select max(rowid), count(*) from model_usage").fetchone()
+        max_rid = (mr[0] or 0) if mr else 0
+        cnt = (mr[1] or 0) if mr else 0
+        rid_id = None
+        if max_rid > 0:
+            r2 = con.execute("select id from model_usage where rowid=?", (max_rid,)).fetchone()
+            rid_id = r2[0] if r2 else None
+        return max_rid, cnt, rid_id
+
+    def sync(self, con):
+        now_ms = int(time.time() * 1000)
+        day = _day_start()
+        t_start = _epoch_ms(day)
+        t_end = _epoch_ms(day + timedelta(days=1))
+        t_date = day.date()
+        covers = _provider_first_token_covers(con)
+        if (now_ms - self.built_at >= _INCR_REBUILD_MS
+                or t_date != self.today_date
+                or t_start != self.today_start_ms
+                or covers != self.covers):
+            return False
+
+        max_rid, cnt, _ = self._probe(con)
+        if max_rid < self.last_rowid:
+            return False
+        if max_rid == self.last_rowid:
+            if cnt != self.row_count:
+                return False
+            if self.last_rowid > 0:
+                r_chk = con.execute("select id from model_usage where rowid=?", (self.last_rowid,)).fetchone()
+                if not r_chk or r_chk[0] != self.last_rowid_id:
+                    return False
+            return True
+
+        # max_rid > self.last_rowid: 校验旧水位锚点并拉取增量行
+        if self.last_rowid > 0:
+            r_chk = con.execute("select id from model_usage where rowid=?", (self.last_rowid,)).fetchone()
+            if not r_chk or r_chk[0] != self.last_rowid_id:
+                return False
+        delta = con.execute(
+            f"select {_INCR_DELTA_COLS} from model_usage where rowid > ? and rowid <= ? order by rowid asc",
+            (self.last_rowid, max_rid),
+        ).fetchall()
+        if self.row_count + len(delta) != cnt:
+            return False
+        if delta:
+            if "scan" in self.ready:
+                self._apply_scan(delta)
+            if "provfbk" in self.ready:
+                self._apply_provfbk(delta)
+            if "today" in self.ready:
+                self._apply_today(delta)
+            if "all_projects" in self.ready:
+                self._apply_all_projects(delta)
+            if "speed_history" in self.ready:
+                self._apply_speed_history(delta)
+            if "speed_days" in self.ready:
+                self._apply_speed_days(delta)
+            self.last_rowid_id = delta[-1][1]
+        self.last_rowid = max_rid
+        self.row_count = cnt
+        return True
+
+    # ---- 1. scan ----
+    def get_scan(self, con):
+        if "scan" not in self.ready:
+            m = {}
+            for r in con.execute(
+                "select session_id, max(coalesce(completed_at, 0)) from model_usage where rowid <= ? group by session_id",
+                (self.last_rowid,),
+            ):
+                m[r[0]] = r[1]
+            self.scan_map = m
+            self.ready.add("scan")
+        return list(self.scan_map.items())
+
+    def _apply_scan(self, delta):
+        m = self.scan_map
+        for r in delta:
+            sid, ct = r[2], r[20] or 0
+            prev = m.get(sid)
+            if prev is None or ct > prev:
+                m[sid] = ct
+
+    # ---- 2. provfbk ----
+    def get_provfbk(self, con):
+        if "provfbk" not in self.ready:
+            row = con.execute(
+                """select completed_at, rowid, provider_id from model_usage
+                   where rowid <= ? and status='completed'
+                     and (query_source is null or query_source='main_turn')
+                     and provider_id like 'account:%'
+                   order by completed_at desc, rowid desc limit 1""",
+                (self.last_rowid,),
+            ).fetchone()
+            self.provfbk = ((row[0] or -1), row[1], row[2] or "") if row else (-1, -1, "")
+            self.ready.add("provfbk")
+        return self.provfbk[2]
+
+    def _apply_provfbk(self, delta):
+        best_ct, best_rid, best_pid = self.provfbk
+        for r in delta:
+            if r[6] != "completed":
+                continue
+            qs = r[7]
+            if qs is not None and qs != "main_turn":
+                continue
+            pid = r[5] or ""
+            if not pid.startswith("account:"):
+                continue
+            ct = r[20] or -1
+            rid = r[0]
+            if (ct, rid) > (best_ct, best_rid):
+                best_ct, best_rid, best_pid = ct, rid, pid
+        self.provfbk = (best_ct, best_rid, best_pid)
+
+    # ---- 3. today_usage & today_detail ----
+    def _ensure_today(self, con):
+        if "today" in self.ready:
+            return
+        rows = con.execute(
+            f"""select {_INCR_DELTA_COLS} from model_usage
+                where rowid <= ? and status='completed' and completed_at between ? and ?""",
+            (self.last_rowid, self.today_start_ms, self.today_end_ms),
+        ).fetchall()
+        self.today_agg = [0, 0, 0, 0, 0, 0, 0, 0, 0, None, None, set(), 0, 0, 0, 0, set(), 0]
+        self.today_rate_out = 0
+        self.today_rate_ms = 0
+        self.today_per_model = {}
+        self.today_models = {}
+        self.today_mnames = {}
+        self._apply_today(rows)
+        self.ready.add("today")
+
+    def _apply_today(self, delta):
+        a = self.today_agg
+        turns_set = a[11]
+        sess_set = a[16]
+        s_ms, e_ms = self.today_start_ms, self.today_end_ms
+        covers = self.covers
+        pm = self.today_per_model
+        tm = self.today_models
+        tn = self.today_mnames
+        for r in delta:
+            if r[6] != "completed":
+                continue
+            ct = r[20]
+            if ct is None or ct < s_ms or ct > e_ms:
+                continue
+            inp = r[8] or 0
+            outp = r[9] or 0
+            reas = r[10] or 0
+            cr = r[11] or 0
+            cw = r[12] or 0
+            tot = r[13] or 0
+            tc = r[14] or 0
+            ret = r[15] or 0
+            dur = r[16] or 0
+            ttft = r[17] or 0
+            st = r[18]
+            a[0] += 1
+            a[1] += inp
+            a[2] += outp
+            a[3] += cr
+            a[4] += tot
+            a[5] += dur
+            a[6] += reas
+            a[7] += ret
+            a[8] += cw
+            if st is not None and (a[9] is None or st < a[9]):
+                a[9] = st
+            if a[10] is None or ct > a[10]:
+                a[10] = ct
+            if r[3] is not None:
+                turns_set.add(r[3])
+            sess_set.add(r[2])
+            a[17] += tc
+
+            qs = r[7]
+            is_main = (qs is None or qs == "main_turn")
+            if is_main:
+                if dur > 0:
+                    a[12] += dur
+                    a[13] += 1
+                if ttft > 0:
+                    a[14] += ttft
+                    a[15] += 1
+                gen_ms = _row_gen_ms({
+                    "first_token_at": r[19], "completed_at": ct, "started_at": st,
+                    "reasoning_tokens": reas, "model_id": r[4], "provider_id": r[5],
+                }, covers)
+                if outp > 0 and gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
+                    self.today_rate_out += outp
+                    self.today_rate_ms += gen_ms
+                    mk = (r[4] or "").lower()
+                    pacc = pm.get(mk)
+                    if pacc is None:
+                        pacc = pm[mk] = [0, 0]
+                    pacc[0] += outp
+                    pacc[1] += gen_ms
+
+            raw_m = r[4] or ""
+            m_key = raw_m.lower()
+            tn[m_key] = _canon_model_name(tn.get(m_key), raw_m)
+            prov = r[5] or ""
+            gkey = (m_key, prov)
+            ga = tm.get(gkey)
+            if ga is None:
+                ga = tm[gkey] = [0, 0, 0, 0, 0, 0]
+            ga[0] += 1
+            ga[1] += tot
+            ga[2] += inp
+            ga[3] += outp
+            ga[4] += cr
+            ga[5] += cw
+
+    def get_today_usage(self, con):
+        self._ensure_today(con)
+        a = self.today_agg
+        avg_dur = (a[12] / a[13]) if a[13] else None
+        avg_ttft = (a[14] / a[15]) if a[15] else None
+        return (
+            a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8],
+            a[9], a[10], len(a[11]), avg_dur, avg_ttft, len(a[16]), a[17],
+        )
+
+    def get_today_detail(self, con):
+        self._ensure_today(con)
+        rate = round(self.today_rate_out / (self.today_rate_ms / 1000), 1) if self.today_rate_ms else 0
+        if _pricing is None:
+            return {"cost": None, "models": [], "tps": rate}
+        models_acc = {}
+        raw_groups = []
+        tn = self.today_mnames
+        for (m_key, prov), ga in self.today_models.items():
+            ma = models_acc.get(m_key)
+            if ma is None:
+                ma = models_acc[m_key] = [0, 0]
+            ma[0] += ga[0]
+            ma[1] += ga[1]
+            raw_groups.append((tn[m_key], prov, ga[2], ga[3], ga[4], ga[5]))
+        try:
+            total_cost, per_cost = _pricing.merge_model_costs(raw_groups)
+        except Exception:
+            return {"cost": None, "models": [], "tps": rate}
+        prov_of = {}
+        for model, prov, *_ in raw_groups:
+            prov_of.setdefault(model, prov)
+        models = [
+            {
+                "model": tn[k], "requests": v[0], "total": v[1],
+                "cost_usd": per_cost.get(tn[k], 0.0),
+                "rates": _model_rates(tn[k], prov_of.get(tn[k], "")).get("rates"),
+            }
+            for k, v in models_acc.items()
+        ]
+        _attach_model_tps(models, self.today_per_model)
+        models.sort(key=lambda m: -m["total"])
+        return {"cost": total_cost, "models": models, "tps": rate}
+
+    # ---- 4. all_projects ----
+    def _ensure_all_projects(self, con):
+        if "all_projects" in self.ready:
+            return
+        rows = con.execute(
+            f"select {_INCR_DELTA_COLS} from model_usage where rowid <= ? and status='completed'",
+            (self.last_rowid,),
+        ).fetchall()
+        self.ap_sess_agg = {}
+        self.ap_sess_groups = {}
+        self.ap_sess_mnames = {}
+        self.ap_rate_out = 0
+        self.ap_rate_ms = 0
+        self.ap_per_model = {}
+        self._apply_all_projects(rows)
+        self.ready.add("all_projects")
+
+    def _apply_all_projects(self, delta):
+        s_agg = self.ap_sess_agg
+        s_grp = self.ap_sess_groups
+        s_mn = self.ap_sess_mnames
+        pm = self.ap_per_model
+        covers = self.covers
+        for r in delta:
+            if r[6] != "completed":
+                continue
+            sid = r[2]
+            sa = s_agg.get(sid)
+            if sa is None:
+                sa = s_agg[sid] = [set(), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, None, None]
+            sa[0].add(r[3] or "")
+            sa[1] += 1
+            inp = r[8] or 0
+            outp = r[9] or 0
+            reas = r[10] or 0
+            cr = r[11] or 0
+            cw = r[12] or 0
+            tot = r[13] or 0
+            dur = r[16] or 0
+            ttft = r[17] or 0
+            st = r[18]
+            ct = r[20]
+            sa[2] += inp
+            sa[3] += outp
+            sa[4] += reas
+            sa[5] += cr
+            sa[6] += cw
+            sa[7] += tot
+            sa[8] += r[14] or 0
+            sa[9] += r[15] or 0
+            sa[10] += dur
+            if dur > 0:
+                sa[11] += dur
+                sa[12] += 1
+            if ttft > 0:
+                sa[13] += ttft
+                sa[14] += 1
+            if st is not None and (sa[15] is None or st < sa[15]):
+                sa[15] = st
+            if ct is not None and (sa[16] is None or ct > sa[16]):
+                sa[16] = ct
+
+            raw_m = r[4] or ""
+            m_key = raw_m.lower()
+            prov = r[5] or ""
+            mn = s_mn.setdefault(sid, {})
+            mn[m_key] = _canon_model_name(mn.get(m_key), raw_m)
+            sg = s_grp.setdefault(sid, {})
+            ga = sg.get((m_key, prov))
+            if ga is None:
+                ga = sg[(m_key, prov)] = [0, 0, 0, 0, 0, 0]
+            ga[0] += inp
+            ga[1] += outp
+            ga[2] += cr
+            ga[3] += cw
+            ga[4] += 1
+            ga[5] += tot
+
+            qs = r[7]
+            if qs is None or qs == "main_turn":
+                gen_ms = _row_gen_ms({
+                    "first_token_at": r[19], "completed_at": ct, "started_at": st,
+                    "reasoning_tokens": reas, "model_id": raw_m, "provider_id": prov,
+                }, covers)
+                if outp > 0 and gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
+                    self.ap_rate_out += outp
+                    self.ap_rate_ms += gen_ms
+                    pa = pm.get(m_key)
+                    if pa is None:
+                        pa = pm[m_key] = [0, 0]
+                    pa[0] += outp
+                    pa[1] += gen_ms
+
+    def get_all_projects(self, con):
+        self._ensure_all_projects(con)
+        sess = {}
+        for r in con.execute("select id, project_id, directory, parent_id from session"):
+            sess[r[0]] = (r[1] or "", r[2] or "", r[3])
+        proj_of = {}
+        meta = {}
+        for sid, (pid, pdir, _parent) in sess.items():
+            cur, seen = sid, set()
+            while True:
+                nxt = sess[cur][2]
+                if not nxt or nxt in seen or nxt not in sess:
+                    break
+                seen.add(cur)
+                cur = nxt
+            rpid, rdir = sess[cur][0], sess[cur][1]
+            if not rpid:
+                proj_of[sid] = (("", ""), "", "", True)
+                meta.setdefault(("", ""), ("", "", True))
+                continue
+            rdir_n = rdir.replace("\\", "/").rstrip("/")
+            name = rdir_n.rsplit("/", 1)[-1] if rdir_n else ""
+            proj_of[sid] = ((rpid, _norm_path_key(rdir_n)), name, rdir_n, False)
+            meta.setdefault((rpid, _norm_path_key(rdir_n)), (name, rdir_n, False))
+
+        def key_of(sid):
+            hit = proj_of.get(sid)
+            return hit if hit is not None else (("", ""), "", "", True)
+
+        agg = {}
+        groups = {}
+        mnames = {}
+        for sid, sa in self.ap_sess_agg.items():
+            key = key_of(sid)[0]
+            a = agg.setdefault(key, [0] * 16 + [None, None])
+            a[0] += 1
+            a[1] += len(sa[0])
+            for i in range(2, 16):
+                a[i] += sa[i - 1]
+            if sa[15] is not None and (a[16] is None or sa[15] < a[16]):
+                a[16] = sa[15]
+            if sa[16] is not None and (a[17] is None or sa[16] > a[17]):
+                a[17] = sa[16]
+
+        gnames = {}
+        ggroups = {}
+        greq = {}
+        gtot = {}
+        for sid, sg in self.ap_sess_groups.items():
+            key = key_of(sid)[0]
+            names = mnames.setdefault(key, {})
+            sn = self.ap_sess_mnames.get(sid, {})
+            for (m_key, prov), ga in sg.items():
+                raw_m = sn.get(m_key, "")
+                names[m_key] = _canon_model_name(names.get(m_key), raw_m)
+                gacc = groups.setdefault(key, {}).setdefault((m_key, prov), [0, 0, 0, 0])
+                for i in range(4):
+                    gacc[i] += ga[i]
+                gnames[m_key] = _canon_model_name(gnames.get(m_key), raw_m)
+                gacc_g = ggroups.setdefault((m_key, prov), [0, 0, 0, 0])
+                for i in range(4):
+                    gacc_g[i] += ga[i]
+                greq[m_key] = greq.get(m_key, 0) + ga[4]
+                gtot[m_key] = gtot.get(m_key, 0) + ga[5]
+
+        def canon_groups(gg, names):
+            return [(names[ml], prov, v[0], v[1], v[2], v[3]) for (ml, prov), v in gg.items()]
+
+        def cost_of(key):
+            if _pricing is None or not groups.get(key):
+                return None
+            try:
+                return _pricing.merge_model_costs(canon_groups(groups[key], mnames.get(key, {})))[0]
+            except Exception:
+                return None
+
+        gmodels = [{"model": gnames[ml], "requests": greq[ml], "total": gtot[ml]} for ml in gnames]
+        _attach_model_tps(gmodels, self.ap_per_model)
+        g_cost = None
+        if _pricing is not None and ggroups:
+            try:
+                g_cost, per_cost = _pricing.merge_model_costs(canon_groups(ggroups, gnames))
+                prov_of = {}
+                for model_name, prov, *_ in canon_groups(ggroups, gnames):
+                    prov_of.setdefault(model_name, prov)
+                for m1 in gmodels:
+                    m1["cost_usd"] = per_cost.get(m1["model"], 0.0)
+                    m1["rates"] = _model_rates(m1["model"], prov_of.get(m1["model"], "")).get("rates")
+            except Exception:
+                g_cost = None
+        gmodels.sort(key=lambda m1: -m1["total"])
+
+        projects = []
+        for key, a in agg.items():
+            name, directory, unattr = meta.get(key, ("", "", True))
+            projects.append({
+                "name": name, "directory": directory, "total": a[8], "requests": a[2],
+                "cost_usd": cost_of(key),
+                **({"unattributed": True} if unattr else {}),
+            })
+        projects.sort(key=lambda p: (-p["total"], p["name"], p["directory"]))
+        truncated = len(projects) > _ALLPROJ_MAX_PROJECTS
+
+        sessions = turns = requests = total = 0
+        input_t = output_t = reasoning = cache_read = cache_write = 0
+        tool_calls = retries = dur_sum = dur_pos = dur_n = ttft_pos = ttft_n = 0
+        started = last_at = None
+        for a in agg.values():
+            sessions += a[0]
+            turns += a[1]
+            requests += a[2]
+            input_t += a[3]
+            output_t += a[4]
+            reasoning += a[5]
+            cache_read += a[6]
+            cache_write += a[7]
+            total += a[8]
+            tool_calls += a[9]
+            retries += a[10]
+            dur_sum += a[11]
+            dur_pos += a[12]
+            dur_n += a[13]
+            ttft_pos += a[14]
+            ttft_n += a[15]
+            if a[16] is not None and (started is None or a[16] < started):
+                started = a[16]
+            if a[17] is not None and (last_at is None or a[17] > last_at):
+                last_at = a[17]
+        out = {
+            "sessions": sessions, "turns": turns, "requests": requests,
+            "input": input_t, "output": output_t, "reasoning": reasoning,
+            "cache_read": cache_read, "cache_write": cache_write, "total": total,
+            "tool_calls": tool_calls, "retries": retries,
+            "started": started or 0, "last_at": last_at or 0,
+            "avg_duration_ms": round(dur_pos / dur_n) if dur_n else 0,
+            "avg_ttft_ms": round(ttft_pos / ttft_n) if ttft_n else 0,
+            "duration_ms": dur_sum,
+            "avg_tps": round(self.ap_rate_out / (self.ap_rate_ms / 1000), 1) if self.ap_rate_ms else 0,
+            "models": gmodels,
+            "cost_usd": g_cost,
+            "projects": projects[:_ALLPROJ_MAX_PROJECTS],
+        }
+        if truncated:
+            out["projects_truncated"] = True
+            out["projects_total"] = len(projects)
+        return out
+
+    # ---- 5. speed_history ----
+    def _ensure_speed_history(self, con):
+        if "speed_history" in self.ready:
+            return
+        windows = [tuple(r) for r in con.execute(
+            """select session_id, turn_id, max(completed_at) as ct
+               from model_usage where rowid <= ? and status='completed'
+                 and (query_source is null or query_source='main_turn')
+                 and completed_at is not null
+               group by session_id, turn_id order by ct desc limit ?""",
+            (self.last_rowid, _SPEED_HISTORY_MAX_TURNS),
+        )]
+        window_n = con.execute(
+            """select count(*) from (select session_id, turn_id from model_usage
+               where rowid <= ? and status='completed'
+                 and (query_source is null or query_source='main_turn')
+               group by session_id, turn_id limit ?)""",
+            (self.last_rowid, _SPEED_HISTORY_MAX_TURNS + 1),
+        ).fetchone()[0]
+        self.sh_truncated = window_n > _SPEED_HISTORY_MAX_TURNS
+        self.sh_turns = {}
+        if windows:
+            groups, null_pairs = {}, []
+            for sid, tid, _ in windows:
+                if tid is None:
+                    null_pairs.append(sid)
+                groups.setdefault(sid, set()).add(tid)
+            rows_all = []
+            for sid, tids in groups.items():
+                real = [t for t in tids if t is not None]
+                for i in range(0, len(real), 400):
+                    part = real[i:i + 400]
+                    qm = ",".join("?" * len(part))
+                    rows_all.extend(con.execute(
+                        f"""select {_INCR_DELTA_COLS} from model_usage
+                            where rowid <= ? and session_id=? and status='completed'
+                              and (query_source is null or query_source='main_turn')
+                              and turn_id in ({qm})""",
+                        (self.last_rowid, sid, *part),
+                    ).fetchall())
+            for sid in dict.fromkeys(null_pairs):
+                rows_all.extend(con.execute(
+                    f"""select {_INCR_DELTA_COLS} from model_usage
+                        where rowid <= ? and session_id=? and status='completed'
+                          and (query_source is null or query_source='main_turn')
+                          and turn_id is null
+                        order by completed_at desc, rowid desc limit 500""",
+                    (self.last_rowid, sid),
+                ).fetchall())
+            self._apply_speed_history(rows_all, trim=False)
+        self.ready.add("speed_history")
+
+    def _apply_speed_history(self, delta, trim=True):
+        turns = self.sh_turns
+        covers = self.covers
+        for r in delta:
+            if r[6] != "completed":
+                continue
+            qs = r[7]
+            if qs is not None and qs != "main_turn":
+                continue
+            ct = r[20]
+            if ct is None:
+                continue
+            sid = r[2]
+            tid = r[3]
+            key = (sid, tid)
+            t = turns.get(key)
+            if t is None:
+                t = turns[key] = {
+                    "s": sid, "t": ct, "b": None,
+                    "valid_out": 0, "valid_ms": 0, "tin": 0, "tout": 0, "n": 0,
+                    "models": {}, "cost_groups": {}, "_c": None,
+                }
+            elif ct > t["t"]:
+                t["t"] = ct
+            t["_c"] = None
+            tokens = r[9] or 0
+            inp = r[8] or 0
+            t["tin"] += inp
+            t["tout"] += tokens
+            t["n"] += 1
+            st = r[18] or 0
+            if st and (t["b"] is None or st < t["b"]):
+                t["b"] = st
+            mk = (r[4] or "", r[5] or "")
+            cg = t["cost_groups"].get(mk)
+            if cg is None:
+                cg = t["cost_groups"][mk] = [0, 0, 0, 0]
+            cg[0] += inp
+            cg[1] += tokens
+            cg[2] += r[11] or 0
+            cg[3] += r[12] or 0
+            m = t["models"].get(mk)
+            if m is None:
+                m = t["models"][mk] = {"out": 0, "ms": 0, "n": 0, "tok": 0}
+            m["n"] += 1
+            m["tok"] += inp + tokens
+            gen_ms = _row_gen_ms({
+                "first_token_at": r[19], "completed_at": ct, "started_at": st,
+                "reasoning_tokens": r[10], "model_id": r[4], "provider_id": r[5],
+            }, covers)
+            if tokens > 0 and gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
+                t["valid_out"] += tokens
+                t["valid_ms"] += gen_ms
+                m["out"] += tokens
+                m["ms"] += gen_ms
+        if trim and len(turns) > _SPEED_HISTORY_MAX_TURNS:
+            self.sh_truncated = True
+            # 留小量缓冲以防末尾轮次暂时无效窗口，随后仅裁剪最旧
+            if len(turns) > _SPEED_HISTORY_MAX_TURNS + 64:
+                ordered = sorted(turns.items(), key=lambda kv: -kv[1]["t"])
+                self.sh_turns = dict(ordered[:_SPEED_HISTORY_MAX_TURNS])
+
+    def get_speed_history(self, con):
+        self._ensure_speed_history(con)
+        srows = {}
+        try:
+            for r in con.execute("select id, title, project_id, directory from session"):
+                srows[r[0]] = r
+        except sqlite3.Error:
+            srows = {}
+        cand = [
+            t for t in self.sh_turns.values()
+            if t["valid_ms"] and t["t"] and t["s"] in srows
+        ]
+        if len(cand) > _SPEED_HISTORY_MAX_TURNS:
+            cand.sort(key=lambda x: -x["t"])
+            cand = cand[:_SPEED_HISTORY_MAX_TURNS]
+        cand.sort(key=lambda x: (x["t"], x["s"], x["b"] or x["t"]))
+
+        out = []
+        sid_idx, sids, snames, pids, mname_idx, mnames, mkeys = {}, [], [], [], {}, [], []
+        for src in cand:
+            sid = src["s"]
+            ml = sorted(src["models"].items(), key=lambda kv: -kv[1]["out"])
+            top = [(k, v) for k, v in ml if v["out"] > 0][:8]
+            other_tok = sum(v["tok"] for _, v in ml[len(top):])
+
+            if sid not in sid_idx:
+                sid_idx[sid] = len(sids)
+                sids.append(sid)
+                sr = srows.get(sid)
+                sn = (sr[1] if sr is not None else "") or sid
+                snames.append(sn[:120])
+                pid = (sr[2] if sr is not None else "") or ""
+                pdir = ((sr[3] if sr is not None else "") or "").replace("\\", "/").rstrip("/")
+                pn = pdir.rsplit("/", 1)[-1] if pdir else (pid or sid)
+                pids.append([pid, pn])
+
+            msl_idx = []
+            for k, v in top:
+                if k not in mname_idx:
+                    mname_idx[k] = len(mnames)
+                    mnames.append(k[0])
+                    mkeys.append((k[1] or "") + "\x1f" + (k[0] or ""))
+                msl_idx.append([mname_idx[k], v["out"], int(v["ms"]), v["n"]])
+
+            item = {
+                "s": sid_idx[sid],
+                "t": src["t"],
+                "b": src["b"] or src["t"],
+                "out": src["valid_out"],
+                "ms": src["valid_ms"],
+                "i": src["tin"],
+                "o": src["tout"],
+                "n": src["n"],
+                "msl": msl_idx,
+            }
+            if len(top) > 1 or other_tok > 0:
+                item["tk"] = [v["tok"] for _, v in top]
+            if _pricing is not None:
+                if src["_c"] is None and src["cost_groups"]:
+                    try:
+                        groups_in = [(k[0], k[1], g[0], g[1], g[2], g[3])
+                                     for k, g in src["cost_groups"].items()]
+                        src["_c"] = _pricing.merge_model_costs(groups_in)[0]
+                    except Exception:
+                        src["_c"] = False
+                if src["_c"] not in (None, False):
+                    item["c"] = src["_c"]
+            out.append(item)
+
+        prev = 0
+        for item in out:
+            cur = item["t"]
+            item["t"] = cur - prev
+            prev = cur
+        return {
+            "source": "local",
+            "sids": sids,
+            "snames": snames,
+            "pids": pids,
+            "mnames": mnames,
+            "mkeys": mkeys,
+            "turns": out,
+            "truncated": self.sh_truncated,
+        }
+
+    # ---- 6. speed_days ----
+    def _ensure_speed_days(self, con):
+        if "speed_days" in self.ready:
+            return
+        today0 = _day_start()
+        start0 = today0 - timedelta(days=_SPEED_DAYS_MAX_DAYS - 1)
+        self.sd_start_ms = _epoch_ms(start0)
+        self.sd_start_date = start0.date()
+        self.sd_today_date = today0.date()
+        probe = con.execute(
+            """select min(completed_at) from model_usage
+               where rowid <= ? and status='completed'
+                 and (query_source is null or query_source='main_turn')
+                 and completed_at is not null""",
+            (self.last_rowid,),
+        ).fetchone()
+        self.sd_truncated = 1 if probe and probe[0] is not None and probe[0] < self.sd_start_ms else 0
+        self.sd_days = {}
+        rows = con.execute(
+            f"""select {_INCR_DELTA_COLS} from model_usage
+                where rowid <= ? and status='completed'
+                  and (query_source is null or query_source='main_turn')
+                  and completed_at is not null""",
+            (self.last_rowid,),
+        ).fetchall()
+        self._apply_speed_days(rows)
+        self.ready.add("speed_days")
+
+    def _apply_speed_days(self, delta):
+        days = self.sd_days
+        start_ms = self.sd_start_ms
+        start_date = self.sd_start_date
+        today_date = self.sd_today_date
+        covers = self.covers
+        for r in delta:
+            if r[6] != "completed":
+                continue
+            qs = r[7]
+            if qs is not None and qs != "main_turn":
+                continue
+            ct = r[20]
+            if ct is None:
+                continue
+            if ct < start_ms:
+                self.sd_truncated = 1
+                continue
+            day = datetime.fromtimestamp(ct / 1000).date()
+            if day > today_date or day < start_date:
+                continue
+            b = days.get(day)
+            if b is None:
+                b = days[day] = [0, 0, 0, set(), {}, 0, 0]
+            tk = (r[2], r[3]) if r[3] is not None else (None, r[0])
+            b[3].add(tk)
+            mk = (r[4] or "", r[5] or "")
+            macc = b[4].get(mk)
+            if macc is None:
+                macc = b[4][mk] = [0, 0, 0, set(), 0]
+            tokens = r[9] or 0
+            inp = r[8] or 0
+            b[2] += 1
+            macc[2] += 1
+            macc[3].add(tk)
+            b[5] += inp
+            b[6] += tokens
+            macc[4] += inp + tokens
+            gen_ms = _row_gen_ms({
+                "first_token_at": r[19], "completed_at": ct, "started_at": r[18],
+                "reasoning_tokens": r[10], "model_id": r[4], "provider_id": r[5],
+            }, covers)
+            if tokens > 0 and gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
+                b[0] += tokens
+                b[1] += gen_ms
+                macc[0] += tokens
+                macc[1] += gen_ms
+
+    def get_speed_days(self, con):
+        self._ensure_speed_days(con)
+        days = self.sd_days
+        start_date = self.sd_start_date
+        mname_idx, mnames, mkeys = {}, [], []
+        buckets = []
+        for i in range(_SPEED_DAYS_MAX_DAYS):
+            b = days.get(start_date + timedelta(days=i))
+            if b is None:
+                buckets.append([0, 0, 0, 0, 0, 0])
+                continue
+            ml = sorted((kv for kv in b[4].items() if kv[1][0] > 0), key=lambda kv: -kv[1][0])
+            top = ml[:_SPEED_DAYS_MAX_MODELS]
+            msl = []
+            for k, v in top:
+                if k not in mname_idx:
+                    mname_idx[k] = len(mnames)
+                    mnames.append(k[0])
+                    mkeys.append(k[1] + "\x1f" + k[0])
+                msl += [mname_idx[k], v[0], int(v[1]), v[2], len(v[3])]
+            per_model = [v[4] for _, v in top] if (len(top) > 1 and i >= _SPEED_DAYS_MAX_DAYS - _SPEED_DAYS_TK_DAYS) else []
+            buckets.append([b[0], b[1], b[2], len(b[3]),
+                            1 if len(ml) > _SPEED_DAYS_MAX_MODELS else 0, msl, [b[5], b[6]] + per_model])
+        return {
+            "v": 1,
+            "source": "local",
+            "start": self.sd_start_ms,
+            "days": buckets,
+            "mnames": mnames,
+            "mkeys": mkeys,
+            "truncated": self.sd_truncated,
+        }
+
+
+_INCR_REQ_COLS = frozenset({
+    "id", "session_id", "turn_id", "model_id", "provider_id", "status", "query_source",
+    "input_tokens", "output_tokens", "reasoning_tokens", "cache_read_input_tokens",
+    "cache_creation_input_tokens", "computed_total_tokens", "tool_call_count", "retry_count",
+    "duration_ms", "time_to_first_token_ms", "started_at", "first_token_at", "completed_at",
+})
+
+
+def _incr_get(con):
+    """获取并同步当前数据库对应的进程内增量状态；内存库/桩连接/列漂移返回 None 退回原全量路径。"""
+    if con is None:
+        return None
+    dbkey = _db_cache_key(con)
+    if dbkey is None:
+        return None
+    try:
+        st = _INCR_STATES.get(dbkey)
+        if st is not None and st.sync(con):
+            return st
+        cols = {r[1] for r in con.execute("pragma table_info(model_usage)").fetchall()}
+        if not _INCR_REQ_COLS.issubset(cols):
+            return None
+        day = _day_start()
+        now_ms = int(time.time() * 1000)
+        mr = con.execute("select max(rowid), count(*) from model_usage").fetchone()
+        max_rid = (mr[0] or 0) if mr else 0
+        cnt = (mr[1] or 0) if mr else 0
+        rid_id = None
+        if max_rid > 0:
+            r2 = con.execute("select id from model_usage where rowid=?", (max_rid,)).fetchone()
+            rid_id = r2[0] if r2 else None
+        st = _IncrState(
+            dbkey, now_ms, max_rid, rid_id, cnt,
+            _epoch_ms(day), _epoch_ms(day + timedelta(days=1)), day.date(),
+            _provider_first_token_covers(con),
+        )
+        if len(_INCR_STATES) > _INCR_MAX_STATES:
+            _INCR_STATES.clear()
+        _INCR_STATES[dbkey] = st
+        return st
+    except (sqlite3.Error, AttributeError, TypeError):
+        _INCR_STATES.pop(dbkey, None)
+        return None
+
+
 def _cached_session(con, sid, kind, fn):
     """会话级聚合缓存（specs/perf-lag-reduction.md 规则 13）：键 (库身份, sid, kind)。
     长会话的 session_usage / 会话均速（全会话 fetchall + Python 逐行）/ 耗时均值原先
@@ -703,6 +1620,9 @@ def _scan_session_ids(con):
     最新会话与 recent 池原先各自独立做同样的全表 group by（3 次 118ms），
     合并为一次扫描并挂 2s TTL。"""
     def run():
+        st = _incr_get(con)
+        if st is not None:
+            return st.get_scan(con)
         # coalesce：崩溃残留的未完成行 completed_at 为 NULL，全会话皆 NULL 时
         # max() 返回 NULL，下游 max()/sorted() 比较会 TypeError 击穿整帧快照。
         return con.execute(
@@ -937,6 +1857,9 @@ def _all_projects_usage(con):
     同款，实测 2.6GB 库 ~210ms/次、载荷 ~6KB，仅水位变化帧重算）；任何列漂移抛
     sqlite3.Error 由调用方按可选增强降级省略。"""
     def run():
+        st = _incr_get(con)
+        if st is not None:
+            return st.get_all_projects(con)
         sess = {}
         for r in con.execute("select id, project_id, directory, parent_id from session"):
             sess[r[0]] = (r[1] or "", r[2] or "", r[3])
@@ -1374,6 +2297,9 @@ def range_usage(con, start_ms, end_ms):
 
 
 def _today_usage(con, start_ms, end_ms):
+    st = _incr_get(con)
+    if st is not None and start_ms == st.today_start_ms and end_ms == st.today_end_ms:
+        return st.get_today_usage(con)
     # v298.1：补 count(distinct turn_id)（今日轮数，条面今日格「N 轮 · M 次」展示）
     # v301：补今日级平均耗时/平均首字延迟两列（>0 样本过滤，同 v211 本轮 / v300 会话口径；
     # review 修复起两列过滤 main_turn——与 _today_rate 的 avg_tps 同口径，子代理/辅助行
@@ -2366,6 +3292,9 @@ def _speed_turns(con, session_ids, covers):
 
 
 def _speed_history(con, sid=""):
+    st = _incr_get(con)
+    if st is not None:
+        return st.get_speed_history(con)
     """v254：速度 Tooltip 统一数据面——始终产出本库**全部**会话的有界轮表。
 
     同一帧快照会推给所有窗口/分栏，所以这里不做 pane 级过滤：渲染端按本 pane 可信
@@ -2514,6 +3443,9 @@ def _peak_segment_safe():
 
 
 def _speed_days(con):
+    st = _incr_get(con)
+    if st is not None:
+        return st.get_speed_days(con)
     """v384（specs/speed-tooltip-v3.md §1.2）：全历史按**本地自然日**聚合的日桶帧——
     解决轮表 6000 轮上限对「全部」视图的截断。聚合口径与 _speed_turns 完全同源：已完成
     main_turn 行、_row_gen_ms 生成窗口 + 200ms–1h 有效段过滤、covers 特例，辅助
@@ -3784,6 +4716,9 @@ def _provider_fallback(con):
 
 def _provider_fallback_uncached(con):
     try:
+        st = _incr_get(con)
+        if st is not None:
+            return st.get_provfbk(con)
         row = con.execute(
             """select provider_id from model_usage
                where status='completed' and (query_source is null or query_source='main_turn')
@@ -3870,6 +4805,9 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
             # 缓存仍经 _WmFn 带连接（水位续用不失效）；任何失败（含最小桩连接无 fetchall）
             # 速度降 0、明细降空，消费端 >0 门控显「—」，不拖垮整帧（同 project/cost 口径）。
             def _today_detail():
+                st = _incr_get(con)
+                if st is not None and start_ms == st.today_start_ms and end_ms == st.today_end_ms:
+                    return st.get_today_detail(con)
                 per_model = {}
                 try:
                     rate = _turn_rate(con.execute(
