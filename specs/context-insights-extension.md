@@ -10,14 +10,14 @@
 
 | 阶段 | 范围 | 核心交付 |
 |---|---|---|
-| **阶段 1（本期）** | Extension 底座与入口打通 | `plugin.json` 声明 `extension` 与 `slots`；`extension-main.cjs` 激活、焦点会话追踪、视图注册；容量弹层与 `⚙` 面板唤起 `context` 视图；`/context` 命令；空白/骨架沙箱视图联通 |
+| **阶段 1（本期）** | Extension 底座与入口打通 | `plugin.json` 声明 `extension` 与 `slots`；`extension-main.cjs` 激活、焦点会话追踪、视图注册；容量弹层唤起 `context` 视图；`/context` 命令；空白/骨架沙箱视图联通 |
 | **阶段 2** | Context 标签页核心（Stats + Current） | `zusage.py --session-stats`；Context Stats、Token Stats、Timing Stats、Current Context（11 类堆叠条） |
 | **阶段 3** | 上下文浏览器与可选请求抓包 | `zusage.py --session-browser`（分页/懒加载）；步骤时间线（含 Delta）；7 类可折叠浏览器；`engine-patch.cjs` 可选请求体抓包（默认关闭，SHA256 去重） |
 | **阶段 4** | 上下文洞察页面（跨会话总览） | `zusage.py --insights`（水位缓存）；KPI 栏、7 天双柱状图、8 周热力图、工具/技能/命令排行、会话卡片与 `sessions.openSession` 跳转 |
 
 ---
 
-## 2. 视图与入口设计（2 视图 + 5 入口）
+## 2. 视图与入口设计（2 视图 + 4 入口）
 
 ### 2.1 两个核心扩展视图
 
@@ -26,15 +26,16 @@
 2. **`context`（Context 标签页，会话级）**
    - 随焦点窗格会话自动切换的侧栏视图（`ui://zcode-token-usage-statusbar/context`），内部通过顶部分段切换聚合：Stats 概览、Timeline & Browser（上下文浏览器）、Events & Activity。
 
-### 2.2 五个用户入口
+### 2.2 四个用户入口
 
 | 入口 | 载体 | 目标视图 | 交互规则 |
 |---|---|---|---|
 | **左侧主导航「上下文洞察」** | 原生 `slots["nav.primary"]` | `insights` | App 级常驻。首次安装/启用时通过 `slots.update(..., { badge: "dot" })` 亮起未读小蓝点；用户打开一次 `insights` 视图后在 `ctx.extension.dataPath` 落盘标记并清除 `badge: null`。 |
 | **「上下文容量」弹层按钮** | `overlay.js` 注入（`[data-slot="hover-card-content"]`） | `context`（当前窗格 `sessionId`） | 位于现有「压缩上下文」按钮旁，文案「上下文明细」/「Context details」。点击后经 `inject-main.cjs` 触发扩展进程调用 `ctx.views.open("context", { sessionId })`。 |
 | **右侧边栏 `+` 新标签页** | 原生 `slots["sidePane.launcher"]` | `context` | 位于右侧面板启动页「扩展」分区，供原生习惯用户随时打开。 |
-| **`⚙` 设置面板顶部快捷条** | `overlay.js` 设置面板 | `context` / `insights` | 在 `⚙` 设置面板顶部放两颗并排胶囊按钮：「当前会话明细」「全部会话洞察」，经同款主桥链路唤起对应视图。 |
 | **`/context` 斜杠命令** | `commands/context.md` | `context`（提示 + 引导） | 与现有 `/usage` 并列，输出当前上下文摘要并提示可在右侧面板查看完整视图。 |
+
+**`⚙` 设置面板不放扩展入口（v494，用户决定）**：v492 曾在 `⚙` 设置面板顶部挂「当前会话明细」「全部会话洞察」两颗快捷按钮（`.zu-ext-quick`），按用户要求移除。设置面板不放这两个功能的入口，扩展入口以上表四项为准，不再新增。
 
 ---
 
@@ -71,11 +72,11 @@
   - 资源 `ui://zcode-token-usage-statusbar/context/state`：变更信号。
   - 订阅 `ctx.context.onDidChange` 与 `ctx.workbench.onDidChange`，命中当前打开的视图会话时调用 `view.notify(...)`。
 
-### 4.2 容量弹层 / 设置面板 → 唤起扩展视图链路
+### 4.2 容量弹层 → 唤起扩展视图链路
 
 `overlay.js` 与扩展进程分属不同进程，采用**轻量文件信号（原子写 + `fs.watch`/防抖）**打通，兼容新旧 loader：
 
-1. **渲染端（`overlay.js`）**：用户点击弹层「上下文明细」或 `⚙` 顶部快捷按钮时，通过既有主桥 IPC（`zusage:action` 新增白名单动作 `open-ext-view`，入参 `{ viewId: "context" | "insights", sessionId?: string }`）通知 `inject-main.cjs`。
+1. **渲染端（`overlay.js`）**：用户点击弹层「上下文明细」时，通过既有主桥 IPC（`zusage:action` 新增白名单动作 `open-ext-view`，入参 `{ viewId: "context" | "insights", sessionId?: string }`）通知 `inject-main.cjs`。
 2. **主进程（`inject-main.cjs`）**：校验本地窗口与 `viewId` 白名单后，向运行目录原子写入请求文件 `~/.zcode/zcode-token-usage-statusbar/ext-open-request.json`：
    ```json
    { "id": "<uuid>", "viewId": "context", "sessionId": "sess_...", "ts": 1700000000000 }
@@ -145,7 +146,7 @@
 2. **原生 Extension 激活**：本地加载插件后，ZCode Extension Host 正常激活 `extension-main.cjs`，无 `invalid` / `incompatible` / `failed` 状态；左侧主导航「插件市场」下方出现「上下文洞察」且首次带蓝点；右侧边栏 `+` 启动页「扩展」分区出现「上下文组成」。
 3. **蓝点消退**：点击左侧「上下文洞察」打开 `insights` 视图后，蓝点消失且重启后保持已读（读 `dataPath/ui-state.json`）。
 4. **当前构成透传**：打开 `context` 视图后，草稿态与正式会话均能通过 `context_snapshot` 展示当前会话 ID、模型与 `ctx.context.get()` 返回的 11 类构成占位列表；切换焦点会话时视图自动跟随更新。
-5. **容量弹层 & 设置联动**：悬停底部上下文圆环出现「上下文明细」按钮；点击后通过 `inject-main.cjs` → `ext-open-request.json` → `ctx.views.open("context", { sessionId })` 成功打开并聚焦右侧 `context` 标签页；`⚙` 设置面板顶部两颗快捷按钮同理可用。
+5. **容量弹层联动**：悬停底部上下文圆环出现「上下文明细」按钮；点击后通过 `inject-main.cjs` → `ext-open-request.json` → `ctx.views.open("context", { sessionId })` 成功打开并聚焦右侧 `context` 标签页；`⚙` 设置面板顶部不出现扩展快捷按钮。
 6. **回归零破坏**：原有状态条、`overlay.js` 分项增强、压缩按钮、逐问速率行、MCP 与 Hooks 行为无退化。
 
 ---
@@ -212,6 +213,6 @@
 
 ### 10.6 审查遗留（已知限制）
 
-- **快捷入口的「fiber 直开」未按插件名收窄匹配**（`src/overlay/09-instance-settings-and-notes.js`、`11-instance-toolbar-chips.js`）：⚙ 面板与弹层按钮先用 `[data-extension-item$="/insights"]` 找导航项、从其属性推出插件 id，再沿 React fiber 取宿主 `onOpenTab` 直开视图。若别的扩展也有 id 为 `insights` 的视图，可能取到别人的插件 id，且此时 `openedDirect=true` 不再走 `open-ext-view` 文件链回退，按钮会静默无效。修法是只认属性里含本插件名 `zcode-token-usage-statusbar@` 的导航项；该改动属于点击交互路径，须在真实页面走一遍完整点击后才能交付（本轮未做桌面验收，故未改）。
+- **快捷入口的「fiber 直开」未按插件名收窄匹配**（`src/overlay/11-instance-toolbar-chips.js`）：弹层按钮先用 `[data-extension-item$="/insights"]` 找导航项、从其属性推出插件 id，再沿 React fiber 取宿主 `onOpenTab` 直开视图。若别的扩展也有 id 为 `insights` 的视图，可能取到别人的插件 id，且此时 `openedDirect=true` 不再走 `open-ext-view` 文件链回退，按钮会静默无效。修法是只认属性里含本插件名 `zcode-token-usage-statusbar@` 的导航项；该改动属于点击交互路径，须在真实页面走一遍完整点击后才能交付（本轮未做桌面验收，故未改）。
 - 代理/自定义证书那条 `node:http(s)` 抓包路径只有真实 Node 本地服务器用例覆盖。
 - **指向受信根之外的「文件」符号链接仍可在文件管理器里定位**（`revealOrOpenFolder` 只对目录换真实路径并复查）：文件管理器只是选中并高亮根内的那个链接条目，不读取目标内容；而文件级链接在工程里很常见（链接进来的配置、资源），一律拦截会误伤，故保持现状。

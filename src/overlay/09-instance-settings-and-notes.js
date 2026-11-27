@@ -2197,57 +2197,6 @@
       panel.querySelectorAll(".zu-drag-over").forEach(function (el) { el.classList.remove("zu-drag-over"); });
     });
     panel.addEventListener("click", function (e) {
-      var extQuick = e.target.closest && e.target.closest(".zu-ext-qbtn");
-      if (extQuick) {
-        var viewId = extQuick.getAttribute("data-view") || "";
-        if (viewId === "context" || viewId === "insights") {
-          var openedDirect = false;
-          try {
-            var navItem = document.querySelector('[data-extension-item$="/insights"]');
-            var itemAttr = navItem ? String(navItem.getAttribute("data-extension-item") || "") : "";
-            var plugId = itemAttr.length > 9 ? itemAttr.slice(0, -9) : "zcode-token-usage-statusbar@zusage-marketplace";
-            var startEl = navItem || document.querySelector('[data-testid="chat-context-usage-trigger"]');
-            if (startEl) {
-              var ks = Object.keys(startEl), fk = "";
-              for (var fi = 0; fi < ks.length; fi++) {
-                if (ks[fi].indexOf("__reactFiber$") === 0) { fk = ks[fi]; break; }
-              }
-              var f = fk ? startEl[fk] : null, depth = 0;
-              while (f && depth++ < 220) {
-                var mp = f.memoizedProps;
-                if (mp && typeof mp === "object" && typeof mp.onOpenTab === "function") {
-                  var fullViewId = plugId + "/" + viewId;
-                  mp.onOpenTab(viewId === "insights" ? {
-                    id: "extension-view:" + fullViewId,
-                    type: "extension-view",
-                    viewId: fullViewId,
-                    title: { "zh-CN": "上下文洞察", "en-US": "Context Insights" },
-                    icon: "bar-chart-2",
-                    appScoped: true
-                  } : {
-                    id: "extension-view:" + fullViewId,
-                    type: "extension-view",
-                    viewId: fullViewId,
-                    title: { "zh-CN": "上下文组成", "en-US": "Context" },
-                    icon: "pie-chart"
-                  });
-                  openedDirect = true;
-                  break;
-                }
-                f = f.return;
-              }
-            }
-          } catch (eOpen) { }
-          if (!openedDirect) {
-            var rawSid = viewId === "context" ? ((typeof currentSid === "function" ? currentSid() : "") || window.__zusageWantSid || "") : "";
-            var sid = String(rawSid).indexOf("sess_") === 0 ? String(rawSid) : "";
-            pluginRequest("open-ext-view", { viewId: viewId, sessionId: sid });
-          }
-          var closeBtn = panel.querySelector(".zu-settings-close");
-          if (closeBtn) closeBtn.click();
-        }
-        return;
-      }
       var testButton = e.target.closest && e.target.closest(".zu-ep-test-run,.zu-ep-test-cancel");
       if (testButton) {
         if (testButton.classList.contains("zu-ep-test-run")) epTestStart();

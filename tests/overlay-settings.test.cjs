@@ -118,6 +118,32 @@ test('buildPanel initializes and rebuilds controls without losing state or scrol
   assert.match(context.panel.innerHTML, /Status bar settings options/);
   assert.equal(syncs, 2);
 });
+test('v494: ⚙ settings panel renders no extension quick buttons in either language', () => {
+  const buildSource = getNamedSlice('barOrderHelpers') + '\n' +
+    extract('    function settingRow(', '    function syncSettingsScroll() {');
+  for (const lang of ['zh', 'en']) {
+    const body = { scrollTop: 0 }, input = { value: '' };
+    const radios = [{ value: 'zh' }, { value: 'en' }];
+    const checkboxes = ['turn', 'win', 'tools', 'today', 'sub'].map(k => ({ dataset: { k } }));
+    const context = {
+      slot: 0,
+      panel: {
+        innerHTML: '',
+        querySelector: selector => selector === '.zu-settings-body' ? body : selector === '.zu-ctxov' ? input : null,
+        querySelectorAll: selector => selector === 'input[name=zu-lang]' ? radios : checkboxes,
+      },
+      state: { lang, show: { turn: 0, win: 1, tools: 1, today: 0, sub: 1 }, ctxOv: '200000' },
+      VERSION: 'v67', L: (zh, en) => lang === 'en' ? en : zh,
+      syncUpdate: () => {}, syncSettingsScroll: () => {},
+    };
+    vm.runInNewContext(buildSource + '\nbuildPanel();', context);
+    const html = context.panel.innerHTML;
+    assert.doesNotMatch(html, /zu-ext-quick|zu-ext-qbtn|当前会话明细|全部会话洞察|Current Session|All Sessions/,
+      `设置面板不放扩展入口按钮（${lang}）`);
+    assert.match(html, /class="zu-settings-body"[^>]*><section class="zu-settings-section" data-sec="display"/,
+      `正文首节仍是「状态条显示」（${lang}）`);
+  }
+});
 
 test('context-window changes persist through the actual delegated handler', () => {
   const changeSource = extract('    panel.addEventListener("change",', '    listenGlobal(document, "mousedown",');
