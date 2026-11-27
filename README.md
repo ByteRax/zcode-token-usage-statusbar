@@ -4,11 +4,12 @@
 
 **模型速度、token 用量、上下文与套餐额度，一眼看到。**
 
+[![LINUX DO](https://img.shields.io/badge/Community-LINUX%20DO-0064e0?style=flat-square)](https://linux.do/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Windows](https://img.shields.io/badge/-Windows-0078D6?logo=data:image/svg%2Bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI2ZmZmZmZiIgZD0iTTAsMEgxMS4zNzdWMTEuMzcySDBaTTEyLjYyMywwSDI0VjExLjM3MkgxMi42MjNaTTAsMTIuNjIzSDExLjM3N1YyNEgwWm0xMi42MjMsMEgyNFYyNEgxMi42MjMiLz48L3N2Zz4%3D)](https://github.com/ByteRax/zcode-token-usage-statusbar) [![macOS](https://img.shields.io/badge/-macOS-000000?logo=apple&logoColor=white)](https://github.com/ByteRax/zcode-token-usage-statusbar) [![Linux](https://img.shields.io/badge/-Linux-FCC624?logo=linux&logoColor=black)](https://github.com/ByteRax/zcode-token-usage-statusbar)
 [![QQ 群](https://img.shields.io/badge/QQ-129554306-12B7F5?logo=qq&logoColor=white)](https://qm.qq.com/q/l43Xj8P7mE) [![微信](https://img.shields.io/badge/%E5%BE%AE%E4%BF%A1-ByteRax-07C160?logo=wechat&logoColor=white)](#-交流与反馈)
 
-给 [ZCode](https://zcode.z.ai) 桌面版用的第三方增强插件，提供速度状态栏、用量查询和界面增强；市场名称仍为 **ZCode Token Usage Statusbar**，仓库地址与命令不变。
+给 [ZCode](https://zcode.z.ai) 桌面版用的第三方增强插件，把模型速度、Token 用量、上下文占用、套餐额度和常用小工具直接放到界面上（市场原名 **ZCode Token Usage Statusbar**）。
 
 A community toolkit for ZCode desktop: generation speed, token usage, context tracking and UI enhancements.
 
@@ -16,7 +17,7 @@ A community toolkit for ZCode desktop: generation speed, token usage, context tr
 
 ![ZCodeBox 速度状态栏宣传图](docs/promo/promo.png)
 
-宣传图采用布景与演示数据，实际界面随版本和配置变化。
+宣传图取自 ZCode 桌面实拍。实际界面随版本和配置变化。
 
 </div>
 
@@ -24,14 +25,13 @@ A community toolkit for ZCode desktop: generation speed, token usage, context tr
 
 ### 你需要准备什么
 
-- **ZCode 桌面客户端**：主要支持 Windows / macOS；Linux 有路径与权限适配，但未覆盖所有发行版的实机验证。
-- **Python 3.8+**，需包含标准库 `sqlite3`，不用安装第三方 Python 包。
-- 无需另外安装 Node.js 或 npm，桌面状态栏使用 ZCode 自带的 Node 环境。
-- `token_usage` MCP 工具需要 **ZCode 桌面 3.19.0 及以上**（由客户端内置的 `zcode-python` 启动，预装工具下载完成后可用）；更旧的桌面版仍可用状态条、`/usage` 命令与 CLI。
+- **ZCode 桌面版**：支持 Windows 和 macOS（Linux 已做基础适配，未逐一测试所有发行版）。
+- **Python 3.8+**：系统自带或自行安装即可，**不需要装任何第三方库**，也不用单独装 Node.js。
+- **可选 MCP 查询**：`token_usage` 工具需要 **ZCode 3.19.0+**；更老版本依然可以使用状态条、`/usage` 命令和终端查询。
 
 ### 安装方法
 
-把下面这段话发给 ZCode，安装或更新插件。文案把要执行的命令都写明了，ZCode 不需要自己摸索安装方式；GitHub 连不上时它会自动改用国内源重试，不用你再发一次：
+复制下面这段话，直接发给 ZCode 就能自动完成安装或更新（GitHub 连不上时，它会自动改用国内源重试）：
 
 ```text
 请安装或更新 ZCode 插件 zcode-token-usage-statusbar，严格按下面三步做，不要另找安装方式：
@@ -46,11 +46,11 @@ A community toolkit for ZCode desktop: generation speed, token usage, context tr
 任何一步失败都原样转述错误，不要跳过，也不要声称安装成功。
 ```
 
-两个地址里的 `#plugin-releases` 与 `.git#plugin-releases-gitcode` 选择正式发布的稳定渠道，保持原样。国内源要求本机装有 [Git](https://git-scm.com/downloads)，而且地址里的 `.git` 不能省：宿主只把以 `.git` 结尾的地址当作仓库来源，否则会把它当成清单文件的直链去下载。
+> **提示**：
+> - 国内源需要本机装有 [Git](https://git-scm.com/downloads)，且地址里的 `#plugin-releases` / `.git#plugin-releases-gitcode` 不能删。
+> - 安装状态条会修改 ZCode 程序文件（`app.asar`），请确认信任本项目。**首次安装后必须完全退出 ZCode**（从菜单或托盘退出，只关窗口不算）再重开，才能看到状态条。
 
-> **注意**：状态条安装会修改 ZCode 的程序文件（`app.asar`），请先确认信任本项目。**首次注入成功后，须完全退出并重开 ZCode**（仅关闭窗口或重开会话不算），再检查状态条是否出现；安装失败或权限不足时，先排查原因，重启不能替代安装。
-
-如果安装成功并完全重启后仍看不到状态条，先新开一个会话运行只读体检 `/zusage-doctor`，按输出里的「建议动作」处理；需要进一步排查时，可把这句话发给 ZCode：
+装完重启后如果没看到状态条，新开一个会话输入 `/zusage-doctor` 做只读体检，按提示修复即可；需要让 ZCode 帮忙排查时，可发送：
 
 ```text
 请排查 https://github.com/ByteRax/zcode-token-usage-statusbar 插件的状态条或工具栏 chip 未显示的原因，先检查插件启用状态、安装结果、实际加载路径及相关开关。修改客户端文件前先征求我确认；需要反馈时，整理脱敏后的复现步骤与诊断摘要，待我确认后再提交到 https://github.com/ByteRax/zcode-token-usage-statusbar/issues，不要上传凭据或完整本地日志。
@@ -58,125 +58,94 @@ A community toolkit for ZCode desktop: generation speed, token usage, context tr
 
 ### 手机远控页面（当前源码功能）
 
-在打开远控页的浏览器中，通过 Tampermonkey 等用户脚本管理器[安装正式版手机脚本](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js)。在桌面状态条 **⚙ → 维护 → 移动端远程控制** 开启默认关闭的「推送状态栏数据到远控页」，再开启宿主「Web 远程控制」并打开 `https://zcode.z.ai/remote/`。
-
-安装地址提供 `main` 根目录的发布快照，可能落后于桌面源码。请使用支持同一中继协议的桌面插件，正式渠道可用性以对应 Release 说明为准。安装、数据范围与排障见[手机远控指南](docs/user-guide.md#手机远控页面)。
+想在手机或浏览器远控页看同样的状态条：在浏览器装好油猴扩展后[点击安装手机脚本](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js)，然后在桌面状态条 **⚙ → 维护 → 移动端远程控制** 开启推送开关，打开宿主「Web 远程控制」并访问 `https://zcode.z.ai/remote/` 即可（详情见[手机远控指南](docs/user-guide.md#手机远控页面)）。
 
 ### 故障排查与自动修复以及卸载说明
 
-客户端升级可能覆盖注入补丁。保持插件启用，**新建或恢复会话**可触发自动安装/修复；仅在已打开的会话里发消息不保证触发。确认修复成功后，如提示待重启，再完全退出并重开 ZCode。权限不足或宿主结构变化仍可能使修复失败。
+ZCode 每次官方升级后，状态条可能会暂时消失。保持插件启用，**新开或恢复一个会话**就会自动修复，按提示完全退出重开即可。
 
-- **插件安装/更新**：`/install-overlay`：打开 ZCode ，新开一个会话，输入 `/install-overlay`，然后回车，即可重新触发修复注入，确认成功后按提示完全重启。
-- **插件体检**：`/zusage-doctor`：状态条、工具栏 chip 或回答末尾的速率行不显示时，新开一个会话输入 `/zusage-doctor`；它只读、不改任何文件，逐项报告哪里不对并给出对应的修法。
-- **插件卸载**：① 在 ⚙ 关闭自动更新 → ② 在对话中执行 `/uninstall-overlay` 并确认成功 → ③ 打开 **设置 → 插件 → 已安装 →
-  ZCode Token Usage Statusbar → ⋯ → 卸载** → ④ 完全退出并重开
-  ZCode。切勿直接卸载插件而把状态条留在客户端中；清理配置与缓存残留见[彻底卸载指南](docs/user-guide.md#彻底卸载)。
+- **手动修复 / 重装**：新开会话输入 `/install-overlay`。
+- **只读体检**：新开会话输入 `/zusage-doctor`，它会列出问题和修法，不改任何文件。
+- **彻底卸载**：① 在 ⚙ 关闭自动更新 → ② 对话中运行 `/uninstall-overlay` → ③ 在 **设置 → 插件 → 已安装** 卸载本插件 → ④ 完全退出并重开 ZCode（清理残留见[彻底卸载指南](docs/user-guide.md#彻底卸载)）。
 
-- [安装指南](docs/user-guide.md#插件安装)
-- [更新与升级细节 →](docs/user-guide.md#更新与客户端升级)
-- [功能图示](docs/features.md)
-- [额度支持矩阵](docs/quota-support-audit.md)
-- [实现原理与数据口径](docs/design-notes.md)
-- [开发与发布](docs/maintaining.md)
-- [测试说明](tests/README.md)
+更多文档：[安装指南](docs/user-guide.md#插件安装) · [更新与升级细节](docs/user-guide.md#更新与客户端升级) · [功能图示](docs/features.md) · [额度支持矩阵](docs/quota-support-audit.md) · [实现原理与数据口径](docs/design-notes.md) · [开发与发布](docs/maintaining.md) · [测试说明](tests/README.md)
 
 ---
 
 ## 功能一览
 
-| 功能名称                   | 核心效果                                                                                                                                                                                                               |
-|----------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **状态栏统计**             | 跟随当前窗口 / 分栏的会话，显示本轮、会话、项目与今日用量；悬停查看输入 / 输出、缓存命中率、请求数、轮数、会话数及耗时等明细。生成中的速度为估算值，用量在请求完成入库后刷新                                           |
-| **回答末尾的速率行**       | 在本轮统计可用时显示输出速度、首字延迟、输出 token（含思考）、生成时长及时间，并按数据情况补充会话均速和累计输出；多段请求另显示段数和峰值。依赖浮层及渲染桥，不保证每条历史回答都有统计行；子智能体窗格里同样显示（远端会话除外） |
-| **Git 状态**               | 查看分支、上游状态、暂存 / 未暂存 / 未跟踪文件数及改动行数；工作目录不是仓库时，汇总直接子目录的多个仓库。只读本机 Git，不联网、不改仓库                                                                               |
-| **系统状态**               | 状态条第八格（默认关闭，⚙ 排序卡开启）：显示本机 CPU 使用率、内存占用与磁盘可用空间，悬停查看负载、Wired/Swap 与多卷明细；阈值预警变色，空间不足时按优先级参与自动折叠。仅监控运行 ZCode 的本机，远端分栏不显示                                                                                                                                 |
-| **套餐额度**               | 在上下文按钮左侧显示账号级套餐池各时间窗的已用比例、重置时间或余额，可切换剩余口径。支持 GLM Coding Plan、DeepSeek、R4 Coder 等数据源及兼容协议的中转站；支持程度见[额度支持矩阵](docs/quota-support-audit.md)，团队套餐暂不支持 |
-| **重置卡徽标**             | 显示登录账号可用的额度重置卡张数与到期时间，临近过期时显示倒计时与颜色提醒；需要 ZCode 登录态，仅 API Key 用户与团队套餐不可用                                                                                         |
-| **增强提示词**               | 模型选择按钮左侧的 ✦ 按钮：点击改写并替换输入框草稿。默认发给当前会话的供应商和模型，自定义时发给已保存的增强供应商和模型，可能消耗额度或产生费用。默认开启，可在「提示词增强」设置中关闭，或配置 `enhance_enabled: false`        |
-| **预估费用**               | 悬停本轮 / 会话累计 / 项目累计 / 今日合计，按 [models.dev](https://models.dev/) 收录的官方渠道公开价格估算 API 费用；未匹配模型使用默认均价，仅供参考，不是账单                                                        |
-| **一键压缩上下文**         | 在上下文按钮面板中确认后，向当前会话发送 `/compact`，不改输入框草稿；压缩期间发送新消息会中断压缩                                                                                                                      |
-| **调整自动压缩上下文比例** | 在 ⚙ → 通用设置按百分比（30–99%）或 Token 数（≥100k，支持 k/M 后缀，低于 100k 的数字自动按 100k 生效）设置触发阈值，补丁生效后也可从上下文面板的「调整」链接直达。留空跟随引擎默认，默认比例因模型窗口而异；仅适用于受支持的桌面内置引擎，首次加载补丁需新会话或重启                                   |
-| **上下文按钮增强**         | 在原生上下文按钮上显示环形填充、档位颜色与百分比，优先跟随宿主当前用量，解析不可用时回退数据库口径；上下文占比不占状态条格子                                                                                           |
-| **项目完整路径**           | 「编辑项目」弹窗在文件夹名称下方显示完整路径；长路径换行，多文件夹逐行显示，点击文件夹行可用系统文件管理器打开目录                                                                                                     |
-| **搜索弹框加宽**           | 放宽命令中心等 cmdk 搜索弹框的宽高上限，便于查看长条目；不影响所有类型的弹窗                                                                                                                                           |
-| **状态轮播**               | 默认关闭；开启后，在思考 / 生成 / 长耗时阶段的消息流 Loading 行轮播状态短语，可自定义词包；默认在文案后追加与宿主一致的「工作中 X 分 X 秒」耗时（⚙ 可关，悬停可随时查看）与实时速度 t/s（档位配色与速度格一致，⚙ 可关）                                                              |
-| **SSH / WSL 远端会话**     | 在可信身份绑定下自动发现远端、按服务器独立查询统计，失败后持续重试；需手动在远端部署查询脚本，不替宿主重连 SSH。仅桌面快照链支持跨机，详见[远程会话指南](docs/user-guide.md#远程会话)                                  |
-| **Web 远控状态条（本检出）** | 浏览器脚本为本地与 WSL/SSH 会话复用桌面状态条、tooltip 和设置。详见[手机远控指南](docs/user-guide.md#手机远控页面) |
-| **子智能体明细**           | 查看子任务用量、模型、运行状态、速度和预估费用；运行中速度按字符增量估算，完成后在数据可用时回填统计值                                                                                                                 |
-| **用量查询**               | 对话中用 `/usage today`，终端在仓库目录运行 `python3 zusage.py days 7`，或调用 MCP 工具 `token_usage(scope="today")`；`current` 取数据库最近活跃会话，不保证是屏幕焦点                                                 |
+点击缩略图可查看原图。标有「演示」的截图使用示例数据。
 
-在 ⚙ 中可切换「默认 / 药丸 / 精简」[状态条样式](docs/user-guide.md#状态条样式)、选择显示项、设置中英文与 token 单位。MCP
-是可选查询入口，不影响状态条使用；终端的 `python3` 可按本机安装替换为 `python`。回答末尾的速率行标签目前仍为中文。
+| 功能名称                   | 核心效果                                                                                                                                      | 截图示意 |
+|----------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------|---|
+| **生成速度与历史趋势 V3**  | 跟着当前窗口和分栏走，显示思考/工具计时与输出速度；鼠标悬停可按 4 种范围 × 5 种时间筛选多模型均速、占比、日历热力图和柱状趋势（支持月份翻页） | <a href="docs/promo/features/live/status-bar.png"><img src="docs/promo/features/live/status-bar.png" width="224" alt="生成速度与历史趋势 V3"></a> |
+| **三套状态栏样式与布局**   | 支持「默认（输入框内嵌）/ 药丸（悬浮胶囊）/ 精简（速度移入工具行）」三套样式与均分/居左/居右对齐；支持拖拽排序和低优先级自动折叠进 `···` 菜单 | <a href="docs/promo/features/live/pill-bar.png"><img src="docs/promo/features/live/pill-bar.png" width="224" alt="三套状态栏样式与布局"></a> |
+| **本轮与会话累计明细**     | 分别统计当前提问和整个对话的 Token 总量、输入/输出、缓存命中率、请求次数、平均延迟与各模型拆分明细；多窗口、多分栏和划词侧栏各自独立不串数据  | <a href="docs/promo/features/live/session.png"><img src="docs/promo/features/live/session.png" width="224" alt="本轮与会话累计明细"></a> |
+| **项目累计与跨项目对比**   | 按工作区目录汇总跨会话的 Token 消耗、请求轮数、总耗时、平均速度和各模型费用明细；右上角可一键切到「全部项目」横向对比各项目历史消耗           | <a href="docs/promo/features/live/project.png"><img src="docs/promo/features/live/project.png" width="224" alt="项目累计与跨项目对比"></a> |
+| **工具调用与错误监控**     | 统计当前会话的工具调用总次数，出错时亮起红色错误徽标；鼠标悬停可看 Bash、Edit、Read、Agent 等每个工具的调用次数、累计耗时和错误数             | <a href="docs/promo/features/live/tools.png"><img src="docs/promo/features/live/tools.png" width="224" alt="工具调用与错误监控"></a> |
+| **回答末尾的速率行**       | 每轮回答结束后，在末尾附上一行小字：模型名、输出速度、首字等待、输出字数、耗时、峰值速度与预估费用（子智能体窗格也会显示，远端会话除外）       | <a href="docs/promo/features/live/reply-rate.png"><img src="docs/promo/features/live/reply-rate.png" width="224" alt="回答末尾的速率行"></a> |
+| **Git 状态**               | 一眼看当前分支、有没有未推送/未拉取的提交、改了多少文件和行数；支持多仓库子目录汇总，也支持 Worktree 会话。只读本地仓库，不改代码             | <a href="docs/promo/features/live/git.png"><img src="docs/promo/features/live/git.png" width="224" alt="Git 状态"></a> |
+| **系统状态**               | 状态条第八格（默认关闭，可在 ⚙ 开启）：看本机 CPU、内存和磁盘剩余空间，快满时变色提醒；仅监控运行 ZCode 的本机                                | <a href="docs/promo/features/live/system.png"><img src="docs/promo/features/live/system.png" width="224" alt="系统状态"></a> |
+| **套餐额度与多源凭据**     | 在上下文按钮左边显示账号套餐已用比例、重置时间或余额，可切换看剩余比例。支持 GLM、Start Plan、千问、DeepSeek、OpenCode Go、R4 Coder、StepFun 等 | <a href="docs/promo/features/live/quota.png"><img src="docs/promo/features/live/quota.png" width="224" alt="套餐额度与多源凭据"></a> |
+| **重置卡徽标**             | 显示登录账号可用的额度重置卡张数和到期倒计时；悬停可看每张卡到期时间、近 7 天过期记录和上次重置时间（纯 API Key 与团队套餐不可用）             | <a href="docs/promo/features/live/reset-card.png"><img src="docs/promo/features/live/reset-card.png" width="224" alt="重置卡徽标"></a> |
+| **模型选择器峰谷倍率徽标** | 在 GLM Coding Plan 模型列表右侧直接标出当前时段消耗倍率（如 `0.67×` / `2.00×`），悬停可看高峰（工作日 14:00–18:00）与非高峰双档倍率           | <a href="docs/promo/features/peak-factor.png"><img src="docs/promo/features/peak-factor.png" width="224" alt="模型选择器峰谷倍率徽标"></a><br><sub>演示</sub> |
+| **拉取模型列表与探测**     | 在自定义供应商和套餐源里一键拉取模型列表；支持自动测试连通性与思考档位，顺手补齐上下文窗口和输出上限（测试会发最小请求，可能消耗少量额度）     | <a href="docs/promo/features/model-pull.png"><img src="docs/promo/features/model-pull.png" width="224" alt="拉取模型列表与探测"></a><br><sub>演示</sub> |
+| **增强提示词与历史记录**   | 模型按钮左边的 ✦ 按钮：点一下把草稿润色改写，悬停可查看最近增强历史（含原始/增强文本对照、耗时与 Token 消耗），也可指定专门的润色模型          | <a href="docs/promo/features/live/prompt-enhance.png"><img src="docs/promo/features/live/prompt-enhance.png" width="224" alt="增强提示词与历史记录"></a> |
+| **预估费用**               | 鼠标悬停本轮、会话、项目、今日或子代理用量，按公开官方价格估算花了多少钱，支持美元（`$`）和人民币（`¥`）切换；仅供参考，不是真实账单           | <a href="docs/promo/features/estimated-cost.png"><img src="docs/promo/features/estimated-cost.png" width="224" alt="预估费用"></a><br><sub>演示</sub> |
+| **上下文按钮增强**         | 给原生上下文按钮加上进度圆环、变色预警和百分比；不占状态条格子                                                                                | <a href="docs/promo/features/live/context-ring.png"><img src="docs/promo/features/live/context-ring.png" width="80" alt="上下文按钮增强"></a> |
+| **上下文构成明细**         | 悬停「上下文容量」弹层时，在每一项旁边显示估算 Token 数；鼠标放上去能看大白话解释、对应文件位置和省空间建议（可在 ⚙ 关闭）                     | <a href="docs/promo/features/live/context-breakdown.png"><img src="docs/promo/features/live/context-breakdown.png" width="224" alt="上下文构成明细"></a> |
+| **一键压缩与分隔线统计**   | 在上下文面板点确认，直接给当前会话发 `/compact` 压缩记忆且不碰输入框草稿；时间线「上下文已压缩」分隔线下方还会标注压缩前后水位变化与耗时       | <a href="docs/promo/features/live/compact.png"><img src="docs/promo/features/live/compact.png" width="224" alt="一键压缩与分隔线统计"></a> |
+| **调整自动压缩上下文比例** | 在 ⚙ → 通用里自定义什么时候自动压缩（30%–99% 或直接填 Token 数，如 `100k`），留空则按官方默认。仅支持受支持的内置引擎，首次开启需重开或新会话  | <a href="docs/promo/features/live/auto-compact.png"><img src="docs/promo/features/live/auto-compact.png" width="224" alt="调整自动压缩上下文比例"></a> |
+| **项目快捷打开与完整路径** | 在本地项目右键或「…」菜单里加入「在 Finder / 文件资源管理器中打开」；在「编辑项目」弹窗里完整显示文件夹路径，点一下就能打开目录               | <a href="docs/promo/features/project-folder.png"><img src="docs/promo/features/project-folder.png" width="224" alt="项目快捷打开与完整路径"></a><br><sub>演示</sub> |
+| **搜索弹框加宽**           | 把命令中心等搜索弹窗放宽加高，长文件名和长标题不用左右滚动就能看全                                                                            | <a href="docs/promo/features/search.png"><img src="docs/promo/features/search.png" width="224" alt="搜索弹框加宽"></a><br><sub>演示</sub> |
+| **状态轮播**               | 默认关闭；开启后，AI 思考和生成时会在加载行轮播有趣短语（内置 16 个词包与日程排程，支持自定义词包），并附上工作耗时和估算速度                  | <a href="docs/promo/features/live/rotator.png"><img src="docs/promo/features/live/rotator.png" width="224" alt="状态轮播"></a> |
+| **SSH / WSL 远端会话**     | 连远程服务器或 WSL 时，也能独立查询和显示远端的用量统计（需先按[远程会话指南](docs/user-guide.md#远程会话)在远端放好查询脚本）               | <a href="docs/promo/features/ssh.png"><img src="docs/promo/features/ssh.png" width="224" alt="SSH / WSL 远端会话"></a><br><sub>演示</sub> |
+| **Web 远控状态条**         | 通过浏览器油猴脚本，在远控页面复用这套桌面状态条、悬停卡和设置面板（见[手机远控指南](docs/user-guide.md#手机远控页面)）                       | <a href="docs/promo/features/live/web-remote.png"><img src="docs/promo/features/live/web-remote.png" width="224" alt="Web 远控状态条"></a><br><sub>桌面设置入口</sub> |
+| **子智能体与工作流明细**   | 独立统计后台子智能体与动态工作流卡片的消耗；展开面板查看各子任务的模型、状态、速度和费用，会话流 Agent 行内也会显示对应子任务速率             | <a href="docs/promo/features/live/subagents.png"><img src="docs/promo/features/live/subagents.png" width="224" alt="子智能体与工作流明细"></a> |
+| **自动更新、日志与体检**   | 支持 GitHub / GitCode 双渠道更新、在线查看版本更新日志、本地热修保护、待重启红点提醒与一键重启 ZCode；输入 `/zusage-doctor` 可做只读环境体检   | <a href="docs/promo/features/live/update-notes.png"><img src="docs/promo/features/live/update-notes.png" width="224" alt="自动更新、日志与体检"></a> |
+| **用量查询**               | 除了看状态条，还能在对话里发 `/usage today`、在终端跑 `python3 zusage.py days 7`，或让 AI 调用 MCP 工具 `token_usage` 查历史用量             | <a href="docs/promo/features/usage-query.png"><img src="docs/promo/features/usage-query.png" width="224" alt="用量查询"></a><br><sub>演示</sub> |
+
+点击状态条右侧的 **⚙ 齿轮图标**，可以切换「默认 / 药丸 / 精简」[状态条样式](docs/user-guide.md#状态条样式)、调整显示哪些格子、切换中英文、切换「万/亿」或「K/M/B」单位，以及设置悬浮卡是「悬停弹出」还是「点击打开」。
 
 ## 这些数据是怎么来的
 
-本地用量统计主要读取 ZCode 的 SQLite 数据库，不是账单；查询优先以只读模式打开，失败时回退到普通连接。用量随请求完成并入库后刷新，不是逐字流式统计。
-
-有渲染桥时，生成中的 t/s 按字符增量估算，完成后条面显示最近一轮真实速度；无桥时回退数据库最近有效段。会话与历史加权均速见速度悬浮卡，回答末尾的速率行按本轮有效请求段加权计算，不包含段间工具等待。
-
-上下文占比优先跟随宿主原生按钮，数据库兜底取最近完成请求的输入量 / 上下文窗口，不是会话累计。套餐额度与余额通常独立查询供应商接口，不用本地
-token 总量反推；SCNet 的无凭据估算另走账本与抵扣表。完整定义见[数据口径](docs/user-guide.md#数据如何计算)。
+- **用量与费用**：主要从 ZCode 本地的历史记录数据库（SQLite，只读不改）读取；每次回答完成后刷新，不是逐字滚动。
+- **生成速度**：回答生成中按字数变化估算，回答结束后切换为实际测算速度；更细的算法见[数据口径](docs/user-guide.md#数据如何计算)。
+- **上下文与额度**：上下文占比优先跟随 ZCode 原生显示；套餐额度直接向对应服务商接口查询，不会用本地 Token 数量去反推。
 
 ## 顺带支持 WorkBuddy（可选）
 
-同一套查询库也能读 **WorkBuddy** 的本地用量：上下文与窗口取自 `~/.workbuddy/workbuddy.db` 的 `session_usage`，**逐请求
-token / 缓存 / 思考 / credit / 工具调用**取自会话正文 `projects/*/*.jsonl` 里的 `providerData.rawUsage`
-（每次模型调用都有）。速度是按响应窗口推算的近似值；**预估费用**按 models.dev 官方牌价逐模型计价（有汇率显示 ¥，否则 $
-），价表未收录的模型如实标「不可得」并在聚合里注明范围，不拿兜底均价或 0 冒充。
-
-浮层按客户端分流：ZCode 仍走原来的 asar 注入；WorkBuddy 没有这条链，改走 CDP 在**输入卡内注入一条状态条**，每个分段
-**悬停弹信息卡**（速度卡带最近 8 段柱状图、档位配色与统计口径；本轮/会话/工具/今日/上下文/项目各有明细），右侧齿轮看完整详情。只连客户端自带的调试端口，不改程序文件；启动时按
-agent 自动选择，ZCode 侧行为一字未变。
-
-三句话用起来：
+同一套查询工具也能读取 **WorkBuddy** 的本地用量，并自动在它的输入框底部注入状态条（只连客户端自带调试端口，不改任何程序文件，也不会影响原 ZCode）：
 
 ```bash
-python zusage.py host                 # 自检：当前宿主、两个库位置、可用指标
-python zusage.py --host workbuddy now # 临时按 WorkBuddy 查，不写配置
+python zusage.py host                 # 检查当前宿主和数据库位置
+python zusage.py --host workbuddy now # 临时查一次 WorkBuddy 用量
 ```
 
-想固定下来，在 `config.json` 写 `"host": "workbuddy"`（或 `"auto"` 让它按库存在性选）；库不在默认位置时用
-`hosts.workbuddy.db_path` 或环境变量 `ZUSAGE_WORKBUDDY_DB`。MCP 工具多了一个可选 `host` 参数。**默认值仍是 `zcode`**——装了
-WorkBuddy 不会改变原 ZCode 的任何行为。
-
-**想直接在 WorkBuddy 客户端里用 `/usage`**：仓库另带 WorkBuddy 专用插件 `plugins/workbuddy-token-usage/`（只有 MCP + 命令，不含
-asar 注入），装法见[宿主适配文档](docs/hosts.md#7-在-workbuddy-客户端里安装可选)。
+想固定用 WorkBuddy 或在客户端里直接用 `/usage`，看[宿主适配文档](docs/hosts.md#7-在-workbuddy-客户端里安装可选)。
 
 ## 隐私与安全
 
-- **这不是 ZCode 官方功能**，是社区插件；状态条靠修改 ZCode 的程序文件（`app.asar`）实现，卸载时只删自己加的那部分。
-- **数据与联网**：本地用量查询使用 SQLite，查询本身不上传用量。额度与重置卡查询会访问对应服务；预估费用默认每 12 小时从 models.dev
-  下载价表，并从 er-api（失败时回退 exchangerate.fun）获取汇率，可用 `pricing.fetch: false`
-  关闭下载，仅关闭费用显示不会停止同步。插件更新 / 更新日志也会联网，⚙ 可关自动更新；远程会话使用已配置的 SSH / WSL
-  通道。各功能开关独立，关闭额度查询不等于停止全部联网。
-  主动增强或测试时，草稿会发送给相应的模型供应商，可能消耗额度或产生费用。
-- **移动端中继**：显式开启 `mobile_relay.enabled` 后，插件经 ZCode 官方中继向远控页推送状态栏数据；该通道无端到端加密，服务端可见载荷。下行仅包含当前远控会话的标识与数值统计，以及其所属主机的今日合计、项目累计等聚合；聚合可能包含其他会话的贡献，不含会话正文、工作区路径或凭据。手机上行仅包含显示偏好与代际计数。关闭开关不影响宿主远控正常消息。
-- **调试端口**：为实机调试与自动化 QA，插件默认尝试补开 Chromium 调试端口 `9229`，并保留用户显式指定的调试端口。同机其它进程可借此读取或操控
-  ZCode 窗口内容，请勿将端口代理或转发到外网。在启动前设置 `ZCODE_DISABLE_FIXED_REMOTE_DEBUGGING_PORT=1`
-  并完全重启，可禁止插件补开端口，但不会移除其它途径启用的端口；不接受此调试能力时，请禁用补开或卸载插件，并在重启后核验。
-- **凭据边界**：ZCode 里存的 SSH 密码、私钥口令不会被插件解密使用；额度查询凭据不写入日志或诊断。⚙ 面板保存的凭据持久化在运行目录的
-  `quota-secrets.json`（支持时设置为 0600），请求只发往对应官方域或用户配置的中转站本域。Anthropic 数据源默认关闭，显式启用后可能读取
-  `~/.claude/.credentials.json`。额度与重置卡查询开关独立，停止这两类查询需分别关闭。
-  ZCode 3.18.0 起登录凭据的加密密钥存放在系统钥匙串，或宿主的 managed secret（`ZCODE_CREDENTIAL_SECRET`、
-  `ZCODE_CREDENTIAL_SECRET_FILE` 指向的文件、凭据同目录的 `credential-secret`）；查询内置套餐额度、重置卡与拉取套餐模型时，
-  插件在 ZCode 进程内读取该密钥用于解密（钥匙串经宿主自带的钥匙串模块读取），密钥只在内存。
-- **token 用量 ≠ 账单**：额度 chip 可显示支持的数据源提供的套餐已用比例或账户余额，但不提供现金扣费账单或计费明细。
+- **非官方插件**：本工具通过修改 ZCode 程序文件（`app.asar`）显示界面增强，卸载时只清理自己添加的部分。
+- **哪些操作会联网**：本地用量查询完全在本地完成，不上传任何数据；只有查询套餐额度/重置卡、每 12 小时同步一次公开价表与汇率、检查插件更新、使用提示词增强/模型探测，以及你手动开启的远程会话或手机远控才会联网。各功能开关独立，可随时关闭。
+- **手机远控安全边界**：只有你在 ⚙ 手动打开开关后，才会把当前会话的数值统计（不含对话正文、文件路径或密钥）经 ZCode 官方中继推给远控页；该通道无端到端加密。
+- **本地调试端口**：为方便排查问题和自动测试，插件默认尝试开启本地调试端口 `9229`（仅限本机，请勿转发到公网）。如不需要，启动前设置环境变量 `ZCODE_DISABLE_FIXED_REMOTE_DEBUGGING_PORT=1` 并完全重启即可关闭。
+- **凭据与密钥**：你在 ⚙ 填写的额度密钥仅保存在本地运行目录的 `quota-secrets.json`（0600 权限），不会写入日志；内置账号凭据只在内存解密使用，SSH 密码和私钥口令不会被插件读取。
+- **用量 ≠ 账单**：估算费用和额度展示仅供参考，不代表实际扣费账单。
 
 ## 常见问题
 
 **更新 ZCode 之后，状态条怎么没了？**
 
-- ZCode 更新时会把状态条改过的程序文件覆盖回原样。保持插件启用，新建或恢复会话触发自动修复，确认成功后再
-  **完全退出重开一次**——哪怕更新时已经自动重启过。[详细步骤 →](docs/user-guide.md#zcode-升级后状态条消失)
+- 官方更新会覆盖程序文件。保持插件启用，**新开或恢复一个会话**触发自动修复，确认成功后再**完全退出重开一次 ZCode** 即可。[详细步骤 →](docs/user-guide.md#zcode-升级后状态条消失)
 
 **数字怎么不一直跳？**
 
-- 用量数据在请求完成并入库后刷新，不是逐字滚动；有渲染桥时生成速度可在回复中按字符增量估算，无桥时按请求完成入库刷新。刚开的新会话可能尚无可用统计。
+- 用量数字在每次回答完成后入库刷新，不是逐字跳动；生成过程中只有速度会按字数估算变化。
 
 **能显示花了多少钱吗？**
 
-- 现金账单不能，这里没有计费明细。悬停本轮 / 会话累计 / 项目累计 / 今日合计时，可查看按官方公开目录价估算的 API
-  费用（仅供参考，非实际账单）；支持的数据源还可通过**套餐额度 chip** 显示套餐已用比例或账户余额。
+- 不能当真实账单，但鼠标悬停在用量数字上可以看到按官方公开价估算的 API 费用；支持的服务商也能直接在「套餐额度」看剩余比例或余额。
 
 [更多排查 →](docs/user-guide.md#排查)
 
@@ -211,6 +180,8 @@ asar 注入），装法见[宿主适配文档](docs/hosts.md#7-在-workbuddy-客
 
 ### 开源许可
 
+本项目已加入并致谢 [LINUX DO](https://linux.do/) 开源社区。
+
 本项目以 [MIT License](LICENSE) 开源。
 
 部分界面图标改编自 [Lucide](https://lucide.dev)（ISC License）。
@@ -218,6 +189,5 @@ asar 注入），装法见[宿主适配文档](docs/hosts.md#7-在-workbuddy-客
 ### 免责声明
 
 - 本项目为**社区维护的非官方增强插件**，未获得 ZCode 官方授权或认可。ZCode 的名称、商标及官方资源归各自权利人所有。
-- 本项目通过修改 `app.asar` 加载增强代码，并依赖客户端内部接口、页面 DOM 与部分引擎补丁，**不承诺兼容未来所有 ZCode 版本**
-  ；客户端更新可能使功能失效或需要适配，用于生产环境前请评估风险。
+- 本项目通过修改 `app.asar` 加载增强代码，并依赖客户端内部接口、页面 DOM 与部分引擎补丁，**不承诺兼容未来所有 ZCode 版本**；客户端更新可能使功能失效或需要适配，用于生产环境前请评估风险。
 - 软件按「现状」提供，不附带明示或默示担保；完整许可与责任限制见 [MIT License](LICENSE)。

@@ -606,6 +606,12 @@
       tpsTip.__zuTipSig = "";
       showTpsTip(tpsTipFor);
     }
+    /* v489（spec §14.1）：筛选弹层同款「点外即收」（同 06 链；fopen 入口豁免防双翻转） */
+    if (typeof spd3PopOutside === "function" &&
+        spd3PopOutside(tpsTipFor && tpsTipFor.__zuT ? tpsTipFor.__zuT.speedSel : null, e.target)) {
+      tpsTip.__zuTipSig = "";
+      showTpsTip(tpsTipFor);
+    }
     if (tpsSpd3Activate(e)) return;
     tpsTabActivate(e);
   });
@@ -921,6 +927,7 @@
     /* v479（spec §28.5）：月历弹层随卡收起，重开不残留 */
     var tpsHideSel = tpsTipFor && tpsTipFor.__zuT && tpsTipFor.__zuT.speedSel;
     if (tpsHideSel && tpsHideSel.mpop) tpsHideSel.mpop.open = false;
+    if (tpsHideSel && tpsHideSel.pop) tpsHideSel.pop.open = false;   // v489：筛选弹层随卡收起（同 mpop；搜索词保留）
     tpsTipFor = null;
     spdHoverPortalHide();   // v280：Portal 随 tooltip 收起，不留孤儿浮层
     spdLegendTipHide();     // v281：档位说明浮层同链收起

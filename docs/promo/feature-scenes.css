@@ -1,0 +1,12 @@
+.demo-host{position:absolute;z-index:3;top:215px;left:120px;width:360px;padding:14px;
+  background:#222;border:1px solid #414141;border-radius:12px;color:#dedede;font-size:14px}
+.demo-host strong{display:block;padding-bottom:8px;color:#f2f2f2}
+.demo-row{display:flex;align-items:center;gap:9px;padding:6px 0}
+.demo-row > .flex-1{display:flex;flex:1}
+.demo-row svg{width:16px;height:16px}
+.demo-host button{background:#303030;border:1px solid #454545;border-radius:6px;color:inherit;padding:6px 10px}
+.demo-search{left:50%;transform:translateX(-50%);width:100%;max-width:32rem}
+.demo-query{border-bottom:1px solid #464646;margin-bottom:8px;color:#9ba3ae}
+.demo-terminal{width:max-content;font-family:var(--font-mono);padding:18px;color:#deebf7}
+.demo-terminal code{color:#80e0b0}
+.demo-terminal pre{margin:12px 0 0;font:inherit;line-height:1.5}

@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """宣传图导出：Playwright 打开 promo.html（真实 overlay.js 渲染状态条），
-用真实鼠标悬停「会话累计」弹出明细 tooltip，按 2 倍像素密度导出 promo.png（2560×1440）。
+用真实鼠标悬停「会话累计」弹出明细 tooltip，按 2 倍像素密度导出布景预览图（2560×1440）。
 同时打印版面自检结果：条是否触发收缩/渐隐、tooltip 与注释是否压住正文、标注与安装区是否越界、重叠或溢出。
 用法（仓库根目录）：uv run --with playwright python docs/promo/shoot.py [html] [输出] [宽] [高] [悬停项序号|none]
-不传参数时默认 promo.html → promo.png 1280x720 悬停第 3 项；传 none 跳过悬停（无 tooltip 的静态版式）。
+不传参数时默认 promo.html → promo-preview.png 1280x720 悬停第 3 项；传 none 跳过悬停（无 tooltip 的静态版式）。
 """
 import json
 import pathlib
@@ -13,7 +13,7 @@ from playwright.sync_api import sync_playwright
 
 HERE = pathlib.Path(__file__).resolve().parent
 HTML_NAME = sys.argv[1] if len(sys.argv) > 1 else "promo.html"
-OUT_NAME = sys.argv[2] if len(sys.argv) > 2 else "promo.png"
+OUT_NAME = sys.argv[2] if len(sys.argv) > 2 else "promo-preview.png"
 URL = (HERE / HTML_NAME).as_uri()
 OUT = pathlib.Path(OUT_NAME)
 if not OUT.is_absolute():
@@ -65,7 +65,7 @@ CHECK_JS = """() => {
     if (right > box.r - (card ? 12 : 0) || bottom > box.b - (card ? 8 : 0)) out.problems.push('安装区文字溢出/贴边：' + e.textContent.slice(0, 18));
   });
   out.cards = [...document.querySelectorAll('.pm-card')].map(c => {
-    const rg = document.createRange(); rg.selectNodeContents(c.querySelector('.pm-cin'));
+    const rg = document.createRange(); rg.selectNodeContents(c.querySelector('.pm-cin') || c.firstElementChild);
     const box = R(c), t = rg.getBoundingClientRect();
     return {w: box.w, padL: Math.round(t.left - box.l), padR: Math.round(box.r - t.right), padT: Math.round(t.top - box.t), padB: Math.round(box.b - t.bottom)};
   });
@@ -116,7 +116,19 @@ CHECK_JS = """() => {
   });
   if (out.bar.b > out.win.b - 2) out.problems.push('状态条贴住/越出窗口底边');
   if (out.overflowPx > 0 || out.clipped) out.problems.push('条面内容超宽（收缩/渐隐）');
-  if (!out.items.some((t, i) => i === 1 && /%/.test(t)) || !out.items.some((t, i) => i === 2 && /%/.test(t))) out.problems.push('缓存命中率被收缩隐藏');
+  if (typeof promoLabels !== 'undefined') {
+    for (const key of Object.keys(promoLabels)) {
+      if (!its.some(e => e.dataset.zuKey === key && e.getBoundingClientRect().width > 0 && e.getAttribute('data-zu-folded') !== '1'))
+        out.problems.push('缺少可见条目 ' + key);
+    }
+    for (const sel of ['.zu-git', '.zu-quota', '.zu-ctxrst', '[data-zusage-armed]']) {
+      const el = document.querySelector(sel);
+      if (!el || !R(el).w) out.problems.push('缺少工具栏功能 ' + sel);
+    }
+    if (out.tipVisible && !/缓存|cache/i.test(out.tipText)) out.problems.push('明细缺少缓存信息');
+  } else if (!out.items.some((t, i) => i === 1 && /%/.test(t)) || !out.items.some((t, i) => i === 2 && /%/.test(t))) {
+    out.problems.push('缓存命中率被收缩隐藏');
+  }
   return out;
 }"""
 

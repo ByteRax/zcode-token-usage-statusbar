@@ -495,7 +495,7 @@ test('v479 wire: 所选月进整卡与 SPD3_MON、筛选池与卡同月、mpop �
   assert.ok(!stripStyle(cardOf(ctx, rebuild(ctx, h, selToday), -1, selToday)).includes('class="zu-sv3-mpop"'));
 });
 
-test('v479 两链接入源码锁: 06/01 各有月份动作分支、锚定、Esc 归位与 mousedown 名单；会话切换复位在场', () => {
+test('v479/v489 两链接入源码锁: 06/01 各有月份动作分支、锚定、Esc 归位与 mousedown 名单；会话切换复位在场；筛选弹层外点判定与隐藏复位', () => {
   // 行为级验证见 overlay-speed-v3-month-nav.test.cjs；这里锁两链都接了同一状态机
   for (const [tag, shard] of [['06', readOverlayPart('06-instance-dom-and-styles.js')],
     ['01', readOverlayPart('01-git-and-doc-tooltips.js')]]) {
@@ -504,10 +504,15 @@ test('v479 两链接入源码锁: 06/01 各有月份动作分支、锚定、Esc 
     assert.equal(countStr(shard, 'spd3MonthFocus('), 2, tag + ' 动作后与 Esc 各归位一次');
     assert.equal(countStr(shard, '[data-sv3-mnav],[data-sv3-mlabel],[data-sv3-mpick],[data-sv3-myear]'), 1, tag + ' closest 白名单含四选择器');
     assert.equal(countStr(shard, 't.closest(".zu-sv3-mnav") || t.closest(".zu-sv3-mpop")'), 1, tag + ' mousedown 名单');
+    assert.equal(countStr(shard, 'spd3PopOutside('), 1, tag + ' 筛选弹层外点判定接入一处（pointerdown 委托）');
   }
   const shard07 = readOverlayPart('07-instance-render-and-tips.js');
   assert.equal(countStr(shard07, 'speedSel.mon = null; speedSel.mpop = { open: false, y: 0 };'), 2,
     '07 两条渲染路径的会话切换复位都清所选月与弹层');
   const shard06 = readOverlayPart('06-instance-dom-and-styles.js');
   assert.match(shard06, /if \(speedSel\.mpop\) speedSel\.mpop\.open = false;/, '06 切 Tab 收起月历弹层（所选月保留）');
+  assert.match(readOverlayPart('01-git-and-doc-tooltips.js'),
+    /tpsHideSel && tpsHideSel\.pop\) tpsHideSel\.pop\.open = false;/, '01 整卡隐藏复位筛选弹层（同 mpop 先例）');
+  assert.match(readOverlayPart('08-instance-bridge-and-subrate.js'),
+    /speedSel && speedSel\.pop\) speedSel\.pop\.open = false;/, '08 整卡隐藏复位筛选弹层（同 mpop 先例）');
 });

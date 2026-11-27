@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>ZCodeBox</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;width:1280px;height:720px;padding:16px 32px 11px;color:#f2f5f9;
+    background:radial-gradient(ellipse at 25% 0%,#173044,transparent 58%),#10141b;
+    font:15px/1.38 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;
+    display:flex;flex-direction:column;justify-content:space-between}
+  header{display:flex;align-items:center;justify-content:space-between;gap:14px}
+  .h-left{display:flex;flex-direction:column;gap:2px;min-width:0}
+  h1{font-size:31px;letter-spacing:-.02em;margin:0;line-height:1.12;white-space:nowrap}
+  h1 span{color:#76dcce}
+  header p{margin:0;color:#b3c2d0;font-size:14px;white-space:nowrap}
+  .badges{display:flex;gap:6px;flex-shrink:0}
+  .badge{font-size:11.5px;padding:3px 9px;border-radius:999px;background:rgba(118,220,206,.1);
+    border:1px solid rgba(118,220,206,.32);color:#9be7dc;white-space:nowrap}
+  .top-grid{display:grid;grid-template-columns:1.85fr 1.05fr .68fr;gap:10px;align-items:stretch}
+  .col-stack{display:flex;flex-direction:column;gap:8px;justify-content:space-between}
+  figure{margin:0;min-width:0;padding:8px 10px;border-radius:11px;border:1px solid #3c4653;background:#1d242d;
+    display:flex;flex-direction:column;justify-content:space-between}
+  figcaption{margin:0 0 5px;font-size:12.5px;font-weight:650;color:#dce6f2;display:flex;align-items:center;
+    justify-content:space-between;gap:6px;white-space:nowrap}
+  figcaption small{font-weight:400;font-size:11px;color:#8fa1b5}
+  .img-wrap{display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:6px}
+  img{display:block;border-radius:6px;max-width:100%;height:auto}
+  .speed .img-wrap{height:320px}
+  .speed img{width:100%;height:320px;object-fit:contain}
+  .mid-card .img-wrap{height:140px}
+  .mid-card img{width:100%;height:140px;object-fit:cover;object-position:left top}
+  .context .img-wrap{height:320px}
+  .context img{height:320px;width:auto;object-fit:contain}
+  .bottom-stack{display:flex;flex-direction:column;gap:8px}
+  .bar-fig{padding:7px 11px}
+  .bar-fig figcaption{margin-bottom:4px}
+  .bar-fig img{width:100%;height:auto;max-height:none;object-fit:contain}
+  .rate-row{display:grid;grid-template-columns:1.1fr 1.15fr .88fr;gap:10px;align-items:stretch}
+  .rate-fig{padding:5px 10px}
+  .rate-fig img{width:100%;max-height:42px;object-fit:contain;object-position:left center}
+  footer{display:flex;justify-content:space-between;align-items:center;color:#95a5b7;font-size:11.5px}
+</style>
+<header>
+  <div class="h-left">
+    <h1>ZCode<span>Box</span> <b id="title">客户端增强套件</b></h1>
+    <p id="subtitle">模型速度、Token 用量、项目与子代理统计、上下文压缩、套餐额度与系统监控。</p>
+  </div>
+  <div class="badges">
+    <span class="badge" id="b1">默认 / 药丸 / 精简三样式</span>
+    <span class="badge" id="b2">中英双语 · 万/亿 & K/M/B</span>
+    <span class="badge" id="b3">桌面 + Web 远控 + CLI/MCP</span>
+  </div>
+</header>
+<main class="top-grid">
+  <figure class="speed">
+    <figcaption><span id="speed">生成速度 V3 与多模型日历趋势</span><small id="speed-sub">4 范围 × 5 时间 · 模型筛选</small></figcaption>
+    <div class="img-wrap"><img src="features/live/status-bar.png" alt="Generation speed trend"></div>
+  </figure>
+  <div class="col-stack">
+    <figure class="mid-card">
+      <figcaption><span id="proj">项目累计与模型费用明细</span><small id="proj-sub">跨会话汇总 · 预估费用 ¥/$</small></figcaption>
+      <div class="img-wrap"><img src="features/live/project.png" alt="Project total and model cost breakdown"></div>
+    </figure>
+    <figure class="mid-card">
+      <figcaption><span id="sub">子智能体独立统计与本机监控</span><small id="sub-sub">子任务均速费用 · CPU / 内存 / 磁盘</small></figcaption>
+      <div class="img-wrap"><img src="features/live/subagents.png" alt="Subagent breakdown panel"></div>
+    </figure>
+  </div>
+  <figure class="context">
+    <figcaption><span id="context">上下文构成与压缩</span><small id="context-sub">Token 估算 · 额度</small></figcaption>
+    <div class="img-wrap"><img src="features/live/context-breakdown.png" alt="Context breakdown and compaction"></div>
+  </figure>
+</main>
+<div class="bottom-stack">
+  <figure class="bar-fig">
+    <figcaption>
+      <span id="bar">输入框工具行增强 + 8 格状态栏（默认内嵌样式）</span>
+      <small id="bar-sub">Git 分支变更 · 重置卡 · 套餐额度 · 上下文圆环 · ✦ 提示词增强 · 速度 / 本轮 / 会话 / 今日 / 项目 / 工具 / 子代理 / 系统状态</small>
+    </figcaption>
+    <img src="features/live/bar.png" alt="Composer toolbar and 8-cell status bar">
+  </figure>
+  <div class="rate-row">
+    <figure class="rate-fig">
+      <figcaption><span id="rate">回答末尾速率行（含子智能体窗格）</span><small id="rate-sub">速度 · 首字 · 耗时 · 峰值 · 预估费用</small></figcaption>
+      <img src="features/live/reply-rate.png" alt="Per-answer rate line">
+    </figure>
+    <figure class="rate-fig">
+      <figcaption><span id="rot">状态轮播与小鲸鱼动画</span><small id="rot-sub">流光渐变 · 16 词包 · 工作中耗时 & 速度</small></figcaption>
+      <img src="features/live/rotator.png" alt="Status phrase rotation and rainbow whale tail animation">
+    </figure>
+    <figure class="rate-fig">
+      <figcaption><span id="pill">药丸 / 精简样式切换</span><small id="pill-sub">悬浮胶囊或收入工具行前导区</small></figcaption>
+      <img src="features/live/pill-bar.png" alt="Pill style status bar">
+    </figure>
+  </div>
+</div>
+<footer>
+  <span id="source">ZCode 桌面实拍（本仓库 zcode-token-usage-statusbar 真实开发数据）· CDP 截图</span>
+  <span id="repo">github.com/ByteRax/zcode-token-usage-statusbar</span>
+</footer>
+<script>
+  if (new URLSearchParams(location.search).get("lang") === "en") {
+    document.documentElement.lang = "en";
+    const strings = {
+      title: "Desktop Toolkit",
+      subtitle: "Speed V3, token & cost stats, subagents, context compaction, plan quota & system monitor.",
+      b1: "Default / Pill / Compact styles",
+      b2: "EN & ZH · K/M/B & 10k/100M",
+      b3: "Desktop + Web Remote + CLI/MCP",
+      speed: "Speed V3 & multi-model calendar history",
+      "speed-sub": "4 scopes × 5 ranges · model filter",
+      proj: "Project total & model cost",
+      "proj-sub": "Cross-session · Est. $/¥",
+      sub: "Subagents & system monitor",
+      "sub-sub": "Tasks · t/s · cost",
+      context: "Context & compaction",
+      "context-sub": "Tokens · quota",
+      bar: "Enhanced composer toolbar + 8-cell status bar (Default in-card style)",
+      "bar-sub": "Git status · Reset card · Plan quota · Context ring · ✦ Prompt enhance · Speed / Turn / Session / Today / Project / Tools / Subagents / System",
+      rate: "Per-answer rate line (incl. subagents)",
+      "rate-sub": "Speed · TTFT · peak · cost",
+      rot: "Status rotator & whale-tail animation",
+      "rot-sub": "16 packs · timer & t/s",
+      pill: "Pill / Compact styles",
+      "pill-sub": "Capsule or toolbar chip",
+      source: "ZCode desktop live CDP captures (real data from zcode-token-usage-statusbar)",
+    };
+    Object.entries(strings).forEach(([id, label]) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = label;
+    });
+  }
+</script>
+</html>

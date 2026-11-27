@@ -8,13 +8,13 @@
 [![Windows](https://img.shields.io/badge/-Windows-0078D6?logo=data:image/svg%2Bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI2ZmZmZmZiIgZD0iTTAsMEgxMS4zNzdWMTEuMzcySDBaTTEyLjYyMywwSDI0VjExLjM3MkgxMi42MjNaTTAsMTIuNjIzSDExLjM3N1YyNEgwWm0xMi42MjMsMEgyNFYyNEgxMi42MjMiLz48L3N2Zz4%3D)](https://github.com/ByteRax/zcode-token-usage-statusbar) [![macOS](https://img.shields.io/badge/-macOS-000000?logo=apple&logoColor=white)](https://github.com/ByteRax/zcode-token-usage-statusbar) [![Linux](https://img.shields.io/badge/-Linux-FCC624?logo=linux&logoColor=black)](https://github.com/ByteRax/zcode-token-usage-statusbar)
 [![QQ 群](https://img.shields.io/badge/QQ-129554306-12B7F5?logo=qq&logoColor=white)](https://qm.qq.com/q/l43Xj8P7mE) [![微信](https://img.shields.io/badge/%E5%BE%AE%E4%BF%A1-ByteRax-07C160?logo=wechat&logoColor=white)](#-community)
 
-A third-party toolkit for the [ZCode](https://zcode.z.ai) desktop app, with a speed status bar, usage queries and UI enhancements. Its marketplace name remains **ZCode Token Usage Statusbar**; repository URLs and commands are unchanged.
+A community toolkit for [ZCode](https://zcode.z.ai) desktop that puts generation speed, token usage, context fill, plan quota and handy helpers right in your interface (marketplace name: **ZCode Token Usage Statusbar**).
 
 English · [简体中文](README.md)
 
 ![ZCodeBox speed status bar promo](docs/promo/promo.en.png)
 
-Promotional image with staged UI and demonstration data; the actual interface varies by version and configuration.
+The cover uses cropped screenshots from ZCode desktop. Interface labels in the live captures are in Chinese.
 
 </div>
 
@@ -22,14 +22,13 @@ Promotional image with staged UI and demonstration data; the actual interface va
 
 ### What you need
 
-- The **ZCode desktop app**: Windows and macOS are the primary targets. Linux has path and permission adaptations, but not every distribution has been tested on-device.
-- **Python 3.8+** with the standard-library `sqlite3` module. No third-party Python packages are required.
-- No separate Node.js or npm installation is needed; the desktop bar uses ZCode's bundled Node runtime.
-- The `token_usage` MCP tool needs **ZCode desktop 3.19.0 or newer** (it is started by the client's built-in `zcode-python`, available once the preinstalled tools have finished downloading); older desktop builds keep the status bar, the `/usage` command and the CLI.
+- **ZCode desktop app**: Windows and macOS are supported (Linux has basic path and permission support, not tested on every distro).
+- **Python 3.8+**: System Python works out of the box — **no extra Python packages or Node.js required**.
+- **Optional MCP queries**: `token_usage` requires **ZCode 3.19.0+**. Older builds still work with the status bar, `/usage` command and CLI.
 
 ### Installation
 
-Send this to ZCode to install or update the plugin. The message spells out every command, so ZCode does not have to work out how to install on its own; when GitHub is unreachable it retries through the mirror by itself, so you do not have to send anything again:
+Send this message directly to ZCode to install or update the plugin (if GitHub is unreachable, it retries automatically via the mirror):
 
 ```text
 Please install or update the ZCode plugin zcode-token-usage-statusbar. Follow the three steps below exactly and do not look for another installation method:
@@ -44,11 +43,11 @@ Please install or update the ZCode plugin zcode-token-usage-statusbar. Follow th
 If any step fails, relay the error as is; do not skip it and do not claim installation succeeded.
 ```
 
-Keep `#plugin-releases` and `.git#plugin-releases-gitcode` in the URLs: they select the project's stable release channels. The mirror route needs local [Git](https://git-scm.com/downloads), and the `.git` suffix cannot be dropped: the host treats only URLs ending in `.git` as repository sources and would otherwise download the page as if it were the manifest.
+> **Note**:
+> - The mirror route requires local [Git](https://git-scm.com/downloads), and `#plugin-releases` / `.git#plugin-releases-gitcode` must stay in the URLs.
+> - Installing the bar modifies ZCode's `app.asar`, so proceed only if you trust this project. **Quit ZCode completely** (from the menu or tray, not just closing the window) and reopen it after installation.
 
-> **Important:** installing the bar modifies ZCode's program files (`app.asar`), so proceed only if you trust the project. **After the first successful injection, quit ZCode completely and reopen it** (closing the window or reopening a session is not enough), then check that the bar appears. If installation fails or permissions are insufficient, diagnose that first; restarting does not replace installation.
-
-If the bar is still missing after a successful installation and full restart, run the read-only check-up `/zusage-doctor` in a new session and follow its suggested actions; to investigate further, send this to ZCode:
+If the bar is still missing after restarting, run `/zusage-doctor` in a new session for a read-only check-up; to ask ZCode to investigate further, send:
 
 ```text
 Please investigate why the status bar or toolbar chips from https://github.com/ByteRax/zcode-token-usage-statusbar are missing. Check whether the plugin is enabled, installation succeeded, the actual loaded path is correct, and the relevant switches are on. Ask for my confirmation before modifying client files. If a report is needed, prepare redacted reproduction steps and a diagnostic summary, then wait for my approval before submitting to https://github.com/ByteRax/zcode-token-usage-statusbar/issues. Do not upload credentials or complete local logs.
@@ -56,98 +55,94 @@ Please investigate why the status bar or toolbar chips from https://github.com/B
 
 ### Mobile remote page (current source feature)
 
-[Install the regular mobile script](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js) with a userscript manager such as Tampermonkey in the browser you use for remote control. In the desktop status bar, open **⚙ → Maintenance → Mobile remote control** and turn on **Push status bar data to the remote page**, which is off by default. Then enable the host’s **Web Remote Control** and open `https://zcode.z.ai/remote/`.
-
-The install link serves a published snapshot from the root of `main`, which can lag behind desktop source. Use a desktop plugin that supports the same relay protocol and check the desktop Release notes for stable-channel availability. See the [mobile remote guide (Chinese)](docs/user-guide.md#手机远控页面) for setup, data boundaries and troubleshooting.
+To see the same status bar in your mobile or browser remote page: install the [regular mobile userscript](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js) in Tampermonkey, turn on push in desktop **⚙ → Maintenance → Mobile remote control**, then enable **Web Remote Control** and open `https://zcode.z.ai/remote/` (see the [mobile remote guide](docs/user-guide.md#手机远控页面) (Chinese)).
 
 ### Troubleshooting, automatic repair and uninstall
 
-Client upgrades can overwrite injection patches. Keep the plugin enabled and **start or resume a session** to trigger automatic installation/repair; sending another message in an already-open session does not guarantee a trigger. Confirm repair succeeded, then fully quit and reopen ZCode if a restart is required. Insufficient permissions or changes to the host's structure can still prevent repair.
+ZCode updates can overwrite the patch. Keep the plugin enabled and **start or resume a session** to trigger auto-repair, then fully quit and reopen ZCode.
 
-- **Plugin install/update**: `/install-overlay`: open ZCode, start a new session, type `/install-overlay` and press Enter to re-trigger the repair injection; after confirming success, fully restart as instructed.
-- **Plugin check-up**: `/zusage-doctor`: when the status bar, toolbar chips or the per-answer rate line are missing, start a new session and type `/zusage-doctor`. It is read-only, changes no files, and lists what is wrong together with the fix for each item.
-- **Plugin uninstall**: ① turn off auto-update in ⚙ → ② run `/uninstall-overlay` in chat and confirm success → ③ open **Settings → Plugins → Installed → ZCode Token Usage Statusbar → ⋯ → Uninstall** → ④ fully quit and reopen ZCode. Never uninstall only the plugin and leave the bar injected; for configuration and cache cleanup, see the [full uninstall guide](docs/user-guide.md#彻底卸载) (Chinese).
+- **Manual repair / reinstall**: Run `/install-overlay` in a new session.
+- **Read-only check-up**: Run `/zusage-doctor` in a new session to see what is wrong and how to fix it.
+- **Clean uninstall**: ① Turn off auto-update in ⚙ → ② Run `/uninstall-overlay` in chat → ③ Uninstall the plugin in **Settings → Plugins → Installed** → ④ Quit ZCode completely and reopen it (see the [full uninstall guide](docs/user-guide.md#彻底卸载) (Chinese)).
 
-- [Installation guide](docs/user-guide.md#插件安装) (Chinese)
-- [Update and client-upgrade details →](docs/user-guide.md#更新与客户端升级) (Chinese)
-- [Feature illustrations](docs/features.md) (Chinese)
-- [Quota support matrix](docs/quota-support-audit.md) (Chinese)
-- [Architecture and data semantics](docs/design-notes.md) (Chinese)
-- [Development and releases](docs/maintaining.md) (Chinese)
-- [Tests](tests/README.md) (Chinese)
+More docs: [Installation guide](docs/user-guide.md#插件安装) (Chinese) · [Updates & upgrades](docs/user-guide.md#更新与客户端升级) (Chinese) · [Feature illustrations](docs/features.md) (Chinese) · [Quota support matrix](docs/quota-support-audit.md) (Chinese) · [Architecture & data](docs/design-notes.md) (Chinese) · [Development & releases](docs/maintaining.md) (Chinese) · [Tests](tests/README.md) (Chinese)
 
 ---
 
 ## Feature overview
 
-| Feature | What it does |
-|---|---|
-| **Status bar statistics** | Follows the session in the current window or pane, showing turn, session, project and daily usage. Hover for input/output, cache hit rate, requests, turns, sessions and timing details. Speed during generation is estimated; stored usage refreshes after completed requests reach the database |
-| **Per-answer rate line** | When turn statistics are available, shows output speed, time to first token, output tokens (including reasoning), generation duration and a timestamp, with session average speed and cumulative output when available. Multi-request turns also show segment count and peak speed. Requires the overlay and renderer bridge; not every historical reply has a rate line; subagent panes show it too (remote sessions excluded) |
-| **Git status** | Shows the branch, upstream status, staged/unstaged/untracked file counts and changed lines. If the working directory is not a repository, summarizes repositories in its direct subdirectories. Reads local Git only, with no network access or repository changes |
-| **System status** | An eighth status-bar cell (off by default; enable it in the ⚙ order card): local CPU usage, memory and free disk space, with a hover card for load, Wired/Swap and per-volume details. Threshold-based color warnings; folds by priority when space runs short. Monitors only the machine running ZCode; remote panes show nothing |
-| **Plan quota** | Shows account-level plan-window usage, reset times or balance to the left of the context button, with an option to display remaining percentages. Supports sources such as GLM Coding Plan, DeepSeek and R4 Coder, plus relays with compatible protocols. See the [quota support matrix](docs/quota-support-audit.md) (Chinese); team plans are not supported yet |
-| **Reset-card badge** | Shows available quota reset cards and expiry times for the signed-in account, with countdowns and color warnings near expiry. Requires a ZCode sign-in; unavailable to API-key-only users and team plans |
-| **Prompt enhance** | A ✦ button left of the model picker rewrites and replaces the composer draft. By default it sends the draft to the session’s provider and model; custom mode uses the saved enhancement provider and model. This may use quota or incur charges. On by default; turn off in Prompt enhancement settings or with `enhance_enabled: false` |
-| **Estimated cost** | Hover turn/session/project/today totals to estimate API cost using official-channel public list prices collected by [models.dev](https://models.dev/). Unmatched models use a fallback average. For reference only, not a bill |
-| **One-click context compaction** | After confirmation in the context-button panel, sends `/compact` to the current session without changing the composer draft. Sending a new message during compaction interrupts it |
-| **Adjustable auto-compaction threshold** | Set the trigger threshold as a percentage (30–99%) or token count (≥100k, k/M suffixes supported; numbers below 100k are clamped to 100k) in ⚙ → General; once the patch is active, the context panel's adjustment link also opens this setting. Leave empty to follow the engine default, which varies by model window. Applies only to supported desktop bundled engines; loading the patch for the first time requires a new session or restart |
-| **Enhanced context button** | Adds ring fill, color bands and a percentage to the native context button. Prefers the host's current usage and falls back to database values when parsing is unavailable. Context usage does not occupy a status bar cell |
-| **Full project paths** | Shows full paths below folder names in the project-edit dialog. Long paths wrap, multiple folders get separate rows, and clicking a folder row opens it in the system file manager |
-| **Wider search dialogs** | Raises the width and height limits of cmdk search dialogs such as the command center, making long entries easier to read. Does not affect every type of dialog |
-| **Status phrase rotation** | Off by default. When enabled, rotates customizable phrases in the message-stream loading row during thinking, generation and long-running stages; by default appends a host-identical working-time counter (toggle in ⚙ settings, also on hover) and a live t/s speed with the same band colors as the speed cell (toggle in ⚙ settings) |
-| **SSH / WSL remote sessions** | Discovers remotes with trusted identity bindings, queries each server independently and retries failed queries. The query script must be deployed manually on the remote; the plugin does not reconnect the host's SSH session. Cross-machine queries are limited to the desktop snapshot path. See the [remote sessions guide](docs/user-guide.md#远程会话) (Chinese) |
-| **Web remote status bar (this checkout)** | The browser script shares the desktop overlay, tooltips and settings for local and WSL/SSH sessions. See the [mobile remote guide (Chinese)](docs/user-guide.md#手机远控页面) |
-| **Subagent details** | Shows subtask usage, models, running state, speed and estimated cost. Running speed is estimated from text changes and replaced with measured statistics after completion when data is available |
-| **Usage queries** | Use `/usage today` in chat, run `python3 zusage.py days 7` from the repository directory, or call the MCP tool `token_usage(scope="today")`. The `current` query selects the most recently active database session, which is not necessarily the focused session |
+Click a preview to open it full size. Live captures show the Chinese UI. Previews marked “Demo” use sample data.
 
-In ⚙, choose a [Default / Pill / Compact status bar style](docs/user-guide.md#状态条样式) (Chinese), select displayed items, switch between Chinese and English, and set token units. MCP is optional and is not required for the bar. Replace `python3` with `python` if that is your installed interpreter command. Per-answer rate-line labels are currently in Chinese.
+| Feature | What it does | Screenshot |
+|---|---|---|
+| **Speed V3 & history trends** | Follows the active window/pane with thinking/tool timers and output speed; hover to filter per-model speeds, shares, calendar heatmaps and bar charts across 4 scopes × 5 time ranges | <a href="docs/promo/features/live/status-bar.png"><img src="docs/promo/features/live/status-bar.png" width="224" alt="Speed V3 & history trends"></a> |
+| **Three bar styles & layout** | Switch between Default (in-card), Pill (floating capsule) and Compact (toolbar speed chip) styles with alignment, drag reordering and priority folding into `···` | <a href="docs/promo/features/live/pill-bar.png"><img src="docs/promo/features/live/pill-bar.png" width="224" alt="Three bar styles & layout"></a> |
+| **Turn & session breakdowns** | Tracks current-turn and whole-session tokens, cache hit rates, request counts, latency and per-model breakdowns independently across windows, split panes and side chats | <a href="docs/promo/features/live/session.png"><img src="docs/promo/features/live/session.png" width="224" alt="Turn & session breakdowns"></a> |
+| **Project total & cross-project view** | Aggregates cross-session tokens, turns, duration, average speed and per-model costs for the current workspace, or switch to All Projects to compare workspaces | <a href="docs/promo/features/live/project.png"><img src="docs/promo/features/live/project.png" width="224" alt="Project total & cross-project view"></a> |
+| **Tool calls & error monitor** | Counts tool invocations in the session and lights up a red error badge on failures; hover for per-tool call counts, cumulative duration and error counts | <a href="docs/promo/features/live/tools.png"><img src="docs/promo/features/live/tools.png" width="224" alt="Tool calls & error monitor"></a> |
+| **Per-answer rate line** | Appends a compact summary line under each completed reply: model, output speed, time to first token, output tokens, duration, peak speed and est. cost (also in subagent panes) | <a href="docs/promo/features/live/reply-rate.png"><img src="docs/promo/features/live/reply-rate.png" width="224" alt="Per-answer rate line"></a> |
+| **Git status** | Shows current branch, ahead/behind status, changed files and line counts; summarizes subdirectory repos if not in a repo root, and tracks managed worktree sessions automatically. Read-only, never modifies your repo | <a href="docs/promo/features/live/git.png"><img src="docs/promo/features/live/git.png" width="224" alt="Git status"></a> |
+| **System status** | Optional 8th cell (enable in ⚙): local CPU, memory and free disk space with color warnings when running low; monitors only the machine running ZCode | <a href="docs/promo/features/en/system.png"><img src="docs/promo/features/en/system.png" width="224" alt="System status"></a><br><sub>Demo</sub> |
+| **Plan quota & multi-provider sources** | Displays plan usage, reset times or balance next to the context button, with an option to show remaining percentages. Supports GLM, Start Plan, Qianwen, DeepSeek, OpenCode Go, R4 Coder, StepFun and more (see [quota matrix](docs/quota-support-audit.md) (Chinese)) | <a href="docs/promo/features/live/quota.png"><img src="docs/promo/features/live/quota.png" width="224" alt="Plan quota & multi-provider sources"></a> |
+| **Reset-card badge** | Shows available quota reset cards and expiry countdowns for signed-in ZCode accounts, with per-card expiry and recent reset history on hover | <a href="docs/promo/features/live/reset-card.png"><img src="docs/promo/features/live/reset-card.png" width="224" alt="Reset-card badge"></a> |
+| **Model picker peak-factor badges** | Shows current-window quota multipliers (e.g., `0.67×` / `2.00×`) on GLM Coding Plan model rows; hover for peak (Mon–Fri 14:00–18:00) and off-peak rates | <a href="docs/promo/features/en/peak-factor.png"><img src="docs/promo/features/en/peak-factor.png" width="224" alt="Model picker peak-factor badges"></a><br><sub>Demo</sub> |
+| **Pull model list & probing** | Pulls model lists for custom providers and plan sources in one click; tests connectivity and reasoning effort and fills missing context/output limits (probing sends minimal requests and may use quota) | <a href="docs/promo/features/en/model-pull.png"><img src="docs/promo/features/en/model-pull.png" width="224" alt="Pull model list & probing"></a><br><sub>Demo</sub> |
+| **Prompt enhance & history** | ✦ button next to the model picker rewrites your draft; hover to view recent enhancement records (original vs. enhanced text, tokens and duration) or configure a dedicated model | <a href="docs/promo/features/en/prompt-enhance.png"><img src="docs/promo/features/en/prompt-enhance.png" width="224" alt="Prompt enhance & history"></a><br><sub>Demo</sub> |
+| **Estimated cost** | Hover turn, session, project, daily or subagent totals to see estimated API cost at public list prices, with USD (`$`) / CNY (`¥`) switching; for reference only, not a bill | <a href="docs/promo/features/en/estimated-cost.png"><img src="docs/promo/features/en/estimated-cost.png" width="224" alt="Estimated cost"></a><br><sub>Demo</sub> |
+| **Enhanced context button** | Adds a progress ring, warning colors and percentage directly on the native context button without taking a status-bar slot | <a href="docs/promo/features/live/context-ring.png"><img src="docs/promo/features/live/context-ring.png" width="80" alt="Enhanced context button"></a> |
+| **Context breakdown details** | Adds estimated token counts to each category in the Context Capacity popover; hover items for plain-language tips, file paths and cache hit-rate details (toggleable in ⚙) | <a href="docs/promo/features/live/context-breakdown.png"><img src="docs/promo/features/live/context-breakdown.png" width="224" alt="Context breakdown details"></a> |
+| **One-click compaction & divider stats** | Sends `/compact` after confirmation in the context panel without touching your composer draft, and annotates timeline compaction dividers with before/after context drop and duration | <a href="docs/promo/features/live/compact.png"><img src="docs/promo/features/live/compact.png" width="224" alt="One-click compaction & divider stats"></a> |
+| **Adjustable auto-compaction threshold** | Set when auto-compaction triggers (30–99% or token count like `100k`) in ⚙ → General; leave blank for engine default. Supports bundled engines only; first activation requires a new session or restart | <a href="docs/promo/features/live/auto-compact.png"><img src="docs/promo/features/live/auto-compact.png" width="224" alt="Adjustable auto-compaction threshold"></a> |
+| **Project quick-open & full paths** | Adds "Open in Finder / File Explorer" to local project context and "⋯" menus; shows clickable full paths in the project-edit dialog | <a href="docs/promo/features/en/project-folder.png"><img src="docs/promo/features/en/project-folder.png" width="224" alt="Project quick-open & full paths"></a><br><sub>Demo</sub> |
+| **Wider search dialogs** | Expands search dialogs such as the command center so long titles and paths are easy to read | <a href="docs/promo/features/en/search.png"><img src="docs/promo/features/en/search.png" width="224" alt="Wider search dialogs"></a><br><sub>Demo</sub> |
+| **Status phrase rotation** | Off by default; rotates customizable phrases (16 built-in packs and schedule presets) while thinking or generating, with working-time counter and estimated t/s speed | <a href="docs/promo/features/live/rotator.png"><img src="docs/promo/features/live/rotator.png" width="224" alt="Status phrase rotation"></a> |
+| **SSH / WSL remote sessions** | Queries and displays usage independently for remote SSH or WSL sessions (requires deploying the query script on the remote; see [remote guide](docs/user-guide.md#远程会话) (Chinese)) | <a href="docs/promo/features/en/ssh.png"><img src="docs/promo/features/en/ssh.png" width="224" alt="SSH / WSL remote sessions"></a><br><sub>Demo</sub> |
+| **Web remote status bar** | Reuses the desktop status bar, tooltips and settings on the web remote page via userscript (see [mobile remote guide](docs/user-guide.md#手机远控页面) (Chinese)) | <a href="docs/promo/features/live/web-remote.png"><img src="docs/promo/features/live/web-remote.png" width="224" alt="Web remote status bar"></a><br><sub>Desktop settings entry</sub> |
+| **Subagent & workflow details** | Tracks background subagents and dynamic workflow cards separately; expands to show per-task model, status, speed and cost, plus inline t/s badges on Agent rows | <a href="docs/promo/features/en/subagents.png"><img src="docs/promo/features/en/subagents.png" width="224" alt="Subagent & workflow details"></a><br><sub>Demo</sub> |
+| **Auto-update, changelog & doctor** | Supports GitHub / GitCode release channels, built-in release notes viewer, local hotfix preservation, restart-needed badge, one-click ZCode restart and `/zusage-doctor` check-up | <a href="docs/promo/features/live/update-notes.png"><img src="docs/promo/features/live/update-notes.png" width="224" alt="Auto-update, changelog & doctor"></a> |
+| **Usage queries** | Run `/usage today` in chat, `python3 zusage.py days 7` in terminal, or call the `token_usage` MCP tool | <a href="docs/promo/features/en/usage-query.png"><img src="docs/promo/features/en/usage-query.png" width="224" alt="Usage queries"></a><br><sub>Demo</sub> |
+
+Click the **⚙ gear icon** on the bar to switch [Default / Pill / Compact styles](docs/user-guide.md#状态条样式) (Chinese), reorder or hide cells, switch English/Chinese, set token units (10k/100M or K/M/B), and choose hover or click to open tooltips.
 
 ## Where these numbers come from
 
-Local usage statistics primarily query ZCode's SQLite database, not billing records. Queries try a read-only connection first and fall back to a regular connection if that fails. Stored usage refreshes when completed requests reach the database, not character by character.
-
-With the renderer bridge, speed during generation is estimated from text changes, then the bar shows the latest turn's measured speed after completion. Without the bridge, it falls back to the latest valid database segment. Session and historical weighted averages are available in the speed popup; the per-answer rate line weights valid request segments from the current turn and excludes tool waits between segments.
-
-The context percentage prefers the host's native button. Its database fallback uses the latest completed request's input divided by the context window, not cumulative session usage. Plan quota and balance are generally queried independently from providers rather than inferred from local token totals. SCNet's credential-free estimate uses a separate ledger and conversion-rate path. See the [data semantics guide](docs/user-guide.md#数据如何计算) (Chinese) for full definitions.
+- **Usage & cost**: Read locally from ZCode's SQLite database (read-only); updates when each request finishes, not character by character.
+- **Generation speed**: Estimated from text changes while generating, then replaced with measured speed after completion. See [data semantics](docs/user-guide.md#数据如何计算) (Chinese).
+- **Context & quota**: Context prefers ZCode's native button; plan quotas are queried directly from providers rather than guessed from local tokens.
 
 ## WorkBuddy support (optional)
 
-The same query library can also read **WorkBuddy**'s local usage: context and window come from `session_usage` in `~/.workbuddy/workbuddy.db`, while per-request **tokens / cache / thinking / credits / tool calls / turns** come from `providerData.rawUsage` in each session transcript (`projects/*/*.jsonl`). Speed is approximated from response windows; **estimated cost** is priced per model at models.dev list rates (¥ when an FX rate is available, otherwise $), and models missing from the price table are reported as unavailable — never as fallback averages or fake zeros.
-
-The overlay is picked per client at startup: ZCode keeps the original asar injection; WorkBuddy has no such chain, so it gets a **CDP-injected status row inside the input card**; every segment shows a **hover card** (speed has a last-8-segment bar chart with the same colour bands and basis text; turn / session / tools / today / context / project each get their own breakdown), with a gear for the full details including estimated cost. It only uses the client's own debug port and never modifies program files. ZCode behaviour is unchanged.
+The same library can read **WorkBuddy** local usage and inject a status bar into its input card (via debug port only, without modifying program files or affecting ZCode):
 
 ```bash
-python zusage.py host                 # self-check: active host, both DB paths, available metrics
-python zusage.py --host workbuddy now # query WorkBuddy for one run, no config change
+python zusage.py host                 # check active host and DB paths
+python zusage.py --host workbuddy now # query WorkBuddy once
 ```
 
-To make it permanent, set `"host": "workbuddy"` in `config.json` (or `"auto"` to pick by DB presence); if the DB lives elsewhere use `hosts.workbuddy.db_path` or `ZUSAGE_WORKBUDDY_DB`. The MCP tool gained an optional `host` argument. **The default stays `zcode`** — installing WorkBuddy never changes existing ZCode behaviour.
-
-**To use `/usage` inside the WorkBuddy client itself**, the repo ships a WorkBuddy-only build at `plugins/workbuddy-token-usage/` (MCP + command, no asar injection); install steps are in the [host adapter docs](docs/hosts.md#7-在-workbuddy-客户端里安装可选) (Chinese).
+See the [host adapter docs](docs/hosts.md#7-在-workbuddy-客户端里安装可选) (Chinese) for permanent setup and the WorkBuddy `/usage` plugin.
 
 ## Privacy and security
 
-- **This is not an official ZCode feature.** It is a community plugin that modifies ZCode's program files (`app.asar`); uninstall removes only the project's own injection.
-- **Data and network access:** local usage queries use SQLite; the queries themselves do not upload usage. Quota and reset-card queries contact the relevant services. Estimated cost downloads prices from models.dev and exchange rates from er-api (with exchangerate.fun as a fallback) every 12 hours by default; `pricing.fetch: false` disables these downloads, while hiding cost in the UI does not stop the sync. Plugin updates and release notes also use the network; auto-update can be disabled in ⚙. Remote sessions use configured SSH / WSL channels. These switches are independent: turning quota queries off does not disable all networking. Running prompt enhancement or a test sends the draft to the relevant model provider and may use quota or incur charges.
-- **Mobile relay:** explicitly enabling `mobile_relay.enabled` lets the plugin push status bar data to the remote page through ZCode's official relay. This channel has no end-to-end encryption, so the server can see the payload. Downstream data is limited to the current remote session's identifier and numeric statistics, plus aggregates such as today's total and project totals from that session's host. These aggregates may include contributions from other sessions; no conversation text, workspace paths or credentials are included. Upstream data contains only display preferences and generation counters. Turning the switch off does not affect ordinary host remote-control messages.
-- **Debug port:** for on-device debugging and automated QA, the plugin attempts to add a Chromium debug port on `9229` by default and preserves any explicitly specified debug port. Other processes on the same machine can read or control ZCode windows through it; do not proxy or forward it to the public internet. Set `ZCODE_DISABLE_FIXED_REMOTE_DEBUGGING_PORT=1` before launching and fully restart to prevent the plugin from adding a port. This does not remove ports enabled through other means. If you do not accept this capability, disable port addition or uninstall the plugin, then restart and verify the result.
-- **Credential boundaries:** SSH passwords and private-key passphrases stored in ZCode are not decrypted or reused by the plugin. Quota credentials are not written to logs or diagnostics. Credentials saved through ⚙ persist in the runtime directory's `quota-secrets.json` (with 0600 permissions where supported), and requests go only to the relevant allowed official domains or the configured relay's own domain. The Anthropic source is off by default and may read `~/.claude/.credentials.json` after explicit opt-in. Quota and reset-card queries have separate switches; turn each off to stop both kinds of queries. Since ZCode 3.18.0 the key that encrypts sign-in credentials lives in the OS keychain, or in the host's managed secret (`ZCODE_CREDENTIAL_SECRET`, the file named by `ZCODE_CREDENTIAL_SECRET_FILE`, or `credential-secret` next to the credentials file); to query built-in plan quota and reset cards or to pull plan models, the plugin reads that key inside the ZCode process (the keychain through the host's own keychain module) and keeps it in memory only.
-- **Token usage is not a bill:** the quota chip may show plan usage or an account balance, depending on the source, but does not provide a cash-spending bill or billing details.
+- **Unofficial plugin**: Modifies ZCode's `app.asar` to load UI enhancements; uninstalling removes only what the plugin added.
+- **Network usage**: Local SQLite queries stay offline. Network requests happen only for plan quota/reset cards, 12-hour price/FX table sync, plugin updates, prompt enhance/probing, or opt-in remote/mobile features. Each feature can be turned off independently.
+- **Mobile relay**: When enabled in ⚙, pushes numeric stats only (no chat text, file paths or secrets) through ZCode's relay without end-to-end encryption.
+- **Debug port**: Opens local Chromium debug port `9229` by default for debugging and QA (never expose to public networks). Set `ZCODE_DISABLE_FIXED_REMOTE_DEBUGGING_PORT=1` before launch and restart completely to disable.
+- **Credentials**: Keys saved in ⚙ are stored locally in `quota-secrets.json` (0600 permissions) and never logged; ZCode sign-in tokens are decrypted in memory only; SSH passwords and key passphrases are never read.
+- **Not a bill**: Estimated costs and quota chips are for reference only, not billing statements.
 
 ## FAQ
 
 **Why did the bar disappear after a ZCode update?**
 
-- A ZCode update can overwrite the modified program files. Keep the plugin enabled, start or resume a session to trigger repair, confirm it succeeds, then **fully quit and reopen once more** — even if the client upgrade already restarted the app. [Detailed steps →](docs/user-guide.md#zcode-升级后状态条消失) (Chinese)
+- Client updates overwrite `app.asar`. Keep the plugin enabled, **start or resume a session** to trigger auto-repair, then **fully quit and reopen ZCode**. [Detailed steps →](docs/user-guide.md#zcode-升级后状态条消失) (Chinese)
 
 **Why don't the numbers change continuously?**
 
-- Stored usage refreshes when a completed request reaches the database, not per character. With the renderer bridge, speed can be estimated from text changes during a reply; otherwise it waits for a valid completed database sample. New sessions may not yet have usable statistics.
+- Stored usage updates after each completed request reaches the database; during generation, only the estimated speed updates.
 
 **Can it show how much money I spent?**
 
-- Not an actual cash bill: no billing details are available here. Hover turn/session/project/today totals for estimated API cost at public list prices (for reference only, not actual charges). Supported quota sources can also show plan usage or account balance through the **quota chip**.
+- Not an official bill, but hovering usage totals shows estimated API cost at public list prices; supported plans also show remaining quota or balance directly.
 
 [More troubleshooting →](docs/user-guide.md#排查) (Chinese)
 

@@ -444,6 +444,55 @@ for (const [tag, mkChain] of CHAINS) {
     assert.equal(sel.mpop.open, false);
     assert.equal(sel.mon, null, '所选月保留（只有会话切换才复位）');
   });
+
+  test(`[${tag}] 筛选弹层点外即收（v489）：图表区按下 → 收弹层、清搜索词、重绘一次；没开时不重绘`, () => {
+    const { sel, dom, chain } = setup(mkChain);
+    const cell = mkEl({ cls: 'zu-hm-cell' }, dom.root);
+    assert.equal(typeof chain.handlers.pointerdown, 'function', 'pointerdown 委托已挂');
+    chain.down(cell);
+    assert.equal(sel.pop.open, false);
+    assert.equal(chain.rebuilds(), 0, '弹层没开：按下不触发任何重绘');
+    sel.pop = { open: true, query: 'glm' };
+    const before = chain.rebuilds();
+    chain.down(cell);
+    assert.equal(sel.pop.open, false, '点图表区：弹层收起');
+    assert.deepEqual(plain(sel.pop), { open: false, query: '' }, '主动关闭，搜索词一并清空');
+    assert.equal(chain.rebuilds(), before + 1, '恰好重绘一次');
+  });
+
+  test(`[${tag}] 筛选弹层点外不吞被点控件且入口豁免：点时间 Tab → 收弹层且切 Tab；点「模型筛选」toggle 只翻转一次；弹层内点行照常 toggle`, () => {
+    const { sel, dom, chain } = setup(mkChain);
+    sel.pop = { open: true, query: '' };
+    let before = chain.rebuilds();
+    chain.down(mkEl({ cls: 'zu-sv-tab', attrs: { 'data-sv-group': 'period', 'data-sv-val': 'today' } }, dom.root));
+    assert.equal(sel.pop.open, false, '外点收起');
+    assert.equal(sel.period, 'today', '被点的 Tab 照常切换（从已脱离的旧节点读属性）');
+    assert.equal(chain.rebuilds(), before + 2, '恰好两次重绘：外点收一次 + Tab 动作自身一次');
+    sel.period = 'month';
+    const label = mkEl({ cls: 'zu-sv3-flabel', attrs: { 'data-sv3-fopen': '' } }, mkEl({ cls: 'zu-sv3-fbar' }, dom.root));
+    sel.pop = { open: true, query: 'glm' };
+    before = chain.rebuilds();
+    chain.down(label);
+    assert.equal(sel.pop.open, false, '入口不算「之外」：toggle 收起（没有被外点收一次再翻转回打开）');
+    assert.equal(sel.pop.query, '', 'toggle 收起同清搜索词');
+    assert.equal(chain.rebuilds(), before + 1, '只 toggle 自身一次重绘');
+    chain.down(label);
+    assert.equal(sel.pop.open, true, '再点：打开');
+    const row = mkEl({ cls: 'zu-sv3-fpop-row', attrs: { 'data-k': 'prov_a\x1fglm-a' } }, mkEl({ cls: 'zu-sv3-fpop' }, dom.root));
+    before = chain.rebuilds();
+    chain.down(row);
+    assert.deepEqual(plain(sel.filt), { mode: 'sel', keys: ['prov_a\x1fglm-a'] }, '弹层内点行=toggle 照常生效');
+    assert.equal(sel.pop.open, true, '弹层内部不算「之外」，保持打开');
+    assert.equal(chain.rebuilds(), before + 1, 'toggle 自身重绘一次（未被外点判定误伤成两次）');
+  });
+
+  test(`[${tag}] 整卡隐藏即复位筛选弹层：重开不残留（搜索词保留）`, () => {
+    const { sel, chain } = setup(mkChain);
+    sel.pop = { open: true, query: 'glm' };
+    chain.hide(true, 'left-bar');
+    assert.equal(sel.pop.open, false);
+    assert.equal(sel.pop.query, 'glm', '隐藏是被动收起，搜索词保留（Esc/外点/toggle 主动关闭才清）');
+  });
 }
 
 test('[01 精简 chip 链] 切 Tab（键盘路径）：收起月历与筛选弹层、保留所选月（审查补齐 06 链同款契约）', () => {

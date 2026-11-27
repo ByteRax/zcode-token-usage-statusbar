@@ -135,6 +135,17 @@
     sel.mpop.open = false;
     return true;
   }
+  /* v489（spec §14.1）：模型筛选弹层「点弹层之外即收」——与 spd3MonthOutside 同款语义：
+   * 筛选弹层开着且按下点在弹层与两枚 fopen 入口（「模型筛选」标签、+N）之外 → 收起、
+   * 清搜索词并返回 true（只改状态不重建，由调用链重绘）。入口不算「之外」，交给
+   * spd3Activate 的 toggle 分支——否则外点收起一次后 toggle 又把它翻转回打开。 */
+  function spd3PopOutside(sel, el) {
+    if (!sel || !sel.pop || !sel.pop.open || !el || typeof el.closest !== "function") return false;
+    if (el.closest(".zu-sv3-fpop,[data-sv3-fopen]")) return false;
+    sel.pop.open = false;
+    sel.pop.query = "";
+    return true;
+  }
   /* v479：月历弹层锚定——顶到胶囊底缘 +6px、右缘对齐胶囊右缘（相对 .zu-sv3-root；
    * 与 fpop 的 pop.top 同款「打开时按实测几何写入」，内联覆写 CSS 默认位置）。
    * 任一侧取不到矩形保持 CSS 默认值。 */

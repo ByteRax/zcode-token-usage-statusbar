@@ -1204,6 +1204,7 @@
       tip.__zuSpeedSize = null;
       tip.__zuSysExp = false;   // v362：关闭即收起阈值说明，重开默认收起
       if (typeof speedSel !== "undefined" && speedSel && speedSel.mpop) speedSel.mpop.open = false;   // v479：月历弹层随卡收起，重开不残留（spec §28.5）
+      if (typeof speedSel !== "undefined" && speedSel && speedSel.pop) speedSel.pop.open = false;   // v489：筛选弹层随卡收起（同 mpop；搜索词保留，主动关闭才清）
       if (tipFor && tipFor.removeAttribute) tipFor.removeAttribute("aria-describedby");
       tipFor = null;
       tipSig = "";

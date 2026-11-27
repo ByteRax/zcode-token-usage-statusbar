@@ -37,7 +37,7 @@
   .pm-glow.b{width:780px;height:440px;left:-280px;bottom:-250px;background:radial-gradient(closest-side,rgba(62,207,142,.14),transparent)}
   .pm-glow.c{width:720px;height:420px;right:-280px;bottom:-230px;background:radial-gradient(closest-side,rgba(87,199,255,.1),transparent)}
 
-  .pm-head{position:absolute;top:28px;left:0;right:0;text-align:center}
+  .pm-head{position:absolute;top:20px;left:0;right:0;text-align:center}
   .pm-eyebrow{display:inline-flex;align-items:center;gap:7px;height:24px;padding:0 12px;border-radius:999px;
     font-size:12.5px;letter-spacing:.06em;color:#a6e3ff;background:rgba(87,199,255,.08);border:1px solid rgba(87,199,255,.3)}
   .pm-eyebrow svg{width:13px;height:13px}
@@ -46,7 +46,7 @@
   .pm-slogan{margin:9px 0 0;font-size:18.5px;line-height:1.5;letter-spacing:.02em;color:#98a2b3}
   .pm-slogan b{font-weight:600;color:#eef2f7}
 
-  .pm-win{position:absolute;left:70px;top:172px;width:1140px;height:380px;border-radius:14px;background:#161616;
+  .pm-win{position:absolute;left:70px;top:156px;width:1140px;height:406px;border-radius:14px;background:#161616;
     border:1px solid rgba(255,255,255,.1);
     box-shadow:0 0 0 1px rgba(0,0,0,.6),0 32px 90px rgba(0,0,0,.6),0 12px 32px rgba(0,0,0,.4)}
   .pm-titlebar{position:relative;height:38px;display:flex;align-items:center;padding:0 15px;background:#202020;
@@ -58,16 +58,17 @@
   .pm-lights i:nth-child(3){background:#28c840}
   .pm-wtitle{position:absolute;left:0;right:0;text-align:center;font-size:13px;color:#8a8a8a}
   .pm-body{position:absolute;top:38px;left:0;right:0;bottom:0;display:flex;justify-content:center;padding:0 0 19px}
-  .pm-col{width:1044px;display:flex;flex-direction:column}
-  .pm-chat{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:4px;padding:0 4px}
-  .pm-user{align-self:flex-end;max-width:70%;padding:8px 15px;border-radius:14px;background:#2b2b2b;
+  .pm-col{width:1100px;display:flex;flex-direction:column}
+  .pm-chat{flex:1 1 auto;min-height:0;align-self:flex-end;width:450px;display:flex;
+    flex-direction:column;gap:12px;padding:24px 4px 0}
+  .pm-user{align-self:flex-end;max-width:100%;padding:8px 15px;border-radius:14px;background:#2b2b2b;
     font-size:14px;line-height:1.6;color:#ececec}
   .pm-bot{font-size:14px;line-height:1.7;color:#d4d4d4}
   .pm-bot p{margin:0 0 3px}
   .pm-bot code{font-family:var(--font-mono);font-size:12.5px;padding:1px 5px;border-radius:5px;
     background:#363636;border:1px solid rgba(255,255,255,.1);color:#e6e6e6}
   .pm-bot blockquote{margin:0;padding:1px 0 1px 12px;border-left:3px solid rgba(255,255,255,.15);
-    font-size:12.5px;line-height:1.7;color:#9a9a9a;white-space:nowrap}
+    font-size:12.5px;line-height:1.7;color:#9a9a9a;white-space:normal}
 
   .pm-composer{flex:0 0 auto;padding:10px 12px 8px;border-radius:16px;background:#2b2b2b;border:1px solid rgba(255,255,255,.1)}
   .pm-composer textarea{display:block;width:100%;height:42px;padding:2px 4px;resize:none;border:0;outline:0;background:transparent;
@@ -78,6 +79,15 @@
   .pm-ctl svg{width:16px;height:16px;flex:0 0 auto}
   .pm-ctl svg.pm-chev{width:12px;height:12px;opacity:.65}
   .pm-perm{color:#f0a020}
+  .pm-spacer{flex:1 1 auto}
+  .pm-context-wrap{display:inline-flex;align-items:center}
+  .pm-context-wrap [data-testid=chat-context-usage-trigger]{display:inline-flex;align-items:center;justify-content:center;gap:4px;width:auto;height:28px;padding:0 4px;background:transparent;border:0;color:#d0d0d0;font:inherit}
+  .pm-context-wrap [data-testid=chat-context-usage-trigger] svg{width:16px;height:16px;flex:0 0 auto}
+  .pm-context-wrap [data-testid=chat-context-usage-trigger] svg circle:first-child{stroke:rgba(255,255,255,.2)}
+  .pm-context-wrap [data-testid=chat-context-usage-trigger] svg circle:last-child{stroke:#57c7ff;stroke-linecap:round}
+  .pm-context-wrap .zu-ctxpct{font-variant-numeric:tabular-nums;font-weight:700;color:#87cfff}
+  .pm-context-wrap .zu-quota{font:600 11px/1.2 var(--font-mono);color:#3ecf8e;white-space:nowrap}
+  .pm-model-marker{position:absolute;left:-10000px;width:1px;height:1px;overflow:hidden}
   .pm-spacer{flex:1 1 auto}
   .pm-send{width:30px;height:30px;justify-content:center;border-radius:9px;background:#ffffff;color:#0d0d0d}
 
@@ -92,28 +102,14 @@
   .pm-tick::before{content:"";position:absolute;left:-2px;top:-2px;width:5px;height:5px;border-radius:50%;
     background:#57c7ff;box-shadow:0 0 6px rgba(87,199,255,.9)}
   .pm-label{position:absolute;transform:translateX(-50%);font-size:13px;line-height:18px;color:#aeb7c5;white-space:nowrap}
-  .pm-note{position:absolute;z-index:60;display:flex;align-items:center;gap:8px;font-size:12.5px;line-height:18px;
-    color:#9fe0ff;white-space:nowrap;pointer-events:none}
-  .pm-note::before{content:"";width:22px;height:1px;background:rgba(87,199,255,.65)}
-  .pm-note.pm-flip{flex-direction:row-reverse}
   .pm-cursor{position:absolute;z-index:2147483647;width:18px;height:24px;pointer-events:none;
     filter:drop-shadow(0 2px 3px rgba(0,0,0,.55))}
 
-  .pm-install{position:absolute;left:70px;right:70px;top:603px;height:96px;display:flex;gap:12px}
-  .pm-ihead{flex:0 0 92px;display:flex;flex-direction:column;justify-content:center;gap:3px;padding-left:2px}
-  .pm-ihead b{margin-bottom:4px;font-size:18px;line-height:24px;font-weight:600;color:#f1f4f8}
-  .pm-ihead span{font-size:12.5px;line-height:18px;color:#8a93a3;white-space:nowrap}
+  .pm-install{position:absolute;left:70px;right:70px;top:616px;height:80px;display:flex;gap:12px}
   .pm-card{display:flex;align-items:center;min-width:0;padding:12px 14px;border-radius:12px;
     background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08)}
-  .pm-card.c1{flex:0 0 auto}
-  .pm-card.c2,.pm-card.c3{flex:1 1 auto}
-  .pm-cin{display:flex;align-items:flex-start;gap:11px;min-width:0}
-  .pm-n{flex:0 0 22px;height:22px;border-radius:50%;border:1.5px solid rgba(87,199,255,.75);
-    font-size:12px;line-height:19px;font-weight:600;text-align:center;color:#57c7ff}
-  .pm-cbody{min-width:0}
+  .pm-card{flex:1}
   .pm-ct{font-size:14px;line-height:20px;color:#e8ecf2;white-space:nowrap}
-  .pm-chip{display:inline-block;margin-top:6px;height:24px;padding:0 8px;border-radius:6px;background:#0d1016;
-    border:1px solid rgba(87,199,255,.28);font-family:var(--font-mono);font-size:11.5px;line-height:22px;color:#9fe0ff;white-space:nowrap}
   .pm-cnote{margin-top:6px;font-size:12px;line-height:17px;color:#8a93a3;white-space:nowrap}
   .pm-cnote em{font-style:normal;color:#c3cad5}
 </style>
@@ -127,22 +123,22 @@
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
     ZCode 插件 · MIT 开源 · 用量数据不上传
   </div>
-  <h1 class="pm-title">ZCode <span class="pm-grad">Token 速度</span>状态栏</h1>
-  <p class="pm-slogan">模型有多快、用了多少 token、上下文还剩多少——<b>一眼看清。</b></p>
+  <h1 class="pm-title">ZCode<span class="pm-grad">Box</span> 客户端增强套件</h1>
+  <p class="pm-slogan">模型速度、Token 用量、上下文与套餐额度，一眼看清。</p>
 </header>
 
 <div class="pm-win">
   <div class="pm-titlebar">
     <div class="pm-lights"><i></i><i></i><i></i></div>
-    <div class="pm-wtitle">订单列表分页改造</div>
+    <div class="pm-wtitle">zcode-token-usage-statusbar</div>
   </div>
   <div class="pm-body">
-    <div class="pm-col">
+    <section class="pm-col" data-testid="v4-session-pane-workspace-main" data-session-id="sess_promo_demo01" data-zusage-scope-version="1" data-pane-id="workspace-main" data-zusage-pane-id="workspace-main" data-zusage-workspace-identity="" data-zusage-workspace-path="/demo/zcode-token-usage-statusbar" data-zusage-remote-session-id="">
       <div class="pm-chat">
-        <div class="pm-user">帮我把订单列表接口改成分页查询，并补上单元测试。</div>
+        <div class="pm-user">使用 zcode-review-fix-merge 审查今日改动并跑全套回归测试。</div>
         <div class="pm-bot">
-          <p>已完成：订单列表接口新增 <code>page</code> / <code>page_size</code> 参数并返回总条数，补充 6 个单元测试，全部通过。</p>
-          <blockquote><span id="pm-rate">⚡ 82.6 token/s(本轮) · 首字 1.4s · 输出 8,300(含 2,100 思考) token / 生成 100.5s · 7 段 / 峰 112 token/s · 累计 16.4万 token · ⏱ 20:31:22</span></blockquote>
+          <p>已完成：审查今日改动并通过 40 条变异测试与全量回归，文档副本与台账均已对齐。</p>
+          <blockquote><span id="pm-rate">⚡ GLM-5.4 97.5 token/s(本轮) · 首字 3.2s · 输出 27.89万 token / 生成 47分27.9秒 · 119 段 / 峰 128.2 token/s · 会话均 97.5 token/s · 累计 27.89万 token · 预估费用 ¥43.64 · ⏱ 20:14:32</span></blockquote>
         </div>
       </div>
       <div class="pm-composer">
@@ -150,77 +146,67 @@
         <div class="pm-ctl group/toolbar">
           <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span>
           <span class="pm-perm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z"/><path d="M12 8v4M12 15.5h.01"/></svg>完全访问<svg class="pm-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>
-          <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>电脑操作</span>
+          <span data-testid="v4-composer-cua-entry"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>电脑操作</span>
           <span class="pm-spacer"></span>
-          <span>GLM-5.3<svg class="pm-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>
+          <span class="pm-context-wrap"><button type="button" data-testid="chat-context-usage-trigger" aria-label="上下文已用 84,600 / 总量 200,000"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" fill="none"></circle><circle cx="12" cy="12" r="9" fill="none"></circle></svg></button></span>
+          <span><span class="pm-model-marker" data-testid="v4-model-config" data-provider="account:bigmodel-individual-coding-plan" data-model="GLM-5.4"></span>GLM-5.4<svg class="pm-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>
           <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 4A2.5 2.5 0 0 0 7 6.5 3 3 0 0 0 5 11.8 3 3 0 0 0 7 17a2.5 2.5 0 0 0 5 .5V5.5A2 2 0 0 0 9.5 4z"/><path d="M14.5 4A2.5 2.5 0 0 1 17 6.5a3 3 0 0 1 2 5.3 3 3 0 0 1-2 5.2 2.5 2.5 0 0 1-5 .5"/></svg>最高<svg class="pm-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>
           <span class="pm-send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg></span>
         </div>
       </div>
-    </div>
+    </section>
   </div>
 </div>
 
 <div class="pm-marks" id="pm-marks"></div>
 
 <section class="pm-install">
-  <div class="pm-ihead"><b>三步安装</b><span>需 Python 3.8+</span><span>Windows / macOS</span></div>
-  <div class="pm-card c1"><div class="pm-cin"><span class="pm-n">1</span><div class="pm-cbody">
-    <div class="pm-ct">ZCode 设置 → 插件 → 添加插件市场</div>
-    <div class="pm-chip">https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases</div>
-    <div class="pm-cnote">添加后，在列表中安装 <em>ZCode Token Usage Statusbar</em></div>
-  </div></div></div>
-  <div class="pm-card c2"><div class="pm-cin"><span class="pm-n">2</span><div class="pm-cbody">
-    <div class="pm-ct">在任意对话框中输入</div>
-    <div class="pm-chip">/install-overlay</div>
-  </div></div></div>
-  <div class="pm-card c3"><div class="pm-cin"><span class="pm-n">3</span><div class="pm-cbody">
-    <div class="pm-ct">执行完毕后，重启 ZCode</div>
-    <div class="pm-cnote">需完全退出再打开</div>
-  </div></div></div>
+  <div class="pm-card"><div><div class="pm-ct">额度与上下文</div><div class="pm-cnote">套餐用量、重置卡和上下文圆环</div></div></div>
+  <div class="pm-card"><div><div class="pm-ct">Git 与系统状态</div><div class="pm-cnote">分支改动、CPU、内存和磁盘</div></div></div>
+  <div class="pm-card"><div><div class="pm-ct">桌面与 Web 远控</div><div class="pm-cnote">沿用状态条、悬停明细和设置</div></div></div>
 </section>
 
+<script src="demo-data.js"></script>
 <script>
   /* 显示项全开、中文，不受本机浏览器 profile 里残留的 overlay 配置影响 */
   try {
-    localStorage.setItem("zusage3.show", JSON.stringify({ win: 1, ctx: 1, today: 1, turn: 1, sub: 1, tools: 1 }));
+    localStorage.setItem("zusage3.show", JSON.stringify({ win: 1, today: 1, turn: 1, sub: 1, tools: 1, proj: 1, sysmon: 1 }));
     localStorage.setItem("zusage3.lang", "zh");
   } catch (e) { }
 
   var NOW = Date.now();
   var SESS = {
-    sid: "sess_promo_demo01", title: "订单列表分页改造", active: true,
-    turns: 23, requests: 187,
-    input: 1284300, output: 164200, reasoning: 96400, cache_read: 1102300, cache_write: 0,
-    total: 1448500, tool_calls: 142, retries: 0,
-    ctx: 84600, ctx_exc: 0, last_at: NOW - 4000, updated: "20:31:22",
+    sid: "sess_promo_demo01", title: "使用 zcode-review-fix-merge 审查今日改动", active: true,
+    turns: 1, requests: 121,
+    input: 37747800, output: 280100, reasoning: 96400, cache_read: 36615300, cache_write: 0,
+    total: 38027900, tool_calls: 207, retries: 0,
+    ctx: 489000, ctx_exc: 0, last_at: NOW - 4000, updated: "20:15:12",
     started: NOW - 4 * 3600000,
-    context_window: 200000, context_auto: false,
-    code: { add: 1840, del: 620, files: 14 },
-    last_turn: { requests: 7, retries: 0, tool_calls: 12, tool_errors: 0,
-      input: 54200, output: 8300, reasoning: 2100, cache_read: 48900, cache_write: 2100,
-      total: 62500, duration_ms: 128000, ttft_ms: 1400,
-      started: NOW - 4000 - 128000, ended: NOW - 4000 },
-    last: { duration_ms: 18400, ttft_ms: 1400, model: "glm-5.3", tps: 86 },
-    tools: { total: 142, errors: 2, list: [
-      { name: "Bash", count: 48, duration_ms: 12400, errors: 0 },
-      { name: "Read", count: 31, duration_ms: 3100, errors: 0 },
-      { name: "Edit", count: 22, duration_ms: 2200, errors: 0 },
-      { name: "Grep", count: 18, duration_ms: 1800, errors: 2 },
-      { name: "Agent", count: 12, duration_ms: 45100, errors: 0 },
-      { name: "TodoWrite", count: 11, duration_ms: 300, errors: 0 } ] },
-    sub: { requests: 34, total: 236400, input: 198200, output: 30200, cache_read: 141000,
-      reasoning: 8200, cache_write: 6100, active: true, list: [
-      { task: "梳理订单查询调用链", title: "", agent: "agentA", sid: "sess_sub_a1b2c3d4", active: true, total: 88400, requests: 12, last: NOW - 6000, input: 74200, output: 12100, cache_read: 52300, reasoning: 3100, cache_write: 1800 },
-      { task: "补充分页边界用例", title: "", agent: "agentB", sid: "sess_sub_e5f6a7b8", active: false, total: 147900, requests: 22, last: NOW - 1440000, input: 124000, output: 18100, cache_read: 88700, reasoning: 5100, cache_write: 4300 } ] }
+    context_window: 1000000, context_auto: false,
+    code: { add: 380, del: 453, files: 11 },
+    last_turn: { requests: 119, retries: 0, tool_calls: 207, tool_errors: 1,
+      input: 37262900, output: 278900, reasoning: 92100, cache_read: 36890200, cache_write: 0,
+      total: 37541900, duration_ms: 4909700, ttft_ms: 3200,
+      started: NOW - 4000 - 4909700, ended: NOW - 4000 },
+    last: { duration_ms: 29100, ttft_ms: 5200, model: "GLM-5.4", tps: 97.5 },
+    tools: { total: 207, errors: 1, list: [
+      { name: "Bash", count: 91, duration_ms: 624000, errors: 0 },
+      { name: "Edit", count: 58, duration_ms: 1200, errors: 1 },
+      { name: "Read", count: 24, duration_ms: 3500, errors: 0 },
+      { name: "Write", count: 12, duration_ms: 600, errors: 0 },
+      { name: "Agent", count: 9, duration_ms: 1600, errors: 0 },
+      { name: "TodoWrite", count: 7, duration_ms: 100, errors: 0 } ] },
+    sub: { requests: 94, total: 4910900, input: 4766700, output: 144100, cache_read: 4099300,
+      reasoning: 28200, cache_write: 0, active: true, cost_usd: 0.64, list: [
+      { task: "新候选全量测试与检查", title: "", agent: "agentA", sid: "sess_sub_a1b2c3d4", active: true, total: 1482000, requests: 28, last: NOW - 6000, input: 1438000, output: 44000, cache_read: 1251000, reasoning: 9100, cache_write: 0, model: "GLM-5.3-FlashX", tps_avg: 148.4, cost_usd: 0.19 },
+      { task: "批跑 40 条预置变异测试审查", title: "", agent: "agentB", sid: "sess_sub_e5f6a7b8", active: false, total: 1846000, requests: 36, last: NOW - 600000, input: 1791000, output: 55000, cache_read: 1540000, reasoning: 11200, cache_write: 0, model: "GLM-5.3-FlashX", tps_avg: 151.2, cost_usd: 0.24 },
+      { task: "C 路 DOM 生命周期与安全核验", title: "", agent: "agentC", sid: "sess_sub_c9d0e1f2", active: false, total: 1582900, requests: 30, last: NOW - 1200000, input: 1537700, output: 45100, cache_read: 1308300, reasoning: 7900, cache_write: 0, model: "GLM-5.3-FlashX", tps_avg: 145.6, cost_usd: 0.21 } ] }
   };
-  var TODAY = { total: 3421800, input: 2864100, output: 557700, reasoning: 213400,
-    cache_read: 2412300, cache_write: 154900, requests: 1240, retries: 6,
-    started: NOW - 7 * 3600000, last_at: NOW - 4000 };
+  var TODAY = { total: 38027900, input: 37747800, output: 280100, reasoning: 96400,
+    cache_read: 36615300, cache_write: 0, requests: 121, retries: 0,
+    cost_usd: 6.32, started: NOW - 7 * 3600000, last_at: NOW - 4000 };
   var PAYLOAD = { mine: SESS.sid, recent: [SESS], today: TODAY };
-  var MARKS = ["生成速度", "本轮用量", "会话累计", "工具调用", "今日合计", "子智能体"];
-
-  function feed() { if (window.__zusageUpdate) window.__zusageUpdate(PAYLOAD); }
+  var feed = promoData(SESS, PAYLOAD, NOW);
 
   /* 条下方的项目标注：刻度对准条目中心，文字过挤时整体右推再从右界回推 */
   function drawMarks() {
@@ -228,7 +214,7 @@
     host.innerHTML = "";
     var win = document.querySelector(".pm-win").getBoundingClientRect();
     var nodes = Array.prototype.slice.call(document.querySelectorAll("#zusage-bar .zu-main .it"));
-    var names = MARKS.slice(0, nodes.length);
+    var names = nodes.map(function (node) { return promoLabels[node.dataset.zuKey]; });
     var gear = document.querySelector("#zusage-bar .zu-gear");
     if (gear) { nodes.push(gear); names.push("设置"); }
     var marks = nodes.map(function (node, i) {
@@ -261,17 +247,6 @@
     marks.forEach(function (m) { m.label.style.left = m.cx + "px"; });
   }
 
-  function note(text, x, y, flip) {
-    var el = document.createElement("div");
-    el.className = "pm-note" + (flip ? " pm-flip" : "");
-    el.textContent = text;
-    document.body.appendChild(el);
-    el.style.top = Math.round(y - el.offsetHeight / 2) + "px";
-    el.style.left = Math.round(flip ? x - el.offsetWidth : x) + "px";
-    return el;
-  }
-
-  /* 截图脚本在真实鼠标悬停出 tooltip 后调用：画光标、给 tooltip 和速率行加注释 */
   window.__promoAfterHover = function (x, y) {
     var cur = document.createElement("div");
     cur.className = "pm-cursor";
@@ -279,19 +254,6 @@
     cur.style.left = (x - 1.5) + "px";
     cur.style.top = (y - 1.5) + "px";
     document.body.appendChild(cur);
-
-    var tip = document.getElementById("zusage-tip");
-    var col = document.querySelector(".pm-col").getBoundingClientRect();
-    if (tip) {
-      var tr = tip.getBoundingClientRect();
-      var probe = note("悬停任一项 · 查看明细", 0, 0, false);
-      var need = probe.offsetWidth + 18;
-      probe.remove();
-      if (col.right - tr.right >= need) note("悬停任一项 · 查看明细", tr.right + 14, tr.top + tr.height / 2, false);
-      else note("悬停任一项 · 查看明细", tr.left - 14, tr.top + tr.height / 2, true);
-    }
-    var rate = document.getElementById("pm-rate").getBoundingClientRect();
-    note("回答末尾速率行", rate.right + 14, rate.top + rate.height / 2, false);
   };
 
   var tries = 0;
@@ -300,7 +262,7 @@
     feed();
     var its = document.querySelectorAll("#zusage-bar .zu-main .it");
     var bar = document.getElementById("zusage-bar");
-    if (its.length >= 6 && bar && bar.style.display === "flex") {
+    if (its.length === 8 && bar && bar.style.display === "flex") {
       clearInterval(timer);
       setTimeout(function () { drawMarks(); window.__promoReady = true; }, 500);
     } else if (tries > 60) clearInterval(timer);

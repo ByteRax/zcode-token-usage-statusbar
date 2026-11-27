@@ -359,8 +359,9 @@
      * → v486 项目菜单「在 Finder 中打开」（用户规格初设「打开文件夹」，后按用户提示完全参照宿主任务菜单原生同名项改纯渲染端，specs/project-open-folder-menu.md）：宿主项目侧栏两类菜单各注入一枚「在 Finder 中打开」（文案随 navigator.userAgent 平台分支跟随宿主 appHeader.openInFinder/openInFileExplorer/openInFileManager 三平台措辞）——右键菜单逐个跟随 virtual-project-context-files-N（textContent 首个「 · 」后即根路径，多根一一对应；克隆同菜单项只借外观、剥宿主身份属性），「…」下拉经 content 的 aria-labelledby 找触发按钮、closest 项目行、React fiber 上溯（≤48 层，真机实测行元素 36 层）取 memoizedProps.project.roots[].rootPath 首根（SOt 层 paths 备选；与宿主行内「查看文件」按钮 M[0]?.run() 同取首根语义），任一环节取不到 fail-closed 不注入；本地/远程甄别=项目行外层 section 的 data-project-host === "local"（真机本地恒 "local"，属性缺席视为不注入），右键菜单来源行靠 document 捕获阶段 contextmenu 监听在菜单打开前记录（ContextMenuContent 不回指触发行，记录有效期 8 秒）；点击直调宿主 preload 桥 window.zcode.openInFileManager(path)（与宿主任务菜单原生项同一 IPC zcode:open-in-file-manager，真机 4.0.0 实证桥函数在场），随后向菜单派发 Escape 关闭（非 Radix collection 成员，宿主不会因选中收菜单）；桥缺失整链不注入（渲染端自证，无能力标记协议）。新分片 05-project-open-folder.js（外层闭包，菜单是文档级对象不进 spawnInstance）：MutationObserver 只挂 body 直属子节点（Radix portal 容器层，聊天流式变更不触发）rAF 去抖扫描，重注入后立即补扫一次；disposeOverlay 增 zuOpfDispose typeof 守卫调用（disconnect + 取消在途 rAF + 摘除 contextmenu 监听）；弹层关闭注入项随宿主 DOM 销毁零摘除路径；回执失败 FATAL.openPathErr 计数不弹 UI；悬停高亮自补（Radix 只给 collection 成员发 data-highlighted——mouseenter 自挂同款属性并清同菜单宿主项的残留高亮、mouseleave 还原，复用克隆来的 data-[highlighted]:bg-menu-hover 样式）。inject-main.cjs、快照协议、Python 零改动。
      * → v487 上下文容量弹层分项构成增强（用户拍板「建议 1 加具体 token 数 + 建议 3 悬停大白话说明」，格式「24.28万 · 74.7%」（数值经实例 fmt() 输出），⚙ 通用独立开关；specs/context-breakdown-enhance.md）：①Token 数补充——从就近上下文触发器 aria-label 解析已用总量 used，按各构成行右侧百分比折算 round(used*pct/100) 并经实例 fmt() 格式化（自动跟随万/亿与强制 K/M/B），在百分比 span 前幂等插入 .zu-ctx-bkd-tok（弱化灰+tabular-nums，「24.28万 · 」）并由其接管 margin-left:auto；百分比按数值解析（兼容小数逗号的 locale，如「74,7 %」），展示串照抄宿主原文；②悬停大白话说明——按宿主 7 类构成标签（消息/其他/系统工具/MCP 工具/技能/系统提示词/工具提示词，中英双语）标记 data-zusage-bkd 并在 body 容器委托 mouseover/mouseout，悬停即在行上方/下方弹出文档级单例 .zusage-ctx-bkd-tip 说明该项真实构成与减负建议；③开关 zusage3.ctxBkd（⚙ 通用「上下文构成明细增强」.zu-ctx-bkd，缺省开，仅显式 "0" 关），关闭即摘除已注入节点与属性并收起气泡。气泡是纯说明、指针穿透（pointer-events:none，不挂指针/键盘监听）：它挂在 body、不在宿主 hover-card 的 DOM 子树里，拦截鼠标会让宿主在指针进入气泡时关闭弹层（真机实证，往上挪一行撞进气泡同样会关）；气泡里的路径（指令规则、技能目录、记忆索引 <home>/.zcode/cli/memories/projects、内置引擎）只展示、不可点击；技能目录取自技能工具输出，只有落在 home 或工作区之下才展示；「近期已用技能」取自会话快照尾部窗口，不等于整个会话；弹层 body 上的委托标记带代际，热重载后新代重挂。
      * → v488 上下文构成说明气泡侧边停靠与悬停保活桥接：气泡改为紧贴 [data-slot="hover-card-content"] 左右两侧（右优先 4px 重叠无缝隙、放不下放左侧），不再遮挡上方分项行；移除 pointer-events:none，恢复 .cb-path 点击调用 openProjFolder 打开对应目录；showCtxBkdTip 对同一行锁定坐标（防宿主关闭动画抖动甩出鼠标），捕获阶段拦截 pointerout/mouseout 向宿主隐藏「移入气泡」的离开事件（气泡 mouseleave 且离开主浮层时再补发离开事件），移入气泡时气泡与宿主上下文浮层均保持打开。
+     * → v489 筛选弹层「点外即收」补实现（用户实报：点搜索模型浮层之外不关闭；spec §14.1 初稿「外点关闭（既有）」失真——v390 只落地 Esc 与 toggle，外点从未实现，规格一并改准）：wire 新增 spd3PopOutside（与 spd3MonthOutside 同构——筛选弹层开着且按下点在 .zu-sv3-fpop 与两枚 [data-sv3-fopen] 入口之外即置 open=false、清搜索词并返回 true，只改状态由调用链重绘），06 主卡链与 01 精简链 tip pointerdown 委托在月历外点判定之后接入并各自重绘，被点控件照常由各自分支处理；fopen 入口豁免（否则外点收起后 toggle 分支再翻转回打开）；整卡隐藏复位补齐（08 hideTip 与 01 hideTpsTip 在 mpop 复位旁同步复位 pop，重开不残留；搜索词仅在 Esc/外点/toggle 三个主动关闭路径清空，随卡隐藏保留）。
      */
-    var VERSION = "v488";
+    var VERSION = "v489";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -2986,6 +2987,9 @@
        * 重绘。被点的控件（Tab/筛选 chips 等）照常由下面的分支处理——它们从已脱离的旧
        * 节点读属性，不受这次重绘影响；胶囊本身与弹层内部不算「之外」，交给 spd3MonthAct。 */
       if (typeof spd3MonthOutside === "function" && spd3MonthOutside(speedSel, e.target)) speedRebuildNow();
+      /* v489（spec §14.1）：筛选弹层同款「点外即收」——按下点在弹层与 fopen 入口之外先收
+       * 弹层并重绘；入口按钮豁免（toggle 分支自己收，避免外点+toggle 双翻转回打开） */
+      if (typeof spd3PopOutside === "function" && spd3PopOutside(speedSel, e.target)) speedRebuildNow();
       if (projTipTabActivate(e)) return;
       if (projTipMoreActivate(e)) return;
       if (spd3Activate(e)) return;   /* v384 V3：筛选 chips/弹出层/展开按钮 pointerdown 先行 */

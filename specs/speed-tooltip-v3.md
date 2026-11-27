@@ -266,7 +266,8 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 - **方案 A**：删除右侧放大镜按钮（.zu-sv3-fsearch 整链退役——含 01/06 委托、CSS、测试）；入口=`+N` button 与「模型筛选」标签 button（.zu-sv3-fopen，data-sv3-fopen），同一面板/同一状态/同一关闭行为。
 - `+N` 与 fopen 均为真 button：aria-expanded（随 pop.open）、aria-haspopup、pointer/键盘（既有 pointerdown 委托白名单扩展）、Hover 反馈。
 - fpop 定位改**锚定筛选栏正下方**：`top` 对齐 fbar 底 +8px（fbar 单行高稳定）、右缘对齐 `right:10px`、宽度 340px；卡内空间恒够（卡高 ≥320）无需翻转；`bottom:10px` 废除。
-- 打开时焦点入搜索框（既有）；Esc/外点关闭（既有）；关闭焦点归还「模型筛选」标签（DOM 首个 fopen 入口；+N 打开时亦归还该合法入口）。
+- 打开时焦点入搜索框（既有）；Esc 关闭（既有）；关闭焦点归还「模型筛选」标签（DOM 首个 fopen 入口；+N 打开时亦归还该合法入口）。
+- **点弹层之外即收（v489，用户实报 2026-11-27；本节初稿写的「外点关闭（既有）」失真——v390 只落地了 Esc 与 toggle，外点从未实现）**：`spd3PopOutside(sel, el)`（wire，与 §28.5 `spd3MonthOutside` 同构）——筛选弹层开着且按下点在 `.zu-sv3-fpop` 与两枚 `[data-sv3-fopen]` 入口（「模型筛选」标签、+N）之外 → `open=false`、清搜索词、返回 true；两条链（06/01）tip `pointerdown` 委托在月历外点判定之后调用并各自重绘，被点控件照常由各自分支处理。入口不算「之外」：外点收起后 toggle 分支会再翻转回打开，必须豁免。整卡隐藏（指针移开、点卡外）时弹层态随卡复位（08 hideTip 与 01 hideTpsTip，同 §28.5 月历先例），重开不残留；搜索词仅在 Esc/外点/toggle 三个主动关闭路径清空，随卡隐藏保留。
 
 ### 14.2 dbar 轨道契约 + Top6+其他（P0/P1）
 

@@ -181,7 +181,7 @@ GitCode 渠道的清单 URL 形状、下载主机白名单（`gitcode.com`/`file
 4. **必须在 build 之前**更新仓库内的旧名并提交：`marketplace.json`、两份 `plugin.json`、插件目录 `README.md`、`overlay.js` 都在发布 ZIP 里，而 `release_tool.py publish` 的 preflight 要求 ZIP 与 HEAD 源码逐字节一致：构建之后再改这些文件会被拒绝（`ZIP is not the current repository source`）；不改就发布，则包里的文件仍是旧名。以 `git grep -n -i 'byterax'` 为准（大小写不敏感：技能测试里有 `bytERAX` 变体；owner 级提及无需改），已知位置：
    - 两份 `plugin.json` 的 `homepage`/`repository`；根 `marketplace.json` 的 `plugins[0].icon`（jsdelivr 地址不保证跟随 GitHub 重定向，须改新名；`owner.url` 是 owner 级地址，只改仓库名时不用动）。已分发的旧渠道清单与宿主缓存里的 icon 仍是旧名，CDN 缓存过期后可能 404，只影响图标外观；`docs/promo/icon.webp` 的路径与文件名冻结，不要为此移动文件。
    - 三份根 README（含 star-history 徽章，只在这三份里）、插件目录下的 `README.md`（随 ZIP 分发）与 `README_CN.md`（不随 ZIP 分发，但同样要改）、`docs/` 里的安装命令与链接。
-   - `docs/promo/*.html` 与 `docs/promo/social-copy.md`：改完按 [docs.md §3](../.zcode/rules/docs.md) 用 `docs/promo/shoot.py` 重新导出 promo 图。
+   - `docs/promo/*.html` 与 `docs/promo/social-copy.md`：检查仓库名与链接，按[宣传图与功能截图](#宣传图与功能截图)重新导出受影响的图。
    - 浮层「反馈问题」链接：`src/overlay/09-instance-settings-and-notes.js` 的 `issuesUrl`。这是 overlay 变更，按 [repo-workflow.md §2](../.zcode/rules/repo-workflow.md) 的惯例升 `VERSION` 并补台账，改完经 `sync_plugin.py` 重新拼出 `overlay.js` 与插件副本。
    - 项目技能里写死的仓库：`.zcode/skills/zcode-issue-pr-resolver/scripts/triage.py` 的 `REPO` 及其测试与文档；`.zcode/rules/repo-workflow.md` 里的仓库地址与 `gh api` 命令。
    - 测试：只改**断言当前真实地址**的（如 `tests/test_plugin_contract.py` 的 icon 断言、`tests/overlay-settings.test.cjs` 的 `ISSUES_URL`）；`tests/plugin-release.test.cjs` 的 `OLD_REPO`、`tests/plugin-release-updater.test.cjs` 的 `REPOSITORY`/`RENAMED` 等**改名夹具刻意保留旧名或占位名**，批量替换会让改名用例变红。
@@ -191,6 +191,12 @@ GitCode 渠道的清单 URL 形状、下载主机白名单（`gitcode.com`/`file
 5. 以新名为 `--repo` **发布下一版**（流程见[发布插件](#发布插件)），使 `plugin-releases` 清单与包内 manifest 都烙新名。不要用改名前构建的包重发清单：包内 manifest 的 `repository` 取自构建时的 `--repo`，用新名 `--repo` 校验旧包时 `release_tool.py verify` 会报 `repository disagrees`，更新器的 `validateManifest` 也会拒绝。
 6. 改名当天在 README 顶部与新版 Release notes 加迁移公告，并在[用户指南](user-guide.md#切换已有市场到正式渠道)补一句「仓库改名后同样适用」、把示例地址换成新名：已升级到含迁移能力版本的用户会自动迁移；更早版本的用户更新报「GitHub Release 资产来源或大小无效」时，按该小节切换同名市场来源，或改用 GitCode 镜像渠道（`plugin-releases-gitcode`，不受 GitHub 改名影响）。
 7. 回读验收：新名下的 Release 与 `plugin-releases` 清单版本、ZIP URL 一致；用旧名注册的环境执行一次检查更新（宿主刷新市场时把已存的 `source` 原样写回，注册名不会被改写成新名，出处见 install-release.md §6），应看到新版本，且运行目录 `plugin-update.json` 出现 `repoMigration`；改名后也用旧名走一遍新用户安装（旧命令仍可用，首次检查会自动迁移）。若迁移后又想回到注册名（例如 `to` 消失），删除 `plugin-update.json` 里的 `repoMigration` 键即可，重新注册同一来源无效。
+
+## 宣传图与功能截图
+
+- README 首页图使用 `docs/promo/features/live/` 的 CDP 裁片。替换裁片前检查透明浮层背后的聊天内容，并遮挡本地路径。运行 `uv run --with playwright python docs/promo/shoot_cover.py` 导出中英文首页图。
+- 「功能一览」共用实机裁片。中英文演示图由 `uv run --with playwright python docs/promo/shoot_features.py` 生成，状态条和插件面板由当前仓库的 `overlay.js` 渲染。
+- 社交宣传图按 [docs.md §3](../.zcode/rules/docs.md) 用 `docs/promo/shoot.py` 指定布景和输出路径。
 
 ## 数据与性能
 
