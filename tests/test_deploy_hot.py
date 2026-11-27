@@ -133,12 +133,16 @@ class DeployHotInstallTests(unittest.TestCase):
         self.assertEqual(self.target.read_bytes(), BASE)
         self.assertEqual(self._leftovers(), ["overlay.js"], "替换被拒时备份和临时文件都要清掉")
 
+    def _install_readonly(self):
+        """在只读目标上部署。root 对只读文件仍有写权限（os.access 恒真），所以把可写判定替身成「只有它不可写」，
+        让这条断言在 root 的 CI 容器里也照跑，而不是整例跳过。"""
+        with mock.patch.object(deploy_hot.os, "access", lambda p, mode, t=str(self.target): str(p) != t):
+            return deploy_hot.install_file(self._step(), self.run, "issue-1", "20261126-120000", _ok_check)
+
     def test_readonly_runtime_file_is_blocked_and_left_alone(self):
         self.target.chmod(0o444)
         self.addCleanup(self.target.chmod, 0o644)   # 只读文件会让临时目录清不掉
-        if os.access(self.target, os.W_OK):
-            self.skipTest("当前身份对只读文件仍有写权限（root）")
-        state, detail = deploy_hot.install_file(self._step(), self.run, "issue-1", "20261126-120000", _ok_check)
+        state, detail = self._install_readonly()
         self.assertEqual(state, "readonly")
         self.assertEqual(self.target.read_bytes(), BASE)
         self.assertEqual(self._leftovers(), ["overlay.js"])
@@ -151,6 +155,19 @@ class DeployHotInstallTests(unittest.TestCase):
         self.assertEqual(state, "race")
         self.assertEqual(self.target.read_bytes(), FOREIGN, "不覆盖别处刚写入的内容")
         self.assertFalse(any(name.startswith(".overlay.js.") for name in self._leftovers()))
+
+    def test_a_rewrite_during_the_backup_stops_the_deploy(self):
+        # 备份刚写完、目标就被别处改写：留下的备份不是甄别过的基线，不能拿它去换
+        real_copy = shutil.copy2
+
+        def copy_then_race(src, dst, *args, **kwargs):
+            real_copy(src, dst, *args, **kwargs)
+            _write(self.run, "overlay.js", FOREIGN)
+        with mock.patch.object(deploy_hot.shutil, "copy2", copy_then_race):
+            state, detail = deploy_hot.install_file(self._step(), self.run, "issue-1", "20261126-120000", _ok_check)
+        self.assertEqual(state, "race")
+        self.assertEqual(self.target.read_bytes(), FOREIGN)
+        self.assertEqual(self._leftovers(), ["overlay.js"], "备份与临时文件都不留")
 
     def test_new_file_is_created_without_a_backup(self):
         state, detail = deploy_hot.install_file(self._step(work=b"x = 1\n", run=None, name="zusage.py"),
@@ -251,13 +268,24 @@ class DeployHotMainTests(unittest.TestCase):
         target = _write(self.run, "overlay.js", BASE)
         target.chmod(0o444)
         self.addCleanup(target.chmod, 0o644)   # 只读文件会让临时目录清不掉
-        if os.access(target, os.W_OK):
-            self.skipTest("当前身份对只读文件仍有写权限（root）")
-        code, out = self._main(["--reason", "issue-1", "--wait", "0"], baselines={"overlay.js": [BASE]})
+        # root 对只读文件仍有写权限：把可写判定替身成「只有它不可写」，断言在 CI 容器里也照跑
+        with mock.patch.object(deploy_hot.os, "access", lambda p, mode, t=target: str(p) != str(t)):
+            code, out = self._main(["--reason", "issue-1", "--wait", "0"], baselines={"overlay.js": [BASE]})
         self.assertEqual(code, 1)
         self.assertIn("受阻    overlay.js", out)
         self.assertIn("失败 0，受阻 1", out)
         self.assertEqual(target.read_bytes(), BASE)
+
+    def test_unexpected_oserror_on_one_file_is_reported_not_raised(self):
+        # 单个文件上的意外异常不该中断整批；它可能发生在替换之后（回读、改 mtime），所以不声称「运行文件未动」
+        _write(self.work, "quota-client.cjs", NEW)
+        _write(self.run, "quota-client.cjs", BASE)
+        with mock.patch.object(deploy_hot, "install_file", side_effect=OSError("disk full")):
+            code, out = self._main(["--reason", "issue-1", "--wait", "0"], baselines={"quota-client.cjs": [BASE]})
+        self.assertEqual(code, 1)
+        self.assertIn("失败    quota-client.cjs：disk full", out)
+        self.assertNotIn("运行文件未动", out)
+        self.assertIn("收尾：有未完成项（失败 1，受阻 0）", out)
 
     def test_dry_run_prints_the_plan_and_writes_nothing(self):
         _write(self.work, "overlay.js", NEW)
@@ -341,6 +369,46 @@ class DeployHotMainTests(unittest.TestCase):
         code, out = self._main(["--reason", "issue-1", "--wait", "0"], baselines={"quota-client.cjs": [BASE]})
         self.assertEqual(code, 0)
         self.assertIn("主进程模块 quota-client.cjs：已部署", out)
+
+
+class DeployHotResidentPidsOutputTests(unittest.TestCase):
+    """Windows 分支的输出解析：真查询放在下面的真机用例里，这里用替身覆盖异常形态。"""
+
+    def _pids(self, run_result):
+        answer = types.SimpleNamespace(returncode=0, stdout="1234\nProgress 5\n", stderr="")
+
+        def fake_run(*_args, **_kwargs):
+            if isinstance(run_result, BaseException):
+                raise run_result
+            return run_result or answer
+        with mock.patch.object(deploy_hot.os, "name", "nt"), \
+                mock.patch.object(deploy_hot, "_WINDOWS_POWERSHELL", __file__), \
+                mock.patch.object(deploy_hot.subprocess, "run", fake_run):
+            return deploy_hot.resident_pids()
+
+    def test_only_numeric_tokens_become_pids(self):
+        # PowerShell 夹带的进度行之类不能让取证抛异常（此前 int() 直接 ValueError 穿出 main）
+        self.assertEqual(self._pids(None), {1234})
+
+    def test_a_failed_query_is_unknown_not_empty(self):
+        # 空集会被 main 当成「常驻进程已更替」：查询失败必须返回 None（无法判定）
+        failed = types.SimpleNamespace(returncode=1, stdout="", stderr="boom")
+        self.assertIsNone(self._pids(failed))
+        self.assertIsNone(self._pids(OSError("PowerShell did not start")))
+
+
+class DeployHotCliTests(unittest.TestCase):
+    def test_cli_survives_a_non_utf8_pipe(self):
+        # Windows 非 CJK 代码页的管道上，中文报错会让脚本以 traceback 收场：接管道时编不了的字符转义
+        env = {key: os.environ[key] for key in ("PATH", "SystemRoot", "SYSTEMROOT", "TEMP", "TMP") if key in os.environ}
+        env.update(PYTHONIOENCODING="cp1252", PYTHONDONTWRITEBYTECODE="1")
+        proc = subprocess.run([sys.executable, "-B", str(ROOT / "scripts" / "deploy_hot.py"), "--dry-run",
+                               "--runtime", str(ROOT / "no-such-runtime-dir")], cwd=str(ROOT), env=env,
+                              stdin=subprocess.DEVNULL, capture_output=True, timeout=60,
+                              creationflags=deploy_hot._NO_WINDOW)
+        err = proc.stderr.decode("utf-8", "replace")
+        self.assertEqual(proc.returncode, 2, err)
+        self.assertNotIn("Traceback", err)
 
 
 if __name__ == "__main__":

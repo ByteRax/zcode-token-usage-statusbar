@@ -6,6 +6,8 @@
 """
 import contextlib
 import io
+import os
+import subprocess
 import sys
 import tempfile
 import types
@@ -19,6 +21,7 @@ if str(ROOT) not in sys.path:
 from tests.helpers.py_test_support import load_module  # noqa: E402
 
 check_all = load_module("check_all_under_test", ROOT / "scripts" / "check_all.py")
+NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 TAP = """TAP version 13
     ok 1 - first
@@ -158,6 +161,9 @@ class CheckAllParseTests(unittest.TestCase):
         broken = b"\xff\x81tail\n"   # cp1252 里 0x81 没有定义：按替换字符读，不抛异常
         with mock.patch.object(check_all.locale, "getpreferredencoding", lambda do_setlocale=False: "cp1252"):
             self.assertEqual(check_all.decode_output(broken), "ÿ\ufffdtail\n")
+        # 区域编码名系统不认识（LookupError）：退回 UTF-8 替换，不让汇总因为一行日志崩掉
+        with mock.patch.object(check_all.locale, "getpreferredencoding", lambda do_setlocale=False: "no-such-charset"):
+            self.assertEqual(check_all.decode_output("中文\n".encode("gbk")), "\ufffd" * 4 + "\n")
 
     def test_test_commands_carry_the_tap_reporter_and_the_current_interpreter(self):
         node, py = check_all.test_commands("node")
@@ -240,13 +246,29 @@ class CheckAllMainTests(unittest.TestCase):
         self.assertEqual([env["ELECTRON_RUN_AS_NODE"] for env in envs], ["1", "1"])
 
     def test_gbk_child_output_is_decoded_for_the_summary(self):
-        # 默认代码页下的 Python 测试进程按 GBK 写日志：没解析到用例时打印的末尾输出必须是原文
+        # 默认代码页下的 Python 测试进程按 GBK 写日志：没解析到用例时打印的末尾输出必须是原文。
+        # 区域编码钉成 cp936：本用例在任何区域（宿主注入 PYTHONUTF8 的工具 shell、UTF-8 区域的 macOS / Linux）
+        # 都有区分力，不依赖跑它的机器恰是中文 Windows
         gbk = "导入失败：模块不存在\n".encode("gbk")
-        code, out, _, started, _ = self._run([], test_outputs={"node-test": (0, "# tests 0\n# fail 0\n"),
-                                                               "python-test": (1, "")}, raw={"python-test": gbk})
+        with mock.patch.object(check_all.locale, "getpreferredencoding", lambda do_setlocale=False: "cp936"):
+            code, out, _, started, _ = self._run([], test_outputs={"node-test": (0, "# tests 0\n# fail 0\n"),
+                                                                 "python-test": (1, "")}, raw={"python-test": gbk})
         self.assertEqual(code, 1)
         self.assertIn("导入失败：模块不存在", out)
         self.assertNotIn("\ufffd", out, "不能读成替换字符")
+
+    def test_cli_survives_a_non_utf8_pipe(self):
+        # Windows 非 CJK 代码页的管道上，汇总里的中文（子进程起不来的指引）会让脚本以 traceback 收场：
+        # 接管道时编不了的字符转义，失败退出码照旧
+        env = {key: os.environ[key] for key in ("PATH", "SystemRoot", "SYSTEMROOT", "TEMP", "TMP") if key in os.environ}
+        env.update(PYTHONIOENCODING="cp1252", PYTHONDONTWRITEBYTECODE="1")
+        proc = subprocess.run([sys.executable, "-B", str(ROOT / "scripts" / "check_all.py"), "--quick",
+                               "--node", str(ROOT / "no-such-node")], cwd=str(ROOT), env=env, stdin=subprocess.DEVNULL,
+                              capture_output=True, timeout=60, creationflags=NO_WINDOW)
+        self.assertEqual(proc.returncode, 1, proc.stderr.decode("utf-8", "replace"))
+        self.assertNotIn("Traceback", proc.stderr.decode("utf-8", "replace"))
+        self.assertIn("node --check overlay.js", proc.stdout.decode("utf-8", "replace"))
+        self.assertIn("--node", proc.stdout.decode("utf-8", "replace"), "给出指引")
 
     def test_green_suites_exit_zero_and_report_counts(self):
         outputs = {"node-test": (0, TAP.replace("not ok", "ok").replace("# fail 4", "# fail 0")),

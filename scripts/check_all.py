@@ -51,7 +51,10 @@ def decode_output(data):
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError:
-        return data.decode(locale.getpreferredencoding(False) or "utf-8", errors="replace")
+        try:
+            return data.decode(locale.getpreferredencoding(False) or "utf-8", errors="replace")
+        except LookupError:   # 区域编码名系统不认识：退回 UTF-8，解不开的字节替换
+            return data.decode("utf-8", errors="replace")
 
 
 def syntax_commands(node):

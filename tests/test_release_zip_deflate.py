@@ -64,7 +64,7 @@ class ReleaseZipDeflateTests(unittest.TestCase):
 
     def test_manifest_and_catalog_are_lf_on_every_platform(self):
         # Windows 文本模式把 \n 写成 \r\n：清单经 git hash-object --stdin 原样进渠道分支，构建产物
-        # 的字节也随平台漂移。任何平台都咬得到——写入侧一旦退回文本模式，Windows 上必红
+        # 的字节也随平台漂移。写入侧一旦退回平台文本模式，Windows 上必红
         built = self.build("out")
         for key in ("manifest", "catalog"):
             self.assertNotIn(b"\r", Path(built[key]).read_bytes(), key)

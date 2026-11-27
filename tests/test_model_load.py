@@ -6,6 +6,7 @@
 """
 import contextlib
 import io
+import os
 import sqlite3
 import sys
 import tempfile
@@ -190,6 +191,18 @@ class ModelLoadCliTests(unittest.TestCase):
         before = self.db.read_bytes()
         self.assertEqual(self._run("--db", str(self.db))[0], 0)
         self.assertEqual(self.db.read_bytes(), before)
+
+    def test_cli_survives_a_non_utf8_pipe(self):
+        # Windows 非 CJK 代码页的管道上，中文报错（读不了用量库）会让脚本以 traceback 收场：
+        # 接管道时编不了的字符转义，失败退出码照旧
+        import subprocess
+        env = {key: os.environ[key] for key in ("PATH", "SystemRoot", "SYSTEMROOT", "TEMP", "TMP") if key in os.environ}
+        env.update(PYTHONIOENCODING="cp1252", PYTHONDONTWRITEBYTECODE="1")
+        proc = subprocess.run([sys.executable, "-B", str(ROOT / "scripts" / "model_load.py"), "--db", str(self.db)],
+                              cwd=str(ROOT), env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+        err = proc.stderr.decode("utf-8", "replace")
+        self.assertEqual(proc.returncode, 2, err)
+        self.assertNotIn("Traceback", err)
 
     def test_cli_opens_databases_whose_path_has_uri_reserved_characters(self):
         # 手拼 "file:" URI 时路径里的 # 截断 URI、丢掉 mode=ro：读不到表，还在父目录里留下一个 0 字节文件；

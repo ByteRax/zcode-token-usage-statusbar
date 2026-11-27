@@ -3,8 +3,8 @@
 """选择性开发部署：把工作树里有改动的热文件安全地放进运行目录，并取热重载证据。
 
 把 .zcode/rules/install-release.md §2 的「热修纪律」固化成一条命令：逐文件甄别（运行目录里的字节必须
-等于某个基线版本，否则视为领先或被热修、不动）、备份、同目录临时文件过语法检查、写前写后比对、
-原子替换并让 mtime 前进；随后经本机调试端口比对部署前后的浮层代际，并看常驻 zusage 进程是否更替。
+等于某个基线版本，否则视为领先或被热修、不动）、同目录临时文件过语法检查、写前比对、备份、原子替换
+（目标被瞬时句柄占住时有界重试）并让 mtime 前进、写后回读；随后经本机调试端口比对部署前后的浮层代际，并看常驻 zusage 进程是否更替。
 没有强制覆盖。契约见 specs/dev-loop-speed.md。
 
 用法：
@@ -137,13 +137,22 @@ def install_file(step, run_dir, reason, stamp, check=syntax_check):
             # 语法检查过了才备份：失败的部署不在运行目录里留 .pre-* 文件
             backup = target.with_name(f".pre-{reason}-{stamp}-{name}")
             shutil.copy2(target, backup)
+            # 备份与替换之间再比对一次：写前比对之后、备份期间被别处改写的运行文件不能被换掉，
+            # 留下的备份也得是甄别过的基线
+            if read_bytes(backup) != expected or read_bytes(target) != expected:
+                _discard_tmp(str(backup))
+                return "race", "运行文件在备份期间被别处改写，已停下，没有覆盖"
             os.chmod(tmp, stat.S_IMODE(old_stat.st_mode))
         try:
             _replace_retrying(tmp, target)   # 目标被瞬时句柄占住（Windows 上常见）时有界重试
         except OSError as exc:
+            leftover = ""
             if backup is not None:
-                _discard_tmp(str(backup))
-            return "locked", f"运行文件被占用，替换被拒（{exc}），没有覆盖"
+                try:
+                    backup.unlink()
+                except OSError:
+                    leftover = f"；备份 {backup.name} 没能删掉，可手动删除"
+            return "locked", f"运行文件被占用，替换被拒（{exc}），没有覆盖{leftover}"
     finally:
         if tmp.exists():
             _discard_tmp(str(tmp))
@@ -198,7 +207,8 @@ def resident_pids():
                                   creationflags=_NO_WINDOW)
         except (OSError, subprocess.TimeoutExpired):
             return None
-        return {int(item) for item in proc.stdout.split()} if proc.returncode == 0 else None
+        # 按行只收纯数字（PowerShell 一行一个 pid）：夹带的进度行之类既不能让取证抛异常，也不能混进假 pid
+        return {int(line) for line in proc.stdout.splitlines() if line.strip().isdigit()} if proc.returncode == 0 else None
     if os.name != "posix":
         return None
     try:
@@ -294,7 +304,9 @@ def main(argv=None, run_dir=None, baseline_of=None, check=syntax_check, evidence
             state, detail = "error", str(exc)
         states[step["name"]] = state
         label = {"ok": "已部署", "readonly": "受阻  "}.get(state, "失败  ")
-        print(f"{label}  {step['name']}：{detail}" + ("（运行文件未动）" if state != "ok" else ""))
+        # 只有运行文件确实没动的状态才标「未动」：error / verify 可能发生在替换之后（回读、改 mtime 时出错）
+        untouched = state in ("syntax", "race", "readonly", "locked")
+        print(f"{label}  {step['name']}：{detail}" + ("（运行文件未动）" if untouched else ""))
         if state == "readonly":
             blocked.append(step["name"])
         elif state != "ok":
