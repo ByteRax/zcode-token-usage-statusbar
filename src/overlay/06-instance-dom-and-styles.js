@@ -363,8 +363,9 @@
      * → v490 模型选择器高峰期显著提示与时段/来源气泡（specs/model-peak-factor-badge.md）：当 is_peak 为真且弹层内有门控通过的 GLM 编码计划模型行时，在 [data-composer-model-list] 正上方（无该列表时回退首行前）挂载 .zu-peak-banner（「⚡ 当前为高峰期 · 高峰倍率生效中」），行右缘倍率同步高亮为 --color-warning + 500 字重（非高峰恢复弱化灰与 400 字重并摘除横条，门控不过实例保持 no-op）；悬停/聚焦横条弹出纯 CSS 显隐的内部气泡 .zu-peak-pop（带 ::before 悬停桥接，零新增监听器/零 body 浮层），标明高峰时段（周一至周五 14:00–18:00 北京时间）并附可点击来源链接「来源：BigModel 官方套餐用量说明 ↗」（走 window.zcode.openExternal 优先、window.open 兜底，阻止冒泡防关弹层）。
      * → v491 药丸悬浮区滚动内容裁剪（issue #517）：ZCode 4.0 起消息滚动列表（[data-testid="v4-timeline"]，composer 以 sticky 悬浮其内）内容延伸到视口底、从悬浮条背后穿过（v143 让位只顶卡不裁内容）——悬浮形态（药丸+兜底）在 track 定位拍按裁线 min(条上缘, 卡下缘) 给所属 pane（composer 最近 v4-pane-shell-* 祖先，miss 回退全文档单列）的 v4-timeline 写 clip-path inset(0 0 Xpx 0)（每帧幂等，X=容器底缘−裁线；找不到滚动容器自然降级不裁；clip-path 只裁绘制、不改 fixed/absolute 后代定位基准，4.0.0 实测 timeline 内无 fixed 后代），条隐藏（hideBar）与让位归还（releasePads，切档/换卡/销毁共用）同步解除裁剪。
      * → v492 上下文洞察扩展的两个入口（specs/context-insights-extension.md §2.2）：「上下文容量」弹层在压缩按钮左侧并排挂「上下文明细」按钮（.zu-ext-ctx-btn，各占一半宽，经主桥 open-ext-view 动作唤起扩展视图，宿主无该入口时不注入）；⚙ 设置面板顶部挂两颗快捷按钮（.zu-ext-quick：当前会话明细 / 全部会话洞察），点击走同一动作
+     * → v493 子代理窗格亲历完成轮不再显示「本轮统计不可用」（用户实报）：宿主投影只给主会话轮（query_source='main_turn'）的轮头累计 outputTokens，子代理会话的轮头从不带该字段（tracker 读数 outputTokens=null），开着窗格看子代理跑完的那一轮此前被 v74 当成「真实零输出」——插「本轮统计不可用」且不查库，而库里该轮数据齐全。03 分片新增 zuSubDetHeaderNoOutput（观察器 owner + tracker 已完成 + 亲历 + outputTokens 为 null），这类轮按纯富文本轮处理：缓存命中直接插富文本，未命中且非压缩轮即发带页面轮号的请求（不限窗格最后一轮），不插占位、不插「不可用」；已插行在缓存条目淘汰后走 v86 keep 分支原文保留。outputTokens 为 0 的轮、非亲历轮与主会话实例行为不变（specs/subagent-turn-stats-line.md 规则 13）
      */
-    var VERSION = "v492";
+    var VERSION = "v493";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */

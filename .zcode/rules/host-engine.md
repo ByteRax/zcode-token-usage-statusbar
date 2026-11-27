@@ -22,6 +22,7 @@
 
 - 宿主自身 tok/s 是**单请求完成态**读数：`output×1000÷(duration−first_content)`，无估算态、无轮内聚合；`first_content` 含工具产出增量且不落库。本项目轮速率=Σ有效输出÷Σ有效生成窗口（剔除工具等待、含思考 provider 特例、完成态为会话均）——两口径不同不是 bug。
 - 宿主恢复历史轮 `outputTokens=0` 但 startedAt/endedAt 齐全；老会话里可见的历史统计行是模型时代贴在正文里的文本，不是宿主数据（展示规则见 [overlay-ui.md](overlay-ui.md)）。
+- 轮头 `outputTokens` 只在主会话轮（`query_source === "main_turn"`）的 ModelComplete 上累计（宿主源码 `product-projection.ts` 的 `onModelComplete`，`isMainTurn` 门）；子代理会话（`query_source="subagent"`）的轮头从不带该字段，tracker 读数是 `outputTokens=null`（缺字段）而不是 0。靠轮头输出数判「零输出」的展示逻辑对子代理窗格不成立——先例：子代理窗格亲历完成的轮被判「本轮统计不可用」且不查库（v493 改按纯富文本轮，见 [subagent-turn-stats-line.md](../../specs/subagent-turn-stats-line.md) 规则 13）。
 
 ## 4. 版本元数据与 issue 排查
 
