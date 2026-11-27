@@ -30,6 +30,12 @@
         if (tid.indexOf("chat-model-select-item-") === 0) {
           var v = tid.slice(23), slash = v.indexOf("/");   // 前缀恰 23 字符，勿差一
           if (slash > 0) return v.slice(0, slash);
+          var lastColon = v.lastIndexOf(":");   // ZCode 4.0: custom:account%3A<id>:<model>
+          if (lastColon > 0) {
+            var rawPid = v.slice(0, lastColon);
+            if (rawPid.indexOf("custom:") === 0) rawPid = rawPid.slice(7);
+            try { return decodeURIComponent(rawPid); } catch (e2) { return rawPid; }
+          }
         }
       } catch (e) { }
       return null;
@@ -50,17 +56,24 @@
         if (tid.indexOf("chat-model-select-item-") === 0) {
           var slash = tid.indexOf("/", 23);   // 前缀恰 23 字符，勿差一
           if (slash > 0) return tid.slice(slash + 1);
+          var lastColon = tid.lastIndexOf(":");   // ZCode 4.0: custom:account%3A<id>:<model>
+          if (lastColon > 23) return tid.slice(lastColon + 1);
         }
       } catch (e) { }
       try {
         var spans = row.querySelectorAll("span");
+        var leafTxt = "";
         for (var i = 0; i < spans.length; i++) {
-          if (spans[i].getAttribute("data-zusage-peak")) continue;   // 跳过徽标自身（title 与文本都不作数）
-          var t = spans[i].getAttribute("title");
+          var sp = spans[i];
+          if (sp.getAttribute("data-zusage-peak") || sp.getAttribute("data-model-input-capability")) continue;
+          var t = sp.getAttribute("title");
           if (t) return t;
-          var txt = spans[i].textContent;
-          if (txt) return String(txt);
+          if (!leafTxt && (!sp.children || !sp.children.length)) {
+            var txt = sp.textContent;
+            if (txt) leafTxt = String(txt);
+          }
         }
+        if (leafTxt) return leafTxt;
       } catch (e) { }
       return "";
     }

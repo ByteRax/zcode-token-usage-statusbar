@@ -247,3 +247,30 @@ test('徽标自身 title 不被当模型名（防挂摘振荡）', () => {
   assert.ok(badge, 'textContent 精确命中后徽标应稳定保留');
   assert.match(badge.attrs['title'], /周一至五/);
 });
+
+test('ZCode 4.0 冒号编码 testid（custom:account%3A...）无需祖先键或斜杠', () => {
+  const row = makeRow({
+    testidValue: 'custom:account%3Abigmodel-individual-coding-plan:GLM-5.4',
+    title: 'GLM-5.4',
+  });
+  const api = run(makeCtx([row], { isPeak: false, paneProvider: '' }));
+  api.syncModelPeakBadges();
+  api.syncModelPeakBadges();
+  const badge = findBadge(row);
+  assert.ok(badge, '应从冒号格式解码出 account:bigmodel-individual-coding-plan 与 GLM-5.4');
+  assert.equal(badge.textContent, '0.67×');
+});
+
+test('span 回退跳过外层容器 textContent 与能力徽标，优先取内层 title/叶子', () => {
+  const row = makeRow({ testidValue: 'plain-model' });
+  const cont = row.children[0];
+  cont.textContent = 'GLM-5.3-Flash视觉';   // 模拟外层 span.flex-1 拼接后的 textContent
+  cont.children[0].setAttribute('title', 'GLM-5.3-Flash');
+  cont.children[0].textContent = 'GLM-5.3-Flash';
+  const api = run(makeCtx([row], { isPeak: false, paneProvider: PLAN }));
+  api.syncModelPeakBadges();
+  api.syncModelPeakBadges();
+  const badge = findBadge(row);
+  assert.ok(badge, '应取内层 title 而非外层拼接 textContent');
+  assert.equal(badge.textContent, '0.40×');
+});
