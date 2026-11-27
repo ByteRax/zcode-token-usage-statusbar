@@ -2336,7 +2336,8 @@ test('pill bar clips timeline content below the floating bar (isolated fixture)'
     await b.evaluate(`(() => {
       const foreign = document.createElement('div');
       foreign.setAttribute('data-testid', 'v4-timeline');
-      foreign.style.cssText = 'position:fixed;left:0;top:0;width:100px;height:50px';
+      // 视口底部 200px：几何上与裁线重叠，去掉归属校验的变异会直接写 inset（可观察）
+      foreign.style.cssText = 'position:fixed;left:0;bottom:0;width:100px;height:200px';
       document.body.insertBefore(foreign, document.body.firstChild);
     })()`);
     await buildTimeline(false);   // no pane shell → document-level fallback
@@ -2350,30 +2351,25 @@ test('pill bar clips timeline content below the floating bar (isolated fixture)'
   });
 
   await t.test('a replaced timeline node takes the clip over (isConnected re-resolve)', async () => {
+    await b.evaluate(`document.querySelector('#pane-a').setAttribute('data-testid', 'v4-pane-shell-a')`);   // 恢复上一用例摘掉的 shell：scope 命中，不经兜底
+    // 先等旧节点被裁：让 clipTarget 活在旧节点上（否则本用例走 null→兜底→直接采纳 fresh 的路径，变异不可观察）
+    await b.waitFor(`document.querySelector('#pane-a [data-testid="v4-timeline"]').style.clipPath.indexOf('inset') === 0`, 'old timeline was not clipped before the replace');
     await b.evaluate(`(() => {
-      document.querySelector('#pane-a').setAttribute('data-testid', 'v4-pane-shell-a');   // 恢复上一用例摘掉的 shell：scope 命中，不经兜底归属校验
       const old = document.querySelector('#pane-a [data-testid="v4-timeline"]');
       const fresh = document.createElement('div');
       fresh.setAttribute('data-testid', 'v4-timeline');
-      fresh.style.cssText = old.style.cssText;
+      fresh.style.cssText = 'position:absolute;left:0;right:0;top:0;height:300px;overflow-y:auto';   // 常量，不带旧节点的内联 clip
       fresh.innerHTML = '<div style="height:2000px"></div>';
       fresh.appendChild(document.querySelector('#card-a'));
       old.replaceWith(fresh);
     })()`);
-    let diag = '';
+    let freshClip = '';
     for (let i = 0; i < 60; i++) {
       await delay(100);
-      diag = await b.evaluate(`(() => {
-        const fresh = document.querySelector('#pane-a [data-testid="v4-timeline"]');
-        const bar = document.querySelector('.zusage-root');
-        const card = document.querySelector('#card-a');
-        return JSON.stringify({ clip: fresh && fresh.style.clipPath, barDisplay: bar && getComputedStyle(bar).display,
-          barVis: bar && getComputedStyle(bar).visibility, cardInFresh: !!(fresh && card && fresh.contains(card)),
-          tlCount: document.querySelectorAll('[data-testid="v4-timeline"]').length });
-      })()`);
-      if (diag.includes('inset')) return;
+      freshClip = await b.evaluate(`(() => { const t = document.querySelector('#pane-a [data-testid="v4-timeline"]'); return t && t.style.clipPath || ''; })()`);
+      if (freshClip.indexOf('inset') === 0) return;
     }
-    assert.fail('fresh timeline did not take over the clip: ' + diag);
+    assert.fail('fresh timeline did not take over the clip: ' + freshClip);
   });
 });
 
