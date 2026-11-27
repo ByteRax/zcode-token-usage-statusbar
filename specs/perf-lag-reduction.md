@@ -55,6 +55,12 @@
     - **诊断**：`__zusageDiag.mount` 追加数值字段 `trackFrames`、`trackPasses`（实例生命周期内走到门的帧数、执行几何段的次数，随既有 5 秒 mount 诊断落盘），只加字段不改既有字段，供报告者环境核对门控生效（空闲内嵌态 60Hz 下比值约 1/6）。读数边界：超限气泡显示期间 `syncExcBubble` 在门之前逐帧读两个矩形（既有行为，门控对它无收益，此时比值仍约 1/6）；精简主题分支的 mount 诊断不带这两个字段；多分栏时只有 0 号实例写，0 号不是内嵌形态时比值不代表其它实例。
     - **有意不做（issue #452 另三条建议）**：`speed_history` 指纹去重推送仍列「未做」（冷文件加主桥到渲染端的协议改动，本机实测推送处理在 profile 里排不上号，不是卡顿主因）；两个 500ms 扫描的范围收敛不做（关闭态已跳过重选择器扫描、只剩每拍一次轻量查询，开启态 0.25–0.31ms/拍）；大库冷帧的增量聚合见「未做」的既有立项，持久化缓存未立项。
 
+20. **大库增量聚合（`zusage.py` 进程内按 `rowid` 增量合并）**：针对 GB 级库（如 3.5GB / 10 万行）无 `completed_at` 索引导致每次新请求完成（`max(rowid)` 变化）触发 7 项全表扫描（冷帧 ~950–1,100 ms）的问题，在常驻进程内建立按 `dbkey = (path, st_dev, st_ino)` 隔离的增量聚合状态（`_INCR_STATES`，容量上限 4 个库身份，超出清空）：
+    - **覆盖范围**：`_scan_session_ids`、`_today_usage`、`_today_detail`（含 `_turn_rate` 与 `_scope_models_cost`）、`_provider_fallback`、`_all_projects_usage`、`_speed_history`（`_speed_turns`）、`_speed_days`。
+    - **单次增量步进**：每次命中增量状态时，先查轻量一致性探针（`max(rowid)`、`count(*)`、与 `last_rowid` 处的 `id` 锚点），随后仅拉取 `model_usage WHERE rowid > last_rowid` 的新增行（以及仅 ~2ms 的 `session` 全表元信息），一次同步更新所有已初始化的增量聚合器。
+    - **全量重建触发条件（Fail-Closed）**：首次访问该 `dbkey`、内存库/桩连接（`dbkey is None`）、数据库被删除/替换/重建（`max(rowid) < last_rowid` 或 `last_rowid` 处 `id` 变更）、行数不符（`count(*) != last_count + delta_count`，即发生 `DELETE`）、`covers`（`_provider_first_token_covers`）判定集合变化、跨本地自然日（`today_date` 变化）、或距上次全量基线超过 `_INCR_REBUILD_MS`（5 分钟）兜底重算。
+    - **语义不变量**：增量结果与全量重算结果在数据结构、数值、排序、截断标记与异常处理上逐字段一致；不写入任何磁盘缓存文件；外层 `_AGG_CACHE`/`_PROJ_CACHE`/`_SPEED_CACHE`/`_DAYS_CACHE` 的 2s TTL 与 20s 水位延长契约保持不变；CLI / 内存库 / 桩连接自动退回原全量查询路径。
+
 ## 状态所有者与接口
 
 - 渲染进程拥有全部实例级节流状态（`liveTipBuiltAt`、`idleRenderData/At`）与失鲜标记（`__zuTipView`/`__zuTipStale`，挂在 `.it` 格元素上）；均为实例闭包变量/元素私有属性，随实例销毁，不进 `localStorage`、不进快照。
