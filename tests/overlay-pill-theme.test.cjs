@@ -2245,10 +2245,10 @@ test('pill bar clips timeline content below the floating bar (isolated fixture)'
   // Build a ZCode-4.0-style pane: a scrollable [data-testid="v4-timeline"]
   // with the composer card sticky inside it (as on the real host), content
   // extending past the floating card and bar top.
-  async function buildTimeline() {
+  async function buildTimeline(withShell = true) {
     await b.evaluate(`(() => {
       const pane = document.querySelector('#pane-a');
-      pane.setAttribute('data-testid', 'v4-pane-shell-a');
+      ${withShell ? `pane.setAttribute('data-testid', 'v4-pane-shell-a');` : 'pane.removeAttribute("data-testid");'}
       pane.style.height = '300px';
       const tl = document.createElement('div');
       tl.setAttribute('data-testid', 'v4-timeline');
@@ -2329,6 +2329,51 @@ test('pill bar clips timeline content below the floating bar (isolated fixture)'
     assert.equal(await b.evaluate(`document.querySelector('[data-testid="v4-timeline"]').style.clipPath`), '', 'clip must be cleared while the bar is hidden');
     await b.evaluate(`document.querySelector('#host-alertdialog-517').remove(); document.querySelector('#host-modal-backdrop-517').remove();`);
     await b.waitFor(`getComputedStyle(document.querySelector('.zusage-root')).display !== 'none' && document.querySelector('[data-testid="v4-timeline"]').style.clipPath.indexOf('inset') === 0`, 'bar/clip did not return after modal closed');
+  });
+
+  await t.test('document-level fallback (no pane shell) refuses a foreign timeline', async () => {
+    await reset(b, { stored: 'pill', narrow: true });
+    await b.evaluate(`(() => {
+      const foreign = document.createElement('div');
+      foreign.setAttribute('data-testid', 'v4-timeline');
+      foreign.style.cssText = 'position:fixed;left:0;top:0;width:100px;height:50px';
+      document.body.insertBefore(foreign, document.body.firstChild);
+    })()`);
+    await buildTimeline(false);   // no pane shell → document-level fallback
+    await delay(250);   // the fallback resolves the DOM-first timeline; ownership check must refuse it
+    const m = await b.evaluate(`(() => ({
+      foreign: document.body.firstChild.style.clipPath,
+      own: document.querySelector('#pane-a [data-testid="v4-timeline"]').style.clipPath
+    }))()`);
+    assert.equal(m.foreign, '', `foreign timeline must not be clipped: ${JSON.stringify(m)}`);
+    assert.equal(m.own, '', 'fallback must fail closed when the DOM-first timeline does not contain the composer');
+  });
+
+  await t.test('a replaced timeline node takes the clip over (isConnected re-resolve)', async () => {
+    await b.evaluate(`(() => {
+      document.querySelector('#pane-a').setAttribute('data-testid', 'v4-pane-shell-a');   // 恢复上一用例摘掉的 shell：scope 命中，不经兜底归属校验
+      const old = document.querySelector('#pane-a [data-testid="v4-timeline"]');
+      const fresh = document.createElement('div');
+      fresh.setAttribute('data-testid', 'v4-timeline');
+      fresh.style.cssText = old.style.cssText;
+      fresh.innerHTML = '<div style="height:2000px"></div>';
+      fresh.appendChild(document.querySelector('#card-a'));
+      old.replaceWith(fresh);
+    })()`);
+    let diag = '';
+    for (let i = 0; i < 60; i++) {
+      await delay(100);
+      diag = await b.evaluate(`(() => {
+        const fresh = document.querySelector('#pane-a [data-testid="v4-timeline"]');
+        const bar = document.querySelector('.zusage-root');
+        const card = document.querySelector('#card-a');
+        return JSON.stringify({ clip: fresh && fresh.style.clipPath, barDisplay: bar && getComputedStyle(bar).display,
+          barVis: bar && getComputedStyle(bar).visibility, cardInFresh: !!(fresh && card && fresh.contains(card)),
+          tlCount: document.querySelectorAll('[data-testid="v4-timeline"]').length });
+      })()`);
+      if (diag.includes('inset')) return;
+    }
+    assert.fail('fresh timeline did not take over the clip: ' + diag);
   });
 });
 
