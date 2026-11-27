@@ -2269,6 +2269,8 @@ test('pill bar clips timeline content below the floating bar (isolated fixture)'
       cardBottom: Math.round(cr.bottom), tlBottom: Math.round(tr.bottom), barDisplay: getComputedStyle(bar).display };
   })()`;
 
+  // 接力式夹具：下面 1–6 号子用例共享 1 号自建的 pill+timeline 现场（node:test 的 name
+  // pattern 过滤会整块跳过父测试，子用例不可单选复跑）；7 号起各自 reset 自建现场。
   await t.test('pill: timeline gets a clip-path ending at the card bottom', async () => {
     await reset(b, { stored: 'pill', narrow: true });
     await buildTimeline();
@@ -2348,6 +2350,25 @@ test('pill bar clips timeline content below the floating bar (isolated fixture)'
     }))()`);
     assert.equal(m.foreign, '', `foreign timeline must not be clipped: ${JSON.stringify(m)}`);
     assert.equal(m.own, '', 'fallback must fail closed when the DOM-first timeline does not contain the composer');
+  });
+
+  await t.test('scope hit trusts the pane shell even when the composer sits outside the timeline', async () => {
+    await reset(b, { stored: 'pill', narrow: true });
+    await b.evaluate(`(() => {
+      const pane = document.querySelector('#pane-a');
+      pane.setAttribute('data-testid', 'v4-pane-shell-a');
+      pane.style.height = '300px';
+      const tl = document.createElement('div');
+      tl.setAttribute('data-testid', 'v4-timeline');
+      tl.style.cssText = 'position:absolute;left:0;right:0;top:0;height:300px;overflow-y:auto';
+      tl.innerHTML = '<div style="height:2000px"></div>';
+      pane.insertBefore(tl, pane.firstChild);
+      const card = document.querySelector('#card-a');
+      Object.assign(card.style, { position: 'absolute', left: '8px', right: '8px', bottom: '80px' });   // 卡留在 timeline 外（pane 内兄弟）
+    })()`);
+    // scope（pane-shell）命中即信任归属：不要求 composer 是 timeline 后代（真机 4.0 才是 sticky 后代）。
+    // 把 10 分片兜底校验误改成「scope 命中也做 contains」的变异会在这里拒绝裁剪 → 本用例红。
+    await b.waitFor(`document.querySelector('#pane-a [data-testid="v4-timeline"]').style.clipPath.indexOf('inset') === 0`, 'timeline was not clipped although the pane shell scopes ownership');
   });
 
   await t.test('a replaced timeline node takes the clip over (isConnected re-resolve)', async () => {
