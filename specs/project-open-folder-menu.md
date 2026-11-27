@@ -10,9 +10,9 @@
 
 ## 注入规则
 
-- **右键菜单**：宿主 `nB({actions})` 为每个根目录渲染一枚 `virtual-project-context-files-N`（「查看文件 · <路径>」）。在每个 files 项之后插入一枚对应路径的注入项；路径取该项 `textContent` 中首个 `" · "` 之后的路径形态段（`/`、`~` 开头或盘符 `X:\`），解析失败 fail-closed 跳过。
+- **右键菜单**：宿主 `nB({actions})` 为每个根目录渲染一枚 `virtual-project-context-files-N`（「查看文件 · <路径>」）。在每个 files 项之后插入一枚对应路径的注入项；路径取该项 `textContent` 中首个 `" · "` 之后的路径形态段（`/`、`~` 开头、盘符 `X:\` 或 `X:/`、Windows 原生 UNC `\\server\share\…`、长路径前缀 `\\?\C:\…`——网络共享做根的本地项目同样出项），解析失败 fail-closed 跳过。
 - **「…」下拉**：宿主下拉 actions 无 files 项，路径取自行组件 props。链路：菜单 content 的 `aria-labelledby` → 触发按钮 id → `closest('[data-testid="virtual-project-row"]')` → React fiber 上溯（≤48 层，实测行元素 36 层）取 `memoizedProps.project.roots[].rootPath`（SOt 层 `paths` 字符串数组为备选形态），取**首根**（与宿主行内「查看文件」按钮 `M[0]?.run()` 同语义）；任一环节取不到 fail-closed 不注入，不猜路径。
-- **本地/远程甄别（fail-closed）**：宿主把 `data-project-host` 烙在项目行外层 section（真机本地恒 `"local"`）。右键菜单的来源行经 document 捕获阶段 `contextmenu` 监听在菜单打开前记录（ContextMenuContent 不回指触发行；记录有效期 8 秒），下拉经 labelledby 链取行；`data-project-host !== "local"` 或属性缺席（宿主改版）一律不注入——远程项目在本地打开无意义。
+- **本地/远程甄别（fail-closed）**：宿主把 `data-project-host` 烙在项目行外层 section（真机本地恒 `"local"`）。右键菜单的来源行经 document 捕获阶段监听记录（ContextMenuContent 不回指触发行；记录自右键按下起 8 秒内有效）：右键按下（`pointerdown`，button 2）即记录——任何平台都早于菜单挂载；`contextmenu` 再记录一次并补排一次扫描（幂等）。`contextmenu` 的派发时机各平台不同（macOS / Linux 在按下时、Windows 在松开时），菜单何时打开取决于宿主 Radix 的版本：4.0.0 引擎包实证当前宿主在 `contextmenu` 里才开菜单；宿主一旦换成按下即开的版本，Windows 上就是「菜单先挂载、扫描先跑、`contextmenu` 后到」，只靠 `contextmenu` 记录会断链。松开时指针落在刚弹出的菜单里，落在菜单内的 `contextmenu` 不动记录，其余右键清掉旧记录。下拉经 labelledby 链取行；`data-project-host !== "local"` 或属性缺席（宿主改版）一律不注入——远程项目在本地打开无意义。
 - 菜单项外观克隆同菜单既有项（默认克隆 `virtual-project-worktrees`），剥 `data-testid`/`data-radix-collection-item`/`id`/`data-orientation`，换 lucide folder-open 图标，挂 `data-zusage-open-folder="1"` 标记幂等。
 - 点击：`stopPropagation` + 直调桥 + 向菜单派发 Escape（Radix DismissableLayer 关闭宿主菜单）。
 - 悬停高亮（与原生菜单项一致）：Radix 的高亮（`data-highlighted` → `data-[highlighted]:bg-menu-hover`）只分发给 collection 成员，注入项已剥成员标记——mouseenter 自挂 `data-highlighted` 补齐 hover 效果，并把同菜单宿主项上的残留高亮清掉（指针从宿主项直接移到非成员时 Radix 的 pointermove 找不到成员、原高亮不撤）；mouseleave 摘除自身属性。方向键导航不覆盖注入项（非成员不参与 Radix 键盘集合），悬停是唯一高亮路径，属已知取舍。
@@ -22,7 +22,7 @@
 - 渲染端唯一新增：`src/overlay/05-project-open-folder.js`（外层闭包，不进 spawnInstance——菜单是文档级对象，与 pane 实例无关）；inject-main.cjs、快照协议、Python 零改动。
 - 门控：`window.zcode.openInFileManager` 非函数（宿主旧版/桥缺失）时整链不注入（扫描级前置，渲染端自证，无能力标记协议）。
 - 观察：MutationObserver 只挂 `document.body` **直属子节点**（Radix portal 容器都在 body 直属层；聊天流式变更都在应用根子树内，不触发本观察器，不进热路径），rAF 去抖扫描；注入热重载后立即 `zuOpfScan()` 一次（跨重注入存活的已开菜单补注入）。
-- 回收：03 分片 `disposeOverlay` 增 `zuOpfDispose()`（typeof 守卫，切片沙箱兼容）：observer disconnect + 取消在途 rAF + 摘除 contextmenu 捕获监听 + 清记录。
+- 回收：03 分片 `disposeOverlay` 增 `zuOpfDispose()`（typeof 守卫，切片沙箱兼容）：observer disconnect + 取消在途 rAF + 摘除 contextmenu / pointerdown 捕获监听 + 清记录。
 - 菜单项是宿主 React DOM 内的手动节点，弹层关闭即随宿主整体卸载，无需摘除路径；不新增 body 级浮层根，不涉 no-drag/modalOpen 四处登记。
 - 已知边界：菜单打开期间宿主重建 items 列表会摘掉注入项，本观察器不重扫（body childList 不变）；Radix 菜单打开中重建属罕见路径，实机观察到再加自愈。
 

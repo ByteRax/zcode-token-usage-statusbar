@@ -284,3 +284,15 @@ test('v445: the document-level update-notes gear card is an own overlay (it can 
   assert.equal(sandbox.reallyVisible(el, true), true, 'ownOK path exempts the update-notes card');
   assert.equal(sandbox.coverOK(el), true, 'coverOK path exempts the update-notes card too');
 });
+
+test('v495: the document-level context-breakdown bubble is an own overlay too (it can fully cover a narrow composer)', () => {
+  const { sandbox } = boot();
+  const el = makeEl(sandbox, { left: 10, top: 400, width: 500, height: 50, right: 510, bottom: 450 });
+  /* v487 的上下文明细气泡同为 body 直挂的文档级单例（不挂 .zusage-tip-root），四处登记时漏了
+   * isOwnOverlay——不豁免则窄分栏里 400ms 后收条→气泡收起→条复显 循环闪烁 */
+  sandbox.hitEl = { getBoundingClientRect: () => ({ left: 0, top: 0, right: 1200, bottom: 800 }),
+    contains: () => false, closest: sel => String(sel).indexOf('.zusage-ctx-bkd-tip') >= 0 ? {} : null,
+    computed: { backgroundColor: 'rgb(20, 20, 20)' } };
+  assert.equal(sandbox.reallyVisible(el, true), true, 'ownOK path exempts the context-breakdown bubble');
+  assert.equal(sandbox.coverOK(el), true, 'coverOK path exempts the context-breakdown bubble too');
+});
