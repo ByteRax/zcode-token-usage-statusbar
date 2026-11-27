@@ -62,7 +62,7 @@ README 的安装文案把命令写明了，ZCode 不必自己摸索。想手动�
 2. 选择包含 `marketplace.json` 的仓库根目录（不是 `plugins/` 子目录），添加市场。
 3. 找到 **ZCode Token Usage Statusbar**，安装到用户范围并启用。
 
-![添加插件市场：远程方式填写 GitHub 地址，本地方式点击「选择目录」](plugin-marketplace-add.png)
+![添加插件市场：远程方式填写 GitHub 地址，本地方式点击「选择目录」](plugin-marketplace-add.webp)
 
 ### 安装结果自查
 
@@ -591,7 +591,7 @@ python3 patch_install.py check
 5. 不再需要插件市场时，在设置里移除 `zusage-marketplace`。保留供其它插件使用的市场和目录，不要删除整个 `.zcode`。
 6. 备份想保留的 `config.json`，检查并删除本项目残留。
 
-![卸载插件：已安装卡片的三个点菜单](plugin-uninstall.png)
+![卸载插件：已安装卡片的三个点菜单](plugin-uninstall.webp)
 
 插件已卸载才想起移除状态条？从仍保留的仓库执行：
 

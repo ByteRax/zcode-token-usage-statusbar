@@ -14,6 +14,7 @@ device_scale_factor=2 直出 2 倍高清。
 from playwright.sync_api import sync_playwright
 import os
 import pathlib
+import subprocess
 
 BASE = os.environ.get("ZUSAGE_TOUR_BASE", "http://127.0.0.1:8799") + "/docs/tour/tour.html"
 OUT = pathlib.Path(__file__).parent / "shots"
@@ -42,33 +43,33 @@ UNION_JS = """() => {
 
 # (文件名, URL 参数, 视口宽, 视口高, 就绪条件, 交互动作, 交互后等待出现的元素, 是否裁空白)
 JOBS = [
-    ("hero.png",   "?embed=1&hero=1", 1148, 260,
+    ("hero.webp",   "?embed=1&hero=1", 1148, 260,
      "window.__tourReady === true", None, None, False),
-    ("item-1.png", "?embed=1&hl=0",   640, 360,
+    ("item-1.webp", "?embed=1&hl=0",   640, 360,
      "window.__tourReady === true",
      ("hover", ".zu-main .it >> nth=0"), "#zusage-tip", True),
-    ("item-2.png", "?embed=1&hl=1",   640, 360,
+    ("item-2.webp", "?embed=1&hl=1",   640, 360,
      "window.__tourReady === true",
      None, None, True),
-    ("item-3.png", "?embed=1&hl=2",   640, 360,
+    ("item-3.webp", "?embed=1&hl=2",   640, 360,
      "window.__tourReady === true",
      ("hover", ".zu-main .it >> nth=1"), "#zusage-tip", True),
-    ("item-4.png", "?embed=1&hl=3",   640, 360,
+    ("item-4.webp", "?embed=1&hl=3",   640, 360,
      "window.__tourReady === true",
      ("hover", ".zu-main .it >> nth=2"), "#zusage-tip", True),
-    ("item-5.png", "?embed=1&hl=4",   640, 360,
+    ("item-5.webp", "?embed=1&hl=4",   640, 360,
      "window.__tourReady === true",
      ("hover", ".zu-main .it >> nth=3"), "#zusage-tip", True),
-    ("item-6.png", "?embed=1&hl=5",   640, 360,
+    ("item-6.webp", "?embed=1&hl=5",   640, 360,
      "window.__tourReady === true",
      ("hover", ".zu-main .it >> nth=4"), "#zusage-tip", True),
     # 子代理：v217 统一浮层（.zu-sub-pop）悬停预览与点击固定同貌——取悬停路径更稳
     # （点击会先被自己触发的预览面板盖住条目而失靶）
-    ("item-7.png", "?embed=1&hl=6",   640, 520,
+    ("item-7.webp", "?embed=1&hl=6",   640, 520,
      "window.__tourReady === true",
      ("hover", ".zu-sub"), ".zu-sub-pop.open", True),
     # ⚙：点击打开设置面板（视口加高让面板完整入镜）
-    ("item-8.png", "?embed=1&hl=gear", 640, 900,
+    ("item-8.webp", "?embed=1&hl=gear", 640, 900,
      "window.__tourReady === true",
      ("click", ".zu-gear"), ".panel.open", True),
 ]
@@ -112,21 +113,27 @@ with sync_playwright() as p:
                 except Exception as exc:
                     raise RuntimeError(name + " did not render " + wait_sel) from exc
             page.wait_for_timeout(700)   # 定位/内容渲染落定
-            if name == "item-8.png":
+            if name == "item-8.webp":
                 page.locator('.zu-navitem[data-sec="display"]').click()   # v219：状态条样式移入「状态条显示」分区
                 page.wait_for_selector('.zu-theme-choice', state='visible', timeout=5000)
                 page.wait_for_timeout(300)
         else:
             page.wait_for_timeout(300)
+        target = out_dir / name
+        tmp = target.with_suffix(".tmp.png")
         if crop:
             rect = page.evaluate(UNION_JS)
             if rect:
-                page.screenshot(path=str(out_dir / name), clip=rect)
+                page.screenshot(path=str(tmp), clip=rect)
+                subprocess.run(["cwebp", "-quiet", "-m", "6", "-q", "75", str(tmp), "-o", str(target)], check=True)
+                tmp.unlink()
                 print(name, "ok", note, f"clip {rect['width']:.0f}x{rect['height']:.0f}")
                 page.close()
                 continue
             print(name, "UNION EMPTY -> full shot")
-        page.screenshot(path=str(out_dir / name))
+        page.screenshot(path=str(tmp))
+        subprocess.run(["cwebp", "-quiet", "-m", "6", "-q", "75", str(tmp), "-o", str(target)], check=True)
+        tmp.unlink()
         print(name, "ok", note)
         page.close()
     browser.close()

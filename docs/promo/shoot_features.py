@@ -4,6 +4,7 @@ Run from the repo root: uv run --with playwright python docs/promo/shoot_feature
 Pass an output directory to preview the whole set without touching the README assets.
 """
 import sqlite3
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -79,7 +80,14 @@ def shoot(page, selectors, output):
     assert all(0 <= box["x"] < width and 0 <= box["y"] < height and
                box["x"] + box["width"] <= width and box["y"] + box["height"] <= height
                for box in boxes), selectors
-    page.screenshot(path=str(output), clip={"x": x, "y": y, "width": right - x, "height": bottom - y})
+    clip = {"x": x, "y": y, "width": right - x, "height": bottom - y}
+    if output.suffix.lower() == ".webp":
+        tmp = output.with_suffix(".tmp.png")
+        page.screenshot(path=str(tmp), clip=clip)
+        subprocess.run(["cwebp", "-quiet", "-m", "6", "-q", "75", str(tmp), "-o", str(output)], check=True)
+        tmp.unlink()
+    else:
+        page.screenshot(path=str(output), clip=clip)
 
 
 FEATURES = (
@@ -115,7 +123,7 @@ if __name__ == "__main__":
                     if name != "ssh":
                         page.wait_for_function("window.__promoReady === true", timeout=3500)
                     selectors = capture(page, name)
-                    shoot(page, selectors, directory / f"{name}.png")
+                    shoot(page, selectors, directory / f"{name}.webp")
                     if errors:
                         raise RuntimeError(errors)
                     print(f"{lang}/{name}: OK", flush=True)

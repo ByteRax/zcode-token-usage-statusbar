@@ -7,13 +7,14 @@
 """
 import json
 import pathlib
+import subprocess
 import sys
 
 from playwright.sync_api import sync_playwright
 
 HERE = pathlib.Path(__file__).resolve().parent
 HTML_NAME = sys.argv[1] if len(sys.argv) > 1 else "promo.html"
-OUT_NAME = sys.argv[2] if len(sys.argv) > 2 else "promo-preview.png"
+OUT_NAME = sys.argv[2] if len(sys.argv) > 2 else "promo-preview.webp"
 URL = (HERE / HTML_NAME).as_uri()
 OUT = pathlib.Path(OUT_NAME)
 if not OUT.is_absolute():
@@ -155,7 +156,13 @@ with sync_playwright() as p:
     else:
         page.wait_for_timeout(300)
     report = page.evaluate(CHECK_JS)
-    page.screenshot(path=str(OUT))
+    if OUT.suffix.lower() == ".webp":
+        tmp = OUT.with_suffix(".tmp.png")
+        page.screenshot(path=str(tmp))
+        subprocess.run(["cwebp", "-quiet", "-m", "6", "-q", "75", str(tmp), "-o", str(OUT)], check=True)
+        tmp.unlink()
+    else:
+        page.screenshot(path=str(OUT))
     browser.close()
 
 print(json.dumps(report, ensure_ascii=False, indent=1))

@@ -1,6 +1,6 @@
 # 小红书 / 微信推广文案
 
-配图：`promo-social.png`（4:3，2400×1800）或 `promo-social-portrait.png`（3:4，2400×3200，小红书原生竖版，首选）
+配图：`promo-social.webp`（4:3，2400×1800）或 `promo-social-portrait.webp`（3:4，2400×3200，小红书原生竖版，首选）
 
 ## 标题（任选一个，或 A/B 测试）
 
