@@ -31,6 +31,7 @@
 - stub Element：`hasAttribute/getAttribute` 对 `data-pane-id`/`data-session-id` 的特判走 pid/sid；`querySelector` 未注册选择器返回新建空元素而非 null；`className` setter 同步 classList；夹具 `createTextNode` 产物必须可被遍历（getAttribute/children 可用）。vm 跨上下文比较用 `[...arr]`/`{...obj}` 展开。跨 realm 另有两坑：Node 域 `Map` 过不了 vm 域 `instanceof Map`（registry 夹具一律在 vm 域内构造）；vm 域抛的 `TypeError` 过不了 Node 域 `assert.throws(…, TypeError)`，改用消息正则匹配。
 - mock 断言：`execFile` 参数是整串 argv，用 join 后整串判断（`Array.includes` 匹配不到 `--cached`）；mock `executeJavaScript` 返回的 JSON 字符串会被 `Array.isArray` 判死，先解析。
 - `tests/overlay-bridge.test.cjs` 的 `.zu-live` 替身每次 `querySelector` 都从 `innerHTML` 回放 class/text，整条重渲染后重新查询即反映新状态；但它按串回放而非事件式同步，持有旧引用不重查仍会陈旧——新增重渲染功能先确认断言走重新查询。
+- 整文件 vm 加载 `inject-main.cjs` 的夹具（`inject-git-status` / `inject-git-multi` / `inject-remote-recovery` / `inject-main-lifecycle`）：窗口 URL 与 `process.resourcesPath` 必须是同盘、带盘符的原生绝对路径——`FX = process.platform === "win32" ? path.resolve(path.sep, "fixture") : "/fixture"`，URL 用 `pathToFileURL(path.join(FX, "resources", "index.html")).href`。无盘符的 `file:///fixture/...` 在 win32 被 `fileURLToPath` 拒绝，宿主页门（`trustedSender` / `isLocalHostPage` / `pollPluginRequests`）catch 后一律判外部页：整套用例在 Windows 恒红，却对不上任何产品缺陷（2026-11-28 定性：三套件 64 例全是夹具）。mock fs 入口先把反斜杠折成正斜杠、去掉盘符再比 POSIX 夹具键；期望值用 `path.join` / `path.resolve` 构造；argv 只在分发处归一化。不要把沙箱的 `path` 换成 `path.posix`——那等于让产品跑在 POSIX 语义下，Windows 分支重新归零。
 
 ## 3. 假绿灯反模式
 

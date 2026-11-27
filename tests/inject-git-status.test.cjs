@@ -7,6 +7,14 @@ const vm = require("node:vm");
 const { EventEmitter } = require("node:events");
 const source = fs.readFileSync(path.join(__dirname, "..", "inject-main.cjs"), "utf8");
 const flush = () => new Promise(resolve => setImmediate(resolve));
+/* 夹具根：POSIX 沿用字面量 /fixture；win32 取带盘符的原生绝对路径——宿主页门（trustedSender /
+ * isLocalHostPage / pollPluginRequests）按 path.relative(resourcesPath, fileURLToPath(url)) 判内外，
+ * 窗口 URL 与 resourcesPath 必须同盘且都带盘符，无盘符的 file:///fixture/... 在 win32 解析即抛错、整窗被判外部页。 */
+const FX = process.platform === "win32" ? path.resolve(path.sep, "fixture") : "/fixture";
+const HOST_URL = require("node:url").pathToFileURL(path.join(FX, "resources", "index.html")).href;
+/* mock fs 入口归一化：产品传入 path.join/path.resolve 的产物（win32 为反斜杠、带盘符），
+ * 折成正斜杠、去盘符后再与 POSIX 夹具键比较。 */
+const norm = p => String(p).replace(/\\/g, "/").replace(/^[a-zA-Z]:/, "");
 
 /* v96 Git 状态旁路查询：整文件 vm 加载（同 inject-remote-recovery 模式），execFile 按 args
  * 分发夹具响应。覆盖 parseGitPorcelain/parseShortstat 纯函数、queryGitStatus 失败分类与
@@ -19,7 +27,8 @@ function loadPump(respond = () => ({})) {
   const state = { vanishOk: false };   // 测试可控的「目录存在性」开关（notrepo 补推用例）
   const mockFs = {
     readFileSync: file => String(file).endsWith("config.json") ? "{}" : "",
-    statSync: file => {
+    statSync: raw => {
+      const file = norm(raw);
       if (file === "/fixture/vanish") {
         if (state.vanishOk) return { isDirectory: () => true, mtimeMs: 1 };
         throw Object.assign(new Error("ENOENT: /fixture/vanish"), { code: "ENOENT" });
@@ -28,8 +37,8 @@ function loadPump(respond = () => ({})) {
       if (["/fixture/runtime/overlay.js", "/fixture/runtime/zusage.py"].includes(file)) return { mtimeMs: 1, size: 1 };
       throw Object.assign(new Error("ENOENT: " + file), { code: "ENOENT" });
     },
-    readdirSync: dir => dir === "/fixture/parent" ? ["a", "b"] : [],
-    existsSync: file => ["/fixture/parent/a/.git", "/fixture/parent/b/.git"].includes(file),
+    readdirSync: dir => norm(dir) === "/fixture/parent" ? ["a", "b"] : [],
+    existsSync: file => ["/fixture/parent/a/.git", "/fixture/parent/b/.git"].includes(norm(file)),
     watch: (dir, opts, fn) => {   // v420：记录建档/关闭，供 watcher 生命周期断言
       if (watchCtl.fail) throw new Error("EPERM: watch unavailable");
       watches.push({ dir, opts: opts || {}, fn });
@@ -39,8 +48,8 @@ function loadPump(respond = () => ({})) {
   };
   const ipc = new EventEmitter();
   const sandbox = {
-    __dirname: "/fixture/runtime", console: { error() {} },
-    process: { resourcesPath: "/fixture/resources", execPath: process.execPath, uptime: () => 1, env: {} },
+    __dirname: path.join(FX, "runtime"), console: { error() {} },
+    process: { resourcesPath: path.join(FX, "resources"), execPath: process.execPath, uptime: () => 1, env: {} },
     module: { exports: {} },
     setTimeout: (fn, ms) => { timeouts.push({ fn, ms }); timers.set(++id, fn); return id; },
     clearTimeout: n => timers.delete(n),
@@ -48,7 +57,7 @@ function loadPump(respond = () => ({})) {
     require(name) {
       if (name === "fs") return mockFs;
       if (["path", "url", "crypto"].includes(name)) return require(name);
-      if (name === "electron") return { app: { getPath: () => "/fixture/home", on() {} }, webContents: { getAllWebContents: () => windows }, ipcMain: ipc };
+      if (name === "electron") return { app: { getPath: () => path.join(FX, "home"), on() {} }, webContents: { getAllWebContents: () => windows }, ipcMain: ipc };
       if (name === "child_process") return {
         spawn() {
           const p = new EventEmitter(); p.stdout = new EventEmitter(); p.stderr = new EventEmitter();
@@ -66,7 +75,7 @@ function loadPump(respond = () => ({})) {
     },
   };
   vm.runInNewContext(source, sandbox);
-  function addWindow(url = "file:///fixture/resources/index.html") {
+  function addWindow(url = HOST_URL) {
     const wc = { id: windows.length + 1, gitPaths: [], requests: [], pushes: [],
       getType: () => "window", isDestroyed: () => false, getURL: () => url,
       executeJavaScript: async js => {
@@ -423,7 +432,7 @@ test("manual Git refresh fails when its requested path is absent or query fails"
   assert.ok(failedWc.pushes.some(js => js.includes("manual-failed") && js.includes("query failed") && js.includes('"ok":false')));
 
   const multi = loadPump(args => {
-    const cmd = args.join(" ");
+    const cmd = args.map(norm).join(" ");   // 子仓 -C 路径是 path.join 产物：归一化后按 POSIX 夹具键分发
     if (cmd.includes("status") && cmd.includes("/fixture/parent")) return { error: { code: 128 }, stderr: "fatal: not a git repository" };
     if (cmd.includes("status") && cmd.includes("/fixture/parent/a")) return { stdout: "## main\x00" };
     if (cmd.includes("status") && cmd.includes("/fixture/parent/b")) return { error: { killed: true } };
@@ -510,7 +519,7 @@ test("gitTick resolves a relative git-common-dir against the workspace path", as
   wc.gitPaths = ["/fixture/repo"];
   await h.api.gitTick(false); await flush();
   const dirs = h.watches.slice(base).map(w => w.dir).sort();
-  assert.deepEqual(dirs, ["/fixture/common/.git", "/fixture/repo", "/fixture/repo/.git"], "相对 --git-common-dir 按工作区 resolve（宿主同款，此处指向外部 common dir）");
+  assert.deepEqual(dirs, [path.resolve("/fixture/repo", "../common/.git"), "/fixture/repo", "/fixture/repo/.git"].sort(), "相对 --git-common-dir 按工作区 resolve（宿主同款，此处指向外部 common dir）");
 });
 
 test("workspace watch events arm a 60s trailing debounce that runs one full tick", async () => {
@@ -619,9 +628,9 @@ function loadPumpIpc() {
   };
   const ipc = new EventEmitter();
   const sandbox = {
-    __dirname: "/fixture/runtime", console: { error() {} },
+    __dirname: path.join(FX, "runtime"), console: { error() {} },
     Buffer,
-    process: { resourcesPath: "/fixture/resources", execPath: process.execPath, uptime: () => 1, env: {} },
+    process: { resourcesPath: path.join(FX, "resources"), execPath: process.execPath, uptime: () => 1, env: {} },
     module: { exports: {} },
     setTimeout: (fn, ms) => { timers.set(++id, fn); return id; },
     clearTimeout: n => timers.delete(n),
@@ -629,7 +638,7 @@ function loadPumpIpc() {
     require(name) {
       if (name === "fs") return mockFs;
       if (["path", "url", "crypto"].includes(name)) return require(name);
-      if (name === "electron") return { app: { getPath: () => "/fixture/home", on() {} }, webContents: { getAllWebContents: () => windows }, ipcMain: ipc };
+      if (name === "electron") return { app: { getPath: () => path.join(FX, "home"), on() {} }, webContents: { getAllWebContents: () => windows }, ipcMain: ipc };
       if (name === "child_process") return {
         spawn() {
           const p = new EventEmitter(); p.stdout = new EventEmitter(); p.stderr = new EventEmitter();
@@ -645,7 +654,7 @@ function loadPumpIpc() {
 }
 
 const trustedSenderFor = id => ({ id, getType: () => "window", isDestroyed: () => false,
-  getURL: () => "file:///fixture/resources/index.html" });
+  getURL: () => HOST_URL });
 
 test("active-task-session IPC is gated by trustedSender like its sibling host channels", () => {
   const { api, ipc } = loadPumpIpc();
@@ -668,7 +677,7 @@ test("per-window maps are pruned when a window disappears", async () => {
   assert.equal(api.ipcState().windowTasks.has(3), true);
   // 至少一个存活窗口（id 99）：maybeSpawn 才会走到修剪段；id 3 从未注册进 getAllWebContents
   windows.push({ id: 99, getType: () => "window", isDestroyed: () => false,
-    getURL: () => "file:///fixture/resources/index.html", executeJavaScript: async () => "null" });
+    getURL: () => HOST_URL, executeJavaScript: async () => "null" });
   await api.maybeSpawn();
   assert.equal(api.ipcState().windowWorkspaces.has(3), false, "workspaces pruned");
   assert.equal(api.ipcState().windowTasks.has(3), false, "tasks pruned");
@@ -677,7 +686,7 @@ test("per-window maps are pruned when a window disappears", async () => {
 test("usage snapshots are never pushed into external pages (data-plane gate parity)", () => {
   const { api, ipc, windows } = loadPumpIpc();
   const local = { id: 21, getType: () => "window", isDestroyed: () => false,
-    getURL: () => "file:///fixture/resources/index.html", pushes: [],
+    getURL: () => HOST_URL, pushes: [],
     executeJavaScript: async js => { if (js.startsWith("window.__zusageUpdate")) local.pushes.push(js); return "null"; } };
   const external = { id: 22, getType: () => "window", isDestroyed: () => false,
     getURL: () => "https://evil.example/", pushes: [],

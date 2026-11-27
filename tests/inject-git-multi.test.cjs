@@ -7,6 +7,14 @@ const vm = require("node:vm");
 const { EventEmitter } = require("node:events");
 const source = fs.readFileSync(path.join(__dirname, "..", "inject-main.cjs"), "utf8");
 const flush = () => new Promise(resolve => setImmediate(resolve));
+/* 夹具根：POSIX 沿用字面量 /fixture；win32 取带盘符的原生绝对路径——宿主页门（trustedSender /
+ * isLocalHostPage / pollPluginRequests）按 path.relative(resourcesPath, fileURLToPath(url)) 判内外，
+ * 窗口 URL 与 resourcesPath 必须同盘且都带盘符，无盘符的 file:///fixture/... 在 win32 解析即抛错、整窗被判外部页。 */
+const FX = process.platform === "win32" ? path.resolve(path.sep, "fixture") : "/fixture";
+const HOST_URL = require("node:url").pathToFileURL(path.join(FX, "resources", "index.html")).href;
+/* argv 归一化：子仓 -C 路径是产品 path.join(parent, name) 的原生产物（win32 为反斜杠），
+ * 分发前折成正斜杠、去盘符再对 POSIX 夹具键匹配；mock fs 的查找不经这里，一律用 path.join 构造。 */
+const norm = p => String(p).replace(/\\/g, "/").replace(/^[a-zA-Z]:/, "");
 
 /* v96 多仓聚合回归：复用 inject-git-status 的 loadPump vm 沙箱，mockFs 扩展出可编程的父目录
  * 子项夹具——children 表按父目录列出子项 { name, file?, statThrows?, git? }，驱动
@@ -19,13 +27,10 @@ function loadPump(respond = () => ({}), children = {}) {
   const childOf = p => {   // 定位直接子项描述符；父目录本身返回 { parent: true }
     for (const parent of Object.keys(children)) {
       if (p === parent) return { parent: true };
-      if (p.startsWith(parent + path.sep)) {
-        const name = p.slice(parent.length + 1);
-        if (!name.includes(path.sep)) {
-          const c = children[parent].find(e => e.name === name);
-          if (c) return c;
-        }
-      }
+      /* 子项路径一律 path.join(parent, name) 构造后比较：产品传入的是同一 join 的原生产物（win32 反斜杠），
+       * 拿 POSIX 键拼 path.sep 做前缀截取在 win32 永远对不上 */
+      const c = children[parent].find(e => path.join(parent, e.name) === p);
+      if (c) return c;
     }
     return null;
   };
@@ -41,7 +46,7 @@ function loadPump(respond = () => ({}), children = {}) {
         const c = childOf(file.slice(0, -(path.sep + ".git").length));
         if (c && c.git) return { isDirectory: () => true, mtimeMs: 1 };   // gitDotDir 探测 .git 目录
       }
-      if (["/fixture/runtime/overlay.js", "/fixture/runtime/zusage.py"].includes(file)) return { mtimeMs: 1, size: 1 };
+      if ([path.join(FX, "runtime", "overlay.js"), path.join(FX, "runtime", "zusage.py")].includes(file)) return { mtimeMs: 1, size: 1 };
       const c = childOf(file);
       if (c) {
         if (c.parent) return { isDirectory: () => true, mtimeMs: 1 };
@@ -73,8 +78,8 @@ function loadPump(respond = () => ({}), children = {}) {
   };
   const ipc = new EventEmitter();
   const sandbox = {
-    __dirname: "/fixture/runtime", console: { error() {} },
-    process: { resourcesPath: "/fixture/resources", execPath: process.execPath, uptime: () => 1, env: {} },
+    __dirname: path.join(FX, "runtime"), console: { error() {} },
+    process: { resourcesPath: path.join(FX, "resources"), execPath: process.execPath, uptime: () => 1, env: {} },
     module: { exports: {} },
     setTimeout: (fn, ms) => { timers.set(++id, fn); return id; },
     clearTimeout: n => timers.delete(n),
@@ -82,7 +87,7 @@ function loadPump(respond = () => ({}), children = {}) {
     require(name) {
       if (name === "fs") return mockFs;
       if (["path", "url", "crypto"].includes(name)) return require(name);
-      if (name === "electron") return { app: { getPath: () => "/fixture/home", on() {} }, webContents: { getAllWebContents: () => windows }, ipcMain: ipc };
+      if (name === "electron") return { app: { getPath: () => path.join(FX, "home"), on() {} }, webContents: { getAllWebContents: () => windows }, ipcMain: ipc };
       if (name === "child_process") return {
         spawn() {
           const p = new EventEmitter(); p.stdout = new EventEmitter(); p.stderr = new EventEmitter();
@@ -99,7 +104,7 @@ function loadPump(respond = () => ({}), children = {}) {
     },
   };
   vm.runInNewContext(source, sandbox);
-  function addWindow(url = "file:///fixture/resources/index.html") {
+  function addWindow(url = HOST_URL) {
     const wc = { id: windows.length + 1, gitPaths: [], requests: [], pushes: [],
       getType: () => "window", isDestroyed: () => false, getURL: () => url,
       executeJavaScript: async js => {
@@ -119,7 +124,7 @@ const NOTREPO = { error: { code: 128 }, stderr: "fatal: not a git repository (or
 function statusRespond(map) {
   return args => {
     if (args.includes("status")) {
-      const hit = map[args[1]];
+      const hit = map[norm(args[1])];   // 子仓路径是 path.join 原生产物：匹配前归一化
       if (hit !== undefined) return typeof hit === "string" ? { stdout: hit } : hit;
       return { stdout: "## main\x00" };
     }
@@ -171,7 +176,7 @@ test("discoverChildRepos: 无 .git 子目录返回 0 仓", async () => {
 test("discoverChildRepos: .git 为文件（worktree 链接）也算仓库", async () => {
   const { api } = loadPump(null, { "/fixture/parent": [{ name: "linked", git: true }] });
   const r = api.discoverChildRepos("/fixture/parent");
-  assert.deepEqual([...r.repos].map(x => ({ ...x })), [{ name: "linked", path: "/fixture/parent/linked" }]);
+  assert.deepEqual([...r.repos].map(x => ({ ...x })), [{ name: "linked", path: path.join("/fixture/parent", "linked") }]);
 });
 
 test("discoverChildRepos: 非目录子项（普通文件）跳过", async () => {
@@ -229,17 +234,17 @@ test("queryGitStatus: 2 个子仓聚合 kind multi，每仓恰 1 条 status 且�
   assert.deepEqual([...st.repos].map(r => r.name), ["alpha", "beta"], "repos 按字母序");
   const statuses = execs.filter(e => e.args.includes("status"));
   assert.equal(statuses.length, 3, "父目录探测 1 条 + 两个子仓各 1 条");
-  assert.equal(statuses.filter(e => e.args[1] === "/fixture/parent/alpha").length, 1, "alpha 恰 1 条 status");
-  assert.equal(statuses.filter(e => e.args[1] === "/fixture/parent/beta").length, 1, "beta 恰 1 条 status");
+  assert.equal(statuses.filter(e => e.args[1] === path.join("/fixture/parent", "alpha")).length, 1, "alpha 恰 1 条 status");
+  assert.equal(statuses.filter(e => e.args[1] === path.join("/fixture/parent", "beta")).length, 1, "beta 恰 1 条 status");
   assert.equal(execs.filter(e => e.args.includes("diff")).length, 0, "多仓分支不跑 diff 行数");
   const alpha = { ...st.repos[0] }, beta = { ...st.repos[1] };
   assert.equal(typeof alpha.ts, "number", "成功项附最近成功时刻");
   assert.equal(alpha.op, "", "无进行中操作时 op 为空串");
   delete alpha.ts; delete alpha.op; delete beta.ts; delete beta.op;
-  assert.deepEqual(alpha, { name: "alpha", path: "/fixture/parent/alpha", branch: "main",
+  assert.deepEqual(alpha, { name: "alpha", path: path.join("/fixture/parent", "alpha"), branch: "main",
     upstream: "origin/main", ahead: 2, behind: 1, detached: false, noCommits: false,
     staged: 1, unstaged: 1, untracked: 1, conflicts: 0, changed: 1 }, "成功项字段完整");
-  assert.deepEqual(beta, { name: "beta", path: "/fixture/parent/beta", branch: "feat/x",
+  assert.deepEqual(beta, { name: "beta", path: path.join("/fixture/parent", "beta"), branch: "feat/x",
     upstream: "", ahead: 0, behind: 0, detached: false, noCommits: false,
     staged: 0, unstaged: 1, untracked: 0, conflicts: 0, changed: 1 });
 });
@@ -258,7 +263,7 @@ test("queryGitStatus: 3 仓中 1 仓超时 1 仓损坏，整体仍 ok 且失败�
   const alpha = repos[0];
   assert.equal(typeof alpha.ts, "number");
   delete alpha.ts; delete alpha.op;
-  assert.deepEqual(alpha, { name: "alpha", path: "/fixture/parent/alpha", branch: "main", upstream: "",
+  assert.deepEqual(alpha, { name: "alpha", path: path.join("/fixture/parent", "alpha"), branch: "main", upstream: "",
     ahead: 0, behind: 0, detached: false, noCommits: false,
     staged: 0, unstaged: 0, untracked: 0, conflicts: 0, changed: 0 }, "剩余仓正常");
   assert.equal(repos[1].err, "notrepo");
@@ -274,7 +279,7 @@ test("queryGitStatus: 失败子仓携带最近成功快照并标 stale（渲染�
   const h = loadPump(args => {
     if (!args.includes("status")) return { stdout: "" };
     if (args[1] === "/fixture/parent") return NOTREPO;
-    if (args[1] === "/fixture/parent/beta") {
+    if (norm(args[1]) === "/fixture/parent/beta") {
       if (slowFirst) { slowFirst = false; return { stdout: "## dev\x00 M b\x00" }; }
       return { error: { killed: true } };   // 第二轮起超时
     }
@@ -297,14 +302,14 @@ test("queryGitStatus: 恰 1 个子仓走完整单仓管线并附子仓 repoPath"
     { "/fixture/parent": [{ name: "alpha", git: true }] });
   const st = await api.queryGitStatus("/fixture/parent");
   assert.equal(st.ok, true);
-  assert.equal(st.repoPath, "/fixture/parent/alpha", "repoPath 指向子仓");
+  assert.equal(st.repoPath, path.join("/fixture/parent", "alpha"), "repoPath 指向子仓");
   assert.ok(!("kind" in st), "单仓形状无 kind");
   assert.ok(!("repos" in st), "单仓形状无 repos");
   assert.deepEqual([st.branch, st.ins, st.del], ["main", 5, 1], "diff HEAD 短统计已合并");
   assert.deepEqual(execs.map(e => [...e.args]), [
     ["-C", "/fixture/parent", "-c", "core.quotepath=false", "status", "--porcelain", "--branch", "-z"],
-    ["-C", "/fixture/parent/alpha", "-c", "core.quotepath=false", "status", "--porcelain", "--branch", "-z"],
-    ["-C", "/fixture/parent/alpha", "-c", "core.quotepath=false", "diff", "HEAD", "--numstat", "-z"],
+    ["-C", path.join("/fixture/parent", "alpha"), "-c", "core.quotepath=false", "status", "--porcelain", "--branch", "-z"],
+    ["-C", path.join("/fixture/parent", "alpha"), "-c", "core.quotepath=false", "diff", "HEAD", "--numstat", "-z"],
   ], "status + diff HEAD（v425 numstat）两条命令都执行");
 });
 
