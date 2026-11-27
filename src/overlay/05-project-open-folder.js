@@ -9,8 +9,8 @@
    * （与宿主任务菜单「在 Finder 中打开」同一 IPC zcode:open-in-file-manager，真机 4.0.0 实证
    * 桥函数在场），随后向菜单派发 Escape 关闭（非 Radix collection 成员，宿主不会因选中收菜单）。
    * 本地/远程甄别：项目行外层 section 带 data-project-host，仅 === "local" 注入（远程项目
-   * 本地打开无意义，fail-closed）；右键菜单经 document 捕获阶段的右键按下与 contextmenu
-   * 监听记录来源行（时机与平台差异见 zuOpfRecord 上方注释）。
+   * 本地打开无意义，fail-closed）；右键菜单经 document 捕获阶段的 pointerdown（鼠标右键、触控
+   * 与笔）与 contextmenu 监听记录来源行（时机与平台差异见 zuOpfRecord 上方注释）。
    * 宿主旧版无桥函数或取不到路径时整链不注入。弹层 DOM 归宿主 React 管，注入项只借克隆外观，
    * 弹层关闭即随宿主销毁；观察器只挂 body 直属子节点（portal 容器都在 body 直属层，
    * 聊天流式变更不触发），不进热路径。 */
@@ -201,13 +201,14 @@
     }
   }
   /* 右键菜单与来源行的唯一关联窗口：Radix ContextMenuContent 不回指触发行，靠 document 捕获阶段
-   * 在菜单打开前记录（仅记录项目行；其余右键清掉旧记录）。记录时机有两个，缺一都会在某种
-   * 宿主 / 平台组合下断链：① 右键按下（pointerdown，button 2）——任何平台都早于菜单挂载；
-   * ② contextmenu 事件——它的派发时机各平台不同（macOS / Linux 在按下时、Windows 在松开时），
-   * 而菜单何时打开取决于宿主 Radix 的版本：4.0.0 引擎包实证当前宿主在 contextmenu 里才开菜单
-   * （记录一定先于挂载）；新版 Radix 改成右键按下即开，Windows 上就成了「菜单先挂载、扫描先跑、
-   * contextmenu 后到」——所以 contextmenu 记录之后再补排一次扫描（幂等）。松开时指针多半落在
-   * 刚弹出的菜单上，落在菜单里的 contextmenu 不动记录。 */
+   * 在菜单打开前记录（仅记录项目行；其余右键清掉旧记录）。记录时机有两个：① pointerdown——
+   * 鼠标右键（button 2）或触控 / 笔的按下，任何平台都早于菜单挂载；② contextmenu 事件——它的
+   * 派发时机各平台不同（macOS / Linux 在按下时、Windows 在松开时），而菜单何时打开取决于宿主
+   * Radix 的实现：4.0.0 引擎包实证当前宿主在 contextmenu 里才开鼠标右键菜单（记录一定先于挂载；
+   * 触控与笔走 700ms 长按定时器开菜单，不保证派发 contextmenu）。宿主若换成在 pointerdown 里就
+   * 开菜单的实现，Windows 上就成了「菜单先挂载、扫描先跑、contextmenu 后到」——所以 contextmenu
+   * 记录之后再补排一次扫描（幂等）。松开时指针多半落在刚弹出的菜单上，落在菜单里的 contextmenu
+   * 不动记录。 */
   function zuOpfRecord(target) {
     try {
       zuOpfCtxRow = target && target.closest ? target.closest(ZU_OPF_ROW_SEL) : null;
@@ -216,7 +217,7 @@
   }
   function zuOpfOnPointerDown(e) {
     try {
-      if (e && e.button === 2) zuOpfRecord(e.target);
+      if (e && (e.button === 2 || e.pointerType === "touch" || e.pointerType === "pen")) zuOpfRecord(e.target);
     } catch (e) { }
   }
   function zuOpfOnCtx(e) {
