@@ -7,14 +7,17 @@
 import contextlib
 import io
 import sqlite3
+import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
-from helpers.py_test_support import load_module
-
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from tests.helpers.py_test_support import load_module  # noqa: E402
+
 model_load = load_module("model_load_under_test", ROOT / "scripts" / "model_load.py")
 
 MAIN = "sess_main-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
@@ -187,6 +190,23 @@ class ModelLoadCliTests(unittest.TestCase):
         before = self.db.read_bytes()
         self.assertEqual(self._run("--db", str(self.db))[0], 0)
         self.assertEqual(self.db.read_bytes(), before)
+
+    def test_cli_opens_databases_whose_path_has_uri_reserved_characters(self):
+        # 手拼 "file:" URI 时路径里的 # 截断 URI、丢掉 mode=ro：读不到表，还在父目录里留下一个 0 字节文件；
+        # % 后跟两位十六进制会被当成转义而打不开。带这两种字符的库路径必须照常读到，目录里也不能多出文件
+        base = self.db.parent / "用量 #1 %41"
+        base.mkdir()
+        for index, name in enumerate(("db#1.sqlite", "db%41.sqlite")):
+            with self.subTest(name=name):
+                folder = base / f"case-{index}"
+                folder.mkdir()
+                self.db = folder / name
+                self._make_db()
+                self._insert([_row(MAIN, "M-A", time.time() * 1000 - 60_000, wait_s=2)])
+                code, out, _ = self._run("--db", str(self.db), "--minutes", "30")
+                self.assertEqual(code, 0, out)
+                self.assertIn("主会话：请求 1 次", out)
+                self.assertEqual([p.name for p in folder.iterdir()], [name], "只读打开不能在目录里新建文件")
 
 
 if __name__ == "__main__":

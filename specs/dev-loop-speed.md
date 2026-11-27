@@ -17,12 +17,17 @@
 - 默认模型取窗口内主会话请求里最多的那个模型，不在脚本里写死。
 - 判定与 [审查子代理并发](review-agent-concurrency.md) 的数字一致：子代理请求不少于 5 条且中位数低于 5 秒为「可同轮并发」；主会话限流比例不低于 20% 为「拥挤」。没有样本写「无法判定」，按不满足处理。
 - 库不存在或读不了：非零退出， stderr 说明原因，不输出半份结论。
+- 库路径经 `Path.as_uri()`（带百分号编码）再接 `mode=ro`：路径里的 `#` 不会截断 URI 并丢掉只读模式，`%` 后跟两位十六进制不会被当成转义。
+- 三个脚本的 stdout / stderr 接管道时，编不了的字符转义（Windows 非 CJK 代码页的管道上一句中文就会 `UnicodeEncodeError`），编码本身仍跟随调用方。
 
 ## 一键检查 `scripts/check_all.py`
 
-- 一条命令跑完 [AGENTS.md](../AGENTS.md) §6 的全部基础检查：六个 `node --check`、三个 `build_*.py --check`、`sync_plugin.py --check`、Node 测试、Python 测试。
+- 一条命令跑完 [AGENTS.md](../AGENTS.md) 的全部基础检查：六个 `node --check`、三个 `build_*.py --check`、`sync_plugin.py --check`、Node 测试、Python 测试。
 - 顺序：先语法检查，再构建与副本一致性（都快，失败即停），然后 Node 与 Python 两套测试并行跑。
-- 测试文件通配由脚本自己展开，不依赖 shell；Python 一律用 `sys.executable`，`--node` 指定别的 Node（Windows 开发机用宿主自带的 Node，见 [tests.md](../.zcode/rules/tests.md) §1）。
+- 测试文件通配由脚本自己展开，不依赖 shell（仓库路径含 `[` 时也照常展开）；Python 一律用 `sys.executable`，`--node` 指定别的 Node（Windows 开发机用宿主自带的 Node，见 [tests.md](../.zcode/rules/tests.md) §1）。
+- Node 子进程自带 `ELECTRON_RUN_AS_NODE=1`：`--node` 可以直接指向宿主的 `ZCode.exe`，不必自己导出这个变量（缺了它 Electron 以客户端身份启动，`--check` 落空）。
+- 子进程输出按字节读：先按 UTF-8 严格解，解不开再按区域代码页解。它不改子进程的编码，默认代码页下的问题照旧会在测试里暴露，这里只是把它们读对。
+- 子进程起不来（PATH 里没有 `node`）算那一条失败，输出里给出 `--node` 指引，不给一段 traceback。
 - 输出：每一步一行结果；测试给出通过、失败、跳过的计数和失败用例名（最多 20 个）；完整输出落在临时目录的日志文件里，末尾给出路径。
 - 有任何一步失败即非零退出。`--quick` 只跑语法检查与一致性检查，`--list` 只列出命令。
 - 它不替人做判断：相对基线的新增失败与既有环境红灯的定责，仍按 [tests.md](../.zcode/rules/tests.md) §3 的双树基线法。
@@ -32,15 +37,15 @@
 纪律来自 [install-release.md](../.zcode/rules/install-release.md) §2「热修纪律」与「部署后必须验证重注入」，脚本把这条流程固化：
 
 - **范围**：只处理热文件（`overlay.js`、`turn-stats.js`、`zusage.py`、`token_rate.py`、`usage_stats.py`、`token_pricing.py` 与八个主进程 `.cjs` 子模块）。`inject-main.cjs` 是冷文件，脚本拒绝部署并提示走可信同步。
-- **甄别**：逐文件比较工作树与运行目录。相同就跳过。不同时，运行目录里的字节必须等于某个基线版本（`HEAD`、`fork/main` 或两者的 merge-base 里的同一文件），否则判为「运行目录领先或被热修」，这个文件不部署、不覆盖，原样报告。
-- **写入**：先备份为 `.pre-<原因>-<时间戳>-<文件名>`（在 [install-release.md](../.zcode/rules/install-release.md) §2 模板的 `<时间戳>` 后追加 `-<文件名>`，同批部署多个文件互不覆盖）；新内容写进运行目录内的临时文件（`runtime_lock.bounded_mkstemp`，保留原扩展名），`.js`/`.cjs` 过 `node --check`、`.py` 过 `ast.parse`；写前再比对一次运行文件与甄别时读到的字节，不一致就停下（宿主更新或别的会话可能在并发改写）；`os.replace` 原子替换并保留权限位；写后回读比对；确保 mtime 前进。
-- **取证**：部署前后各取一次渲染端代际（`scripts/hot_evidence.cjs` 经本机调试端口读 `window.__zusageGen` 与诊断对象里的版本），最多等 `--wait` 秒（默认 90）看代际是否递增；`zusage.py` 另看常驻进程是否更替。取不到证据（调试端口不可达、窗口被后台节流）就如实写「已部署、待重注入验证」。
+- **甄别**：逐文件比较工作树与运行目录。相同就跳过。不同时，运行目录里的字节必须等于某个基线版本（`HEAD`、`fork/main` 或两者的 merge-base 里的同一文件），否则判为「运行目录领先或被热修」，这个文件不部署、不覆盖，原样报告。运行文件是只读的同样按受保护处理，计入受阻。
+- **写入**：新内容写进运行目录内的临时文件（`runtime_lock.bounded_mkstemp`，保留原扩展名），`.js`/`.cjs` 过 `node --check`（用的是 `--node` 指定的那个可执行文件，子进程自带 `ELECTRON_RUN_AS_NODE=1`）、`.py` 过 `ast.parse`；写前再比对一次运行文件与甄别时读到的字节，不一致就停下（宿主更新或别的会话可能在并发改写）。语法检查过了才备份为 `.pre-<原因>-<时间戳>-<文件名>`（在 [install-release.md](../.zcode/rules/install-release.md) §2 模板的 `<时间戳>` 后追加 `-<文件名>`，同批部署多个文件互不覆盖）——失败的部署不留备份和临时文件。随后原子替换并保留权限位：目标被瞬时句柄占住（Windows 上的杀毒、搜索索引）时有界重试，持续被拒就如实报失败；写后回读比对；确保 mtime 前进。
+- **取证**：部署前后各取一次渲染端代际（`scripts/hot_evidence.cjs` 经本机调试端口读 `window.__zusageGen` 与诊断对象里的版本），最多等 `--wait` 秒（默认 90）看代际是否递增；`zusage.py` 另看常驻进程是否更替（POSIX 用 `pgrep`，Windows 用 PowerShell 的 CIM 查询按命令行筛）。取不到证据（调试端口不可达、窗口被后台节流）就如实写「已部署、待重注入验证」。只有部署成功的文件才会出现在「主进程模块…已部署」里。
 - `--dry-run` 只做甄别并打印计划，不写任何文件；`--reason` 必填，进备份名。不提供强制覆盖：被保护住的文件由人按规则处理。
 
 ## 验收
 
 - 三个脚本在临时目录与临时库上有行为级测试，不碰真实运行目录与真实用量库。
-- `model_load.py`：阈值前后各一例；无样本；库缺失。
-- `check_all.py`：通配展开、两套测试输出的计数与失败名解析、任一步失败即非零退出、`--list` 不起子进程。
-- `deploy_hot.py`：相同跳过；安全部署留备份且 mtime 前进；运行目录领先时拒写；写前比对不一致时停下且不覆盖；语法检查失败时运行文件不动；冷文件拒收。
+- `model_load.py`：阈值前后各一例；无样本；库缺失；路径带 `#` 与 `%HH` 的库照常只读打开、目录里不多出文件。
+- `check_all.py`：通配展开（含路径里的 `[`）、两套测试输出的计数与失败名解析、GBK 子进程输出按区域代码页读对、子进程起不来算失败并给指引、Node 子进程带 `ELECTRON_RUN_AS_NODE`、任一步失败即非零退出、`--list` 不起子进程。
+- `deploy_hot.py`：相同跳过；安全部署留备份且 mtime 前进；运行目录领先时拒写；只读文件按受阻处理；写前比对不一致时停下且不覆盖；语法检查失败时运行文件不动、不留备份；替换持续被拒时如实报告且不留备份和临时文件；`--node` 接到语法预检上；没部署成功的模块不报「已部署」；冷文件拒收；Windows 上按命令行找到常驻进程。
 - `hot_evidence.cjs`：调试端口不可达时非零退出并说明。

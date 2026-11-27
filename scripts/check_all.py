@@ -14,6 +14,7 @@
 """
 import argparse
 import glob
+import locale
 import os
 import re
 import subprocess
@@ -26,12 +27,31 @@ ROOT = Path(__file__).resolve().parents[1]
 SYNTAX_TARGETS = ("overlay.js", "inject-main.cjs", "quota-client.cjs", "model-puller.cjs",
                   "zusage-mobile.user.js", "zusage-mobile.debug.user.js")
 MAX_FAILURE_NAMES = 20
+_NO_WINDOW = 0x08000000 if os.name == "nt" else 0   # CREATE_NO_WINDOW：父进程没有控制台时子进程不闪黑框
 _TAP_COUNT = re.compile(r"^# (tests|pass|fail|skipped) (\d+)", re.M)
 _TAP_RESULT = re.compile(r"^( *)(not )?ok \d+ - (.*)$", re.M)
 _UT_RAN = re.compile(r"^Ran (\d+) tests? in", re.M)
 _UT_BAD = re.compile(r"^(FAIL|ERROR): (\S+) \((\S+)\)", re.M)
 _UT_END = re.compile(r"^(OK|FAILED)( \(.*\))?\s*$", re.M)
 _UT_SKIPPED = re.compile(r"skipped=(\d+)")
+
+
+def child_env():
+    """子进程环境。--node 指向宿主的 Electron（ZCode.exe）时必须带 ELECTRON_RUN_AS_NODE=1：缺了它
+    Electron 以客户端身份启动，--check 落空；对正式 Node 与 Python 子进程无影响。"""
+    return dict(os.environ, ELECTRON_RUN_AS_NODE="1")
+
+
+def decode_output(data):
+    """子进程输出按字节读再解码：Node 与 UTF-8 模式下的 Python 写 UTF-8，中文 Windows 默认代码页下的
+    Python 写 GBK。先按 UTF-8 严格解，解不开再按区域代码页解（残缺字节替换）——不改子进程的编码，
+    默认代码页下的问题照旧会在测试里暴露，这里只是把它们读对。"""
+    if isinstance(data, str):
+        return data
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode(locale.getpreferredencoding(False) or "utf-8", errors="replace")
 
 
 def syntax_commands(node):
@@ -48,7 +68,8 @@ def consistency_commands():
 
 
 def node_test_files(root=ROOT):
-    files = sorted(glob.glob(os.path.join(str(root), "tests", "*.test.cjs")))
+    # glob.escape：仓库路径里的 [ 会被当成字符类
+    files = sorted(glob.glob(os.path.join(glob.escape(str(root)), "tests", "*.test.cjs")))
     if not files:
         raise FileNotFoundError(f"{root / 'tests'} 下没有 *.test.cjs")
     return files
@@ -96,11 +117,16 @@ def parse_unittest(text):
 
 
 def _run_quick(steps, run):
-    """逐条跑快检查；返回第一条失败的 (名字, 输出)，全过返回 None。"""
+    """逐条跑快检查；返回第一条失败的 (名字, 输出)，全过返回 None。子进程起不来（PATH 里没有 node）
+    也算那一条失败：带指引，不给一段 traceback。"""
     for _, name, cmd, _ in steps:
-        proc = run(cmd, cwd=str(ROOT), capture_output=True, encoding="utf-8", errors="replace")
+        try:
+            proc = run(cmd, cwd=str(ROOT), capture_output=True, env=child_env(), creationflags=_NO_WINDOW)
+        except OSError as exc:
+            return name, (f"子进程没能启动：{exc}\n"
+                          "找不到 node 时用 --node 指定可执行文件（Windows 开发机指向宿主自带的 ZCode.exe）")
         if proc.returncode != 0:
-            return name, (proc.stdout or "") + (proc.stderr or "")
+            return name, decode_output(proc.stdout or b"") + decode_output(proc.stderr or b"")
     return None
 
 
@@ -111,7 +137,8 @@ def _run_tests(steps, popen, log_dir):
     for _, name, cmd, log_stem in steps:
         log = Path(log_dir) / (log_stem + ".log")
         handle = open(log, "w", encoding="utf-8", errors="replace")
-        running.append((name, popen(cmd, cwd=str(ROOT), stdout=handle, stderr=subprocess.STDOUT), handle, log))
+        running.append((name, popen(cmd, cwd=str(ROOT), stdout=handle, stderr=subprocess.STDOUT,
+                                    env=child_env(), creationflags=_NO_WINDOW), handle, log))
     results = []
     for name, proc, handle, log in running:
         code = proc.wait()
@@ -159,7 +186,7 @@ def main(argv=None, run=subprocess.run, popen=subprocess.Popen):
     print(f"两套测试并行运行中，日志目录：{log_dir}")
     clean = True
     for name, code, log, seconds in _run_tests(tests, popen, log_dir):
-        text = log.read_text(encoding="utf-8", errors="replace")
+        text = decode_output(log.read_bytes())
         total, bad, skipped, names = parse_tap(text) if log.name == "node-test.log" else parse_unittest(text)
         clean = clean and code == 0 and bad == 0
         print(f"[{'通过' if code == 0 and bad == 0 else '失败'}] {name}：共 {total}，失败 {bad}，跳过 {skipped}，"
@@ -176,4 +203,9 @@ def main(argv=None, run=subprocess.run, popen=subprocess.Popen):
 
 
 if __name__ == "__main__":
+    # Windows 上 stdout 接管道时按区域代码页编码：汇总里的中文（失败明细、路径）在 cp1252 管道上一句就
+    # UnicodeEncodeError。保留调用方的编码，只把编不了的字符转义
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="backslashreplace")
     sys.exit(main())
