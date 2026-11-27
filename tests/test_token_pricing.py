@@ -14,6 +14,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 if str(REPO) not in sys.path:
@@ -252,6 +253,32 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(tp.fx_view(), None)
         self.assertEqual(tp.lookup("GLM-5.3", "account:zai-x")["input"], 8)
 
+    def _payload(self, at):
+        return {"version": 1, "pricing": {"zai/glm-5.3": {"input": 9, "output": 9}}, "pricing_at": at}
+
+    def test_write_cache_retries_while_the_target_is_briefly_open(self):
+        # Windows 上目标被任何句柄打开时 os.replace 都被拒。pricing-cache.json 的读者是并发的
+        # serve / MCP / 逐问脚本，都是微秒级短开；静默放弃这一次刷新就要再等 12 小时
+        real_replace, denied = tp.os.replace, {"left": 3}
+
+        def flaky(src, dst):
+            if denied["left"]:
+                denied["left"] -= 1
+                raise PermissionError(13, "另一个程序正在使用此文件", dst)
+            return real_replace(src, dst)
+        payload = self._payload(5)
+        with mock.patch.object(tp.os, "replace", flaky), mock.patch.object(tp.time, "sleep", lambda seconds: None):
+            tp._write_cache(payload)
+        self.assertEqual((denied["left"], json.loads(Path(tp._CACHE_PATH).read_text(encoding="utf-8"))), (0, payload))
+
+    def test_write_cache_gives_up_cleanly_when_the_target_stays_locked(self):
+        def locked(src, dst):
+            raise PermissionError(13, "另一个程序正在使用此文件", dst)
+        with mock.patch.object(tp.os, "replace", locked), mock.patch.object(tp.time, "sleep", lambda seconds: None):
+            tp._write_cache(self._payload(5))
+        self.assertFalse(Path(tp._CACHE_PATH).exists(), "替换始终被拒：旧缓存不动，也不抛异常")
+        self.assertFalse(Path(str(tp._CACHE_PATH) + ".tmp").exists(), "临时文件要清掉")
+
 
 class RefreshTests(unittest.TestCase):
     def setUp(self):
@@ -487,6 +514,16 @@ class PeakValleyTests(unittest.TestCase):
                          self.bj(2026, 11, 26, 14, 0, 0))
         self.assertEqual(tp.next_peak_change(self.bj(2026, 11, 27, 18, 30, 0), 'glm-plan'),
                          self.bj(2026, 11, 30, 14, 0, 0))
+
+    def test_epochs_outside_the_representable_range_are_off_peak_without_raising(self):
+        # time.gmtime 对超出可表示范围（0001 ~ 9999 年）的 epoch 抛 OSError；docstring 约定非法输入不抛错
+        for bad in (10 ** 30, -(10 ** 30), None, "abc", float("nan"), float("inf")):
+            with self.subTest(value=bad):
+                self.assertIs(tp.is_peak_time(bad), False)
+                self.assertIsNone(tp.next_peak_change(bad))
+                self.assertIs(tp._is_flash_promo(bad), False)
+                self.assertEqual(tp.glm_plan_peak_factor("glm-5.4", bad), 0.67, "活动判定为 False，按常规系数")
+        self.assertIs(tp._is_flash_promo(tp._FLASH_PROMO_START), True, "活动起点含在窗口内")
 
     def test_glm_plan_peak_factor(self):
         peak = self.bj(2026, 11, 26, 15, 0, 0)      # 周四 15:00 高峰（11.24–12.24 Flash 限时 50% 活动期内）

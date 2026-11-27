@@ -11,9 +11,9 @@
 | 阶段 | 范围 | 核心交付 |
 |---|---|---|
 | **阶段 1（本期）** | Extension 底座与入口打通 | `plugin.json` 声明 `extension` 与 `slots`；`extension-main.cjs` 激活、焦点会话追踪、视图注册；容量弹层唤起 `context` 视图；`/context` 命令；空白/骨架沙箱视图联通 |
-| **阶段 2** | Context 标签页核心（Stats + Current） | `zusage.py --session-stats`；Context Stats、Token Stats、Timing Stats、Current Context（11 类堆叠条） |
-| **阶段 3** | 上下文浏览器与可选请求抓包 | `zusage.py --session-browser`（分页/懒加载）；步骤时间线（含 Delta）；7 类可折叠浏览器；`engine-patch.cjs` 可选请求体抓包（默认关闭，SHA256 去重） |
-| **阶段 4** | 上下文洞察页面（跨会话总览） | `zusage.py --insights`（水位缓存）；KPI 栏、7 天双柱状图、8 周热力图、工具/技能/命令排行、会话卡片与 `sessions.openSession` 跳转 |
+| **阶段 2** | Context 标签页核心（Stats + Current） | `zusage.py session-stats`（会话统计子命令）；Context Stats、Token Stats、Timing Stats、Current Context（11 类堆叠条） |
+| **阶段 3** | 上下文浏览器与可选请求抓包 | `zusage.py session-browser`（分页/懒加载）；步骤时间线（含 Delta）；7 类可折叠浏览器；`engine-patch.cjs` 可选请求体抓包（默认关闭，SHA256 去重） |
+| **阶段 4** | 上下文洞察页面（跨会话总览） | `zusage.py insights`（水位缓存）；KPI 栏、7 天双柱状图、8 周热力图、工具/技能/命令排行、会话卡片与 `sessions.openSession` 跳转 |
 
 ---
 

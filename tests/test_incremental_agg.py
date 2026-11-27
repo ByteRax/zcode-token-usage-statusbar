@@ -13,6 +13,14 @@ def setUpModule():
         zusage._pricing.start_refresh = lambda *a, **k: None
 
 
+def _today_anchor(now_ms, seconds):
+    """now 之前 seconds 秒的时刻，但保证落在本地今天：「今天」用量的断言不能因为跑在零点之后的这一分钟
+    里就变红（审查 R3：00:00:00–00:00:51 之间必红）。零点刚过、不够减时，落在今天已过时间的四分之一处。"""
+    day_ms = zusage._epoch_ms(zusage._day_start())
+    ago = now_ms - seconds * 1000
+    return ago if ago >= day_ms else day_ms + max(1, (now_ms - day_ms) // 4)
+
+
 def _make_db(path):
     con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
@@ -115,7 +123,7 @@ class IncrementalAggTests(unittest.TestCase):
 
     def test_incremental_matches_full_across_inserts_and_multi_step_turn(self):
         now_ms = int(datetime.now().timestamp() * 1000)
-        t0 = now_ms - 60_000
+        t0 = _today_anchor(now_ms, 60)
         self.con.execute(
             "INSERT INTO session VALUES (?,?,?,?,?)",
             ("s1", "proj_a", "/tmp/proj_a", None, "first"),
@@ -157,7 +165,7 @@ class IncrementalAggTests(unittest.TestCase):
 
     def test_delete_triggers_full_rebuild(self):
         now_ms = int(datetime.now().timestamp() * 1000)
-        t0 = now_ms - 30_000
+        t0 = _today_anchor(now_ms, 30)
         self.con.execute("INSERT INTO session VALUES (?,?,?,?,?)", ("s1", "p1", "/tmp/p1", None, "s1"))
         _insert_usage(self.con, "u1", "s1", "t1", st=t0, ft=t0 + 100, ct=t0 + 1100)
         _insert_usage(self.con, "u2", "s1", "t2", st=t0 + 2000, ft=t0 + 2100, ct=t0 + 3100)
@@ -177,7 +185,7 @@ class IncrementalAggTests(unittest.TestCase):
 
     def test_session_metadata_change_reflected_without_rebuild(self):
         now_ms = int(datetime.now().timestamp() * 1000)
-        t0 = now_ms - 20_000
+        t0 = _today_anchor(now_ms, 20)
         self.con.execute("INSERT INTO session VALUES (?,?,?,?,?)", ("s1", "p1", "/tmp/alpha", None, "old-title"))
         _insert_usage(self.con, "u1", "s1", "t1", st=t0, ft=t0 + 100, ct=t0 + 1100)
         self._snapshot_all(now_ms)
