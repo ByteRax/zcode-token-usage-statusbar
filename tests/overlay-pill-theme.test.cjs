@@ -2236,6 +2236,143 @@ test('pill layout safety browser regressions (isolated fixture)', { skip: skipRe
   });
 });
 
+// issue #517: the pill bar floats over the message timeline (ZCode 4.0 mounts
+// the composer as sticky inside the scrollable timeline), so content scrolls
+// behind the bar. The bar must clip the timeline below itself instead.
+test('pill bar clips timeline content below the floating bar (isolated fixture)', { skip: skipReason, timeout: 60000 }, async t => {
+  const b = await startBrowser(t);
+
+  // Build a ZCode-4.0-style pane: a scrollable [data-testid="v4-timeline"]
+  // with the composer card sticky inside it (as on the real host), content
+  // extending past the floating card and bar top.
+  async function buildTimeline(withShell = true) {
+    await b.evaluate(`(() => {
+      const pane = document.querySelector('#pane-a');
+      ${withShell ? `pane.setAttribute('data-testid', 'v4-pane-shell-a');` : 'pane.removeAttribute("data-testid");'}
+      pane.style.height = '300px';
+      const tl = document.createElement('div');
+      tl.setAttribute('data-testid', 'v4-timeline');
+      tl.style.cssText = 'position:absolute;left:0;right:0;top:0;height:300px;overflow-y:auto';
+      tl.innerHTML = '<div style="height:2000px"></div>';
+      pane.insertBefore(tl, pane.firstChild);
+      const card = document.querySelector('#card-a');
+      Object.assign(card.style, { position: 'sticky', left: '8px', right: '8px', bottom: '80px' });
+      tl.appendChild(card);   // real 4.0 mounts the composer as sticky inside the timeline
+    })()`);
+  }
+  const measure = `(() => {
+    const tl = document.querySelector('[data-testid="v4-timeline"]');
+    const bar = document.querySelector('.zusage-root');
+    const card = document.querySelector('#card-a');
+    const tr = tl.getBoundingClientRect(), br = bar.getBoundingClientRect(), cr = card.getBoundingClientRect();
+    return { clip: tl.style.clipPath, barTop: Math.round(br.top), barBottom: Math.round(br.bottom),
+      cardBottom: Math.round(cr.bottom), tlBottom: Math.round(tr.bottom), barDisplay: getComputedStyle(bar).display };
+  })()`;
+
+  await t.test('pill: timeline gets a clip-path ending at the card bottom', async () => {
+    await reset(b, { stored: 'pill', narrow: true });
+    await buildTimeline();
+    await b.waitFor(`document.querySelector('[data-testid="v4-timeline"]').style.clipPath.indexOf('inset') === 0`, 'timeline was not clipped in pill theme');
+    const m = await b.evaluate(measure);
+    assert.match(m.clip, /^inset\(0px 0px (\d+)px( 0px)?\)$/, JSON.stringify(m));   // Chrome 序列化省略末段 0
+    const cut = Number(m.clip.match(/^inset\(0px 0px (\d+)px(?: 0px)?\)$/)[1]);
+    assert.ok(Math.abs(cut - Math.round(m.tlBottom - Math.min(m.barTop, m.cardBottom))) <= 2, JSON.stringify(m));
+    assert.ok(m.barTop >= m.cardBottom - 1, `bar must stay below the card: ${JSON.stringify(m)}`);
+  });
+
+  await t.test('the card stays inside the clipped timeline and survives clipping', async () => {
+    const card = await b.evaluate(`(() => {
+      const tl = document.querySelector('[data-testid="v4-timeline"]'), card = document.querySelector('#card-a');
+      const cr = card.getBoundingClientRect(), tr = tl.getBoundingClientRect();
+      return { inTimeline: tl.contains(card), cardBottomInside: cr.bottom <= tr.bottom + 1, cardVisible: cr.height > 40 };
+    })()`);
+    assert.deepEqual(card, { inTimeline: true, cardBottomInside: true, cardVisible: true }, JSON.stringify(card));
+  });
+
+  await t.test('a host-side style rewrite self-heals on the next track frame', async () => {
+    await b.evaluate(`document.querySelector('[data-testid="v4-timeline"]').style.clipPath = ''`);
+    await b.waitFor(`document.querySelector('[data-testid="v4-timeline"]').style.clipPath.indexOf('inset') === 0`, 'clip was not rewritten after the host cleared the style');
+  });
+
+  await t.test('switching to default (bar inside card) removes the clip', async () => {
+    await choose(b, 'default', 0);
+    await b.waitFor(`document.querySelector('[data-testid="v4-timeline"]').style.clipPath === ''`, 'clip survived the theme switch');
+    const after = await b.evaluate(`(() => {
+      const bar = document.querySelector('.zusage-root'), card = document.querySelector('#card-a');
+      return { inCard: card.contains(bar), clip: document.querySelector('[data-testid="v4-timeline"]').style.clipPath };
+    })()`);
+    assert.equal(after.inCard, true, JSON.stringify(after));
+  });
+
+  await t.test('switching to compact (bar hidden) removes the clip too', async () => {
+    await choose(b, 'compact', 0);
+    await b.waitFor(`getComputedStyle(document.querySelector('.zusage-root')).display === 'none'`, 'bar did not hide in compact');
+    assert.equal(await b.evaluate(`document.querySelector('[data-testid="v4-timeline"]').style.clipPath`), '', 'clip must be cleared in compact theme');
+  });
+
+  await t.test('hiding the bar (host modal) removes the clip; both return with the bar', async () => {
+    await choose(b, 'pill', 0);
+    await b.waitFor(`document.querySelector('[data-testid="v4-timeline"]').style.clipPath.indexOf('inset') === 0`, 'clip did not return in pill theme');
+    await b.evaluate(`(() => {
+      const backdrop = document.createElement('div');
+      backdrop.id = 'host-modal-backdrop-517';
+      backdrop.style.cssText = 'position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.45)';
+      document.body.appendChild(backdrop);
+      const dialog = document.createElement('div');
+      dialog.id = 'host-alertdialog-517';
+      dialog.setAttribute('role', 'alertdialog');
+      dialog.setAttribute('aria-label', 'Host confirmation');
+      dialog.style.cssText = 'position:fixed;left:20px;top:80px;width:200px;height:120px;z-index:101;background:white';
+      document.body.appendChild(dialog);
+    })()`);
+    await b.waitFor(`getComputedStyle(document.querySelector('.zusage-root')).display === 'none'`, 'bar did not hide under host modal');
+    assert.equal(await b.evaluate(`document.querySelector('[data-testid="v4-timeline"]').style.clipPath`), '', 'clip must be cleared while the bar is hidden');
+    await b.evaluate(`document.querySelector('#host-alertdialog-517').remove(); document.querySelector('#host-modal-backdrop-517').remove();`);
+    await b.waitFor(`getComputedStyle(document.querySelector('.zusage-root')).display !== 'none' && document.querySelector('[data-testid="v4-timeline"]').style.clipPath.indexOf('inset') === 0`, 'bar/clip did not return after modal closed');
+  });
+
+  await t.test('document-level fallback (no pane shell) refuses a foreign timeline', async () => {
+    await reset(b, { stored: 'pill', narrow: true });
+    await b.evaluate(`(() => {
+      const foreign = document.createElement('div');
+      foreign.setAttribute('data-testid', 'v4-timeline');
+      // 视口底部 200px：几何上与裁线重叠，去掉归属校验的变异会直接写 inset（可观察）
+      foreign.style.cssText = 'position:fixed;left:0;bottom:0;width:100px;height:200px';
+      document.body.insertBefore(foreign, document.body.firstChild);
+    })()`);
+    await buildTimeline(false);   // no pane shell → document-level fallback
+    await delay(250);   // the fallback resolves the DOM-first timeline; ownership check must refuse it
+    const m = await b.evaluate(`(() => ({
+      foreign: document.body.firstChild.style.clipPath,
+      own: document.querySelector('#pane-a [data-testid="v4-timeline"]').style.clipPath
+    }))()`);
+    assert.equal(m.foreign, '', `foreign timeline must not be clipped: ${JSON.stringify(m)}`);
+    assert.equal(m.own, '', 'fallback must fail closed when the DOM-first timeline does not contain the composer');
+  });
+
+  await t.test('a replaced timeline node takes the clip over (isConnected re-resolve)', async () => {
+    await b.evaluate(`document.querySelector('#pane-a').setAttribute('data-testid', 'v4-pane-shell-a')`);   // 恢复上一用例摘掉的 shell：scope 命中，不经兜底
+    // 先等旧节点被裁：让 clipTarget 活在旧节点上（否则本用例走 null→兜底→直接采纳 fresh 的路径，变异不可观察）
+    await b.waitFor(`document.querySelector('#pane-a [data-testid="v4-timeline"]').style.clipPath.indexOf('inset') === 0`, 'old timeline was not clipped before the replace');
+    await b.evaluate(`(() => {
+      const old = document.querySelector('#pane-a [data-testid="v4-timeline"]');
+      const fresh = document.createElement('div');
+      fresh.setAttribute('data-testid', 'v4-timeline');
+      fresh.style.cssText = 'position:absolute;left:0;right:0;top:0;height:300px;overflow-y:auto';   // 常量，不带旧节点的内联 clip
+      fresh.innerHTML = '<div style="height:2000px"></div>';
+      fresh.appendChild(document.querySelector('#card-a'));
+      old.replaceWith(fresh);
+    })()`);
+    let freshClip = '';
+    for (let i = 0; i < 60; i++) {
+      await delay(100);
+      freshClip = await b.evaluate(`(() => { const t = document.querySelector('#pane-a [data-testid="v4-timeline"]'); return t && t.style.clipPath || ''; })()`);
+      if (freshClip.indexOf('inset') === 0) return;
+    }
+    assert.fail('fresh timeline did not take over the clip: ' + freshClip);
+  });
+});
+
 test('v146 compact theme browser behaviour (isolated fixture)', { skip: skipReason, timeout: 90000 }, async t => {
   const b = await startBrowser(t);
   // 精简模式装载（reset() 的可见等待不适用：条本就 display:none）

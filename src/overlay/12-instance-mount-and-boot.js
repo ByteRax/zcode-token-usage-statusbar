@@ -488,6 +488,7 @@
     }
     function hideBar() {
       if (curDisplay !== "none") { bar.style.display = "none"; curDisplay = "none"; }
+      clearPillClip();   // 条整体隐藏时内容裁剪一并解除（复显由 track 下一拍重写）
       /* v80：面板挂 body 不再随条隐藏，条隐时必须主动收起（否则面板悬空在已消失的条上方） */
       if (panel.classList.contains("open")) closeSettings(false);
       if (subPopOpen()) subPopClose(false, "bar-hidden");
@@ -1049,6 +1050,10 @@
             bar.style.left = left + "px"; bar.style.top = top + "px";
             lastPos = [left, top];
           }
+          /* issue #517：悬浮形态（药丸+兜底）都遮滚动内容，裁线=min(条上缘, 卡下缘)——
+           * 贴卡下缘清空 gap 区；pillUnsafe（条 visibility 隐藏、没有可见条顶在那里）
+           * 时不裁，防止只裁掉卡底一条却无条遮挡。每帧调用，函数内幂等。 */
+          syncPillClip(pillUnsafe ? null : Math.min(top, Math.round(ar.bottom)));
         }
         /* 用脱离布局的副本量完整/紧凑自然宽度，避免 space-between 或宿主 flex
          * 把分配到的空白误算为内容宽度。文本或字体变化才重测，不改真实条面。 */

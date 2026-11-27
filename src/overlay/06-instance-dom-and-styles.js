@@ -361,8 +361,9 @@
      * → v488 上下文构成说明气泡侧边停靠与悬停保活桥接：气泡改为紧贴 [data-slot="hover-card-content"] 左右两侧（右优先 4px 重叠无缝隙、放不下放左侧），不再遮挡上方分项行；移除 pointer-events:none，恢复 .cb-path 点击调用 openProjFolder 打开对应目录；showCtxBkdTip 对同一行锁定坐标（防宿主关闭动画抖动甩出鼠标），捕获阶段拦截 pointerout/mouseout 向宿主隐藏「移入气泡」的离开事件（气泡 mouseleave 且离开主浮层时再补发离开事件），移入气泡时气泡与宿主上下文浮层均保持打开。
      * → v489 筛选弹层「点外即收」补实现（用户实报：点搜索模型浮层之外不关闭；spec §14.1 初稿「外点关闭（既有）」失真——v390 只落地 Esc 与 toggle，外点从未实现，规格一并改准）：wire 新增 spd3PopOutside（与 spd3MonthOutside 同构——筛选弹层开着且按下点在 .zu-sv3-fpop 与两枚 [data-sv3-fopen] 入口之外即置 open=false、清搜索词并返回 true，只改状态由调用链重绘），06 主卡链与 01 精简链 tip pointerdown 委托在月历外点判定之后接入并各自重绘，被点控件照常由各自分支处理；fopen 入口豁免（否则外点收起后 toggle 分支再翻转回打开）；整卡隐藏复位补齐（08 hideTip 与 01 hideTpsTip 在 mpop 复位旁同步复位 pop，重开不残留；搜索词仅在 Esc/外点/toggle 三个主动关闭路径清空，随卡隐藏保留）。
      * → v490 模型选择器高峰期显著提示与时段/来源气泡（specs/model-peak-factor-badge.md）：当 is_peak 为真且弹层内有门控通过的 GLM 编码计划模型行时，在 [data-composer-model-list] 正上方（无该列表时回退首行前）挂载 .zu-peak-banner（「⚡ 当前为高峰期 · 高峰倍率生效中」），行右缘倍率同步高亮为 --color-warning + 500 字重（非高峰恢复弱化灰与 400 字重并摘除横条，门控不过实例保持 no-op）；悬停/聚焦横条弹出纯 CSS 显隐的内部气泡 .zu-peak-pop（带 ::before 悬停桥接，零新增监听器/零 body 浮层），标明高峰时段（周一至周五 14:00–18:00 北京时间）并附可点击来源链接「来源：BigModel 官方套餐用量说明 ↗」（走 window.zcode.openExternal 优先、window.open 兜底，阻止冒泡防关弹层）。
+     * → v491 药丸悬浮区滚动内容裁剪（issue #517）：ZCode 4.0 起消息滚动列表（[data-testid="v4-timeline"]，composer 以 sticky 悬浮其内）内容延伸到视口底、从悬浮条背后穿过（v143 让位只顶卡不裁内容）——悬浮形态（药丸+兜底）在 track 定位拍按裁线 min(条上缘, 卡下缘) 给所属 pane（composer 最近 v4-pane-shell-* 祖先，miss 回退全文档单列）的 v4-timeline 写 clip-path inset(0 0 Xpx 0)（每帧幂等，X=容器底缘−裁线；找不到滚动容器自然降级不裁；clip-path 只裁绘制、不改 fixed/absolute 后代定位基准，4.0.0 实测 timeline 内无 fixed 后代），条隐藏（hideBar）与让位归还（releasePads，切档/换卡/销毁共用）同步解除裁剪。
      */
-    var VERSION = "v490";
+    var VERSION = "v491";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */

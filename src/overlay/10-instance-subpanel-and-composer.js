@@ -587,7 +587,41 @@
     /* 每实例只归还自己占用的卡片，不能清掉其它 pane 的让位边距。 */
     var paddedCard = null, originalMargin = "", originalMarginPriority = "", pillLayoutAnchor = null, pillMarginFloor = 0, lastPillMargin = "", lastPillHeight = 0, lastPillGeometry = "";
     var pillMoveCheck = null, pillUnmovable = false, pillUnsafe = false, pillBottomLimit = null;
+    /* 药丸悬浮区的内容裁剪（issue #517）：v143 让位只把输入卡顶上去，ZCode 4.0 起消息
+     * 滚动列表（[data-testid="v4-timeline"]，composer 以 sticky 悬浮其内）的内容仍延伸到
+     * 视口底、从悬浮条背后穿过。按裁剪线给所属 pane 的滚动容器写 clip-path，内容在其下
+     * 不绘制；找不到滚动容器（旧版宿主/异形布局）自然降级不裁。clip-path 只裁绘制，
+     * 不改 fixed/absolute 后代的定位基准（4.0.0 实测 timeline 内无 fixed 后代）。 */
+    var clipTarget = null, lastClipCut = "";
+    function clearPillClip() {
+      if (clipTarget && clipTarget.style.clipPath) clipTarget.style.clipPath = "";
+      clipTarget = null;
+      lastClipCut = "";
+    }
+    function syncPillClip(cutY) {
+      if (!(cutY >= 0)) { clearPillClip(); return; }   // null/undefined/NaN 一律清
+      var tl = clipTarget && clipTarget.isConnected ? clipTarget : null;
+      if (!tl) {
+        clearPillClip();
+        var scope = null;
+        try { scope = composer && composer.closest('[data-testid^="v4-pane-shell-"]'); } catch (e) { }
+        try { tl = (scope || document).querySelector('[data-testid="v4-timeline"]'); } catch (e) { tl = null; }
+        /* document 级兜底必须校验归属：多 pane 文档里 DOM 序第一个 timeline 可能属于别的
+         * pane；真机 4.0 的 composer 以 sticky 悬浮在本 pane timeline 内部，contains 同时
+         * 校验了这一点。scope（pane-shell）命中时 timeline 必属本 pane，不在此限。
+         * 不归属宁可不裁。 */
+        if (!tl || (!scope && !(composer && tl.contains(composer)))) return;
+        clipTarget = tl;
+      }
+      var cut = Math.max(0, Math.round(tl.getBoundingClientRect().bottom - cutY));
+      var want = cut > 0 ? "inset(0px 0px " + cut + "px 0px)" : "";
+      if (want !== lastClipCut || (want && tl.style.clipPath !== want)) {
+        tl.style.clipPath = want;
+        lastClipCut = want;
+      }
+    }
     function releasePads() {
+      clearPillClip();   // 裁剪随让位一同归还（切档/换卡/销毁共用此路径）
       if (!paddedCard) return;
       if (!lastPillMargin || paddedCard.style.marginBottom === lastPillMargin) {
         if (originalMarginPriority && paddedCard.style.setProperty) paddedCard.style.setProperty("margin-bottom", originalMargin, originalMarginPriority);
