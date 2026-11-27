@@ -8,18 +8,48 @@ const os = require("node:os");
 const path = require("node:path");
 
 const STATE_FILE = "ui-state.json";
-const OPEN_REQ_DIR = path.join(os.homedir(), ".zcode", "zcode-token-usage-statusbar");
+/* 标准运行目录（与主桥 inject-main.cjs 的 HERE 同一位置；--dev 布局下主桥写在仓库根，这里的唤起请求
+ * 与 python_path 都读不到——开发者布局的已知边界）。 */
+const RUNTIME_DIR = path.join(os.homedir(), ".zcode", "zcode-token-usage-statusbar");
+const OPEN_REQ_DIR = RUNTIME_DIR;
 const OPEN_REQ_FILE = "ext-open-request.json";
 const CAPTURE_FILE = "req-capture.json";
 const INSIGHTS_STATE_URI = "ui://zcode-token-usage-statusbar/insights/state";
 const CONTEXT_STATE_URI = "ui://zcode-token-usage-statusbar/context/state";
 const STALE_OPEN_REQ_MS = 15000;
+/* 会话 id 的形状：ext-open-request.json 文件链与 zusage_open_context 工具入参同一道门
+ * （与主桥写请求文件前的校验同款正则）。 */
+const SESSION_ID_RE = /^sess_[A-Za-z0-9_-]{1,120}$/;
 
 function readJsonSafe(filePath) {
   try {
-    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+    // 带字节序标记的 JSON 直接 parse 会整份读成 null：与主桥读宿主 config.json 同款先去掉开头的 U+FEFF
+    return JSON.parse(fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, ""));
   } catch {
     return null;
+  }
+}
+
+/* 同步睡一小会儿：写入点都在异步流程里，最长不过百来毫秒，不值得把调用链改成 Promise。 */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/* 覆盖已存在目标的 rename 在 Windows 上会被瞬时句柄（杀毒、搜索索引、并发读者）拒绝（EPERM / EBUSY /
+ * EACCES）：有界退避重试；始终失败时清掉临时文件再上抛，不在目录里留 .tmp。 */
+function renameWithRetry(tmp, filePath, attempts = 5) {
+  for (let i = 1; ; i++) {
+    try {
+      fs.renameSync(tmp, filePath);
+      return;
+    } catch (e) {
+      const transient = e && (e.code === "EPERM" || e.code === "EBUSY" || e.code === "EACCES");
+      if (!transient || i >= attempts) {
+        try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+        throw e;
+      }
+      sleepSync(10 * i);
+    }
   }
 }
 
@@ -28,7 +58,7 @@ function writeJsonAtomic(filePath, obj) {
   fs.mkdirSync(dir, { recursive: true });
   const tmp = path.join(dir, `.${path.basename(filePath)}.tmp.${process.pid}.${Date.now()}`);
   fs.writeFileSync(tmp, JSON.stringify(obj), "utf8");
-  fs.renameSync(tmp, filePath);
+  renameWithRetry(tmp, filePath);
 }
 
 /* 请求抓包开关：运行目录 req-capture.json 的 enabled===true。引擎 prologue（engine-patch.cjs
@@ -383,9 +413,34 @@ function revealOrOpenFolder(rawPath, { allowedRoots = [], platform = process.pla
   });
 }
 
-function runZusageCli(pluginPath, args) {
+/* 解释器候选与主桥同源（inject-main.cjs readCfg）：运行目录 config.json 的 python_path 优先——安装与
+ * 每次 SessionStart 都把 sys.executable 写回它，一定指向带 sqlite3 的那个解释器，状态条与 hooks 走的
+ * 就是它；配置里没有时按 hooks 的回退链（hooks/hooks.json：python3 → python → py -3）。此前这里是一套
+ * 自写的 python → python3 且只认 ENOENT：Windows 上 PATH 里的 python 常是应用商店的占位别名——能启动、
+ * 不报 ENOENT，退出码 9009 并提示去商店安装——于是状态条与 hooks 正常、洞察页和上下文页却没有数据。 */
+function pythonCandidates(runtimeDir, platform = process.platform) {
+  const candidates = [];
+  const cfg = readJsonSafe(path.join(runtimeDir, "config.json"));
+  const configured = cfg && typeof cfg.python_path === "string" ? cfg.python_path.trim() : "";
+  if (configured) candidates.push([configured]);
+  const chain = platform === "win32" ? [["python"], ["python3"], ["py", "-3"]] : [["python3"], ["python"], ["py", "-3"]];
+  for (const c of chain) {
+    if (!candidates.some((x) => x.join(" ") === c.join(" "))) candidates.push(c);
+  }
+  return candidates;
+}
+
+/* 候选解释器「不可用」而不只是 ENOENT：没有执行权限；.cmd / .bat 垫片不经 shell 执行报 EINVAL；
+ * 应用商店占位别名的退出码 9009。这些都要让位给下一个候选；脚本自身的非零退出不在此列。 */
+function interpreterUnusable(err) {
+  return !!(err && (err.code === "ENOENT" || err.code === "EACCES" || err.code === "EINVAL"
+    || err.code === "ENOTDIR" || err.status === 9009));
+}
+
+function runZusageCli(pluginPath, args, hooks) {
   const scriptPath = path.join(pluginPath, "zusage.py");
-  const pyCandidates = process.platform === "win32" ? ["python", "python3"] : ["python3", "python"];
+  const exec = (hooks && hooks.execFile) || execFile;
+  const pyCandidates = (hooks && hooks.candidates) || pythonCandidates(RUNTIME_DIR);
   return new Promise((resolve) => {
     let idx = 0;
     function tryNext() {
@@ -393,14 +448,16 @@ function runZusageCli(pluginPath, args) {
         resolve({ ok: false, error: "python not found" });
         return;
       }
-      const py = pyCandidates[idx++];
-      execFile(
+      const [py, ...preArgs] = pyCandidates[idx++];
+      // -X utf8：zusage.py 只把 stdout 钉成 UTF-8，回溯里的本地化文字按区域代码页写 stderr，
+      // 这里按 UTF-8 解码会乱码并显示进视图
+      exec(
         py,
-        ["-B", scriptPath, ...args],
+        [...preArgs, "-B", "-X", "utf8", scriptPath, ...args],
         { timeout: 15000, maxBuffer: 16 * 1024 * 1024, windowsHide: true },
         (err, stdout) => {
           if (err) {
-            if (err.code === "ENOENT") {
+            if (interpreterUnusable(err)) {
               tryNext();
               return;
             }
@@ -432,6 +489,7 @@ async function activate(ctx) {
   let currentSessions = [];
   let watcher = null;
   let watchTimer = null;
+  let pollTimer = null;
   const warmTimers = new Set();   // 视图打开后的洞察预热定时器：停用时统一清掉，且不拖住进程
 
   const uiStatePath = path.join(ctx.extension.dataPath, STATE_FILE);
@@ -620,7 +678,7 @@ async function activate(ctx) {
             const sid = input && typeof input.sessionId === "string" ? input.sessionId : "";
             if (!sid) return { ok: false, error: "missing sessionId" };
             // 与 ext-open-request.json 文件链同一道门：只接受会话 id 的形状
-            if (!/^sess_[A-Za-z0-9_-]{1,120}$/.test(sid)) return { ok: false, error: "invalid sessionId" };
+            if (!SESSION_ID_RE.test(sid)) return { ok: false, error: "invalid sessionId" };
             try {
               if (ctx.sessions && typeof ctx.sessions.openSession === "function") {
                 await ctx.sessions.openSession({ session: { kind: "app", sessionId: sid } });
@@ -790,7 +848,7 @@ async function activate(ctx) {
         await ctx.views.open("insights", "app");
       } else {
         const rawSid = typeof req.sessionId === "string" ? req.sessionId.trim() : "";
-        const sid = rawSid.startsWith("sess_") ? rawSid : "";
+        const sid = SESSION_ID_RE.test(rawSid) ? rawSid : "";
         await ctx.views.open("context", sid ? { sessionId: sid } : undefined);
       }
     } catch (err) {
@@ -798,18 +856,44 @@ async function activate(ctx) {
     }
   }
 
-  try {
-    fs.mkdirSync(OPEN_REQ_DIR, { recursive: true });
-    watcher = fs.watch(OPEN_REQ_DIR, (_eventType, filename) => {
-      if (filename && filename !== OPEN_REQ_FILE) return;
-      if (watchTimer) clearTimeout(watchTimer);
-      watchTimer = setTimeout(() => {
-        watchTimer = null;
-        void processOpenRequestFile();
-      }, 30);
-    });
-    watcher.on("error", () => { /* ignore watch errors */ });
-  } catch { /* ignore */ }
+  let openReqMtime = -1;
+  function scheduleOpenRequest() {
+    if (watchTimer) clearTimeout(watchTimer);
+    watchTimer = setTimeout(() => {
+      watchTimer = null;
+      void processOpenRequestFile();
+    }, 30);
+  }
+  /* 轮询兜底：Windows 上 fs.watch 可能漏事件，报过 error 之后更是不再派发——每 3 秒比对一次请求文件的
+   * mtime（只 stat 一个文件），watcher 不在场时顺带重建。 */
+  function pollOpenRequest() {
+    if (!watcher) startOpenRequestWatcher();
+    try {
+      const mtime = fs.statSync(path.join(OPEN_REQ_DIR, OPEN_REQ_FILE)).mtimeMs;
+      if (mtime !== openReqMtime) {
+        openReqMtime = mtime;
+        scheduleOpenRequest();
+      }
+    } catch { /* 请求文件不在：无事可做 */ }
+  }
+  function startOpenRequestWatcher() {
+    try {
+      fs.mkdirSync(OPEN_REQ_DIR, { recursive: true });
+      const w = fs.watch(OPEN_REQ_DIR, (_eventType, filename) => {
+        if (filename && filename !== OPEN_REQ_FILE) return;
+        scheduleOpenRequest();
+      });
+      watcher = w;
+      w.on("error", () => {
+        // 报 error 后 watcher 不再派发事件：关掉，留给轮询去重建
+        if (watcher === w) watcher = null;
+        try { w.close(); } catch { /* ignore */ }
+      });
+    } catch { /* 目录暂不可用：轮询时再试 */ }
+  }
+  startOpenRequestWatcher();
+  pollTimer = setInterval(pollOpenRequest, 3000);
+  if (pollTimer.unref) pollTimer.unref();
 
   return {
     dispose() {
@@ -818,6 +902,10 @@ async function activate(ctx) {
       if (watchTimer) {
         clearTimeout(watchTimer);
         watchTimer = null;
+      }
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
       }
       if (watcher) {
         try { watcher.close(); } catch { /* ignore */ }
@@ -834,4 +922,5 @@ function deactivate() {
   /* resources are disposed via returned Disposable */
 }
 
-module.exports = { activate, deactivate, enrichContextPaths, revealOrOpenFolder, readCaptureConfig, writeCaptureConfig, browserOptions };
+module.exports = { activate, deactivate, enrichContextPaths, revealOrOpenFolder, readCaptureConfig, writeCaptureConfig, browserOptions,
+  pythonCandidates, interpreterUnusable, runZusageCli, renameWithRetry, readJsonSafe };

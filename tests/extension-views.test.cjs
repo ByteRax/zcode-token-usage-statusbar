@@ -372,3 +372,60 @@ test("context browser: clicking a timeline bar or a snapshot refresh keeps scrol
   assert.equal(v.scroller.scrollTop, 0, "换会话后回到顶部");
   assert.equal(content.querySelector(".timeline-wrap").scrollLeft, 0, "换会话后时间线也回到起点（是另一份步骤）");
 });
+
+test("context browser: an older page that lands after a session switch is dropped", async () => {
+  let current = "sess_1";
+  let release = null;
+  const first = (sid) => ({ ok: true, sessionId: sid, order: "desc", turnId: "", totalMessages: 3, hasMore: true, offset: 0, limit: 80,
+    cursor: { s: 9, t: T0 + 9000, id: sid + "-m1" },
+    messages: [msg(sid + "-m2", 2, "user", {}, [{ type: "text", text: sid + " newest" }])], fileActivity: [], commands: [], events: [], capturedRequests: [] });
+  const tools = {
+    context_snapshot: () => ({ status: "ready", sessionId: current, isDraft: false, locale: "zh-CN", composition: null, contextPaths: null,
+      capture: { enabled: false }, stats: stats() }),
+    // 带游标的请求只有 sess_1 那一次「加载更早」：捏在手里，等用例放行
+    context_browser: (input) => (input.before
+      ? new Promise((resolve) => { release = () => resolve({ ...PAGE1, sessionId: "sess_1" }); })
+      : Promise.resolve(first(current))),
+    context_capture_set: () => ({ ok: true, enabled: false }),
+  };
+  const v = loadView("extension-view-context.js", tools);
+  await v.flush();
+  v.tabs[1].handlers.click();
+  await v.flush();
+  v.get("bMore").onclick();   // sess_1 的「加载更早」挂在途
+  await v.flush();
+  assert.equal(typeof release, "function", "带游标的请求已发出、还没回来");
+  current = "sess_2";
+  await v.fireResource();     // 请求在途时焦点会话切到 sess_2
+  await v.flush(); await v.flush();
+  assert.ok(v.html().includes("sess_2 newest") && !v.html().includes("sess_1 newest"), "列表已换成 sess_2");
+  release();                  // sess_1 的旧页这才迟到
+  await v.flush(); await v.flush();
+  const html = v.html();
+  assert.ok(html.includes("sess_2 newest"), "新会话的列表还在");
+  assert.ok(!html.includes("third"), "迟到的旧会话页不能并进新会话的列表");
+});
+
+test("insights: the day filter uses local calendar days, survives bad timestamps and names Windows projects by their folder", async () => {
+  const pad = (n) => (n < 10 ? "0" : "") + n;
+  const now = new Date();
+  const dayKey = now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate());
+  // 东八区本地 00:30 的 UTC 日期还是前一天；负时区换成 23:30（UTC 已是次日）。取一个本地日与 UTC 日不同的时刻
+  const edgeHour = now.getTimezoneOffset() <= 0 ? 0 : 23;
+  const edge = new Date(now.getFullYear(), now.getMonth(), now.getDate(), edgeHour, 30).getTime();
+  const cell = { getAttribute: (n) => (n === "data-hday" ? dayKey : null), onclick: null };
+  const snap = insightsSnap();
+  snap.sessions = [
+    { id: "sess_1", title: "夜里的会话", directory: "C:\\Users\\me\\项目 alpha", updatedAt: edge, tokens: 5 },
+    { id: "sess_2", title: "坏时间戳的会话", directory: "/tmp/proj", updatedAt: "not-a-date", tokens: 5 },
+  ];
+  const v = loadView("extension-view-insights.js", { insights_snapshot: () => snap });
+  v.hooks["[data-hday]"] = () => [cell];
+  await v.flush();
+  assert.equal(typeof cell.onclick, "function", "热力图格子已绑定点击");
+  cell.onclick();
+  const html = v.html();
+  assert.ok(html.includes("夜里的会话"), "按本地自然日筛：与热力图格子同一天");
+  assert.ok(!html.includes("bad-ts-title") && !html.includes("坏时间戳的会话"), "时间戳非法的会话不匹配日筛选，也不打断渲染");
+  assert.match(html, /<span class="sess-proj">项目 alpha<\/span>/, "Windows 路径按反斜杠取目录名做项目名");
+});

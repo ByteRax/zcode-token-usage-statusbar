@@ -312,3 +312,86 @@ test("insights_open_session rejects session ids that are not shaped like sess_<i
     assert.equal(opened.length, 1);
   } finally { handle.dispose(); fs.rmSync(ctx.extension.dataPath, { recursive: true, force: true }); }
 });
+
+test("zusage CLI: interpreter candidates follow the main bridge (configured python_path first, then the hooks chain)", () => {
+  const { pythonCandidates, readJsonSafe } = requirePlugin("../plugins/zcode-token-usage-statusbar/extension-main.cjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-ext-py-"));
+  try {
+    // 没有配置：hooks 的回退链（Windows 没有 python3 别名，所以 python 在前）
+    assert.deepEqual(pythonCandidates(dir, "win32"), [["python"], ["python3"], ["py", "-3"]]);
+    assert.deepEqual(pythonCandidates(dir, "darwin"), [["python3"], ["python"], ["py", "-3"]]);
+    // 配置里的 python_path 优先：安装与每次 SessionStart 都把 sys.executable 写回它
+    const configured = path.join(dir, "Python312", "python.exe");
+    fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ python_path: "  " + configured + "  " }));
+    assert.equal(pythonCandidates(dir, "darwin")[0][0], configured);
+    assert.equal(pythonCandidates(dir, "darwin").length, 4);
+    // 与链里的候选同名时不重复列；带 BOM 的 config.json 也要读得出（主桥读宿主 config.json 同款处理）
+    fs.writeFileSync(path.join(dir, "config.json"), "\uFEFF" + JSON.stringify({ python_path: "python" }));
+    assert.deepEqual(readJsonSafe(path.join(dir, "config.json")), { python_path: "python" });
+    assert.deepEqual(pythonCandidates(dir, "darwin"), [["python"], ["python3"], ["py", "-3"]]);
+    // 配置损坏：退回回退链，不抛
+    fs.writeFileSync(path.join(dir, "config.json"), "{broken");
+    assert.deepEqual(pythonCandidates(dir, "win32"), [["python"], ["python3"], ["py", "-3"]]);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("zusage CLI: an unusable interpreter yields to the next candidate; a script failure does not", async () => {
+  const { runZusageCli, interpreterUnusable } = requirePlugin("../plugins/zcode-token-usage-statusbar/extension-main.cjs");
+  for (const err of [{ code: "ENOENT" }, { code: "EINVAL" }, { code: "EACCES" }, { code: "ENOTDIR" }, { status: 9009 }]) {
+    assert.equal(interpreterUnusable(err), true, "不可用：" + JSON.stringify(err));
+  }
+  for (const err of [null, { status: 1 }, { code: 1, message: "boom" }, { status: 2 }]) {
+    assert.equal(interpreterUnusable(err), false, "脚本自身失败：" + JSON.stringify(err));
+  }
+  const calls = [];
+  // python、python3 不在 PATH；py 能启动但……；第 4 个候选（配置里的解释器）才真正跑起来
+  const replies = [{ err: { code: "ENOENT" } }, { err: { code: "ENOENT" } }, { err: { status: 9009, message: "Python was not found" } },
+                   { stdout: JSON.stringify({ ok: true, n: 1 }) }];
+  const execFile = (file, args, opts, cb) => {
+    calls.push({ file, args, opts });
+    const r = replies.shift();
+    setImmediate(() => cb(r.err || null, r.stdout || ""));
+  };
+  const candidates = [["python"], ["python3"], ["py", "-3"], [path.join(dirOf("opt"), "venv", "bin", "python3")]];
+  const out = await runZusageCli(path.join(dirOf("plugin"), "dir"), ["insights", "7"], { execFile, candidates });
+  assert.deepEqual(out, { ok: true, n: 1 });
+  assert.deepEqual(calls.map((c) => c.file), ["python", "python3", "py", candidates[3][0]]);
+  assert.deepEqual(calls[2].args, ["-3", "-B", "-X", "utf8", path.join(dirOf("plugin"), "dir", "zusage.py"), "insights", "7"],
+    "-3 在脚本之前；-X utf8 让 stderr 也按 UTF-8 写（zusage.py 只钉了 stdout）");
+  assert.equal(calls[0].opts.windowsHide, true, "不闪控制台窗口");
+  const failing = (_file, _args, _opts, cb) => setImmediate(() => cb({ status: 1, message: "Traceback" }, ""));
+  assert.deepEqual(await runZusageCli(path.join(dirOf("plugin"), "dir"), ["session-stats", "s"], { execFile: failing, candidates }),
+    { ok: false, error: "Traceback" }, "脚本自己失败：如实报错，不换解释器重跑");
+  const missing = (_file, _args, _opts, cb) => setImmediate(() => cb({ code: "ENOENT" }, ""));
+  assert.deepEqual(await runZusageCli(path.join(dirOf("plugin"), "dir"), [], { execFile: missing, candidates: [["python"]] }),
+    { ok: false, error: "python not found" });
+  function dirOf(name) { return process.platform === "win32" ? path.parse(process.cwd()).root + name : "/" + name; }
+});
+
+test("atomic JSON write retries a transiently locked target and never leaves a .tmp behind", () => {
+  const { renameWithRetry } = requirePlugin("../plugins/zcode-token-usage-statusbar/extension-main.cjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-ext-rename-"));
+  const realRename = fs.renameSync;
+  const refusal = (code) => () => { const e = new Error(code + ": operation not permitted"); e.code = code; throw e; };
+  try {
+    const target = path.join(dir, "ext-open-request.json");
+    fs.writeFileSync(target, "old");
+    let left = 2;
+    fs.renameSync = (a, b) => { if (left > 0) { left -= 1; refusal("EPERM")(); } return realRename(a, b); };
+    const tmp = path.join(dir, ".ext-open-request.tmp.1");
+    fs.writeFileSync(tmp, "new");
+    renameWithRetry(tmp, target);
+    assert.equal(fs.readFileSync(target, "utf8"), "new");
+    assert.deepEqual(fs.readdirSync(dir), ["ext-open-request.json"], "瞬时被拒后重试成功，临时文件不残留");
+
+    fs.renameSync = refusal("EPERM");
+    fs.writeFileSync(path.join(dir, ".stuck.tmp"), "x");
+    assert.throws(() => renameWithRetry(path.join(dir, ".stuck.tmp"), target), /EPERM/);
+    assert.deepEqual(fs.readdirSync(dir), ["ext-open-request.json"], "始终被拒：抛出并清掉临时文件");
+
+    fs.renameSync = refusal("ENOENT");
+    fs.writeFileSync(path.join(dir, ".other.tmp"), "x");
+    assert.throws(() => renameWithRetry(path.join(dir, ".other.tmp"), target), /ENOENT/);
+    assert.deepEqual(fs.readdirSync(dir), ["ext-open-request.json"], "非瞬时错误不重试，临时文件同样清掉");
+  } finally { fs.renameSync = realRename; fs.rmSync(dir, { recursive: true, force: true }); }
+});
