@@ -21,12 +21,21 @@ function el(tag) {
     className: '',
     style: { cssText: '' },
     attrs: {},
+    listeners: {},
     parentNode: null,
     isConnected: true,
     textContent: '',
+    addEventListener(ev, fn) { (this.listeners[ev] ||= []).push(fn); },
     setAttribute(k, v) { this.attrs[k] = String(v); },
     getAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null; },
     appendChild(c) { c.parentNode = this; this.children.push(c); },
+    insertBefore(c, ref) {
+      if (c.parentNode) c.parentNode.removeChild(c);
+      c.parentNode = this;
+      const idx = ref ? this.children.indexOf(ref) : -1;
+      if (idx === -1) this.children.push(c);
+      else this.children.splice(idx, 0, c);
+    },
     removeChild(c) { c.parentNode = null; this.children = this.children.filter(x => x !== c); },
     remove() { if (this.parentNode) this.parentNode.removeChild(this); },
     /* 只认本特性用到的选择器，其余抛错——防止实现漂移后被宽松桩掩成假绿 */
@@ -101,6 +110,7 @@ function makeCtx(rows, opts) {
         if (sel !== ROW_SEL) throw new Error('unexpected ' + sel);
         return rows;
       },
+      querySelector: o.querySelector,
       createElement: tag => el(tag),
     },
   };
@@ -273,4 +283,89 @@ test('span 回退跳过外层容器 textContent 与能力徽标，优先取内�
   const badge = findBadge(row);
   assert.ok(badge, '应取内层 title 而非外层拼接 textContent');
   assert.equal(badge.textContent, '0.40×');
+});
+
+test('高峰期在模型列表上方挂载显著横条并带时段提示，翻档非高峰摘除且行徽标变色', () => {
+  const panel = el('div');
+  const search = el('div');
+  const list = el('div');
+  list.setAttribute('data-composer-model-list', '');
+  const r54 = makeRow({ provider: PLAN, name: 'GLM-5.4' });
+  list.appendChild(r54);
+  panel.appendChild(search);
+  panel.appendChild(list);
+
+  const findInPanel = (sel) => {
+    const stack = [panel];
+    while (stack.length) {
+      const n = stack.pop();
+      for (const c of n.children) {
+        if (sel === '[data-composer-model-list]' && c.attrs['data-composer-model-list'] !== undefined) return c;
+        if (sel === '[data-zusage-peak-banner]' && c.attrs['data-zusage-peak-banner'] !== undefined) return c;
+        stack.push(c);
+      }
+    }
+    return null;
+  };
+
+  const opened = [];
+  const ctx = makeCtx([r54], { isPeak: true, querySelector: findInPanel });
+  ctx.window = { zcode: { openExternal: (u) => opened.push(u) } };
+  const api = run(ctx);
+  api.syncModelPeakBadges();
+
+  const banner = findInPanel('[data-zusage-peak-banner]');
+  assert.ok(banner, '高峰期应在列表上方挂载横条');
+  assert.equal(panel.children[1], banner, '横条应紧邻插入在模型列表正上方');
+  assert.equal(panel.children[2], list);
+  assert.match(banner.children[0].textContent, /当前为高峰期/);
+  assert.match(banner.attrs['title'], /周一至五 14:00–18:00/);
+  const pop = banner.children[2];
+  assert.equal(pop.className, 'zu-peak-pop');
+  assert.match(pop.children[1].textContent, /周一至周五 14:00–18:00/);
+  const docLink = pop.children[3];
+  assert.equal(docLink.attrs['data-zusage-peak-doc'], '1');
+  assert.match(docLink.textContent, /来源：BigModel 官方套餐用量说明/);
+  let stopped = false;
+  let prevented = false;
+  docLink.listeners.click[0]({ stopPropagation: () => { stopped = true; }, preventDefault: () => { prevented = true; } });
+  assert.ok(stopped && prevented, '点击来源链接应阻止冒泡与默认行为防关弹层');
+  assert.deepEqual(opened, [
+    'https://docs.bigmodel.cn/cn/coding-plan/notice/usage-revision#%E4%B8%89%E3%80%81%E5%8E%86%E5%8F%B2%E5%A5%97%E9%A4%90%E7%94%A8%E9%87%8F%E8%AF%B4%E6%98%8E%E5%A4%87%E6%9F%A5',
+  ]);
+
+  const badge = findBadge(r54);
+  assert.match(badge.style.color, /--color-warning/);
+  assert.equal(badge.style.fontWeight, '500');
+
+  api.syncModelPeakBadges();
+  assert.equal(findInPanel('[data-zusage-peak-banner]'), banner, '幂等重跑应复用同一横条节点');
+
+  // 翻档为非高峰
+  ctx.state.data.peak.glm_plan.is_peak = false;
+  api.syncModelPeakBadges();
+  assert.equal(findInPanel('[data-zusage-peak-banner]'), null, '非高峰期应摘除横条');
+  assert.match(badge.style.color, /--color-foreground-subtle/);
+  assert.equal(badge.style.fontWeight, '400');
+});
+
+test('非 GLM 弹层门控不过时对已有高峰横条保持 no-op 不摘除', () => {
+  const panel = el('div');
+  const list = el('div');
+  list.setAttribute('data-composer-model-list', '');
+  const rOther = makeRow({ provider: 'account:openai-coding-plan', name: 'GPT-5' });
+  list.appendChild(rOther);
+  const foreignBanner = el('div');
+  foreignBanner.setAttribute('data-zusage-peak-banner', '1');
+  panel.appendChild(foreignBanner);
+  panel.appendChild(list);
+
+  const findInPanel = (sel) => {
+    if (sel === '[data-composer-model-list]') return list;
+    if (sel === '[data-zusage-peak-banner]') return foreignBanner.parentNode ? foreignBanner : null;
+    return null;
+  };
+  const api = run(makeCtx([rOther], { isPeak: false, querySelector: findInPanel }));
+  api.syncModelPeakBadges();
+  assert.equal(foreignBanner.parentNode, panel, '门控不过实例绝不摘除横条');
 });
