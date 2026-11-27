@@ -25,6 +25,7 @@ The cover uses cropped screenshots from ZCode desktop. Interface labels in the l
 - **ZCode desktop app**: Windows and macOS are supported (Linux has basic path and permission support, not tested on every distro).
 - **Python 3.8+**: System Python works out of the box — **no extra Python packages or Node.js required**.
 - **Optional MCP queries**: `token_usage` requires **ZCode 3.19.0+**. Older builds still work with the status bar, `/usage` command and CLI.
+- **Context Insights panels (ZCode 4.0+)**: "Context Insights" in the left nav shows cross-session usage; the "Context" side tab shows the current session's composition, per-turn messages, errors and retries. Send `/context` in chat for an AI summary. Details in the [user guide](docs/user-guide.md#上下文洞察与上下文组成) (Chinese).
 
 ### Installation
 

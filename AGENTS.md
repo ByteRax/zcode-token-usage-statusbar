@@ -63,7 +63,8 @@
 | `quota-client.cjs` / `src/quota/` / `scripts/build_quota.py` | 套餐额度客户端（主进程，热换）：解密宿主 OAuth 凭据（`enc:v1`/`enc:v2` 双信封按宿主语义重写实现，v2 密钥在 OS 凭据库，见 [.zcode/rules/quota.md](.zcode/rules/quota.md)）直查 BigModel/Z.ai monitor 端点及多厂商额度/余额接口，归一化窗口/退避/冻结/epoch 竞态，凭据只在内存；`src/quota/00-*.cjs`..`05-*.cjs` 为模块化分片源码，经零依赖 `scripts/build_quota.py` 拼接产出单文件 `quota-client.cjs` |
 | `sysmon-client.cjs` | 系统资源采样器（主进程，热换，v356/issue #338）：CPU `os.cpus()` tick 差分、三平台内存口径、磁盘 `fs.statfs`+卷枚举（探测复用+超时黑名单）；订阅制双定时器轮询，帧经 `inject-main.cjs` 信任门推 `window.__zusageSysmon`；契约见 [specs/statusbar-system-status.md](specs/statusbar-system-status.md) |
 | `model-puller.cjs` / `src/puller/` / `scripts/build_puller.py` | 自定义供应商模型列表、思考档位拉取写回与提示词增强（共源 `resolveHostQuotaPaths`）；`src/puller/00-*.cjs`..`03-*.cjs`（4 个模块）为模块化分片源码，经零依赖 `scripts/build_puller.py` 拼接产出单文件 `model-puller.cjs`（主进程，热换） |
-| `engine-patch.cjs` | 宿主引擎 bundle 自动压缩阈值等白名单补丁（主进程，热换） |
+| `engine-patch.cjs` | 宿主引擎 bundle 白名单补丁（主进程，热换）：prologue 是两段——自动压缩阈值 hook 与请求抓包 hook（默认关闭，运行目录 `req-capture.json` 开启；只落 system 与工具 schema） |
+| `plugins/zcode-token-usage-statusbar/extension-main.cjs` / `extension-view-*.js` | ZCode 原生扩展（扩展进程）：CommonJS 入口负责激活、焦点会话追踪、视图与工具注册、弹层/⚙ 唤起请求文件桥（主桥 `open-ext-view` 动作）与抓包开关；两张自包含沙箱页面的**内容是 HTML**，放插件顶层并以 `.js` 命名只为兼容在野旧版解包器的放行规则——扩展新增文件只能落顶层 `.py/.cjs/.js` 或 `hooks/*.py`、`commands/*.md`，不要为它放宽 `release_unpack.py`（规格 specs/context-insights-extension.md §5.3） |
 | `runtime_lock.py` / `release_unpack.py` | 跨进程锁、配置事务/可信同步、受限次数临时文件/目录（`bounded_mkstemp`/`bounded_tempdir`，防 Windows ACL 无限挂起）、安全 ZIP 解包 |
 | `sync_plugin.py` / `release_tool.py` | 根源码副本同步、`overlay.js`/`quota-client.cjs`/`model-puller.cjs` 的构建联动及 6 处分发清单一致性校验（`check_manifests` / `--verify-manifests`）；确定性发布包构建、校验、发布预演/发布 |
 | `plugins/zcode-token-usage-statusbar/` | 两份 manifest、`.mcp.json`、命令、技能、hooks、专有安装/更新/提醒入口与共享副本 |
@@ -234,6 +235,7 @@ python3 -B scripts/check_all.py   # 上面全部的一键跑法：两套测试�
 | 桥/SSH 路由 | `test_renderer_bridge.py`、`test_bridge_pending.py`、`test_remote_targets.py`、`test_serve_stdio.py`、`inject-remote-recovery.test.cjs`、`overlay-remote-scope.test.cjs`；实机身份/重连与认证另验 |
 | 安装/更新/锁/解包 | `test_install_discovery.py`、`test_plugin_sudo_install.py`、`test_pending_asar.py`、`test_quiet_monitor.py`、`test_pending_zip_patch.py`、`test_config_transactions.py`、`test_plugin_upgrade.py`、`test_runtime_sync_guard.py`、`test_release*.py` 及 `plugin-*.test.cjs`、`runtime-lock.test.cjs`、`test_runtime_lock_windows.py` |
 | 插件命令/hooks/MCP | `test_command_frontmatter.py`、`test_plugin_contract.py`、`test_usage_mcp_stdio.py`（MCP 直启的 stdio 帧契约）、`test_plugin_package.py`、`test_plugin_runtime.py`、`test_session_start_channels.py`、`test_restart_notice.py`、`test_zusage_doctor.py`（体检命令）、`test_test_file_layout.py`（测试文件布局契约，新增测试文件后必跑）；共享文件同时同步并检查漂移 |
+| 上下文扩展（`extension-main.cjs`、`extension-view-*.js`、`zusage.py` 上下文查询、抓包 hook） | `extension-phase1.test.cjs`、`extension-views.test.cjs`、`test_context_queries.py`、`engine-patch.test.cjs`；新增包内文件必跑 `test_release_tool.py`（旧版解包器契约）；宿主加载入口/页面、工具与唤起链需桌面验收 |
 | 文档/本地化 | 路径、相对链接/锚点、JSON 示例、双语对应与 manifest 一致性；涉及默认值/协议时加对应契约测试；README 安装文案的自包含契约见 `test_install_prompt_contract.py`（文案里的命令须与 `install-prompt-smoke.py` 实跑的一致） |
 
 宿主真实 CLI 沙箱测试和交互演示见 [测试说明](tests/README.md)。它们使用真实 ZCode、认证和模型，可能联网/消耗 token，不属于默认纯隔离测试；测试对象必须指向自有临时 HOME、插件库存与夹具。

@@ -277,6 +277,9 @@ test('无「剩余额度」段时按钮落在容器尾（仍是命中率行下�
   h.inject(); h.boot(); h.tick();
   const btn = h.compactBtnOf(ui.body);
   assert.ok(btn);
+  const extBtn = ui.body.children.find(e => e.classList.contains('zu-ext-ctx-btn'));
+  assert.ok(extBtn);
+  assert.equal(ui.body.children[ui.body.children.length - 2], extBtn);
   assert.equal(ui.body.children[ui.body.children.length - 1], btn);
 });
 
@@ -324,7 +327,9 @@ test('命中率行自带 border-t（breakdown 存在时 pt-3）不充当锚点�
   h.inject(); h.boot(); h.tick();
   const btn = h.compactBtnOf(ui.body);
   assert.ok(btn);
-  assert.equal(ui.body.children.indexOf(ui.cacheRow), ui.body.children.indexOf(btn) - 1);
+  const extBtn = ui.body.children.find(e => e.classList.contains('zu-ext-ctx-btn'));
+  assert.equal(ui.body.children.indexOf(ui.cacheRow), ui.body.children.indexOf(extBtn) - 1);
+  assert.equal(ui.body.children.indexOf(extBtn), ui.body.children.indexOf(btn) - 1);
   assert.equal(ui.body.children.indexOf(btn), ui.body.children.indexOf(ui.borderT) - 1);
 });
 
@@ -601,7 +606,7 @@ test('v179 阈值行：补丁生效时钉在按钮之后，推送变化原地改
   const hint = ui.body.children.find(e => e.classList.contains('zu-ac-hint'));
   assert.ok(hint, 'v195 新手说明行挂载');
   assert.equal(ui.body.children.indexOf(info), ui.body.children.indexOf(hint) - 1, '说明行紧随阈值行');
-  assert.equal(ui.body.children.indexOf(hint), ui.body.children.indexOf(btn) - 1, '说明行钉在压缩按钮上方');
+  assert.equal(ui.body.children.indexOf(hint), ui.body.children.indexOf(btn) - 2, '说明行钉在按钮行（extBtn+压缩按钮）上方');
   assert.match(hint.textContent, /按窗口总量计算/);
   const infoText = info.children.find(e => e.classList && e.classList.contains('zu-ac-text'));
   assert.ok(infoText, '文本 span 存在');
@@ -663,8 +668,8 @@ test('v200 开关关闭（zusage3.ctxCpt="0"）：弹层不注入压缩按钮，
   const info = ui.body.children.find(e => e.classList.contains('zu-ac-info'));
   const hint = ui.body.children.find(e => e.classList.contains('zu-ac-hint'));
   assert.ok(info && hint, '阈值行/说明行不受本开关影响（v179 独立生命周期）');
-  assert.equal(ui.body.children.indexOf(info), ui.body.children.indexOf(ui.borderT) - 2, '阈值行顶到「剩余额度」段上方');
-  assert.equal(ui.body.children.indexOf(hint), ui.body.children.indexOf(ui.borderT) - 1);
+  assert.equal(ui.body.children.indexOf(info), ui.body.children.indexOf(ui.borderT) - 3, '阈值行顶到「上下文明细」按钮上方');
+  assert.equal(ui.body.children.indexOf(hint), ui.body.children.indexOf(ui.borderT) - 2);
   h.tick();
   assert.equal(h.compactBtnOf(ui.body), undefined, '幂等：继续对账按钮不再出现');
 });
@@ -678,20 +683,20 @@ test('v200 运行期切换：按钮挂载中关掉即摘除补位，重开即原
   const btn = h.compactBtnOf(ui.body);
   assert.ok(btn, '前置：开关缺省开，按钮已挂载');
   const info = ui.body.children.find(e => e.classList.contains('zu-ac-info'));
-  assert.equal(ui.body.children.indexOf(info), ui.body.children.indexOf(btn) - 2, '前置：阈值行+说明行钉在按钮上方');
+  assert.equal(ui.body.children.indexOf(info), ui.body.children.indexOf(btn) - 3, '前置：阈值行+说明行钉在按钮行上方');
   h.window.compactTest.state().ctxCpt = 0;
   h.tick();
   assert.equal(h.compactBtnOf(ui.body), undefined, '关闭：按钮摘除');
-  assert.equal(ui.body.children.indexOf(info), ui.body.children.indexOf(ui.borderT) - 2, '阈值行顶到按钮原位');
+  assert.equal(ui.body.children.indexOf(info), ui.body.children.indexOf(ui.borderT) - 3, '阈值行顶到上下文明细按钮上方');
   const hint = ui.body.children.find(e => e.classList.contains('zu-ac-hint'));
-  assert.equal(ui.body.children.indexOf(hint), ui.body.children.indexOf(ui.borderT) - 1, '说明行随阈值行补位');
+  assert.equal(ui.body.children.indexOf(hint), ui.body.children.indexOf(ui.borderT) - 2, '说明行随阈值行补位');
   h.window.compactTest.state().ctxCpt = 1;
   h.tick();
   const btn2 = h.compactBtnOf(ui.body);
   assert.ok(btn2, '重开：按钮重挂');
   assert.equal(ui.body.children.indexOf(btn2), ui.body.children.indexOf(ui.borderT) - 1, '重挂位置：「剩余额度」段上方');
   const info2 = ui.body.children.find(e => e.classList.contains('zu-ac-info'));
-  assert.equal(ui.body.children.indexOf(info2), ui.body.children.indexOf(btn2) - 2, '阈值行回到按钮上方');
+  assert.equal(ui.body.children.indexOf(info2), ui.body.children.indexOf(btn2) - 3, '阈值行回到按钮行上方');
 });
 
 test('v200 开关关闭且无阈值行：弹层仅摘按钮，无残留', () => {
@@ -700,7 +705,8 @@ test('v200 开关关闭且无阈值行：弹层仅摘按钮，无残留', () => 
   const ui = h.buildHoverCard({ withBorderT: true });
   h.inject(); h.boot(); h.tick();
   assert.equal(h.compactBtnOf(ui.body), undefined);
-  assert.ok(!ui.body.children.find(e => e.classList && String(e.className).indexOf('zu-') === 0), '无任何插件节点残留');
+  const zuLeft = ui.body.children.filter(e => e.classList && String(e.className).indexOf('zu-') === 0).map(e => String(e.className));
+  assert.deepEqual(zuLeft, ['zu-ext-ctx-btn'], '除扩展入口按钮外，无任何其它插件节点残留');
 });
 
 test('v200 ⚙ 开关全链路（真实面板 change）：关掉即摘按钮，开着确认框时兜底收起', () => {

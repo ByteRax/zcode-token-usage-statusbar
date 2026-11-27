@@ -2815,6 +2815,26 @@ async function pollPluginRequests() {
           const refreshed = !!(sysmonClient && sysmonWantAny());
           if (refreshed) sysmonClient.refreshNow();
           deliverPluginRequest(wc, req.requestId, refreshed ? { ok: true, pending: true } : { ok: false, error: "sysmon not subscribed" });
+        } else if (req && req.action === "open-ext-view") {   // Phase 1：弹层/设置快捷按钮唤起扩展视图
+          const viewId = req.viewId === "insights" ? "insights" : req.viewId === "context" ? "context" : "";
+          if (!viewId) {
+            deliverPluginRequest(wc, req.requestId, { ok: false, error: "invalid viewId" });
+          } else {
+            try {
+              const rawSid = typeof req.sessionId === "string" ? req.sessionId.trim() : "";
+              const sid = /^sess_[A-Za-z0-9_-]{1,120}$/.test(rawSid) ? rawSid : "";
+              const reqDir = HERE;
+              fs.mkdirSync(reqDir, { recursive: true });
+              const reqPath = path.join(reqDir, "ext-open-request.json");
+              const tmpPath = path.join(reqDir, ".ext-open-request.tmp." + process.pid + "." + Date.now());
+              const id = Date.now() + "-" + Math.random().toString(36).slice(2);
+              fs.writeFileSync(tmpPath, JSON.stringify({ id, viewId, sessionId: sid, ts: Date.now() }), "utf8");
+              fs.renameSync(tmpPath, reqPath);
+              deliverPluginRequest(wc, req.requestId, { ok: true });
+            } catch (e) {
+              deliverPluginRequest(wc, req.requestId, { ok: false, error: (e && e.message) || "write failed" });
+            }
+          }
         } else if (req && req.action === "relaunch") {   // v172：⚙ 更新页「重启 ZCode」按钮（浮层已二次确认）
           if (pluginUpdater && pluginUpdater.status().busy) {   // 更新进行中拒绝重启：quit 会打断下载/安装
             deliverPluginRequest(wc, req.requestId, { ok: false, error: "update in progress" });

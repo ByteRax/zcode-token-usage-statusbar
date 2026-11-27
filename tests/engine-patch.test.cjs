@@ -7,6 +7,8 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const vm = require("vm");
+const http = require("node:http");
+const cp = require("node:child_process");
 
 const ep = require("../engine-patch.cjs");
 const { createEnginePatcher, ENGINE_TARGETS, PROLOGUE, PROLOGUE_V1, PROLOGUE_V2, PROLOGUE_PREFIX, ANCHOR, REPLACEMENT, MARK, insertPrologue, resolveEnginePath, buildPatchedSource } = ep;
@@ -583,5 +585,477 @@ test("hook: mtime cache picks up rewrites without restart", () => {
     assert.equal(hook(EFF), 120000);
     env.write({ thresholdPercent: 85 });
     assert.equal(hook(EFF), 170000, "改 JSON 下轮决策生效");
+  } finally { env.cleanup(); }
+});
+
+/* ---------- 请求抓包 hook（CAPTURE_PROLOGUE，vm 沙箱 + 临时 HOME）---------- */
+const PROLOGUE_BASE = ep.PROLOGUE_BASE;
+const HDR = { "content-type": "application/json", "x-zcode-trace-id": "trace-1", "x-zcode-query-source": "main_turn", "x-zcode-session-type": "main" };
+const modelBody = (sys, tools, user) => JSON.stringify({
+  model: "m-1", system: sys, tools,
+  messages: [{ role: "user", content: user || "SECRET-USER-TEXT" }, { role: "assistant", content: [{ type: "text", text: "SECRET-ANSWER-TEXT" }] }],
+});
+const TOOLS = [{ name: "Read", description: "read a file", parameters: { type: "object" } }];
+
+function captureEnv() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ztus-capture-home-"));
+  const cfgDir = path.join(root, ".zcode", "zcode-token-usage-statusbar");
+  fs.mkdirSync(cfgDir, { recursive: true });
+  const capDir = path.join(cfgDir, "req-capture");
+  const jsonl = path.join(capDir, "requests.jsonl");
+  return {
+    root, capDir, jsonl,
+    cfg: path.join(cfgDir, "req-capture.json"),
+    setConfig: (obj) => fs.writeFileSync(path.join(cfgDir, "req-capture.json"), JSON.stringify(obj)),
+    lines: () => (fs.existsSync(jsonl) ? fs.readFileSync(jsonl, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []),
+    blobs: () => { const d = path.join(capDir, "blobs"); return fs.existsSync(d) ? fs.readdirSync(d).sort() : []; },
+    blobText: (h) => fs.readFileSync(path.join(capDir, "blobs", h + ".json"), "utf8"),
+    cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
+  };
+}
+
+function loadCapture(env, fetchImpl, extra = {}) {
+  const calls = [];
+  const clock = { value: 1700000000000 };   // 真实纪元毫秒量级：hook 的 5 秒节流窗以 0 为「上次检查」，小数值会被当成刚检查过
+  const base = fetchImpl || (async (input, init) => { calls.push({ input, init }); return { ok: true }; });
+  // node:http / node:https 替身：记下 request 入参，返回一个带 end 的假请求对象（真引擎就是 req.end(Buffer) 写请求体）
+  const httpCalls = [];
+  const fakeMod = () => ({
+    request(...args) {
+      httpCalls.push({ self: this, args });
+      const req = { ended: [], once() { return this; }, on() { return this; } };
+      req.end = function (...a) { this.ended.push(a[0]); return this; };
+      return req;
+    },
+  });
+  const http = fakeMod();
+  const https = fakeMod();
+  const sandbox = {
+    require: (name) => (name === "os" ? { homedir: () => env.root } : name === "node:http" ? http : name === "node:https" ? https : require(name)),
+    fetch: base,
+    Date: { now: () => clock.value },
+    Buffer,
+    ...extra,   // 额外的沙箱全局（例如 setImmediate 替身）
+  };
+  vm.runInNewContext(PROLOGUE, sandbox, { filename: "capture-prologue-test.js" });
+  return { fetch: sandbox.fetch, base, calls, clock, http, https, httpCalls };
+}
+
+/* 宿主 4.0.0 引擎 fetchHttpResponse 的两条真实调用形态 */
+const HOST_HDRS = new Headers({ "content-type": "application/json", "x-zcode-trace-id": "trace-1", "x-zcode-query-source": "main_turn", "x-zcode-session-type": "main" });
+const hostDirectFetch = (c, body) => c.fetch("https://x.test/api/chat/completions", { body: Buffer.from(body), method: "POST", headers: HOST_HDRS, redirect: "manual" });
+const hostNodeRequest = (mod, body) => {
+  // p.request({agent, headers, hostname, method, path, port, protocol, signal, lookup}, cb) → x.end(Buffer)
+  const hdrs = {};
+  HOST_HDRS.forEach((v, k) => { hdrs[k] = v; });
+  const req = mod.request({ agent: undefined, headers: hdrs, hostname: "x.test", method: "POST", path: "/api/chat/completions", port: void 0, protocol: "https:", signal: void 0, lookup: void 0 }, () => {});
+  req.once("error", () => {});
+  req.end(body === undefined ? void 0 : Buffer.from(body));
+  return req;
+};
+
+test("capture hook: full prologue compiles and is BASE + capture; legacy bodies stay free of it", () => {
+  assert.doesNotThrow(() => new vm.Script(PROLOGUE), "注入引擎的 prologue 必须可解析（坏一字即全引擎起不来）");
+  assert.ok(PROLOGUE.startsWith(PROLOGUE_BASE), "完整 prologue = 阈值 hook + 抓包 hook");
+  assert.ok(PROLOGUE.includes("request capture hook") && !PROLOGUE_BASE.includes("request capture hook"));
+  assert.equal(ep.PROLOGUE_CAP_V2, PROLOGUE_BASE + ep.CAPTURE_PROLOGUE_V2, "上一版抓包装机形态 = 阈值 hook + 上一版抓包 hook");
+  assert.notEqual(ep.CAPTURE_PROLOGUE_V2, ep.CAPTURE_PROLOGUE, "上一版文本原样保留，供迁移逐字节命中");
+  assert.ok(!/\\/.test(ep.CAPTURE_PROLOGUE), "抓包段不含反斜杠转义（模板会提前解开换行，生成非法 JS）");
+  // 上一版抓包串靠逐字节命中做原位迁移：这里钉死它的哈希，任何误改（哪怕一个字符）都会让测试变红，
+  // 而不是等到那台机器迁移时报 patched_inconsistent。要换掉这一版时连同哈希一起滚动。
+  assert.equal(sha256hex(Buffer.from(ep.CAPTURE_PROLOGUE_V2, "utf8")), "bd4bff09dd4a3f492b197a3d39ab1906d02e08604cee27eb6aa5c48340285cab");
+  assert.ok(!PROLOGUE_V1.includes("request capture hook") && !PROLOGUE_V2.includes("request capture hook"), "旧代际串不得混入抓包段（迁移要逐字节命中）");
+});
+
+test("capture hook: off by default — pass-through, nothing on disk", async () => {
+  const env = captureEnv();
+  try {
+    const c = loadCapture(env);
+    const init = { method: "POST", headers: HDR, body: modelBody("You are a helper", TOOLS) };
+    const res = await c.fetch("https://x.test/v1/chat/completions", init);
+    assert.deepEqual(res, { ok: true });
+    assert.equal(c.calls.length, 1);
+    assert.equal(c.calls[0].init, init, "参数原样透传");
+    assert.deepEqual(env.lines(), []);
+    assert.deepEqual(env.blobs(), []);
+    env.setConfig({ enabled: false });
+    c.clock.value += 6000;
+    await c.fetch("https://x.test/v1/chat/completions", init);
+    assert.deepEqual(env.lines(), [], "enabled:false 不记");
+    env.setConfig("{broken");
+    c.clock.value += 6000;
+    await c.fetch("https://x.test/v1/chat/completions", init);
+    assert.deepEqual(env.lines(), [], "损坏配置不记也不抛");
+  } finally { env.cleanup(); }
+});
+
+test("capture hook: enabled — one line per model request, deduped blobs, no message bodies", async () => {
+  const env = captureEnv();
+  try {
+    env.setConfig({ enabled: true });
+    const c = loadCapture(env);
+    await c.fetch("https://x.test/v1/chat/completions", { method: "POST", headers: HDR, body: modelBody("You are a helper", TOOLS) });
+    await c.fetch("https://x.test/v1/messages", { method: "POST", headers: HDR, body: modelBody("You are a helper", TOOLS, "SECOND-USER-TEXT") });
+    const lines = env.lines();
+    assert.equal(lines.length, 2);
+    const l = lines[0];
+    assert.equal(l.trace, "trace-1");
+    assert.equal(l.querySource, "main_turn");
+    assert.equal(l.sessionType, "main");
+    assert.equal(l.model, "m-1");
+    assert.equal(l.ts, 1700000000000);
+    assert.equal(l.messages, 2);
+    assert.ok(l.messageChars > 0, "只记消息条数与字符数");
+    const sysJson = JSON.stringify("You are a helper"), toolsJson = JSON.stringify(TOOLS);
+    assert.equal(l.systemHash, sha256hex(Buffer.from(sysJson)));
+    assert.equal(l.toolsHash, sha256hex(Buffer.from(toolsJson)));
+    assert.equal(l.systemChars, sysJson.length);
+    assert.equal(l.toolsChars, toolsJson.length);
+    assert.deepEqual(env.blobs(), [l.systemHash + ".json", l.toolsHash + ".json"].sort(), "两次同 system/tools 只落两份 blob");
+    assert.equal(env.blobText(l.systemHash), sysJson, "blob 是 JSON 值，读取端 json.loads 即得原文");
+    assert.equal(env.blobText(l.toolsHash), toolsJson);
+    const everything = fs.readFileSync(env.jsonl, "utf8") + env.blobText(l.systemHash) + env.blobText(l.toolsHash);
+    for (const secret of ["SECRET-USER-TEXT", "SECRET-ANSWER-TEXT", "SECOND-USER-TEXT"]) {
+      assert.ok(!everything.includes(secret), "消息正文不得落盘：" + secret);
+    }
+    assert.equal(c.calls.length, 2, "原请求照常发出");
+  } finally { env.cleanup(); }
+});
+
+test("capture hook: non-model requests and unusable bodies are skipped without breaking the call", async () => {
+  const env = captureEnv();
+  try {
+    env.setConfig({ enabled: true });
+    const c = loadCapture(env);
+    const body = modelBody("sys", TOOLS);
+    await c.fetch("https://x.test/v1/chat/completions", { method: "GET", headers: HDR });
+    await c.fetch("https://x.test/v1/chat/completions", { method: "PUT", headers: HDR, body });            // 带归因头、带请求体，但不是 POST
+    await c.fetch("https://x.test/v1/chat/completions", { method: "get", headers: HDR, body: modelBody("sys-lower", TOOLS) });
+    await c.fetch("https://x.test/v1/chat/completions", { method: "POST", body });             // 无归因头
+    await c.fetch("https://x.test/v1/chat/completions", { method: "POST", headers: { "X-Zcode-Trace-Id": "" }, body });
+    await c.fetch("https://x.test/v1/chat/completions", { method: "POST", headers: HDR, body: "not json" });
+    await c.fetch("https://x.test/v1/chat/completions", { method: "POST", headers: HDR, body: "[1,2]" });
+    await c.fetch("https://x.test/v1/chat/completions", { method: "POST", headers: HDR, body: JSON.stringify({ model: "m", messages: [] }) });
+    assert.equal(c.calls.length, 8, "原请求照常发出");
+    assert.deepEqual(env.lines(), [], "只有 POST 记：PUT 与带体 GET 不记");
+    assert.deepEqual(env.blobs(), []);
+    await c.fetch("https://x.test/v1/chat/completions", { method: "POST", headers: { "X-ZCODE-TRACE-ID": "trace-upper" }, body });
+    assert.equal(env.lines().length, 1, "请求头大小写不敏感");
+    assert.equal(env.lines()[0].trace, "trace-upper");
+  } finally { env.cleanup(); }
+});
+
+test("capture hook: Request-object input with an async body is captured", async () => {
+  const env = captureEnv();
+  try {
+    env.setConfig({ enabled: true });
+    const c = loadCapture(env);
+    const req = {
+      method: "POST",
+      headers: { get: (n) => (n === "x-zcode-trace-id" ? "trace-req" : n === "x-zcode-session-type" ? "subagent" : null) },
+      clone() { return { text: async () => modelBody("sys-req", null) }; },
+    };
+    await c.fetch(req);
+    assert.equal(c.calls.length, 1, "原请求照常发出，不等抓包");
+    await new Promise((r) => setImmediate(r));
+    const lines = env.lines();
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].trace, "trace-req");
+    assert.equal(lines[0].sessionType, "subagent");
+    assert.equal(lines[0].toolsHash, "", "无 tools 不落 blob");
+    assert.deepEqual(env.blobs(), [lines[0].systemHash + ".json"]);
+  } finally { env.cleanup(); }
+});
+
+test("capture hook: config flips are picked up without a restart, at most once per 5s", async () => {
+  const env = captureEnv();
+  try {
+    env.setConfig({ enabled: true });
+    const c = loadCapture(env);
+    const post = () => c.fetch("https://x.test/v1/chat/completions", { method: "POST", headers: HDR, body: modelBody("sys", null) });
+    await post();
+    assert.equal(env.lines().length, 1);
+    env.setConfig({ enabled: false });
+    await post();
+    assert.equal(env.lines().length, 2, "5 秒内仍用缓存的开关");
+    c.clock.value += 6000;
+    await post();
+    assert.equal(env.lines().length, 2, "过了节流窗读到关闭");
+    env.setConfig({ enabled: true });
+    await post();
+    assert.equal(env.lines().length, 2);
+    c.clock.value += 6000;
+    await post();
+    assert.equal(env.lines().length, 3, "重新打开同样免重启");
+  } finally { env.cleanup(); }
+});
+
+test("capture hook: requests.jsonl keeps the last 300 lines past 512KB; blobs are capped at 300", async () => {
+  const env = captureEnv();
+  try {
+    env.setConfig({ enabled: true });
+    const c = loadCapture(env);
+    for (let i = 0; i < 1700; i++) {
+      await c.fetch("https://x.test/v1/chat/completions", { method: "POST", headers: { ...HDR, "x-zcode-trace-id": "trace-" + (i % 7) }, body: modelBody("sys", TOOLS) });
+    }
+    const lines = env.lines();
+    assert.ok(lines.length > 0 && lines.length < 1700, "1700 行足以触发至少一次滚动，滚动掉更早的行：" + lines.length);
+    assert.equal(lines[0].trace, "trace-" + ((1700 - lines.length) % 7), "留下的是最近写入的行（连续、无空洞）");
+    for (let i = 1; i < lines.length; i++) {
+      assert.equal(lines[i].trace, "trace-" + ((1700 - lines.length + i) % 7), "第 " + i + " 行连续");
+    }
+    assert.ok(fs.statSync(env.jsonl).size <= 524288, "滚动后文件回到 512KB 以内");
+    for (let i = 0; i < 320; i++) {
+      await c.fetch("https://x.test/v1/chat/completions", { method: "POST", headers: HDR, body: modelBody("distinct-system-" + i + "-" + "x".repeat(200), null) });
+    }
+    assert.equal(env.blobs().length, 300, "blob 目录封顶 300 个，超出按最旧删除");
+    for (const h of env.blobs()) assert.ok(/^[0-9a-f]{64}\.json$/.test(h), "blob 文件名=内容 SHA256");
+  } finally { env.cleanup(); }
+});
+
+test("ensure migrates an engine patched with the threshold-only prologue (PROLOGUE_BASE) and restore handles it", () => {
+  const s = setup();
+  try {
+    registerTarget(s.original);
+    /* 加抓包 hook 之前的装机形态：只有阈值 hook + 同一替换体 */
+    const legacy = buildPatchedSource(s.original.toString("utf8"), { anchor: ANCHOR, replacement: REPLACEMENT, prologue: PROLOGUE_BASE });
+    assert.ok(legacy && !legacy.error);
+    fs.writeFileSync(s.enginePath, legacy.output);
+    assert.equal(s.patcher.ensure(), "applied");
+    const after = fs.readFileSync(s.enginePath, "utf8");
+    assert.ok(after.includes(PROLOGUE), "hook 本体已换装为 阈值+抓包 完整版");
+    assert.ok(after.includes(REPLACEMENT), "锚点替换体保持不变");
+    assert.equal(after.split("request capture hook").length - 1, 1, "抓包 hook 只有一份，不叠加");
+    assert.equal(s.patcher.ensure(), "applied", "迁移后幂等");
+    assert.equal(s.patcher.restore(), "off");
+    assert.deepEqual(fs.readFileSync(s.enginePath), s.original, "完整版装机还原到原版字节");
+    /* 只装了 BASE 的机器直接 restore 也要能还原 */
+    fs.writeFileSync(s.enginePath, legacy.output);
+    assert.equal(s.patcher.restore(), "off");
+    assert.deepEqual(fs.readFileSync(s.enginePath), s.original);
+  } finally { s.cleanup(); }
+});
+
+test("capture hook: host direct path — fetch with a Buffer body and a Headers instance is captured", async () => {
+  const env = captureEnv();
+  try {
+    env.setConfig({ enabled: true });
+    const c = loadCapture(env);
+    await hostDirectFetch(c, modelBody("You are a helper", TOOLS));
+    assert.equal(env.lines().length, 1, "Buffer 请求体（宿主 fetchHttpResponse 直连分支的写法）必须能记");
+    assert.equal(env.lines()[0].trace, "trace-1");
+    assert.equal(env.lines()[0].systemChars, JSON.stringify("You are a helper").length);
+    assert.equal(c.calls.length, 1, "原请求照常发出");
+    // 其余字节形态
+    const text = modelBody("sys-u8", null);
+    await c.fetch("https://x.test/a", { method: "POST", headers: HDR, body: new TextEncoder().encode(text) });
+    await c.fetch("https://x.test/a", { method: "POST", headers: HDR, body: new TextEncoder().encode(text).buffer });
+    const view = new TextEncoder().encode(modelBody("sys-dv", null));
+    await c.fetch("https://x.test/a", { method: "POST", headers: HDR, body: new DataView(view.buffer, 1, view.length - 1) });
+    assert.equal(env.lines().length, 3, "Uint8Array / ArrayBuffer 记；DataView 截掉首字节后不是合法 JSON，不记也不抛");
+    assert.ok(!env.lines().some((l) => l.systemChars === 0));
+    await c.fetch("https://x.test/a", { method: "POST", headers: HDR, body: { not: "bytes" } });
+    await c.fetch("https://x.test/a", { method: "POST", headers: HDR, body: null });
+    assert.equal(env.lines().length, 3, "无法解码的请求体静默跳过");
+    assert.equal(c.calls.length, 6);
+  } finally { env.cleanup(); }
+});
+
+test("capture hook: host node path — http(s).request({method, headers}, cb) + req.end(Buffer) is captured", async () => {
+  const env = captureEnv();
+  try {
+    env.setConfig({ enabled: true });
+    const c = loadCapture(env);
+    assert.ok(c.http.request.__zc === 1 && c.https.request.__zc === 1, "node:http 与 node:https 的 request 都被包了");
+    const req = hostNodeRequest(c.https, modelBody("sys-node", TOOLS));
+    assert.ok(req.ended.length === 1 && Buffer.isBuffer(req.ended[0]), "请求体原样交给原 end（Buffer 不动）");
+    assert.equal(c.httpCalls.length, 1);
+    assert.equal(c.httpCalls[0].self, c.https, "this 保持为模块对象");
+    assert.equal(env.lines().length, 1);
+    assert.equal((env.lines()[0].trace, env.lines()[0].systemChars), JSON.stringify("sys-node").length);
+    hostNodeRequest(c.http, modelBody("sys-http", null));
+    assert.equal(env.lines().length, 2, "http 与 https 两条都记");
+    // 不该记的：GET、无归因头、关闭状态
+    c.https.request({ method: "GET", headers: { "x-zcode-trace-id": "t" }, hostname: "x.test" }, () => {}).end();
+    const plain = c.https.request({ method: "POST", headers: {}, hostname: "x.test" }, () => {});
+    plain.end(Buffer.from(modelBody("no-trace", null)));
+    assert.equal(plain.ended.length, 1);
+    assert.equal(env.lines().length, 2, "GET 与无归因头的请求不记");
+    // request(url, options, cb) 重载：选项在第二个参数
+    const urlOpts = c.https.request("https://x.test/p", { method: "POST", headers: { "x-zcode-trace-id": "trace-url" } }, () => {});
+    urlOpts.end(Buffer.from(modelBody("sys-url", null)));
+    assert.equal(env.lines().length, 3);
+    assert.equal(env.lines()[2].trace, "trace-url");
+    // 关闭状态：原样透传、不记
+    env.setConfig({ enabled: false });
+    c.clock.value += 6000;
+    const off = c.https.request({ method: "POST", headers: { "x-zcode-trace-id": "trace-1" }, hostname: "x.test" }, () => {});
+    off.end(Buffer.from(modelBody("off", null)));
+    assert.equal(off.ended.length, 1, "请求体照常交给原 end");
+    assert.equal(env.lines().length, 3, "关闭状态不记");
+    await hostDirectFetch(c, modelBody("off-fetch", null));
+    assert.equal(env.lines().length, 3, "关闭状态 fetch 路径同样不记");
+    // 同一模块重复初始化不叠加
+    vm.runInNewContext(PROLOGUE, { require: (name) => (name === "os" ? { homedir: () => env.root } : name === "node:https" ? c.https : name === "node:http" ? c.http : require(name)), Buffer, Date: { now: () => c.clock.value } }, { filename: "again.js" });
+    assert.equal(c.https.request.__zc, 1);
+  } finally { env.cleanup(); }
+});
+
+test("ensure migrates an engine patched with the previous capture hook (PROLOGUE_CAP_V2) and restore handles it", () => {
+  const s = setup();
+  try {
+    registerTarget(s.original);
+    const legacy = buildPatchedSource(s.original.toString("utf8"), { anchor: ANCHOR, replacement: REPLACEMENT, prologue: ep.PROLOGUE_CAP_V2 });
+    assert.ok(legacy && !legacy.error);
+    fs.writeFileSync(s.enginePath, legacy.output);
+    assert.equal(s.patcher.ensure(), "applied");
+    const after = fs.readFileSync(s.enginePath, "utf8");
+    assert.ok(after.includes(PROLOGUE), "已换装 阈值+抓包 v2");
+    assert.ok(!after.includes(ep.PROLOGUE_CAP_V2), "初版抓包不残留");
+    assert.equal(after.split("request capture hook").length - 1, 1, "抓包 hook 只有一份");
+    assert.equal(s.patcher.ensure(), "applied", "迁移后幂等");
+    assert.equal(s.patcher.restore(), "off");
+    assert.deepEqual(fs.readFileSync(s.enginePath), s.original, "还原到原版字节");
+    fs.writeFileSync(s.enginePath, legacy.output);
+    assert.equal(s.patcher.restore(), "off", "初版抓包装机直接 restore");
+    assert.deepEqual(fs.readFileSync(s.enginePath), s.original);
+  } finally { s.cleanup(); }
+});
+
+test("capture hook: real Node runtime — both host request shapes hit a local server (temp HOME, real fetch/Headers/Buffer/http)", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "ztus-capture-real-home-"));
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    let n = 0;
+    req.on("data", (c) => { n += c.length; });
+    req.on("end", () => { seen.push({ method: req.method, trace: req.headers["x-zcode-trace-id"], bytes: n }); res.writeHead(200, { "content-type": "application/json" }); res.end("{}"); });
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  try {
+    const url = "http://127.0.0.1:" + server.address().port + "/v1/chat/completions";
+    const cfgDir = path.join(home, ".zcode", "zcode-token-usage-statusbar");
+    fs.mkdirSync(cfgDir, { recursive: true });
+    fs.writeFileSync(path.join(cfgDir, "req-capture.json"), JSON.stringify({ enabled: true }));
+    const body = JSON.stringify({ model: "m", system: "REAL NODE", tools: [{ name: "Read" }], messages: [{ role: "user", content: "NEVER-STORED-BODY" }] });
+    // 子进程里：先跑真实 prologue，再按宿主 fetchHttpResponse 的两种写法发请求
+    const driver = [
+      PROLOGUE,
+      "(async () => {",
+      "  const hdrs = new Headers({ 'content-type': 'application/json', 'x-zcode-trace-id': 'trace-real', 'x-zcode-query-source': 'main_turn', 'x-zcode-session-type': 'main' });",
+      "  const r1 = await fetch(" + JSON.stringify(url) + ", { body: Buffer.from(" + JSON.stringify(body) + "), method: 'POST', headers: hdrs, redirect: 'manual' });",
+      "  await r1.text();",
+      "  const u = new URL(" + JSON.stringify(url) + ");",
+      "  const h = {}; hdrs.forEach((v, k) => { h[k] = v; });",
+      "  await new Promise((resolve, reject) => {",
+      "    const x = require('node:http').request({ agent: undefined, headers: h, hostname: u.hostname, method: 'POST', path: u.pathname + u.search, port: u.port || undefined, protocol: u.protocol, signal: undefined, lookup: undefined }, (r) => { r.resume(); r.on('end', resolve); });",
+      "    x.once('error', reject);",
+      "    x.end(Buffer.from(" + JSON.stringify(body) + "));",
+      "  });",
+      "  await new Promise((r) => setImmediate(r));",
+      "})().catch((e) => { console.error((e && e.stack) || e); process.exit(3); });",
+    ].join("\n");
+    const res = await new Promise((resolve) => {
+      const child = cp.spawn(process.execPath, ["-e", driver], { env: { ...process.env, HOME: home, USERPROFILE: home }, stdio: ["ignore", "pipe", "pipe"] });
+      let err = "";
+      child.stderr.on("data", (d) => { err += d; });
+      child.on("close", (code) => resolve({ code, err }));
+    });
+    assert.equal(res.code, 0, "子进程正常结束：" + res.err.slice(0, 400));
+    assert.deepEqual(seen.map((x) => [x.method, x.trace, x.bytes]), [["POST", "trace-real", Buffer.byteLength(body)], ["POST", "trace-real", Buffer.byteLength(body)]], "两次请求原样到达服务器，请求体一字节没动");
+    const jsonl = path.join(cfgDir, "req-capture", "requests.jsonl");
+    const lines = fs.readFileSync(jsonl, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    assert.equal(lines.length, 2, "两条路径各记一条");
+    assert.deepEqual(lines.map((l) => l.trace), ["trace-real", "trace-real"]);
+    assert.equal(lines[0].systemHash, lines[1].systemHash);
+    assert.equal(lines[0].systemChars, JSON.stringify("REAL NODE").length);
+    assert.equal(lines[0].messages, 1);
+    const blob = path.join(cfgDir, "req-capture", "blobs", lines[0].systemHash + ".json");
+    assert.equal(fs.readFileSync(blob, "utf8"), JSON.stringify("REAL NODE"));
+    assert.ok(!fs.readFileSync(jsonl, "utf8").includes("NEVER-STORED-BODY") && !fs.readFileSync(blob, "utf8").includes("NEVER-STORED-BODY"), "消息正文不落盘");
+    assert.ok(!fs.existsSync(path.join(home, ".zcode", "zcode-token-usage-statusbar", "autocompact.json")), "阈值 hook 不受影响、不写东西");
+    // 审查第 1 轮 R2：system prompt 可能含项目规则/记忆，落盘文件只给本人读（POSIX）
+    if (process.platform !== "win32") {
+      const capDir = path.join(cfgDir, "req-capture");
+      assert.equal(fs.statSync(capDir).mode & 0o777, 0o700, "req-capture 目录 0700");
+      assert.equal(fs.statSync(path.join(capDir, "blobs")).mode & 0o777, 0o700, "blobs 目录 0700");
+      assert.equal(fs.statSync(jsonl).mode & 0o777, 0o600, "requests.jsonl 0600");
+      assert.equal(fs.statSync(blob).mode & 0o777, 0o600, "blob 0600");
+      assert.equal(typeof lines[0].messageChars, "number");
+    }
+  } finally {
+    await new Promise((r) => server.close(r));
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("capture hook: parsing and writing are deferred off the request path (unref'd setImmediate)", async () => {
+  const env = captureEnv();
+  try {
+    env.setConfig({ enabled: true });
+    const queued = [];
+    let unrefd = 0;
+    const fakeSetImmediate = (fn) => { queued.push(fn); return { unref() { unrefd += 1; } }; };
+    const c = loadCapture(env, undefined, { setImmediate: fakeSetImmediate });
+    await hostDirectFetch(c, modelBody("sys-defer", TOOLS));
+    assert.equal(c.calls.length, 1, "原请求照常发出");
+    assert.equal(env.lines().length, 0, "请求返回时还没有解析/落盘");
+    const req = hostNodeRequest(c.https, modelBody("sys-defer-http", null));
+    assert.equal(req.ended.length, 1, "请求体原样交给原 end");
+    assert.equal(env.lines().length, 0);
+    assert.equal(queued.length, 2, "两条路径各排了一个延后任务");
+    assert.ok(unrefd >= 2, "延后定时器都 unref（不拖住进程）");
+    while (queued.length) queued.shift()();
+    assert.deepEqual(env.lines().map((l) => l.systemChars), [JSON.stringify("sys-defer").length, JSON.stringify("sys-defer-http").length]);
+    // 没有 setImmediate 的环境同步执行
+    const sync = loadCapture(env);
+    await hostDirectFetch(sync, modelBody("sys-sync", null));
+    assert.equal(env.lines().length, 3);
+  } finally { env.cleanup(); }
+});
+
+test("capture hook: messageChars is null (not a misleading 0) when the message list is too long to estimate", async () => {
+  const env = captureEnv();
+  try {
+    env.setConfig({ enabled: true });
+    const c = loadCapture(env);
+    const many = JSON.stringify({ model: "m", system: "sys-many", tools: [], messages: Array.from({ length: 20001 }, () => ({ role: "user", content: "x" })) });
+    await c.fetch("https://x.test/a", { method: "POST", headers: HDR, body: many });
+    const l = env.lines()[0];
+    assert.equal(l.messages, 20001, "条数照记");
+    assert.equal(l.messageChars, null, "超过 2 万条不估字符数：写 null");
+    assert.equal(l.systemChars, JSON.stringify("sys-many").length);
+    const ok = JSON.stringify({ model: "m", system: "s", tools: [], messages: [{ role: "user", content: "hello" }] });
+    await c.fetch("https://x.test/a", { method: "POST", headers: HDR, body: ok });
+    assert.equal(env.lines()[1].messageChars, JSON.stringify({ role: "user", content: "hello" }).length);
+  } finally { env.cleanup(); }
+});
+
+test("capture hook: request bodies are decoded as UTF-8 (non-ASCII system prompts keep their characters)", async () => {
+  const env = captureEnv();
+  try {
+    env.setConfig({ enabled: true });
+    const c = loadCapture(env);
+    const sys = "系统提示 · тест · “引号” · 换行";
+    await c.fetch("https://x.test/a", { method: "POST", headers: HDR, body: Buffer.from(modelBody(sys, [{ name: "读文件", description: "читать" }]), "utf8") });
+    const l = env.lines()[0];
+    const sysJson = JSON.stringify(sys);
+    assert.equal(l.systemChars, sysJson.length, "按 UTF-8 解码后字符数与原文一致");
+    assert.equal(l.systemHash, sha256hex(Buffer.from(sysJson, "utf8")));
+    assert.equal(env.blobText(l.systemHash), sysJson, "blob 里是原样的非 ASCII 文本");
+  } finally { env.cleanup(); }
+});
+
+test("capture hook: message bodies never reach disk even in truncated or partial form", async () => {
+  const env = captureEnv();
+  try {
+    env.setConfig({ enabled: true });
+    const c = loadCapture(env);
+    await c.fetch("https://x.test/a", { method: "POST", headers: HDR, body: modelBody("sys", null, "SECRET-USER-TEXT") });
+    await hostDirectFetch(c, modelBody("sys", TOOLS, "SECRET-USER-TEXT"));
+    const record = fs.readFileSync(env.jsonl, "utf8");
+    assert.deepEqual(Object.keys(JSON.parse(record.split("\n")[0])).sort(),
+      ["messageChars", "messages", "model", "querySource", "sessionType", "systemChars", "systemHash", "toolsChars", "toolsHash", "trace", "ts"],
+      "记录行只有这些字段：没有任何承载消息内容的键");
+    assert.ok(!record.includes("SECRET") && !record.includes("role") && !record.includes("content"));
   } finally { env.cleanup(); }
 });
