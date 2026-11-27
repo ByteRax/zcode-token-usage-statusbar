@@ -37,7 +37,9 @@ def load_rows(db_path, since_ms):
     """窗口内已完成（status='completed'）的请求行；进行中/取消/出错的不算，
     与 zusage 查询口径一致。库不存在或读不了时原样抛出，由 main 报错退出。"""
     path = Path(os.path.abspath(os.fspath(db_path)))
-    con = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=3)
+    # URI 由 Path.as_uri 生成（带百分号编码）：手拼 "file:" 路径时，路径里的 # 会截断 URI 并丢掉
+    # mode=ro（库没被打开，还在父目录里留下一个 0 字节文件），% 后跟两位十六进制会被当成转义
+    con = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=3)
     try:
         return [dict(zip(_COLUMNS, row)) for row in con.execute(
             "select session_id, model_id, query_source, started_at, first_token_at, retry_count"
@@ -168,4 +170,9 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    # Windows 上 stdout 接管道时按区域代码页编码：报告里的中文在 cp1252 管道上一句就 UnicodeEncodeError。
+    # 保留调用方的编码，只把编不了的字符转义
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="backslashreplace")
     sys.exit(main())

@@ -8,20 +8,30 @@ const { EventEmitter } = require("node:events");
 const source = fs.readFileSync(path.join(__dirname, "..", "inject-main.cjs"), "utf8");
 const A = "remote:ssh:a:22:u:/p", B = "remote:ssh:b:22:u:/p";
 const flush = () => new Promise(resolve => setImmediate(resolve));
-function loadPump(config = {}, desktopHome = "/fixture/home") {
+/* 夹具根：POSIX 沿用字面量 /fixture；win32 取带盘符的原生绝对路径——宿主页门（trustedSender /
+ * isLocalHostPage / pollPluginRequests）按 path.relative(resourcesPath, fileURLToPath(url)) 判内外，
+ * 窗口 URL 与 resourcesPath 必须同盘且都带盘符，无盘符的 file:///fixture/... 在 win32 解析即抛错、整窗被判外部页。 */
+const FX = process.platform === "win32" ? path.resolve(path.sep, "fixture") : "/fixture";
+const HOST_URL = require("node:url").pathToFileURL(path.join(FX, "resources", "index.html")).href;
+/* mock fs 入口归一化：产品传入 path.join/path.resolve 的产物（win32 为反斜杠、带盘符），
+ * 折成正斜杠、去盘符后再与 POSIX 夹具键比较。 */
+const norm = p => String(p).replace(/\\/g, "/").replace(/^[a-zA-Z]:/, "");
+
+function loadPump(config = {}, desktopHome = path.join(FX, "home")) {
   let now = 100000, id = 0, cfgStamp = 1, settingStamp = 1, dbStamp = 1;
   const timers = new Map(), intervals = [], procs = [], lines = [], windows = [], ipc = new EventEmitter();
   let cfg = { activity_min_ms: 300, remote: { poll_ms: 1000 }, ...config };
   class Clock extends Date { static now() { return now; } }
   const mockFs = {
     readFileSync: file => String(file).endsWith("config.json") ? JSON.stringify(cfg) : "{}",
-    statSync: file => {
+    statSync: raw => {
+      const file = norm(raw);
       if (file === "/fixture/runtime/config.json") return { mtimeMs: cfgStamp, size: 1 };
-      if (file === desktopHome + "/.zcode/v2/setting.json") return { mtimeMs: settingStamp, size: 1 };
+      if (file === norm(desktopHome) + "/.zcode/v2/setting.json") return { mtimeMs: settingStamp, size: 1 };
       if (["/fixture/runtime/overlay.js", "/fixture/runtime/zusage.py",
         // db 路径跟随 desktopHome（issue #279 起 dbDir 解析 setting.json dataBaseDir / env），
         // development-home 场景下库随之迁移，否则 stamp 恒 0 打穿去重
-        ...["db.sqlite", "db.sqlite-wal", "db.sqlite-shm"].map(name => desktopHome + "/.zcode/cli/db/" + name)].includes(file)) {
+        ...["db.sqlite", "db.sqlite-wal", "db.sqlite-shm"].map(name => norm(desktopHome) + "/.zcode/cli/db/" + name)].includes(file)) {
         return { mtimeMs: file.includes("/db/") ? dbStamp : 1, size: 1 };
       }
       throw Object.assign(new Error("ENOENT: " + file), { code: "ENOENT" });
@@ -29,15 +39,16 @@ function loadPump(config = {}, desktopHome = "/fixture/home") {
     existsSync: () => false, watch: () => ({ on() {} }), writeFileSync() {},
   };
   const sandbox = {
-    __dirname: "/fixture/runtime", console: { error() {} }, Date: Clock,
-    process: { resourcesPath: "/fixture/resources", execPath: process.execPath, uptime: () => 1,
+    __dirname: path.join(FX, "runtime"), console: { error() {} }, Date: Clock,
+    // process 替身有意不带 platform：缺省代表非 Linux（个别用例显式设 sandbox.process.platform 模拟 Linux）
+    process: { resourcesPath: path.join(FX, "resources"), execPath: process.execPath, uptime: () => 1,
       env: { ZCODE_DESKTOP_HOME_DIR: desktopHome } }, module: { exports: {} },
     setTimeout: (fn, ms) => { timers.set(++id, { fn, at: now + ms }); return id; },
     clearTimeout: id => timers.delete(id), setInterval: (fn, ms) => { intervals.push({ fn, ms }); return intervals.length; },
     require(name) {
       if (name === "fs") return mockFs;
       if (["path", "url", "crypto"].includes(name)) return require(name);
-      if (name === "electron") return { app: { getPath: () => "/fixture/home", on() {} }, webContents: { getAllWebContents: () => windows }, ipcMain: ipc };
+      if (name === "electron") return { app: { getPath: () => path.join(FX, "home"), on() {} }, webContents: { getAllWebContents: () => windows }, ipcMain: ipc };
       if (name === "child_process") return {
         spawn(cmd, args) {
           const p = new EventEmitter();
@@ -53,7 +64,7 @@ function loadPump(config = {}, desktopHome = "/fixture/home") {
   vm.runInNewContext(source, sandbox);
   function addWindow(identity, sid = "sA") {
     const wc = { id: windows.length + 1, page: { s: [sid], w: identity ? { [sid]: [identity] } : {}, p: {} }, pushes: [],
-      getType: () => "window", isDestroyed: () => false, getURL: () => "file:///fixture/resources/index.html",
+      getType: () => "window", isDestroyed: () => false, getURL: () => HOST_URL,
       executeJavaScript: async js => {
         if (js.includes("var a=window.__zusageWantSids")) return JSON.stringify(wc.page);
         if (js.startsWith("window.__zusageUpdate")) wc.pushes.push(js);
@@ -157,7 +168,7 @@ test("local idle dedups, config and client setting changes invalidate dedup", as
   f.settingChanged(); f.api.maybeSpawn(); await flush(); assert.equal(f.lines.length, 3);
 });
 test("development desktop HOME setting changes invalidate local dedup", async () => {
-  const f = loadPump({}, "/fixture/development-home");
+  const f = loadPump({}, path.join(FX, "development-home"));
   await start(f, "");
   f.respond({ recent: [], not_local: [], remote_enabled: false });
   await f.advance(31000);

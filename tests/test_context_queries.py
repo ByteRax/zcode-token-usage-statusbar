@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 import zusage
@@ -170,7 +171,7 @@ class ContextQueriesRichTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.con = sqlite3.connect(":memory:")
         self.con.row_factory = sqlite3.Row
-        self.now = now = _hours_ago_ms(2)   # 远离日界线：当日归属稳定
+        self.now = now = _hours_ago_ms(2)   # 夹具请求都在两小时前；日桶按这个时刻的本地日期取，不假设它是「今天」
         ms = lambda ago: now - ago * 1000   # noqa: E731  「ago 秒前」的毫秒时间戳
         self.con.executescript("""
             CREATE TABLE session (
@@ -293,7 +294,9 @@ class ContextQueriesRichTests(unittest.TestCase):
         self.assertEqual(isp["sub"]["tokens"], 2400)
         self.assertEqual(isp["main"]["tokens"] + isp["sub"]["tokens"] + isp["aux"]["tokens"], isp["all"]["tokens"])
         self.assertEqual(sum(x["tokens"] for x in ins["tokenSplit"]), ins["kpi"]["billedTokens"])
-        day = ins["daily"][-1]
+        # 日桶按夹具时刻的本地日期取：00:00–02:00 之间跑时「两小时前」属于昨天，daily[-1]（今天）恒为空
+        day_date = datetime.fromtimestamp(self.now / 1000.0).strftime("%Y-%m-%d")
+        day = next(x for x in ins["daily"] if x["date"] == day_date)
         self.assertEqual((day["mainTokens"], day["subTokens"], day["tokens"]), (1820, 2400, 4280), "主=1200+600+20，子=2400，合计含辅助 60")
         self.assertLessEqual(day["mainCostUsd"] + day["subCostUsd"], day["costUsd"] + 1e-12, "主+子的费用不超过当日合计（差额是辅助请求）")
         self.assertAlmostEqual(isp["main"]["costUsd"] + isp["sub"]["costUsd"] + isp["aux"]["costUsd"], isp["all"]["costUsd"], places=9)
@@ -487,36 +490,86 @@ class ContextQueriesRichTests(unittest.TestCase):
         cps = zusage.session_stats_json(self.con, "sess_c")["compactions"]
         self.assertEqual([c["postTokens"] for c in cps], [77000, 0, 0])
 
+    def test_command_program_first_word_forms(self):
+        cp = zusage._command_program
+        cases = [
+            ('"C:\\Program Files\\Git\\cmd\\git.exe" status --short', "git.exe"),   # 引号包裹的 Windows 绝对路径
+            ("C:\\Windows\\System32\\cmd.exe /c dir", "cmd.exe"),
+            ("/usr/bin/git log", "git"), ("git  status", "git"), ("  'git' log", "git"),     # 单引号、前导空白
+            ('& "C:\\Tools\\x y\\a.exe" -Flag', "a.exe"),                              # PowerShell 调用符
+            ("", ""), ("   ", ""), ('"', ""), ("''", ""), ("&", ""),                       # 没有首词
+            ("C:\\x\\", ""),                                                            # 尾分隔符之后是空串：调用方按空跳过
+        ]
+        for cmd, want in cases:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(cp(cmd), want)
+        # 引号没闭合：退化成引号后第一个空白前的词（不抛异常）
+        self.assertIsInstance(cp('"C:\\Program Files\\Git status'), str)
+
+    def test_command_program_name_survives_windows_paths_and_quotes(self):
+        # 审查 R3：程序名只按 / 切时，Windows 的绝对路径命令得到整条反斜杠路径，带引号带空格的被截成
+        # "C:\Program——同一个程序按调用写法被拆成多项
+        def programs():
+            return {p["name"]: p["count"] for p in zusage.insights_json(self.con, days=7)["topPrograms"]}
+        before = programs()
+        commands = ['"C:\\Program Files\\Git\\cmd\\git.exe" status --short', "C:\\Windows\\System32\\cmd.exe /c dir",
+                    "/usr/bin/git log", "git push"]
+        for i, command in enumerate(commands):
+            data = json.dumps({"type": "tool", "tool": "Bash", "callID": "cc%d" % i,
+                               "state": {"status": "completed", "input": {"command": command}, "output": ""}})
+            self.con.execute("INSERT INTO message VALUES (?,?,?,?,?)",
+                             ("m_cmd_%d" % i, "sess_cmd", self.now - 1000 + i, json.dumps({"role": "assistant"}), i + 1))
+            self.con.execute("INSERT INTO part VALUES (?,?,?,?,?,?)",
+                             ("p_cmd_%d" % i, "m_cmd_%d" % i, "sess_cmd", self.now - 1000 + i, data, 0))
+        self.con.commit()
+        after = programs()
+        delta = {name: after.get(name, 0) - before.get(name, 0) for name in set(before) | set(after)}
+        self.assertEqual({name: count for name, count in delta.items() if count}, {"git.exe": 1, "cmd.exe": 1, "git": 2})
+        self.assertFalse(any(name.startswith('"C:') for name in after), "带引号的 Windows 路径不能被截成半截")
+
     def test_cli_session_browser_json_options(self):
         """扩展进程 ↔ zusage.py 的胶水：选项以单个 JSON 位置参数走真实 CLI（临时库，不碰个人数据）。"""
+        import shutil
         import subprocess
         import sys
         fd, dbpath = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
+        fake_home = tempfile.mkdtemp(prefix="zusage-cli-home-")
         try:
+            # 非 ASCII 文本经真 CLI 走一遭：宿主只给工具 shell 与 hooks 注入 PYTHONUTF8，扩展进程拉起的
+            # Python 拿不到——子进程环境里也不带它，输出按 UTF-8 严格解码，钉子被改坏时才看得见
+            stamp = self.now - 900
+            self.con.execute("INSERT INTO session VALUES ('sess_utf8',NULL,'会话😀','/tmp/proj',?,?,0,0,0)", (stamp, stamp + 100))
+            self.con.execute("INSERT INTO message VALUES (?,?,?,?,?)", ("m_utf8", "sess_utf8", stamp, json.dumps({"role": "user"}), 1))
+            self.con.execute("INSERT INTO part VALUES (?,?,?,?,?,?)",
+                             ("p_utf8", "m_utf8", "sess_utf8", stamp, json.dumps({"type": "text", "text": "中文输出😀 无乱码"}), 0))
+            self.con.commit()
             dst = sqlite3.connect(dbpath)
             self.con.backup(dst)
             dst.close()
-            env = dict(os.environ, ZCODE_SESSION_DB_PATH=dbpath)
+            env = {key: os.environ[key] for key in ("PATH", "SystemRoot", "SYSTEMROOT", "TEMP", "TMP") if key in os.environ}
+            env.update(ZCODE_SESSION_DB_PATH=dbpath, HOME=fake_home, USERPROFILE=fake_home)
 
-            def run(*args):
-                out = subprocess.run([sys.executable, "-B", str(Path(zusage.__file__).resolve()), "session-browser", "sess_a", *args],
-                                     capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL, timeout=60)
+            def run(session, *args):
+                out = subprocess.run([sys.executable, "-B", str(Path(zusage.__file__).resolve()), "session-browser", session, *args],
+                                     capture_output=True, encoding="utf-8", env=env, stdin=subprocess.DEVNULL, timeout=60)
                 self.assertEqual(out.returncode, 0, out.stderr or out.stdout)
                 return json.loads(out.stdout)
 
-            page = run(json.dumps({"limit": 2, "offset": 0}))
+            page = run("sess_a", json.dumps({"limit": 2, "offset": 0}))
             self.assertEqual(([m["id"] for m in page["messages"]], page["hasMore"], page["cursor"]["id"]), (["m5", "m4"], True, "m4"))
-            older = run(json.dumps({"limit": 9999, "before": page["cursor"]}))
+            older = run("sess_a", json.dumps({"limit": 9999, "before": page["cursor"]}))
             self.assertEqual(([m["id"] for m in older["messages"]], older["hasMore"], older["limit"]), (["m3", "m2", "m1"], False, 300), "limit 钳到 300")
-            turn = run(json.dumps({"turnId": "t1"}))
+            turn = run("sess_a", json.dumps({"turnId": "t1"}))
             self.assertEqual((turn["order"], [m["id"] for m in turn["messages"]]), ("asc", ["m1", "m2"]))
-            self.assertEqual([m["id"] for m in run("3", "0")["messages"]], ["m5", "m4", "m3"], "旧的位置参数形态仍可用")
-            self.assertEqual(len(run("{bad json", )["messages"]), 5, "坏 JSON 当默认选项")
-            self.assertEqual(len(run(json.dumps({"limit": "abc"}))["messages"]), 5, "非数字 limit 当默认值")
-            self.assertEqual(len(run('{"limit": 1e999}')["messages"]), 5, "limit=1e999（解析成 inf）当默认值，不带栈崩溃")
+            self.assertEqual([m["id"] for m in run("sess_a", "3", "0")["messages"]], ["m5", "m4", "m3"], "旧的位置参数形态仍可用")
+            self.assertEqual(len(run("sess_a", "{bad json")["messages"]), 5, "坏 JSON 当默认选项")
+            self.assertEqual(len(run("sess_a", json.dumps({"limit": "abc"}))["messages"]), 5, "非数字 limit 当默认值")
+            self.assertEqual(len(run("sess_a", '{"limit": 1e999}')["messages"]), 5, "limit=1e999（解析成 inf）当默认值，不带栈崩溃")
+            self.assertIn("中文输出😀 无乱码", json.dumps(run("sess_utf8"), ensure_ascii=False), "中文与 emoji 经管道往返不走样")
         finally:
             os.unlink(dbpath)
+            shutil.rmtree(fake_home, ignore_errors=True)
 
 
 if __name__ == "__main__":

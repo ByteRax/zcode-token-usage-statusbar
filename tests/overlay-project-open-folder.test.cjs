@@ -76,7 +76,7 @@ class FakeEl {
     assert.ok(m, 'unexpected closest sel: ' + sel);
     const attr = m[1];
     const want = m[2];
-    let p = this.parentNode;
+    let p = this;   // 与真实 closest 一致：先看自己（键盘开菜单时 contextmenu 的目标就是行元素本身）
     while (p) {
       const v = p.attrs[attr];
       if (v !== undefined && (want === undefined || v === want)) return p;
@@ -183,6 +183,7 @@ function makeCtx(opts) {
   };
   ctx.window = { zcode: ctx.zcode };
   ctx.navigator = { userAgent: opts.ua || 'Macintosh; Intel Mac OS X 10_15_7' };   // 真机 mac 分支
+  ctx.Date = opts.clock ? { now: () => opts.clock.value } : Date;   // 分片只用 Date.now()：可拨的钟，验证记录有效期
   ctx.document._menus = ctx.menus;
   vm.createContext(ctx);
   vm.runInContext(SRC, ctx, { filename: '05-project-open-folder.js' });
@@ -195,6 +196,15 @@ function fireCtxMenu(ctx, insideRow) {
   assert.ok(handler, 'contextmenu 捕获监听已注册');
   handler.fn({ target: insideRow });
 }
+/* 按下（捕获阶段 pointerdown）。contextmenu 在 macOS / Linux 于按下时派发、在 Windows 于松开时派发；
+ * 菜单何时打开取决于宿主 Radix 的实现（4.0.0 引擎包实证：鼠标右键菜单在 contextmenu 里开）——宿主若换成
+ * 按下即开的实现，Windows 上的事件序就是「按下 → 菜单挂载、扫描先跑 → 松开时 contextmenu 后到」。 */
+function firePointerDown(ctx, target, button, pointerType) {
+  const handler = ctx.docListeners.find(l => l.type === 'pointerdown');
+  assert.ok(handler, 'pointerdown 捕获监听已注册');
+  handler.fn({ target, button: button === undefined ? 2 : button, pointerType: pointerType || 'mouse' });
+}
+function runRaf(ctx) { ctx.rafCbs.splice(0).forEach(fn => fn()); }
 
 test('context menu: local project gets an item after each files entry with parsed path', () => {
   const f0 = menuItem('virtual-project-context-files-0', '查看文件 · /tmp/proj-a');
@@ -365,12 +375,154 @@ test('observer watches body direct children only; dispose disconnects all wiring
   assert.equal(mo.target, ctx.document.body);
   assert.deepEqual({ ...mo.options }, { childList: true }, '仅直属子节点，无 subtree');
   assert.equal(ctx.docListeners.filter(l => l.type === 'contextmenu').length, 1, 'contextmenu 捕获监听唯一');
+  const down = ctx.docListeners.filter(l => l.type === 'pointerdown');
+  assert.equal(down.length, 1, 'pointerdown 捕获监听唯一');
+  assert.equal(down[0].capture, true, '右键按下要在宿主的冒泡监听之前记录');
   mo.cb();
   assert.equal(ctx.rafCbs.length, 1, '变更经 rAF 去抖');
   ctx.zuOpfDispose();
   assert.equal(mo.disconnected, true);
   assert.deepEqual(ctx.rafCancelled, [1], '在途 rAF 随 dispose 取消');
   assert.equal(ctx.docListeners.filter(l => l.type === 'contextmenu').length, 0, 'contextmenu 监听随 dispose 摘除');
+  assert.equal(ctx.docListeners.filter(l => l.type === 'pointerdown').length, 0, 'pointerdown 监听随 dispose 摘除');
+});
+
+test('context menu (Windows order): the right-button press records the row before the menu mounts; a late contextmenu inside the menu keeps it', () => {
+  const f0 = menuItem('virtual-project-context-files-0', '查看文件 · C:\\Users\\me\\proj-a');
+  const host = menuItem('virtual-project-worktrees', 'Worktrees');
+  const menu = makeMenu([f0, host]);
+  const { row } = makeRow('C:\\Users\\me\\proj-a');
+  const probe = new FakeEl('span');
+  row.appendChild(probe);
+  const ctx = makeCtx({ menus: [menu], ua: 'Windows NT 10.0; Win64; x64' });
+  firePointerDown(ctx, probe);   // 按下：宿主若在 pointerdown 里就开菜单，菜单挂载触发的扫描先于 contextmenu
+  ctx.zuOpfScan();
+  const item = f0.nextElementSibling;
+  assert.ok(item && item.hasAttribute('data-zusage-open-folder'), '按下时的记录足以注入');
+  assert.equal(item.children[item.children.length - 1].text, '在文件资源管理器中打开', 'Windows 文案');
+  fireCtxMenu(ctx, host);        // 松开时 contextmenu 后到，指针落在刚弹出的菜单里
+  assert.equal(ctx.rafCbs.length, 1, 'contextmenu 之后补排一次扫描');
+  menu.removeChild(item);        // 宿主在菜单打开期间重建 items：已注入的项被摘掉
+  runRaf(ctx);
+  const again = f0.nextElementSibling;
+  assert.ok(again && again !== item && again.hasAttribute('data-zusage-open-folder'), '菜单内的 contextmenu 不清记录：补排的扫描把项补回来');
+  assert.equal(menu.querySelectorAll('[data-zusage-open-folder]').length, 1, '幂等');
+  again.click();
+  assert.deepEqual(ctx.opened, ['C:\\Users\\me\\proj-a']);
+});
+
+test('context menu: a keyboard-opened menu records the row when the contextmenu target is the row itself', () => {
+  // 宿主行 onKeyDown 自派发 contextmenu，目标就是行元素（引擎包实读）
+  const f0 = menuItem('virtual-project-context-files-0', '查看文件 · /tmp/proj-a');
+  const menu = makeMenu([f0]);
+  const { row } = makeRow('/tmp/proj-a');
+  const ctx = makeCtx({ menus: [menu] });
+  fireCtxMenu(ctx, row);
+  runRaf(ctx);
+  assert.ok(f0.nextElementSibling && f0.nextElementSibling.hasAttribute('data-zusage-open-folder'), '键盘开菜单照常注入');
+});
+
+test('context menu: touch and pen presses record the row (long-press menus open on a timer); a mouse left press does not', () => {
+  const f0 = menuItem('virtual-project-context-files-0', '查看文件 · /tmp/proj-a');
+  const menu = makeMenu([f0]);
+  const { row } = makeRow('/tmp/proj-a');
+  const probe = new FakeEl('span');
+  row.appendChild(probe);
+  const ctx = makeCtx({ menus: [menu] });
+  firePointerDown(ctx, probe, 0, 'mouse');
+  ctx.zuOpfScan();
+  assert.equal(f0.nextElementSibling, null, '鼠标左键不记录');
+  for (const type of ['touch', 'pen']) {
+    firePointerDown(ctx, probe, 0, type);
+    ctx.zuOpfScan();
+    assert.ok(f0.nextElementSibling && f0.nextElementSibling.hasAttribute('data-zusage-open-folder'), type + ' 按下即记录');
+  }
+  assert.equal(menu.querySelectorAll('[data-zusage-open-folder]').length, 1);
+});
+
+test('context menu: the source-row record expires after 8 seconds', () => {
+  const f0 = menuItem('virtual-project-context-files-0', '查看文件 · /tmp/proj-a');
+  const menu = makeMenu([f0]);
+  const { row } = makeRow('/tmp/proj-a');
+  const probe = new FakeEl('span');
+  row.appendChild(probe);
+  const clock = { value: 1000000 };
+  const ctx = makeCtx({ menus: [menu], clock });
+  firePointerDown(ctx, probe);
+  clock.value += 7999;
+  ctx.zuOpfScan();
+  assert.ok(f0.nextElementSibling && f0.nextElementSibling.hasAttribute('data-zusage-open-folder'), '窗口内注入');
+  const late = menuItem('virtual-project-context-files-1', '查看文件 · /tmp/proj-b');
+  menu.insertBefore(late, null);
+  clock.value += 2;   // 过了 8000ms：记录过期，新出现的 files 项不再注入
+  ctx.zuOpfScan();
+  assert.equal(late.nextElementSibling, null, '过期的记录不注入');
+});
+
+test('malformed UNC-looking paths are refused (fail-closed)', () => {
+  const texts = ['查看文件 · \\\\srv', 'View files · \\\\\\\\server', '查看文件 · \\\\?\\UNC\\srv\\share\\p', '查看文件 · \\\\?\\C:/x'];
+  const menu = makeMenu(texts.map((text, i) => menuItem('virtual-project-context-files-' + i, text)));
+  const { row } = makeRow('/tmp/proj-a');
+  const probe = new FakeEl('span');
+  row.appendChild(probe);
+  const ctx = makeCtx({ menus: [menu] });
+  fireCtxMenu(ctx, probe);
+  ctx.zuOpfScan();
+  assert.equal(menu.querySelectorAll('[data-zusage-open-folder]').length, 0);
+  assert.deepEqual(ctx.opened, []);
+});
+
+test('context menu: a left press does not record; a contextmenu elsewhere clears the record', () => {
+  const f0 = menuItem('virtual-project-context-files-0', '查看文件 · /tmp/proj-a');
+  const menu = makeMenu([f0]);
+  const { row } = makeRow('/tmp/proj-a');
+  const probe = new FakeEl('span');
+  row.appendChild(probe);
+  const ctx = makeCtx({ menus: [menu] });
+  firePointerDown(ctx, probe, 0);
+  ctx.zuOpfScan();
+  assert.equal(f0.nextElementSibling, null, '左键不记录来源行');
+  firePointerDown(ctx, probe);
+  fireCtxMenu(ctx, new FakeEl('main'));
+  runRaf(ctx);
+  assert.equal(f0.nextElementSibling, null, '别处的右键清掉记录');
+});
+
+test('context menu: a contextmenu arriving after the scan re-triggers it', () => {
+  const f0 = menuItem('virtual-project-context-files-0', '查看文件 · /tmp/proj-a');
+  const menu = makeMenu([f0]);
+  const { row } = makeRow('/tmp/proj-a');
+  const probe = new FakeEl('span');
+  row.appendChild(probe);
+  const ctx = makeCtx({ menus: [menu] });
+  ctx.zuOpfScan();
+  assert.equal(f0.nextElementSibling, null, '没有记录时扫描跳过');
+  fireCtxMenu(ctx, probe);
+  assert.equal(ctx.rafCbs.length, 1, 'contextmenu 记录后补排扫描');
+  runRaf(ctx);
+  assert.ok(f0.nextElementSibling && f0.nextElementSibling.hasAttribute('data-zusage-open-folder'), '迟到的记录仍能注入');
+});
+
+test('windows UNC and long-path roots are accepted from both menu entries', () => {
+  const unc = '\\\\srv\\share\\proj';
+  const f0 = menuItem('virtual-project-context-files-0', '查看文件 · ' + unc);
+  const ctxMenu = makeMenu([f0]);
+  const trig = new FakeEl('button');
+  trig.attrs.id = 'trig-u';
+  const dd = makeMenu([menuItem('virtual-project-worktrees', 'Worktrees')], { labelledby: 'trig-u' });
+  const { row } = makeRow('\\\\?\\C:\\proj');
+  row.appendChild(trig);
+  const probe = new FakeEl('span');
+  row.appendChild(probe);
+  const ctx = makeCtx({ menus: [ctxMenu, dd], byId: { 'trig-u': trig }, ua: 'Windows NT 10.0' });
+  fireCtxMenu(ctx, probe);
+  ctx.zuOpfScan();
+  assert.ok(f0.nextElementSibling && f0.nextElementSibling.hasAttribute('data-zusage-open-folder'), '网络共享做根的项目右键菜单出项');
+  f0.nextElementSibling.click();
+  const item = dd.querySelector('[data-zusage-open-folder]');
+  assert.ok(item, '长路径前缀的根在下拉里出项');
+  item.click();
+  assert.deepEqual(ctx.opened, [unc, '\\\\?\\C:\\proj']);
 });
 
 test('bridge failure reply counts into FATAL.openPathErr without UI error', () => {

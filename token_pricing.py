@@ -585,18 +585,35 @@ _PEAK_EDGES = {
 }
 
 
+# time.gmtime 能表示的范围（0001-01-01 ~ 9999-12-31）；超出它的 epoch 与 None / 非数同属非法输入
+_EPOCH_MIN, _EPOCH_MAX = -62135596800, 253402300799
+
+
+def _epoch_or_none(time_sec):
+    """epoch 秒的合法性归一：None / 非数 / NaN / inf，以及超出 time.gmtime 表示范围的值，都返回 None。
+    各峰谷函数对非法输入按谷处理、不抛错（time.gmtime 自己对越界值抛 OSError）。"""
+    try:
+        sec = int(time_sec)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return sec if _EPOCH_MIN <= sec <= _EPOCH_MAX else None
+
+
 def is_peak_time(time_sec, mode='deepseek'):
     """epoch 秒是否高峰时段（按北京时间判定，与机器时区无关）。
 
     mode 选数据源口径，窗口见 PEAK_HOURS；周末特例只有 deepseek 有（分界起全天
     谷），glm-plan 因「周一至五」定义周末自然非高峰。非法输入（None/非数/NaN/
-    inf）按谷 False 处理，不抛错；未知 mode 属调用方错误，让它照常 KeyError。
+    inf/超出可表示范围的 epoch）按谷 False 处理，不抛错；未知 mode 属调用方错误，
+    让它照常 KeyError。
     """
-    try:
-        sec = int(time_sec)
-    except (TypeError, ValueError, OverflowError):
+    sec = _epoch_or_none(time_sec)
+    if sec is None:
         return False
-    bj = time.gmtime(sec + 8 * 3600)  # 加 8h 再按 UTC 读，即北京日历
+    try:
+        bj = time.gmtime(sec + 8 * 3600)  # 加 8h 再按 UTC 读，即北京日历
+    except (OSError, OverflowError, ValueError):
+        return False   # 平台的 time_t 更窄时同样按非法输入处理
     # 周末恒为谷的条件：glm-plan 无分界、周一至五定义下周末恒非高峰；deepseek
     # 有 2026-08-23 生效分界（分界前周末按旧规则仍有峰，不豁免）
     if bj.tm_wday >= 5 and (mode != 'deepseek' or sec >= _WEEKEND_VALLEY_FROM_SEC):
@@ -613,9 +630,8 @@ def next_peak_change(time_sec, mode='deepseek'):
     从北京当日 0 点起最多扫 12 天的小时边界，取第一个与当前状态相反的时刻；
     扫不到（理论不可达）兜底 +1 天，避免倒计时卡 00:00:00。非法输入返回 None。
     """
-    try:
-        sec = int(time_sec)
-    except (TypeError, ValueError, OverflowError):
+    sec = _epoch_or_none(time_sec)
+    if sec is None:
         return None
     edges = _PEAK_EDGES[mode]
     cur = is_peak_time(sec, mode)
@@ -650,11 +666,8 @@ _FLASH_PROMO_END = calendar.timegm((2026, 12, 25, 0, 0, 0)) - 8 * 3600     # 北
 
 
 def _is_flash_promo(time_sec):
-    try:
-        sec = int(time_sec)
-    except (TypeError, ValueError, OverflowError):
-        return False
-    return _FLASH_PROMO_START <= sec < _FLASH_PROMO_END
+    sec = _epoch_or_none(time_sec)
+    return sec is not None and _FLASH_PROMO_START <= sec < _FLASH_PROMO_END
 
 
 def _glm_plan_pairs(time_sec, plan_version=None):
@@ -827,6 +840,20 @@ def _read_cache_raw():
         return {}
 
 
+def _replace_with_retry(tmp, path):
+    """os.replace 短暂重试。Windows 上目标被任何句柄打开时替换都被拒绝——pricing-cache.json 的读者
+    是并发的 serve / MCP / 逐问脚本（各自启动时读一次），都是微秒级短开，重试窗口远大于它；静默
+    放弃会让这一轮刷新作废、下一次要等 12 小时。永久性拒绝只是多等约 190ms 才上抛同一异常。"""
+    for attempt in range(20):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == 19:
+                raise
+            time.sleep(0.01)
+
+
 def _write_cache(payload):
     """校验 → 同目录临时文件 → os.replace 原子替换 → 重载内存。"""
     if _CACHE_PATH is None:
@@ -840,7 +867,7 @@ def _write_cache(payload):
     tmp = _CACHE_PATH.with_name(_CACHE_PATH.name + ".tmp")
     try:
         tmp.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8")
-        os.replace(tmp, _CACHE_PATH)
+        _replace_with_retry(tmp, _CACHE_PATH)
     except OSError:
         try:
             tmp.unlink()

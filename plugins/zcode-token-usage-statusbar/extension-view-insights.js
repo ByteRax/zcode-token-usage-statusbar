@@ -489,7 +489,13 @@
         var q = search.trim().toLowerCase();
         var sessList = (snap.sessions || []).filter(function (s) {
           if (dayFilter) {
-            var ds = new Date(s.updatedAt).toISOString().slice(0, 10);
+            // 按本地自然日筛，与热力图格子同口径（zusage.py insights_json 的日桶按本地时间）：
+            // toISOString 是 UTC 日期，UTC+8 下本地 0–8 点更新的会话会被算进前一天。updatedAt 非法
+            // （缺失或不是时间）的会话不匹配任何日筛选——不能让一次 RangeError 把整页渲染打断
+            var t = new Date(s.updatedAt).getTime();
+            if (!isFinite(t)) return false;
+            var da = new Date(t), mo = da.getMonth() + 1, dd = da.getDate();
+            var ds = da.getFullYear() + "-" + (mo < 10 ? "0" : "") + mo + "-" + (dd < 10 ? "0" : "") + dd;
             if (ds !== dayFilter) return false;
           }
           if (!q) return true;
@@ -508,7 +514,8 @@
           '</div>' +
           '<div class="sess-grid">' +
           (sessList.slice(0, 60).map(function (s) {
-            var proj = (s.directory || "").split("/").filter(Boolean).pop() || s.id.slice(0, 10);
+            // 两种分隔符都认：会话目录原样来自库，Windows 下是反斜杠路径（只按 / 切会让每个会话的项目名都是整条路径）
+            var proj = (s.directory || "").split(/[\\/]+/).filter(Boolean).pop() || s.id.slice(0, 10);
             var ctxPct = Math.min(100, Math.round(((s.lastContext || 0) / 1000000) * 100));
             return '<div class="sess-card" data-sid="' + esc(s.id) + '">' +
               '<div class="sess-top"><span>' + esc(s.title) + '</span><span class="num">' + fmtAgo(s.updatedAt, zh) + '</span></div>' +

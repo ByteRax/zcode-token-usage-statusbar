@@ -123,21 +123,29 @@ test("env 源来源序：环境变量优先于同目录文件；显式文件缺�
     "同目录 credential-secret 可作 env 源（宿主无 os 标记时如此派生，headless 部署靠它）");
 });
 
-test("env 源文件：非属主可读写一律拒绝（逐位权限样本）；secret 不做 trim；按字节计尺寸", async (t) => {
+/* 权限位断言单独成例并显式带因跳过：此前与 trim / 尺寸断言同在一例、靠静默 if 门住，Windows 上
+   权限位段空跑而标题仍写「一律拒绝」。 */
+test("env 源文件：非属主可读写一律拒绝（逐位权限样本）", { skip: process.platform === "win32" && "POSIX 权限位在 Windows 上不表达" }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-v2-modes-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const credsPath = path.join(dir, "credentials.json");
   const sibling = path.join(dir, "credential-secret");
   const dec = async (env) => { const d = Q.makeHostDecryptor({ credsPath, credsDir: dir, env }); await d.ensureKey(); return d; };
-  if (process.platform !== "win32") {
-    fs.writeFileSync(sibling, SECRET_A);   // writeFileSync 的 mode 只在创建时生效：统一用 chmodSync 换挡
-    for (const mode of [0o640, 0o604, 0o620, 0o602, 0o610, 0o601]) {
-      fs.chmodSync(sibling, mode);
-      assert.equal((await dec({})).decrypt(v2Entry("jwt.mode", sha256(SECRET_A), "env"), V1_KEY), null, "mode 0" + mode.toString(8) + " 越出仅属主");
-    }
-    fs.chmodSync(sibling, 0o600);
-    assert.equal((await dec({})).decrypt(v2Entry("jwt.mode", sha256(SECRET_A), "env"), V1_KEY), "jwt.mode", "0600 可用");
+  fs.writeFileSync(sibling, SECRET_A);   // writeFileSync 的 mode 只在创建时生效：统一用 chmodSync 换挡
+  for (const mode of [0o640, 0o604, 0o620, 0o602, 0o610, 0o601]) {
+    fs.chmodSync(sibling, mode);
+    assert.equal((await dec({})).decrypt(v2Entry("jwt.mode", sha256(SECRET_A), "env"), V1_KEY), null, "mode 0" + mode.toString(8) + " 越出仅属主");
   }
+  fs.chmodSync(sibling, 0o600);
+  assert.equal((await dec({})).decrypt(v2Entry("jwt.mode", sha256(SECRET_A), "env"), V1_KEY), "jwt.mode", "0600 可用");
+});
+
+test("env 源文件：secret 不做 trim；按字节计尺寸", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-v2-raw-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const credsPath = path.join(dir, "credentials.json");
+  const sibling = path.join(dir, "credential-secret");
+  const dec = async (env) => { const d = Q.makeHostDecryptor({ credsPath, credsDir: dir, env }); await d.ensureKey(); return d; };
   const withNewline = SECRET_A + "\n";   // 带尾随换行：按原样哈希（宿主不 trim）
   fs.writeFileSync(sibling, withNewline);
   fs.chmodSync(sibling, 0o600);

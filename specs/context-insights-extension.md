@@ -11,9 +11,9 @@
 | 阶段 | 范围 | 核心交付 |
 |---|---|---|
 | **阶段 1（本期）** | Extension 底座与入口打通 | `plugin.json` 声明 `extension` 与 `slots`；`extension-main.cjs` 激活、焦点会话追踪、视图注册；容量弹层唤起 `context` 视图；`/context` 命令；空白/骨架沙箱视图联通 |
-| **阶段 2** | Context 标签页核心（Stats + Current） | `zusage.py --session-stats`；Context Stats、Token Stats、Timing Stats、Current Context（11 类堆叠条） |
-| **阶段 3** | 上下文浏览器与可选请求抓包 | `zusage.py --session-browser`（分页/懒加载）；步骤时间线（含 Delta）；7 类可折叠浏览器；`engine-patch.cjs` 可选请求体抓包（默认关闭，SHA256 去重） |
-| **阶段 4** | 上下文洞察页面（跨会话总览） | `zusage.py --insights`（水位缓存）；KPI 栏、7 天双柱状图、8 周热力图、工具/技能/命令排行、会话卡片与 `sessions.openSession` 跳转 |
+| **阶段 2** | Context 标签页核心（Stats + Current） | `zusage.py session-stats`（会话统计子命令）；Context Stats、Token Stats、Timing Stats、Current Context（11 类堆叠条） |
+| **阶段 3** | 上下文浏览器与可选请求抓包 | `zusage.py session-browser`（分页/懒加载）；步骤时间线（含 Delta）；7 类可折叠浏览器；`engine-patch.cjs` 可选请求体抓包（默认关闭，SHA256 去重） |
+| **阶段 4** | 上下文洞察页面（跨会话总览） | `zusage.py insights`（水位缓存）；KPI 栏、7 天双柱状图、8 周热力图、工具/技能/命令排行、会话卡片与 `sessions.openSession` 跳转 |
 
 ---
 
@@ -47,7 +47,7 @@
 | 扩展运行态、蓝点已读状态 | 扩展进程 (`extension-main.cjs`) | 已读标记存 `path.join(ctx.extension.dataPath, "ui-state.json")` |
 | 当前 11 类上下文构成 | ZCode CLI → Window Host | `ctx.context.get({ sessionId })` + `ctx.context.onDidChange` 推送修订号 |
 | 屏幕焦点会话 / 草稿态 | ZCode Renderer → Window Host | `ctx.workbench.visibleSessions()` + `ctx.workbench.onDidChange` |
-| 历史用量、耗时、工具调用、消息正文 | 本地 `db.sqlite`（只读） | 扩展进程按需调用包内 `zusage.py`（复用 `python_path` / `python3`） |
+| 历史用量、耗时、工具调用、消息正文 | 本地 `db.sqlite`（只读） | 扩展进程按需调用包内 `zusage.py`（解释器与主桥同源：运行目录 `config.json` 的 `python_path` 优先，没有时按 hooks 的回退链；候选不可用不只是 ENOENT，详见 §4.2） |
 | 弹层/设置按钮唤起视图信号 | `overlay.js` → `inject-main.cjs` → 扩展进程 | 见 §4.2 跨进程唤起协议 |
 
 ### 关键约束
@@ -81,10 +81,11 @@
    ```json
    { "id": "<uuid>", "viewId": "context", "sessionId": "sess_...", "ts": 1700000000000 }
    ```
-3. **扩展进程（`extension-main.cjs`）**：监听运行目录（`fs.watch` 配合 `ts` 与 `id` 去重，忽略启动前超过 15 秒的陈旧请求（`STALE_OPEN_REQ_MS`）），读到新请求后立即消费并调用：
+3. **扩展进程（`extension-main.cjs`）**：监听运行目录（`fs.watch` 配合 `ts` 与 `id` 去重，忽略启动前超过 15 秒的陈旧请求（`STALE_OPEN_REQ_MS`）；`fs.watch` 报 error 后不再派发事件，另有每 3 秒比对请求文件 mtime 的轮询兜底（异步 `stat`，watcher 缺席时顺带重建），激活时已在的请求文件只取 mtime 作种子、不当成新请求——否则扩展进程在一次点击后 15 秒内重启会把那次打开重放一遍；请求里的 `sessionId` 过与工具入参同一道正则门 `^sess_[A-Za-z0-9_-]{1,120}$`，不过则不带会话打开），读到新请求后立即消费并调用：
    - `viewId === "context"`：`ctx.views.open("context", sessionId ? { sessionId } : undefined)`
    - `viewId === "insights"`：`ctx.views.open("insights", "app")`
 4. **降级与兜底**：若扩展未激活或宿主不支持 `views.open`（旧版 ZCode），`overlay.js` 提示用户“请在 ZCode 4.0+ 中启用本插件扩展能力”，不抛未捕获异常。
+5. **解释器定位（`runZusageCli`）**：与主桥 `readCfg()` 同源——运行目录 `config.json` 的 `python_path` 优先（安装与每次 SessionStart 都把 `sys.executable` 写回它，状态条与 hooks 走的就是它）；没有时先试主桥的平台默认（Windows 是 `python`、其它是 `python3`），再按 hooks 的回退链（`hooks/hooks.json` 在所有平台都是 `python3 → python → py -3`）补齐其余候选。候选「不可用」不只是 ENOENT：没有执行权限（EACCES）、路径不是目录（ENOTDIR）、`.cmd` / `.bat` 垫片不经 shell 执行（EINVAL）、Windows 上应用商店的 `python` 占位别名能启动但退出码 9009，都要让位给下一个候选（`execFile` 的错误对象上，子进程非零退出的退出码是数值型的 `code`，没有 `status` 字段）；全部候选不可用时错误里带上各候选的原因；脚本自身的非零退出如实报错、不换解释器重跑。子进程带 `-X utf8`（`zusage.py` 只把 stdout 钉成 UTF-8，回溯里的本地化文字否则按区域代码页写 stderr、读进视图是乱码）。扩展进程按标准运行目录 `~/.zcode/zcode-token-usage-statusbar` 定位请求文件与配置（环境变量 `ZUSAGE_PLUGIN_RUNTIME` 可覆盖，与安装器的同名测试接缝一致，宿主的扩展进程不会带它）；`--dev` 布局下主桥的运行目录是仓库根，唤起按钮无效，属开发者布局的已知边界。
 
 ---
 
@@ -166,7 +167,7 @@
 洞察页「活跃度」卡在 会话 / Token 之外新增 `t/s` 档位（`heatMode="tps"`）：逐日 `Σ输出 ÷ Σ生成窗口`（与 §7 均速同口径，仅累计 output>0 且窗口>0 的行），色阶沿用相对最大值分档，最快的一天最深；无样本日显空格，悬停显「日期: N t/s」或「—」。
 
 - **数据契约**：`insights_json` 的 `heatmap[]`（56 格）每格增补 `avgTps`；热力窗口仍为 55 天回看（与 tokens/sessions 聚合同一循环，`heat_start_ms` 门）。
-- **边界**：t/s 档位数值高低与用量多少无关（慢而大的一天在 Token 档最深、在 t/s 档可能很浅），属口径差异非缺陷；点格过滤会话列表（dayFilter）行为与另两档一致。
+- **边界**：t/s 档位数值高低与用量多少无关（慢而大的一天在 Token 档最深、在 t/s 档可能很浅），属口径差异非缺陷；点格过滤会话列表（dayFilter）行为与另两档一致；dayFilter 按**本地自然日**筛（与热力图格子、`insights_json` 的日桶同口径——UTC+8 下本地 0–8 点更新的会话属于当天，不能按 `toISOString()` 的 UTC 日期算），`updatedAt` 非法的会话不匹配任何日筛选、也不打断渲染；会话卡片的项目名按两种分隔符取目录名（Windows 下会话目录是反斜杠路径）。
 
 ---
 

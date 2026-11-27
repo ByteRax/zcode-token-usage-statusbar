@@ -847,11 +847,14 @@
       async function loadOlder() {
         var tail = olderPages.length ? olderPages[olderPages.length - 1] : lastBrowser;
         if (loadingMore || browserTurn || !tail || !tail.ok || !tail.cursor || !tail.hasMore) return;
+        var key = browserLoadedKey;   // 这一页属于哪个会话 / 哪一轮
         loadingMore = true;
         try {
           var res = await window.zcode.callTool("context_browser", { limit: 80, offset: 0, before: tail.cursor });
           var d = res && (res.structuredContent || res);
           if (typeof d === "string") d = JSON.parse(d);
+          // 「加载更早」途中切换了会话或轮：迟到的旧会话页不能并进新会话的列表
+          if (browserLoadedKey !== key) return;
           if (d && d.ok && Array.isArray(d.messages) && d.messages.length) {
             // 回来的还是同一页（最老一条没变）= 对端没认游标，不重复追加
             if (d.cursor && tail.cursor && d.cursor.id === tail.cursor.id) pagingStale = true;

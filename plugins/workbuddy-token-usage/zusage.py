@@ -6066,6 +6066,24 @@ def _bump(b, inp, outp, reas, cr, cw, gen_ms, dur, ttft, cost, tools=0):
     b["costUsd"] += cost
 
 
+_PROGRAM_SPLIT_RE = re.compile(r"[\\/]")
+
+
+def _command_program(cmd_s):
+    """命令行首词里的程序名（上下文洞察的命令排行）。PowerShell 的调用符 & 先剥掉（& "C:\\x y\\a.exe"）；
+    首词被引号包裹时取引号内的整段——Windows 上带空格的绝对路径命令写成 "C:\\Program Files\\...\\git.exe"，
+    按空白切只得到半截路径；再去掉两种分隔符前的目录部分，同一程序的不同写法（/usr/bin/git、C:\\...\\git.exe）
+    才不会被拆成多项。"""
+    text = cmd_s.strip()
+    if text[:1] == "&":
+        text = text[1:].lstrip()
+    first = text.split(None, 1)[0] if text else ""
+    if first[:1] in ("\"", "'"):
+        end = text.find(first[0], 1)
+        first = text[1:end] if end > 0 else first[1:]
+    return _PROGRAM_SPLIT_RE.split(first)[-1][:32]
+
+
 def _bucket_out(b):
     """桶 → 对外形状：加权的 Σ输出÷Σ生成窗口（无有效窗口为 0，消费端显 —）。"""
     out = {k: b[k] for k in ("requests", "tokens", "inp", "out", "reas", "cr", "cw", "durMs", "ttftMs", "genMs")}
@@ -6466,7 +6484,7 @@ def session_stats_json(con, session_id):
                     if isinstance(tinp, dict):
                         cmd_s = str(tinp.get("command") or tinp.get("CommandLine") or "").strip()
                     if cmd_s:
-                        prog = cmd_s.split()[0].split("/")[-1][:32]
+                        prog = _command_program(cmd_s)
                         if prog:
                             cmd_progs[prog] = cmd_progs.get(prog, 0) + 1
     except sqlite3.Error:
@@ -7066,7 +7084,7 @@ def insights_json(con, days=7):
             elif (low_t in ("bash", "run_command", "exec", "shell", "terminal") or (isinstance(tinp, dict) and ("command" in tinp or "CommandLine" in tinp))) and isinstance(tinp, dict):
                 cmd_s = str(tinp.get("command") or tinp.get("CommandLine") or "").strip()
                 if cmd_s:
-                    prog = cmd_s.split()[0].split("/")[-1][:32]
+                    prog = _command_program(cmd_s)
                     if prog:
                         pe = p_map.setdefault(prog, {"name": prog, "count": 0, "lastAt": 0})
                         pe["count"] += 1

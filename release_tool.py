@@ -64,6 +64,12 @@ def read_file(path, limit=MAX_FILE):
     return path.read_bytes()
 
 
+def write_lf(path, text):
+    """按 UTF-8 + LF 落盘。Path.write_text 走平台文本模式，Windows 上把 \\n 写成 \\r\\n（它的 newline=
+    参数要 Python 3.10）：渠道清单经 git hash-object --stdin 原样进渠道分支，跨平台对账比的也是字节。"""
+    path.write_bytes(text.encode("utf-8"))
+
+
 def identities(data, expected=None):
     market = json.loads(data["marketplace.json"])
     manifest = json.loads(data[PREFIX + ".zcode-plugin/plugin.json"])
@@ -145,7 +151,7 @@ def build(root, repo, out, version=None):
                 "pluginId": PLUGIN_ID, "asset": {"name": asset.name, "size": len(payload),
                 "sha256": hashlib.sha256(payload).hexdigest()}}
     path = out / "release-manifest.json"
-    path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_lf(path, json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     verify(asset, path, repo)
     catalog = json.loads(data["marketplace.json"])
     catalog["plugins"][0]["source"] = {
@@ -153,7 +159,7 @@ def build(root, repo, out, version=None):
         f"https://github.com/{repo}/releases/download/v{version}/{asset.name}",
         "sha256": manifest["asset"]["sha256"], "path": "plugins/" + PLUGIN, "stripRoot": False}
     catalog_path = out / "marketplace-release.json"
-    catalog_path.write_text(json.dumps(catalog, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_lf(catalog_path, json.dumps(catalog, indent=2, sort_keys=True) + "\n")
     return {"zip": str(asset.resolve()), "manifest": str(path.resolve()),
             "catalog": str(catalog_path.resolve()), **manifest}
 
@@ -259,7 +265,7 @@ def reconcile(repo, asset, manifest_path, published_asset, published_manifest_pa
             "rebuilt package differs from the published release")
     catalog = release_catalog(repo, published["version"], published["asset"]["name"],
                               published["asset"]["sha256"], dict(zip_members(published_asset))["marketplace.json"])
-    catalog_out.write_text(catalog, encoding="utf-8")
+    write_lf(catalog_out, catalog)
     return {"byteIdentical": byte_identical, "version": published["version"],
             "sha256": published["asset"]["sha256"], "rebuiltSha256": rebuilt["asset"]["sha256"],
             "catalog": str(catalog_out.resolve())}
@@ -486,7 +492,7 @@ def gitcode_mirror(asset, manifest_path, manifest, notes, tag, gitcode_repo, out
         "source": "url", "type": "zip", "url": zip_url,
         "sha256": manifest["asset"]["sha256"], "path": "plugins/" + PLUGIN, "stripRoot": False}
     catalog_path = out_dir / "marketplace-release-gitcode.json"
-    catalog_path.write_text(json.dumps(catalog, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_lf(catalog_path, json.dumps(catalog, indent=2, sort_keys=True) + "\n")
     return {"zipUrl": zip_url, "manifestUrl": urls[manifest_path.name],
             "catalog": str(catalog_path.resolve()), "redirectHops": hops}
 

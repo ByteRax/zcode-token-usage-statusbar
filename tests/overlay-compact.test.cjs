@@ -1221,3 +1221,16 @@ test('v487 对账摘除：缓存明细消失后缓存行摘标记；行标签变
   assert.equal(tip.style.display, 'none', '未知类别不弹气泡');
   assert.ok(ui.bkdRows[1].row.children.some(c => c.classList && c.classList.contains('zu-ctx-bkd-tok')), 'Token 数不依赖类别，照常显示');
 });
+
+test('context breakdown: the built-in engine path is a native backslash path on the Windows renderer address (v495)', () => {
+  const { readOverlayPart } = require('./helpers/overlay-extract.cjs');
+  const fn = readOverlayPart('11-instance-toolbar-chips.js').match(/function bkdAppResourcesDir\(\) \{[\s\S]*?\n    \}/);
+  assert.ok(fn, 'bkdAppResourcesDir 在 11 分片里');
+  const run = href => new Function('location', fn[0] + '\nreturn bkdAppResourcesDir();')({ href });
+  assert.equal(run('file:///D:/Program%20Files/ZCode/resources/app.asar/out/renderer/index.html'),
+    'D:\\Program Files\\ZCode\\resources\\glm', 'file:///D:/… 归一成反斜杠，与同气泡里的其它路径一致');
+  assert.equal(run('file:///D:/ZCode/resources/app.asar/out/renderer/assets/index.html'), 'D:\\ZCode\\resources\\glm', 'asar 之后的路径段截掉');
+  assert.equal(run('file:///Applications/ZCode.app/Contents/Resources/app.asar/out/renderer/index.html'),
+    '/Applications/ZCode.app/Contents/Resources/glm', 'macOS 路径不变');
+  assert.equal(run('https://zcode.z.ai/remote/x'), '', '非 asar 页面返回空');
+});

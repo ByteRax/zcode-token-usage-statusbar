@@ -403,8 +403,9 @@
       /* v342 补自有全屏遮罩（.zu-mp-ov 系/词包查看/压缩确认）：此前 only 面板/tooltip/气泡——
        * 遮罩盖输入框中心曾被判「被整体罩住」→ track 收条连带 closeSettings（用户实报）
        * v445 补齿轮更新日志卡（.zusage-upd-note-tip，v413 文档级单例、不挂 .zusage-tip-root）：
-       * 384px 卡在窄分栏里会整体盖住输入框，不豁免则 400ms 后收条→卡收起→条复显 循环闪烁 */
-      try { return !!(el && el.closest && el.closest(".zusage-tip-root,.panel,.zusage-exc,.zu-mp-ov,.zu-rot-pk-dlg,.zu-compact-dlg,.zusage-upd-note-tip")); } catch (e) { return false; }
+       * 384px 卡在窄分栏里会整体盖住输入框，不豁免则 400ms 后收条→卡收起→条复显 循环闪烁
+       * v495 补上下文明细气泡（.zusage-ctx-bkd-tip，v487 同为文档级单例、不挂 .zusage-tip-root）：同一形态 */
+      try { return !!(el && el.closest && el.closest(".zusage-tip-root,.panel,.zusage-exc,.zu-mp-ov,.zu-rot-pk-dlg,.zu-compact-dlg,.zusage-upd-note-tip,.zusage-ctx-bkd-tip")); } catch (e) { return false; }
     }
     /* 幽灵子树检测（v61，取代 v58/v59 的 coverLock + 穿透特判）：
      * 客户端 3.11.x 的设置页 = 设置 tab 激活时给工作区主视图套 opacity-0 + inert +

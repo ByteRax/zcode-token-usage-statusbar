@@ -9,7 +9,8 @@
    * （与宿主任务菜单「在 Finder 中打开」同一 IPC zcode:open-in-file-manager，真机 4.0.0 实证
    * 桥函数在场），随后向菜单派发 Escape 关闭（非 Radix collection 成员，宿主不会因选中收菜单）。
    * 本地/远程甄别：项目行外层 section 带 data-project-host，仅 === "local" 注入（远程项目
-   * 本地打开无意义，fail-closed）；右键菜单经 document 捕获阶段 contextmenu 监听记录来源行。
+   * 本地打开无意义，fail-closed）；右键菜单经 document 捕获阶段的 pointerdown（鼠标右键、触控
+   * 与笔）与 contextmenu 监听记录来源行（时机与平台差异见 zuOpfRecord 上方注释）。
    * 宿主旧版无桥函数或取不到路径时整链不注入。弹层 DOM 归宿主 React 管，注入项只借克隆外观，
    * 弹层关闭即随宿主销毁；观察器只挂 body 直属子节点（portal 容器都在 body 直属层，
    * 聊天流式变更不触发），不进热路径。 */
@@ -17,7 +18,8 @@
   var ZU_OPF_ROW_SEL = '[data-testid="virtual-project-row"]';
   var ZU_OPF_LOCAL_SEL = "[data-project-host]";
   var ZU_OPF_FILES_SEL = "[data-testid^='virtual-project-context-files-']";
-  var ZU_OPF_CTX_WINDOW_MS = 8000;   // contextmenu 记录的有效期（菜单在右键后瞬时打开）
+  var ZU_OPF_MENU_SEL = "[data-radix-menu-content]";
+  var ZU_OPF_CTX_WINDOW_MS = 8000;   // 来源行记录的有效期（右键按下起算；菜单在右键后瞬时打开）
   var ZU_OPF_ICON =
     '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-folder-open size-4 shrink-0" aria-hidden="true"><path d="m6 14 1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.22a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"/></svg>';
   var zuOpfCtxRow = null, zuOpfCtxAt = 0;
@@ -25,9 +27,12 @@
     var f = FATAL.openPathErr || (FATAL.openPathErr = { n: 0 });
     f.n++;
   }
+  /* 路径形态：POSIX 绝对路径 / ~ 展开、Windows 盘符路径（正反斜杠都认）、Windows 原生 UNC
+   * （\\server\share\…）与长路径前缀（\\?\C:\…）——网络共享做根的本地项目同样要出菜单项 */
   function zuOpfLooksPath(v) {
     return typeof v === "string" && v.length > 1 && v.length <= 1024 &&
-      (v.charAt(0) === "/" || v.charAt(0) === "~" || /^[A-Za-z]:[\\/]/.test(v));
+      (v.charAt(0) === "/" || v.charAt(0) === "~" || /^[A-Za-z]:[\\/]/.test(v) ||
+       /^\\\\[^\\?]+\\[^\\]/.test(v) || /^\\\\\?\\[A-Za-z]:\\/.test(v));
   }
   function zuOpfFiberOf(el) {
     try {
@@ -195,14 +200,32 @@
       } catch (e) { zuOpfFails(); }
     }
   }
-  /* 右键菜单与来源行的唯一关联窗口：Radix ContextMenuContent 不回指触发行，靠捕获阶段
-   * contextmenu 在菜单打开前记录（仅记录项目行；其余右键清掉旧记录）。 */
+  /* 右键菜单与来源行的唯一关联窗口：Radix ContextMenuContent 不回指触发行，靠 document 捕获阶段
+   * 在菜单打开前记录（仅记录项目行；其余右键清掉旧记录）。记录时机有两个：① pointerdown——
+   * 鼠标右键（button 2）或触控 / 笔的按下，任何平台都早于菜单挂载；② contextmenu 事件——它的
+   * 派发时机各平台不同（macOS / Linux 在按下时、Windows 在松开时），而菜单何时打开取决于宿主
+   * Radix 的实现：4.0.0 引擎包实证当前宿主在 contextmenu 里才开鼠标右键菜单（记录一定先于挂载；
+   * 触控与笔走 700ms 长按定时器开菜单，不保证派发 contextmenu）。宿主若换成在 pointerdown 里就
+   * 开菜单的实现，Windows 上就成了「菜单先挂载、扫描先跑、contextmenu 后到」——所以 contextmenu
+   * 记录之后再补排一次扫描（幂等）。松开时指针多半落在刚弹出的菜单上，落在菜单里的 contextmenu
+   * 不动记录。 */
+  function zuOpfRecord(target) {
+    try {
+      zuOpfCtxRow = target && target.closest ? target.closest(ZU_OPF_ROW_SEL) : null;
+      zuOpfCtxAt = zuOpfCtxRow ? Date.now() : 0;
+    } catch (e) { }
+  }
+  function zuOpfOnPointerDown(e) {
+    try {
+      if (e && (e.button === 2 || e.pointerType === "touch" || e.pointerType === "pen")) zuOpfRecord(e.target);
+    } catch (e) { }
+  }
   function zuOpfOnCtx(e) {
     try {
       var t = e && e.target;
-      zuOpfCtxRow = t && t.closest ? t.closest(ZU_OPF_ROW_SEL) : null;
-      zuOpfCtxAt = zuOpfCtxRow ? Date.now() : 0;
+      if (!(t && t.closest && t.closest(ZU_OPF_MENU_SEL))) zuOpfRecord(t);
     } catch (e) { }
+    zuOpfSchedule();
   }
   function zuOpfSchedule() {
     if (zuOpfRaf) return;
@@ -221,12 +244,14 @@
     }
   } catch (e) { zuOpfObserver = null; }
   try { document.addEventListener("contextmenu", zuOpfOnCtx, true); } catch (e) { }
+  try { document.addEventListener("pointerdown", zuOpfOnPointerDown, true); } catch (e) { }
   function zuOpfDispose() {
     try { if (zuOpfObserver) { zuOpfObserver.disconnect(); } } catch (e) { }
     zuOpfObserver = null;
     try { if (zuOpfRaf && typeof cancelAnimationFrame === "function") cancelAnimationFrame(zuOpfRaf); } catch (e) { }
     zuOpfRaf = 0;
     try { document.removeEventListener("contextmenu", zuOpfOnCtx, true); } catch (e) { }
+    try { document.removeEventListener("pointerdown", zuOpfOnPointerDown, true); } catch (e) { }
     zuOpfCtxRow = null; zuOpfCtxAt = 0;
   }
   zuOpfScan();   // 热重载重注入后立即补一次（跨代际存活的已开菜单）

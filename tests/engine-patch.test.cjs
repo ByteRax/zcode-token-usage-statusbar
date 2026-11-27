@@ -973,15 +973,16 @@ test("capture hook: real Node runtime — both host request shapes hit a local s
     assert.equal(fs.readFileSync(blob, "utf8"), JSON.stringify("REAL NODE"));
     assert.ok(!fs.readFileSync(jsonl, "utf8").includes("NEVER-STORED-BODY") && !fs.readFileSync(blob, "utf8").includes("NEVER-STORED-BODY"), "消息正文不落盘");
     assert.ok(!fs.existsSync(path.join(home, ".zcode", "zcode-token-usage-statusbar", "autocompact.json")), "阈值 hook 不受影响、不写东西");
-    // 审查第 1 轮 R2：system prompt 可能含项目规则/记忆，落盘文件只给本人读（POSIX）
+    // 审查第 1 轮 R2：system prompt 可能含项目规则/记忆，落盘文件只给本人读（POSIX 权限位；Windows 不表达）
     if (process.platform !== "win32") {
       const capDir = path.join(cfgDir, "req-capture");
       assert.equal(fs.statSync(capDir).mode & 0o777, 0o700, "req-capture 目录 0700");
       assert.equal(fs.statSync(path.join(capDir, "blobs")).mode & 0o777, 0o700, "blobs 目录 0700");
       assert.equal(fs.statSync(jsonl).mode & 0o777, 0o600, "requests.jsonl 0600");
       assert.equal(fs.statSync(blob).mode & 0o777, 0o600, "blob 0600");
-      assert.equal(typeof lines[0].messageChars, "number");
     }
+    // 与平台无关的断言不进上面的权限位门：此前它在 Windows 上被一并静默跳过。断精确值而不只是类型
+    assert.equal(lines[0].messageChars, JSON.stringify(JSON.parse(body).messages[0]).length, "首条消息的字符数");
   } finally {
     await new Promise((r) => server.close(r));
     fs.rmSync(home, { recursive: true, force: true });

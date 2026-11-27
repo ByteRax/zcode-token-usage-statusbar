@@ -2253,6 +2253,7 @@
         var m = href.match(/^file:\/\/(\/[A-Za-z]:)?(\/.*?)\/app\.asar(?:\/|$)/i);
         if (!m) return "";
         var p = decodeURIComponent((m[1] ? m[1].slice(1) : "") + m[2]);
+        if (m[1]) p = p.replace(/\//g, "\\");   // Windows 渲染页地址是 file:///D:/… 正斜杠形态：展示成原生反斜杠路径
         return p.replace(/[\\/]+$/, "") + (p.indexOf("\\") >= 0 ? "\\glm" : "/glm");
       } catch (e) { return ""; }
     }

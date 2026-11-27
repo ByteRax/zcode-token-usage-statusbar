@@ -59,8 +59,15 @@ class ReleaseZipDeflateTests(unittest.TestCase):
         manifest = self.tool.verify(Path(built["zip"]), Path(built["manifest"]), REPO)
         self.assertEqual(manifest["asset"]["size"], Path(built["zip"]).stat().st_size)
         self.assertEqual(manifest["asset"]["sha256"], hashlib.sha256(Path(built["zip"]).read_bytes()).hexdigest())
-        catalog = json.loads(Path(built["catalog"]).read_text())
+        catalog = json.loads(Path(built["catalog"]).read_text(encoding="utf-8"))
         self.assertEqual(catalog["plugins"][0]["source"]["sha256"], manifest["asset"]["sha256"])
+
+    def test_manifest_and_catalog_are_lf_on_every_platform(self):
+        # Windows 文本模式把 \n 写成 \r\n：清单经 git hash-object --stdin 原样进渠道分支，构建产物
+        # 的字节也随平台漂移。写入侧一旦退回平台文本模式，Windows 上必红
+        built = self.build("out")
+        for key in ("manifest", "catalog"):
+            self.assertNotIn(b"\r", Path(built[key]).read_bytes(), key)
 
     def test_same_machine_rebuild_is_byte_identical(self):
         first, second = self.build("first"), self.build("second")
@@ -74,7 +81,7 @@ class ReleaseZipDeflateTests(unittest.TestCase):
         prefix = unpack.PREFIX
         allowed = frozenset(("marketplace.json", "LICENSE") + tuple(prefix + name for name in LEGACY_PLUGIN_FILES))
         bootstrap = frozenset(("marketplace.json", "LICENSE") + tuple(prefix + name for name in LEGACY_BOOTSTRAP_FILES))
-        version = json.loads(Path(built["manifest"]).read_text())["version"]
+        version = json.loads(Path(built["manifest"]).read_text(encoding="utf-8"))["version"]
         with mock.patch.object(unpack, "ALLOWED_FILES", allowed), \
                 mock.patch.object(unpack, "REQUIRED_FILES", allowed), \
                 mock.patch.object(unpack, "BOOTSTRAP_FILES", bootstrap):
@@ -84,7 +91,8 @@ class ReleaseZipDeflateTests(unittest.TestCase):
         self.assertEqual(result["version"], version)
         # 解出来的每个文件都与源码逐字节一致：压缩只改了传输形态
         root = self.base / "unpacked"
-        unpacked = {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+        # 归档成员名恒为正斜杠；relative_to() 在 Windows 上给反斜杠，比对前归一
+        unpacked = {path.relative_to(root).as_posix(): path.read_bytes() for path in root.rglob("*") if path.is_file()}
         self.assertEqual({member.filename for member in self.members(built["zip"])}, set(unpacked))
         self.assertEqual(unpacked[prefix + "overlay.js"], (ROOT / "plugins" / "zcode-token-usage-statusbar" / "overlay.js").read_bytes())
 

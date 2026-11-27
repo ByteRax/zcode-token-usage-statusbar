@@ -953,6 +953,16 @@ def _load_tmp_metadata():
         raise PendingTmpError(f"untrusted pending TMP; re-run install: {e}") from e
 
 
+def _replace_retrying(source, target):
+    """os.replace 的有界重试（实现与退避常量在 runtime_lock）。运行目录里的 runtime_lock 可能是热修
+    保护下留下的旧版、没有这个函数：那时退回裸 os.replace，与引入重试之前的行为一致——不能因为一项
+    可选的加固让本模块整个导入失败（待替换收尾、自检、卸载全断）。"""
+    retry = getattr(runtime_lock, "_replace_retrying", None)
+    if retry is None:
+        return os.replace(source, target)
+    return retry(source, target)
+
+
 def _atomic_tmp_metadata(meta):
     fd, name = bounded_mkstemp(prefix=TMP_META.name + ".", dir=TMP_META.parent)
     try:
@@ -960,7 +970,8 @@ def _atomic_tmp_metadata(meta):
             json.dump(meta, stream, separators=(",", ":"))
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(name, TMP_META)
+        # 刚写完的文件常被杀软 / 搜索索引瞬时打开：Windows 上此时 os.replace 被拒，有界重试
+        _replace_retrying(name, TMP_META)
     finally:
         try:
             Path(name).unlink(missing_ok=True)
@@ -1141,7 +1152,9 @@ def _publish_pending(stage, source, operation, previous, *, validated_mobile=Non
     try:
         _same_stamp(ASAR, source)
         _same_stamp(stage, meta["tmp"])
-        os.replace(stage, TMP)
+        # stage 是刚落盘的整包：Windows 上杀毒 / 索引的瞬时句柄会让裸 os.replace 被拒，
+        # 而这次拒绝的代价是整轮「待替换包生成失败」——有界重试，永久性拒绝照常上抛走回滚
+        _replace_retrying(stage, TMP)
         if mobile:
             # This is an exclusive private stage whose content and syntax were fully checked
             # outside the target lock. Preserve that SHA across the same-directory rename;
@@ -2004,5 +2017,13 @@ def main(argv=None):
 if __name__ == "__main__":
     # check 等子命令的失败退出码必须真正生效（曾裸 main() 恒 0）；bool 返回值不能直接
     # sys.exit——True 会被当成退出码 1（失败），False 变 0（成功），成功失败颠倒。
+    # stdout / stderr 接管道时钉 UTF-8：Windows 默认按区域代码页编码，check / install 的中文
+    # 提示在 cp1252 管道上 UnicodeEncodeError 中断，GBK 管道上则是按 UTF-8 读不清的字节
+    # ——与 usage_mcp.py、hooks、overlay_install.py 同款防护。
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     result = main()
     sys.exit(0 if result is True or result is None else (result or 1))
