@@ -266,7 +266,7 @@ test("capture config helpers read/write the on/off switch atomically (temp path,
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("revealOrOpenFolder: a symlink inside the allowed root that resolves outside is refused", { skip: process.platform === "win32" }, async () => {
+test("revealOrOpenFolder: a symlink inside the allowed root that resolves outside is refused", async () => {
   const { revealOrOpenFolder } = requirePlugin("../plugins/zcode-token-usage-statusbar/extension-main.cjs");
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-ext-symlink-"));
   const root = path.join(base, "root");
@@ -274,7 +274,8 @@ test("revealOrOpenFolder: a symlink inside the allowed root that resolves outsid
   const real = path.join(base, "root", "real");
   fs.mkdirSync(root); fs.mkdirSync(outside); fs.mkdirSync(real);
   try {
-    fs.symlinkSync(outside, path.join(root, "escape"));
+    // Windows 建目录符号链接要特权，junction 免特权、同样被 realpath 解析：用它覆盖同一条越界守卫
+    fs.symlinkSync(outside, path.join(root, "escape"), process.platform === "win32" ? "junction" : "dir");
     const opened = [];
     const execFn = (cmd, args, opts, cb) => { opened.push(args[0]); cb(null); };
     const opts = { allowedRoots: [root], platform: "darwin", execFn, homeDir: base };
