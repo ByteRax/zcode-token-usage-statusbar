@@ -2243,7 +2243,8 @@ test('pill bar clips timeline content below the floating bar (isolated fixture)'
   const b = await startBrowser(t);
 
   // Build a ZCode-4.0-style pane: a scrollable [data-testid="v4-timeline"]
-  // whose content extends past the floating composer card and bar top.
+  // with the composer card sticky inside it (as on the real host), content
+  // extending past the floating card and bar top.
   async function buildTimeline() {
     await b.evaluate(`(() => {
       const pane = document.querySelector('#pane-a');
@@ -2255,7 +2256,8 @@ test('pill bar clips timeline content below the floating bar (isolated fixture)'
       tl.innerHTML = '<div style="height:2000px"></div>';
       pane.insertBefore(tl, pane.firstChild);
       const card = document.querySelector('#card-a');
-      Object.assign(card.style, { position: 'absolute', left: '8px', right: '8px', bottom: '80px' });
+      Object.assign(card.style, { position: 'sticky', left: '8px', right: '8px', bottom: '80px' });
+      tl.appendChild(card);   // real 4.0 mounts the composer as sticky inside the timeline
     })()`);
   }
   const measure = `(() => {
@@ -2278,6 +2280,20 @@ test('pill bar clips timeline content below the floating bar (isolated fixture)'
     assert.ok(m.barTop >= m.cardBottom - 1, `bar must stay below the card: ${JSON.stringify(m)}`);
   });
 
+  await t.test('the card stays inside the clipped timeline and survives clipping', async () => {
+    const card = await b.evaluate(`(() => {
+      const tl = document.querySelector('[data-testid="v4-timeline"]'), card = document.querySelector('#card-a');
+      const cr = card.getBoundingClientRect(), tr = tl.getBoundingClientRect();
+      return { inTimeline: tl.contains(card), cardBottomInside: cr.bottom <= tr.bottom + 1, cardVisible: cr.height > 40 };
+    })()`);
+    assert.deepEqual(card, { inTimeline: true, cardBottomInside: true, cardVisible: true }, JSON.stringify(card));
+  });
+
+  await t.test('a host-side style rewrite self-heals on the next track frame', async () => {
+    await b.evaluate(`document.querySelector('[data-testid="v4-timeline"]').style.clipPath = ''`);
+    await b.waitFor(`document.querySelector('[data-testid="v4-timeline"]').style.clipPath.indexOf('inset') === 0`, 'clip was not rewritten after the host cleared the style');
+  });
+
   await t.test('switching to default (bar inside card) removes the clip', async () => {
     await choose(b, 'default', 0);
     await b.waitFor(`document.querySelector('[data-testid="v4-timeline"]').style.clipPath === ''`, 'clip survived the theme switch');
@@ -2286,6 +2302,12 @@ test('pill bar clips timeline content below the floating bar (isolated fixture)'
       return { inCard: card.contains(bar), clip: document.querySelector('[data-testid="v4-timeline"]').style.clipPath };
     })()`);
     assert.equal(after.inCard, true, JSON.stringify(after));
+  });
+
+  await t.test('switching to compact (bar hidden) removes the clip too', async () => {
+    await choose(b, 'compact', 0);
+    await b.waitFor(`getComputedStyle(document.querySelector('.zusage-root')).display === 'none'`, 'bar did not hide in compact');
+    assert.equal(await b.evaluate(`document.querySelector('[data-testid="v4-timeline"]').style.clipPath`), '', 'clip must be cleared in compact theme');
   });
 
   await t.test('hiding the bar (host modal) removes the clip; both return with the bar', async () => {

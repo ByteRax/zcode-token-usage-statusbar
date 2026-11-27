@@ -25057,7 +25057,11 @@
         var scope = null;
         try { scope = composer && composer.closest('[data-testid^="v4-pane-shell-"]'); } catch (e) { }
         try { tl = (scope || document).querySelector('[data-testid="v4-timeline"]'); } catch (e) { tl = null; }
-        if (!tl) return;
+        /* document 级兜底必须校验归属：多 pane 文档里 DOM 序第一个 timeline 可能属于别的
+         * pane；真机 4.0 的 composer 以 sticky 悬浮在本 pane timeline 内部，contains 同时
+         * 校验了这一点。scope（pane-shell）命中时 timeline 必属本 pane，不在此限。
+         * 不归属宁可不裁。 */
+        if (!tl || (!scope && !(composer && tl.contains(composer)))) return;
         clipTarget = tl;
       }
       var cut = Math.max(0, Math.round(tl.getBoundingClientRect().bottom - cutY));
@@ -29343,8 +29347,9 @@
             lastPos = [left, top];
           }
           /* issue #517：悬浮形态（药丸+兜底）都遮滚动内容，裁线=min(条上缘, 卡下缘)——
-           * 贴卡下缘清空 gap 区，被钳上移时绝不裁进卡。每帧调用，函数内幂等。 */
-          syncPillClip(Math.min(top, Math.round(ar.bottom)));
+           * 贴卡下缘清空 gap 区；pillUnsafe（条 visibility 隐藏、没有可见条顶在那里）
+           * 时不裁，防止只裁掉卡底一条却无条遮挡。每帧调用，函数内幂等。 */
+          syncPillClip(pillUnsafe ? null : Math.min(top, Math.round(ar.bottom)));
         }
         /* 用脱离布局的副本量完整/紧凑自然宽度，避免 space-between 或宿主 flex
          * 把分配到的空白误算为内容宽度。文本或字体变化才重测，不改真实条面。 */
