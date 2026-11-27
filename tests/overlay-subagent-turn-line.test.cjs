@@ -539,7 +539,7 @@ function makeChainctx(opts) {
     richTextOwners: new WeakMap(), richTextOwnerSeq: 0,
     FATAL: {},
     zuActiveTurnId: () => '',
-    TURN_STATS: {
+    TURN_STATS: opts.realStats ? require('../turn-stats.js') : {   // realStats：v493 全链用例用真实 tracker
       createTracker: () => ({ get: tid => (opts.stats && opts.stats[tid]) || null, dispose() {} }),
       subscribeStore: () => { if (opts.subThrows) throw new Error('host store subscribe failed'); return () => {}; },
     },
@@ -548,7 +548,7 @@ function makeChainctx(opts) {
     zuUnavailableText: () => 'unavailable',
     zuIsUnavailableText: t => t === 'unavailable',
     isRateLine: () => false,
-    zuTryBindStore: () => (opts.tryStore ? { off: () => storeOffs.push(SUB_SID) } : null),
+    zuTryBindStore: () => (opts.tryStore ? (opts.tryStoreObj || { off: () => storeOffs.push(SUB_SID) }) : null),
     zuAcquireSubStore: sid => { acquired.push(sid); return null; },
     setInterval: fn => { intervals.push(fn); return 1; },
     clearInterval: () => { cleared++; },
@@ -915,4 +915,181 @@ test('v458 源码契约：扫描循环的观察器存量轮旁路不插占位、
   const block = src.slice(i, src.indexOf('if (!stats || !stats.complete) continue;', i));
   assert.equal(block.indexOf('zuUnavailableText'), -1, '旁路绝不插「本轮统计不可用」误导行');
   assert.equal(block.indexOf('zuFinalText'), -1, '旁路绝不插 tracker 简化文案占位');
+});
+
+/* ---------- v493：亲历完成轮缺轮头输出数（specs/subagent-turn-stats-line.md 规则 13） ----------
+ * 真机宿主投影（2026-11-27 用户实报）：子代理会话（query_source='subagent'）的轮头从不带 outputTokens——
+ * 宿主只给 main_turn 轮头累计该字段——tracker 读数 complete=true / observedLive=true / outputTokens=null。
+ * 旧逻辑把它当 v74「真实零输出」：插「本轮统计不可用」且不发请求，而库里这一轮数据齐全。 */
+const SUB_LIVE_NO_OUT = { complete: true, observedLive: true, outputTokens: null, state: 'completedSuccess', sessionId: SUB_SID };
+const lineText = box => { const l = linesOf(box); return l.length ? l[0].querySelector('p').textContent : null; };
+
+test('v493 扫描（行为）：亲历完成但轮头缺 outputTokens 的轮——不插「不可用」、不插占位，发带页面轮号的请求；富文本到达后插一行富文本并保持', () => {
+  const h = makeChainctx({ tryStore: true, stats: { msg_t1: SUB_LIVE_NO_OUT } });
+  const t = pane(h, ['msg_t1']);
+  h.api.scan();
+  assert.equal(linesOf(h.body).length, 0, '不插「本轮统计不可用」，也不插占位');
+  const reqs = h.api.reqs();
+  assert.equal(reqs.length, 1);
+  assert.equal(reqs[0].action, 'turn-text');
+  assert.equal(reqs[0].sid, SUB_SID);
+  assert.equal(reqs[0].turnRef, 'msg_t1', '请求带这一轮的页面轮号');
+  h.api.deliver(SUB_SID, '', reqs[0].unitEpoch, null);   // 库还没追上：空回执
+  assert.equal(linesOf(h.body).length, 0, '空回执不插行');
+  h.api.scan();   // 下一拍照常重试
+  assert.equal(h.api.reqs().length, 2, '空回执后重试');
+  h.api.deliver(SUB_SID, '⚡ t1 富文本', h.api.reqs()[1].unitEpoch, null);
+  assert.equal(linesOf(t.boxes[0]).length, 1, '富文本到达后恰一行');
+  assert.equal(lineText(t.boxes[0]), '⚡ t1 富文本');
+  h.api.scan();
+  assert.equal(linesOf(t.boxes[0]).length, 1);
+  assert.equal(lineText(t.boxes[0]), '⚡ t1 富文本', '后续拍次保持富文本，不翻回「不可用」');
+  assert.equal(h.api.reqs().length, 2, '已缓存不再发请求');
+});
+
+test('v493 扫描（行为）：同窗格更早一轮已亲历完成、后一轮仍在进行——前一轮照常发请求（有 tracker 完成记录即不限窗格最后一轮）', () => {
+  const h = makeChainctx({ tryStore: true, stats: {
+    msg_t1: SUB_LIVE_NO_OUT,
+    msg_t2: { complete: false, observedLive: true, outputTokens: 5, text: 'B', sessionId: SUB_SID },
+  } });
+  const t = pane(h, ['msg_t1', 'msg_t2']);
+  h.api.scan();
+  const reqs = h.api.reqs();
+  assert.equal(reqs.length, 1);
+  assert.equal(reqs[0].turnRef, 'msg_t1', '请求的是已完成的上一轮，不是窗格最后一轮');
+  assert.equal(linesOf(h.body).length, 0, '进行中的后一轮不插行，前一轮也不插占位');
+  h.api.deliver(SUB_SID, '⚡ t1 富文本', reqs[0].unitEpoch, null);
+  assert.equal(lineText(t.boxes[0]), '⚡ t1 富文本');
+  assert.equal(linesOf(t.boxes[1]).length, 0);
+});
+
+test('v493 扫描（行为）：亲历完成且缺输出数的压缩轮——不发请求、不插行', () => {
+  const h = makeChainctx({ tryStore: true, stats: { msg_t1: Object.assign({ isCompact: true }, SUB_LIVE_NO_OUT) } });
+  const t = pane(h, ['msg_t1']);
+  h.api.scan();
+  assert.equal(h.api.reqs().length, 0, '压缩轮不查库（v230 同款）');
+  assert.equal(linesOf(h.body).length, 0);
+  assert.equal(linesOf(t.boxes[0]).length, 0);
+});
+
+test('v493 边界：轮头明确报零（outputTokens === 0）的亲历完成轮维持 v74——明示「不可用」、不发请求', () => {
+  const h = makeChainctx({ tryStore: true, stats: { msg_t1: Object.assign({}, SUB_LIVE_NO_OUT, { outputTokens: 0 }) } });
+  const t = pane(h, ['msg_t1']);
+  h.api.scan();
+  assert.equal(linesOf(t.boxes[0]).length, 1);
+  assert.equal(lineText(t.boxes[0]), 'unavailable');
+  assert.equal(h.api.reqs().length, 0);
+});
+
+test('v493 边界：主会话实例的亲历完成轮缺输出数——不走观察器分支，行为不变（明示「不可用」、不发请求）', () => {
+  const h = makeChainctx({ tryStore: true });
+  const instRoot = new El('div', { 'data-session-id': 'sess_main' });
+  const box = new El('section', { 'data-turn-id': 'msg_m1' });
+  instRoot.appendChild(box);
+  h.body.appendChild(instRoot);
+  const st = Object.assign({}, SUB_LIVE_NO_OUT, { sessionId: 'sess_main' });
+  h.ctx.instances.push({
+    pid: 'workspace-main', detRoot: () => instRoot, getSid: () => 'sess_main',
+    getScope: () => ({ sid: 'sess_main', identity: '', workspacePath: WS_PATH, remoteSessionId: '' }),
+    statsFor: () => st, isCurrentTurn: () => true,
+  });
+  h.api.scan();
+  assert.equal(linesOf(box).length, 1);
+  assert.equal(lineText(box), 'unavailable');
+  assert.equal(h.api.reqs().length, 0);
+  assert.deepEqual(plain(h.api.diagSub()), { panes: 0, bound: 0, retrying: 0 }, '主会话 box 不建观察器');
+});
+
+test('v493 边界：压缩轮即使富文本已缓存也不插行（marker 晚渲染的瞬态防护，审查收口）', () => {
+  // 先让该轮以非压缩形态发请求并拿到富文本（写缓存、插行），再模拟宿主补渲染 compact marker：
+  // 行节点被宿主重挂摘除后，下一拍统计已是压缩轮——缓存命中也不得再插（v230 语义）
+  const stats = { msg_t1: Object.assign({}, SUB_LIVE_NO_OUT) };
+  const h = makeChainctx({ tryStore: true, stats });
+  const t = pane(h, ['msg_t1']);
+  h.api.scan();
+  h.api.deliver(SUB_SID, '⚡ t1 富文本', h.api.reqs()[0].unitEpoch, null);
+  assert.equal(linesOf(t.boxes[0]).length, 1);
+  linesOf(t.boxes[0])[0].remove();   // 宿主重渲染摘走行节点
+  stats.msg_t1 = Object.assign({}, SUB_LIVE_NO_OUT, { isCompact: true });
+  h.api.scan();
+  assert.equal(linesOf(t.boxes[0]).length, 0, '压缩轮缓存命中不插行');
+});
+
+test('v493 边界：非亲历完成轮已插富文本、缓存条目淘汰后仍保行（审查收口：keep 分支 observedLive 门钉子）', () => {
+  // 场景：轮完成时窗格开着（tracker 亲历）拿到富文本；之后 tracker 重绑重建、缓存条目被
+  // FIFO 淘汰——重读的轮是非亲历形态。keep 分支必须仍保留原文，不翻成「不可用」
+  const stats = { msg_t1: Object.assign({}, SUB_LIVE_NO_OUT) };
+  const h = makeChainctx({ tryStore: true, stats });
+  const t = pane(h, ['msg_t1']);
+  h.api.scan();
+  h.api.deliver(SUB_SID, '⚡ t1 富文本', h.api.reqs()[0].unitEpoch, null);
+  assert.equal(lineText(t.boxes[0]), '⚡ t1 富文本');
+  for (const k of Object.keys(h.api.cache)) delete h.api.cache[k];   // 256 条 FIFO 淘汰的替身
+  stats.msg_t1 = Object.assign({}, SUB_LIVE_NO_OUT, { observedLive: false });   // 重绑后 tracker 非亲历
+  h.api.scan();
+  assert.equal(h.api.reqs().length, 1, '不补发请求');
+  assert.equal(linesOf(t.boxes[0]).length, 1);
+  assert.equal(lineText(t.boxes[0]), '⚡ t1 富文本', 'keep 分支保留富文本原文');
+});
+
+test('v493 边界：非亲历（observedLive=false）的完成轮缺输出数——不走 v493 分支（维持 v467/静默契约）', () => {
+  // 非亲历轮由 v467 backwait/静默路径负责；钉住谓词的 observedLive 条件，防该门被拆后
+  // 非亲历轮改走 v493 查库路径（契约漂移）
+  const h = makeChainctx({ tryStore: true, stats: { msg_t1: Object.assign({}, SUB_LIVE_NO_OUT, { observedLive: false }) } });
+  const t = pane(h, ['msg_t1']);
+  h.api.scan();
+  assert.equal(h.api.reqs().length, 0, '非亲历轮不发 turnRef 请求（观察器无 tracker 活跃轮，isCurrentTurn 恒否）');
+  assert.equal(linesOf(h.body).length, 0, '非亲历轮不插行');
+});
+
+test('v493 扫描（行为）：富文本缓存条目被淘汰后，已插的富文本行原文保留，不翻成「不可用」', () => {
+  const h = makeChainctx({ tryStore: true, stats: { msg_t1: SUB_LIVE_NO_OUT } });
+  const t = pane(h, ['msg_t1']);
+  h.api.scan();
+  h.api.deliver(SUB_SID, '⚡ t1 富文本', h.api.reqs()[0].unitEpoch, null);
+  assert.equal(lineText(t.boxes[0]), '⚡ t1 富文本');
+  for (const k of Object.keys(h.api.cache)) delete h.api.cache[k];   // 模拟 capPut 256 上限的 FIFO 淘汰
+  h.api.scan();
+  assert.equal(linesOf(t.boxes[0]).length, 1);
+  assert.equal(lineText(t.boxes[0]), '⚡ t1 富文本');
+});
+
+test('v493 真实 tracker：宿主子代理投影形态（轮头无 outputTokens 键）→ 完成、亲历、outputTokens=null（修复依赖的前提）', () => {
+  const { createTracker } = require('../turn-stats.js');
+  const tr = createTracker({ now: () => 0 });
+  const header = state => ({ rowId: 2, turnId: 'msg_t1', kind: 'turnHeader', state, startedAt: 1, endedAt: 2, modelDurationMs: 0 });
+  assert.equal(tr.ingest({ sessionId: SUB_SID, logEpoch: 'e1', seq: 1, rows: { window: [header('running')] } }), true);
+  assert.equal(tr.ingest({ sessionId: SUB_SID, logEpoch: 'e1', seq: 2, rows: { window: [header('completedSuccess')] } }), true);
+  const s = tr.get('msg_t1');
+  assert.equal(s.complete, true);
+  assert.equal(s.observedLive, true);
+  assert.equal(s.outputTokens, null, '缺字段读作 null，不是 0');
+  assert.equal(s.modelMs, 0);
+  tr.dispose();
+});
+
+test('v493 全链（真实 tracker + 真实订阅 + 扫描）：子代理轮头「进行中」到「已完成」全程无 outputTokens——不出现「不可用」，富文本到达后出行', () => {
+  // 宿主投影形态取自真机（2026-11-27）：turnHeader + userInput + reasoning/toolCall + assistantText，完成时轮头只多
+  // state/endedAt/activeMs，没有 outputTokens 键。store 替身只在用例里换快照、手动通知。
+  const header = state => ({ rowId: 2, turnId: 'msg_t1', kind: 'turnHeader', state, startedAt: 1, endedAt: 2, modelDurationMs: 0 });
+  const snap = seq => ({ sessionId: SUB_SID, logEpoch: 'e1', seq, rows: { window: [header(seq === 1 ? 'running' : 'completedSuccess'),
+    { rowId: 3, turnId: 'msg_t1', kind: 'reasoning', text: '想一下' }, { rowId: 4, turnId: 'msg_t1', kind: 'assistantText', text: '结论' }] } });
+  const subs = [];
+  const store = { off() {}, getState: () => ({ snapshot: snap(store.seq) }), subscribe: fn => { subs.push(fn); return () => {}; }, seq: 1 };
+  const h = makeChainctx({ tryStore: true, tryStoreObj: store, realStats: true });
+  const t = pane(h, ['msg_t1']);
+  h.api.scan();   // 发现窗格、建观察器、订阅（同步首跑入库「进行中」）
+  assert.equal(subs.length, 1, '观察器已订阅 store');
+  assert.equal(h.api.reqs().length, 0, '进行中的轮不发请求');
+  assert.equal(linesOf(h.body).length, 0, '进行中的轮不插行');
+  store.seq = 2;
+  subs[0]();      // 宿主通知：轮已完成（轮头无 outputTokens）
+  h.api.scan();
+  assert.equal(linesOf(h.body).length, 0, '轮完成这一拍不出现「本轮统计不可用」');
+  const reqs = h.api.reqs();
+  assert.equal(reqs.length, 1);
+  assert.equal(reqs[0].turnRef, 'msg_t1');
+  h.api.deliver(SUB_SID, '⚡ 123.4 token/s(本轮) · …', reqs[0].unitEpoch, null);
+  assert.equal(lineText(t.boxes[0]), '⚡ 123.4 token/s(本轮) · …');
+  assert.equal(linesOf(t.boxes[0]).length, 1);
 });

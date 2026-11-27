@@ -146,6 +146,15 @@
     for (var sid in zuSubDetPanes) if (zuSubDetPanes[sid] === owner) return true;
     return false;
   }
+  /* v493（用户实报）：观察器 owner 的「亲历完成但轮头缺 outputTokens」轮。宿主投影只给主会话轮
+   * （query_source='main_turn'）的轮头累计 outputTokens（product-projection onModelComplete 的
+   * isMainTurn 门），子代理会话的轮头从不带该字段——tracker 读数恒 complete / observedLive 为真、
+   * outputTokens=null（缺字段 ≠ 零输出）。scanDeterministicLines 据此把这类轮按纯富文本轮处理，
+   * 不走 v74「零输出即本轮统计不可用」。outputTokens === 0（宿主恢复的历史轮 / 宿主明确报零）与
+   * 非亲历轮不在内，维持原规则（v74 / v467）。 */
+  function zuSubDetHeaderNoOutput(owner, stats) {
+    return !!stats && stats.complete && stats.observedLive && stats.outputTokens === null && zuSubDetHasOwner(owner);
+  }
   function zuSubDetDiag() {   // panes=窗格数，bound=已绑定 store 数，retrying=未绑定（拿不到 store 或绑定失败，等 2s 重试）
     var bound = 0, n = 0;
     for (var sid in zuSubDetPanes) { n++; if (zuSubDetPanes[sid].store) bound++; }
@@ -384,7 +393,10 @@
             if (rec) { rec.line = "compact"; rec.st = zuDiagStats(again); }
             continue;
           }
-          if (!againOk && !(again && again.observedLive)) {
+          /* v493：子代理窗格亲历完成轮缺轮头输出数（zuSubDetHeaderNoOutput）同样按本分支保留——它的行
+           * 只可能是富文本（纯富文本轮不插占位），缓存条目被淘汰后原文保留，不翻成「不可用」 */
+          var againNoOut = !againOk && typeof zuSubDetHeaderNoOutput === "function" && zuSubDetHeaderNoOutput(owner, again);
+          if (!againOk && !(again && again.observedLive && !againNoOut)) {
             /* v86：tracker 无记录（快照窗口滑出/store 换代/热更新换 tracker）或重绑后一步到位捞到的
              * 历史存量轮缺 outputTokens（缺字段 ≠ 零输出）——都不据此改判"不可用"：已完成轮的数字不会
              * 过时，保留已有占位/富文本；此前误插的"不可用"行直接撤下。仅亲历过的真实零输出轮仍明示 */
@@ -449,6 +461,19 @@
           if (!stats.isCompact && owner.isCurrentTurn && owner.isCurrentTurn(tid)) {
             if (zuRequestTurnText(owner, tid, { sessionId: owner.getSid() }) && rec) rec.line = "backwait";   // noSid 门只读 sessionId；未入队（尝试耗尽/身份拒绝）不标等回执
           }
+          continue;
+        }
+        /* v493（用户实报）：子代理窗格里开着窗格看它跑完的轮，轮头从不带 outputTokens
+         * （zuSubDetHeaderNoOutput）——此前被当成 v74「真实零输出」：插「本轮统计不可用」且不发请求，
+         * 而库里这一轮数据齐全。改为纯富文本轮：缓存命中直接插富文本；未命中且非压缩轮就发带页面
+         * 轮号的请求（有 tracker 完成记录即可，不限窗格最后一轮——请求按轮号精确定位这一轮）；
+         * 不插占位、不插「不可用」。空回执不写缓存：轮没结束、库没追上或旧主桥在位时不插行。
+         * 富文本到达后重扫经本分支插行，再往后的拍次由上方 v86 keep 分支自维持。 */
+        if (!statsOk && typeof zuSubDetHeaderNoOutput === "function" && zuSubDetHeaderNoOutput(owner, stats)) {
+          if (richTextCache[richKey] && !stats.isCompact) {   // 审查收口：压缩 marker 晚渲染时缓存命中也不插（与请求侧同门），否则插出一拍即被上方 v230 撤下
+            zuDetPlace(box, zuDetBuildLine(ownerToken, tid, richTextCache[richKey]));
+            if (rec) rec.line = "rich";
+          } else if (!richTextCache[richKey] && !stats.isCompact && zuRequestTurnText(owner, tid, { sessionId: owner.getSid() }) && rec) rec.line = "subwait";   // noSid 门只读 sessionId；未入队（尝试耗尽）不标等回执
           continue;
         }
         if (!statsOk && stats.isCompact && !richTextCache[richKey]) continue;   // v230：压缩轮零输出不插「不可用」行（宿主压缩提示已承载语义；rec.line 已在上面记 none）
