@@ -1754,4 +1754,13 @@ def main():
 
 
 if __name__ == "__main__":
+    # Windows 默认（无全局 PYTHONUTF8）下 stdout / stderr 接管道时按区域代码页（cp936 / cp1252）
+    # 编码：非 CJK 代码页的机器上一句中文 print 就 UnicodeEncodeError 中断（check / doctor /
+    # /install-overlay 全断），中文代码页下家目录含 GBK 外字符（emoji 等）时路径回显同样崩；
+    # 宿主与 plugin-updater 的 sync 按 UTF-8 读这些输出——与 usage_mcp.py、hooks 同款防护。
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     main()

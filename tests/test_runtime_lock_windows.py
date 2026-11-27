@@ -318,5 +318,54 @@ class RuntimeLockStdinTests(unittest.TestCase):
                 self.assertEqual(config.read_bytes(), before)
 
 
+class PatchInstallPublishRetryTests(unittest.TestCase):
+    """待替换包的 sidecar 发布同样走有界重试：Windows 上刚写完的文件常被杀毒 / 搜索索引的瞬时句柄
+    占住，裸 os.replace 被拒一次就让整轮安装报「待替换包生成失败」。读者何时松手由替身决定。"""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="pending publish ")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.pi = load_module("patch_install_publish_retry", ROOT / "patch_install.py")
+        self.meta = self.root / "app.asar.zusage.tmp.json"
+        patched = mock.patch.object(self.pi, "TMP_META", self.meta)
+        patched.start()
+        self.addCleanup(patched.stop)
+
+    def _flaky(self, failures):
+        real_replace, left = os.replace, {"n": failures}
+
+        def replace(source, target):
+            if left["n"]:
+                left["n"] -= 1
+                raise PermissionError(errno.EACCES, "另一个程序正在使用此文件", str(target), 32)
+            return real_replace(source, target)
+        return replace
+
+    def _publish(self, failures):
+        with mock.patch.object(self.pi.os, "replace", self._flaky(failures)), \
+                mock.patch.object(runtime_lock.time, "sleep", lambda seconds: None):
+            self.pi._atomic_tmp_metadata({"operation": "install"})
+
+    def test_sidecar_publish_survives_transiently_open_targets(self):
+        self._publish(3)
+        self.assertEqual(json.loads(self.meta.read_text(encoding="utf-8")), {"operation": "install"})
+        self.assertEqual([p.name for p in self.root.iterdir()], [self.meta.name], "临时文件不残留")
+
+    def test_permanently_locked_target_still_raises_and_cleans_up(self):
+        with self.assertRaises(PermissionError):
+            self._publish(10 ** 6)
+        self.assertEqual([p.name for p in self.root.iterdir()], [], "临时文件要清掉，目标没写成")
+
+    def test_older_lock_module_without_the_helper_falls_back_to_a_plain_replace(self):
+        # 运行目录里可能是热修保护下留下的旧版 runtime_lock：没有重试函数时退回裸 os.replace，
+        # 不能让 patch_install 整个导入失败（待替换收尾、自检、卸载全断）
+        helper = self.pi.runtime_lock._replace_retrying
+        del self.pi.runtime_lock._replace_retrying
+        self.addCleanup(setattr, self.pi.runtime_lock, "_replace_retrying", helper)
+        self._publish(0)
+        self.assertEqual(json.loads(self.meta.read_text(encoding="utf-8")), {"operation": "install"})
+
+
 if __name__ == "__main__":
     unittest.main()

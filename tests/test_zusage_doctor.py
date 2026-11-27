@@ -301,8 +301,11 @@ class DoctorTests(unittest.TestCase):
             self.assertEqual(INSTALLER._doctor_storage(), self.home / ".zcode" / "cli" / "plugins")
             self.config.write_text(json.dumps({"storage": {"dir": "~/elsewhere"}}), encoding="utf-8")
             self.assertEqual(INSTALLER._doctor_storage(), self.home / "elsewhere" / "cli" / "plugins")
-            self.config.write_text(json.dumps({"storage": {"dir": "/abs/cli"}}), encoding="utf-8")
-            self.assertEqual(INSTALLER._doctor_storage(), Path("/abs/cli/plugins"))
+            absolute = self.root / "abs" / "cli"
+            self.config.write_text(json.dumps({"storage": {"dir": str(absolute)}}), encoding="utf-8")
+            # 绝对路径原样跟随：不拼家目录，已以 cli 结尾就不再补一层。不用 "/abs/cli" 这种 POSIX 形态的
+            # 字面量当期望——它在 Windows 上是无盘符的根路径，产品会按家目录所在盘符解析（平台语义）
+            self.assertEqual(INSTALLER._doctor_storage(), absolute / "plugins")
             self.config.write_text("{broken", encoding="utf-8")
             self.assertEqual(INSTALLER._doctor_storage(), self.home / ".zcode" / "cli" / "plugins")
 

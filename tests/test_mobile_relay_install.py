@@ -702,7 +702,10 @@ class MobileInstallTests(unittest.TestCase):
 
         self.assertFalse(result)
         self.assertEqual(self.pi.mobile_status()["status"], "skipped-error")
-        self.assertEqual([dest for _source, dest in attempts], [self.target, self.pi.TMP])
+        # 待替换包的发布替换有界重试（Windows 上杀毒 / 索引的瞬时句柄）：持续被拒时试满上限才回滚；
+        # 目标 asar 的直接替换仍是一次，被拒即转待替换流程
+        self.assertEqual([dest for _source, dest in attempts],
+                         [self.target] + [self.pi.TMP] * self.lock_module._REPLACE_ATTEMPTS)
         self.assertEqual((self.runtime / ".plugin-restart-required").read_bytes(), before_marker)
         self.assert_no_pending_or_stage()
 
