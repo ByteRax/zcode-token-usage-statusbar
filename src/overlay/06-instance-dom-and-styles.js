@@ -364,8 +364,9 @@
      * → v491 药丸悬浮区滚动内容裁剪（issue #517）：ZCode 4.0 起消息滚动列表（[data-testid="v4-timeline"]，composer 以 sticky 悬浮其内）内容延伸到视口底、从悬浮条背后穿过（v143 让位只顶卡不裁内容）——悬浮形态（药丸+兜底）在 track 定位拍按裁线 min(条上缘, 卡下缘) 给所属 pane（composer 最近 v4-pane-shell-* 祖先，miss 回退全文档单列）的 v4-timeline 写 clip-path inset(0 0 Xpx 0)（每帧幂等，X=容器底缘−裁线；找不到滚动容器自然降级不裁；clip-path 只裁绘制、不改 fixed/absolute 后代定位基准，4.0.0 实测 timeline 内无 fixed 后代），条隐藏（hideBar）与让位归还（releasePads，切档/换卡/销毁共用）同步解除裁剪。
      * → v492 上下文洞察扩展的两个入口（specs/context-insights-extension.md §2.2）：「上下文容量」弹层在压缩按钮左侧并排挂「上下文明细」按钮（.zu-ext-ctx-btn，各占一半宽，经主桥 open-ext-view 动作唤起扩展视图，宿主无该入口时不注入）；⚙ 设置面板顶部挂两颗快捷按钮（.zu-ext-quick：当前会话明细 / 全部会话洞察），点击走同一动作
      * → v493 子代理窗格亲历完成轮不再显示「本轮统计不可用」（用户实报）：宿主投影只给主会话轮（query_source='main_turn'）的轮头累计 outputTokens，子代理会话的轮头从不带该字段（tracker 读数 outputTokens=null），开着窗格看子代理跑完的那一轮此前被 v74 当成「真实零输出」——插「本轮统计不可用」且不查库，而库里该轮数据齐全。03 分片新增 zuSubDetHeaderNoOutput（观察器 owner + tracker 已完成 + 亲历 + outputTokens 为 null），这类轮按纯富文本轮处理：缓存命中直接插富文本，未命中且非压缩轮即发带页面轮号的请求（不限窗格最后一轮），不插占位、不插「不可用」；已插行在缓存条目淘汰后走 v86 keep 分支原文保留。outputTokens 为 0 的轮、非亲历轮与主会话实例行为不变（specs/subagent-turn-stats-line.md 规则 13）
+     * → v494 ⚙ 设置面板撤掉上下文洞察扩展的两颗快捷按钮（用户决定，设置面板不放功能入口）：v492 在设置面板顶部挂的「当前会话明细」「全部会话洞察」（.zu-ext-quick）按用户要求移除；这两个功能的入口保留左侧主导航、右侧边栏新标签页、容量弹层「上下文明细」按钮与 /context 命令。06 分片的按钮与样式、09 分片面板点击委托里的 fiber 直开与 open-ext-view 回退分支一并删除，容量弹层按钮的同一链路不变
      */
-    var VERSION = "v493";
+    var VERSION = "v494";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -2137,13 +2138,6 @@
       "html:not(.dark) .zu-ext-ctx-btn,html:not(.dark) .zu-ext-ctx-btn + .zu-compact-btn{color:var(--color-foreground,#171717);background:rgba(0,0,0,.04);border-color:rgba(0,0,0,.08)}" +
       "html:not(.dark) .zu-ext-ctx-btn:hover,html:not(.dark) .zu-ext-ctx-btn + .zu-compact-btn:hover{background:rgba(0,0,0,.075);border-color:rgba(0,0,0,.13)}" +
       "html:not(.dark) .zu-ext-ctx-btn:active,html:not(.dark) .zu-ext-ctx-btn + .zu-compact-btn:active{background:rgba(0,0,0,.11)}" +
-      ".zu-ext-quick{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}" +
-      ".zu-ext-qbtn{flex:1 1 160px;display:inline-flex;align-items:center;justify-content:center;gap:6px;" +
-      "height:32px;padding:0 10px;border-radius:8px;border:1px solid var(--color-border,rgba(255,255,255,.14));" +
-      "background:rgba(255,255,255,.04);color:inherit;font:inherit;font-size:12px;font-weight:500;cursor:pointer}" +
-      ".zu-ext-qbtn:hover{background:rgba(255,255,255,.10)}" +
-      "html:not(.dark) .zu-ext-qbtn{background:rgba(0,0,0,.03)}" +
-      "html:not(.dark) .zu-ext-qbtn:hover{background:rgba(0,0,0,.07)}" +
       "html:not(.dark) .zu-compact-btn{background:rgba(0,0,0,.05)}" +
       "html:not(.dark) .zu-compact-btn:hover{background:rgba(0,0,0,.08)}" +
       "html:not(.dark) .zu-compact-btn:active{background:rgba(0,0,0,.12)}" +
@@ -2527,10 +2521,6 @@
       '<button type="button" class="zu-settings-close" aria-label="' + L("关闭设置", "Close settings") + '">✕</button></div>' +
       '<div class="zu-settings-layout">' + navHtml() +
       '<div class="zu-settings-body" tabindex="0" role="region" aria-label="' + L("状态条设置选项", "Status bar settings options") + '">' +
-      '<div class="zu-ext-quick">' +
-      '<button type="button" class="zu-ext-qbtn" data-view="context">' + L("当前会话明细 (Context)", "Current Session (Context)") + '</button>' +
-      '<button type="button" class="zu-ext-qbtn" data-view="insights">' + L("全部会话洞察 (Insights)", "All Sessions (Insights)") + '</button>' +
-      '</div>' +
       '<section class="zu-settings-section" data-sec="display"' + secOpen("display") + '><div class="cap">' + L("状态条显示", "Display items") + '</div><div class="zu-settings-card">' +
       '<div class="zu-theme-title">' + L("状态语言", "Status language") + '</div>' +
       '<div class="zu-settings-langs"><label><input type="radio" name="zu-lang" value="zh"><span>中文</span></label>' +
