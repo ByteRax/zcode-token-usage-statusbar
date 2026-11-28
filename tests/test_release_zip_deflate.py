@@ -64,8 +64,15 @@ class ReleaseZipDeflateTests(unittest.TestCase):
 
     def test_manifest_and_catalog_are_lf_on_every_platform(self):
         # Windows 文本模式把 \n 写成 \r\n：清单经 git hash-object --stdin 原样进渠道分支，构建产物
-        # 的字节也随平台漂移。写入侧一旦退回平台文本模式，Windows 上必红
-        built = self.build("out")
+        # 的字节也随平台漂移。POSIX 的文本模式不换行，这条断言在 POSIX 上是空转的——所以给
+        # Path.write_text 打桩模拟 Windows 文本模式的换行替换：写入侧一旦退回 write_text，哪个平台上都红
+        real_write_text = Path.write_text
+
+        def text_mode_write_text(path, data, encoding=None, errors=None, newline=None):
+            return real_write_text(path, data.replace("\n", "\r\n"), encoding=encoding, errors=errors)
+
+        with mock.patch.object(Path, "write_text", text_mode_write_text):
+            built = self.build("out")
         for key in ("manifest", "catalog"):
             self.assertNotIn(b"\r", Path(built[key]).read_bytes(), key)
 

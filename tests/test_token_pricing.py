@@ -538,6 +538,11 @@ class PeakValleyTests(unittest.TestCase):
         self.assertEqual(n(tp._EPOCH_MAX), tp._EPOCH_MAX)
         self.assertIsNone(n(tp._EPOCH_MIN - 1))
         self.assertIsNone(n(tp._EPOCH_MAX + 1))
+        # 上下界钉成字面值：time.gmtime 能表示的第一秒与最后一秒（0001-01-01T00:00:00Z、9999-12-31T23:59:59Z）。
+        # 上面两条拿常量自己推 ±1，常量被挪动时照样绿；界外的下一秒必须经 next_peak_change 走到 None 而不是抛错
+        self.assertEqual((tp._EPOCH_MIN, tp._EPOCH_MAX), (-62135596800, 253402300799))
+        self.assertIsNone(tp.next_peak_change(253402300799 + 1))
+        self.assertIsNone(tp.next_peak_change(-62135596800 - 1))
         for bad in (None, "abc", float("nan"), float("inf"), float("-inf"), 10 ** 30, -(10 ** 30)):
             with self.subTest(value=bad):
                 self.assertIsNone(n(bad))

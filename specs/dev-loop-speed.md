@@ -25,7 +25,7 @@
 - 一条命令跑完 [AGENTS.md](../AGENTS.md) 的全部基础检查：六个 `node --check`、三个 `build_*.py --check`、`sync_plugin.py --check`、Node 测试、Python 测试。
 - 顺序：先语法检查，再构建与副本一致性（都快，失败即停），然后 Node 与 Python 两套测试并行跑。
 - 测试文件通配由脚本自己展开，不依赖 shell（仓库路径含 `[` 时也照常展开）；Python 一律用 `sys.executable`，`--node` 指定别的 Node（Windows 开发机用宿主自带的 Node，见 [tests.md](../.zcode/rules/tests.md) §1）。
-- Node 子进程自带 `ELECTRON_RUN_AS_NODE=1`：`--node` 可以直接指向宿主的 `ZCode.exe`，不必自己导出这个变量（缺了它 Electron 以客户端身份启动，`--check` 落空）。
+- 子进程环境自带 `ELECTRON_RUN_AS_NODE=1`（语法检查、构建检查与两套测试的子进程一并带上）：`--node` 可以直接指向宿主的 `ZCode.exe`，不必自己导出这个变量（缺了它 Electron 以客户端身份启动，`--check` 落空）。
 - 子进程输出按字节读：先按 UTF-8 严格解，解不开再按区域代码页解。它不改子进程的编码，默认代码页下的问题照旧会在测试里暴露，这里只是把它们读对。
 - 子进程起不来（PATH 里没有 `node`）算那一条失败，输出里给出 `--node` 指引，不给一段 traceback。
 - 输出：每一步一行结果；测试给出通过、失败、跳过的计数和失败用例名（最多 20 个）；完整输出落在临时目录的日志文件里，末尾给出路径。

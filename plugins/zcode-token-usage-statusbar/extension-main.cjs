@@ -883,8 +883,9 @@ async function activate(ctx) {
   }
   /* 轮询兜底：Windows 上 fs.watch 可能漏事件，报过 error 之后更是不再派发——每 3 秒比对一次请求文件的
    * mtime（异步 stat，不阻塞扩展进程的事件循环），watcher 不在场时顺带重建。
-   * 激活时已在的请求文件只取它的 mtime 作种子、不当成新请求：processOpenRequestFile 只拒绝 15 秒前的
-   * 请求，而 lastHandledReqId 只在内存里，否则扩展进程在一次点击后 15 秒内重启会把那次打开重放一遍。 */
+   * 激活时已在的请求文件不当成新请求（否则扩展进程在一次点击后 15 秒内重启会把那次打开重放一遍：
+   * processOpenRequestFile 只拒绝 15 秒前的请求，lastHandledReqId 只在内存里）：轮询这条路上它的
+   * mtime 只作种子；真正的门是 seedOpenRequest 记下的 id，watcher 路径同样被它去重。 */
   function pollOpenRequest() {
     fs.stat(path.join(OPEN_REQ_DIR, OPEN_REQ_FILE), (err, st) => {
       if (disposed) return;
@@ -912,6 +913,15 @@ async function activate(ctx) {
       });
     } catch { /* 目录暂不可用：轮询时再试 */ }
   }
+  /* 激活时已在的请求文件，把它的 id 记成已处理——必须同步完成（fs.watch 的事件最早也要到下一轮事件循环
+   * 才派发），且对 watcher 路径同样成立：
+   * macOS 的 fs.watch（FSEvents 经 fseventsd 异步派发）会把建监听之前刚落盘的那次写入补发给新 watcher
+   * （实测确定性复现，事件在建监听后约 10ms 到达），只给轮询种 mtime 挡不住它。之后不论事件从哪条路
+   * 来，processOpenRequestFile 都按 id 去重；新请求带新 id，照常处理。 */
+  (function seedOpenRequest() {
+    const req = readJsonSafe(path.join(OPEN_REQ_DIR, OPEN_REQ_FILE));
+    if (req && typeof req === "object" && typeof req.id === "string") lastHandledReqId = req.id;
+  })();
   startOpenRequestWatcher(true);
   pollOpenRequest();   // 激活即取一次种子
   pollTimer = setInterval(pollOpenRequest, 3000);

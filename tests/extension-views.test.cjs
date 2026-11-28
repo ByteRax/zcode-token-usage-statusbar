@@ -420,9 +420,12 @@ test("insights: the day filter uses local calendar days, survives bad timestamps
   if (edge === null) return t.skip("本地日与 UTC 日全天相同（UTC+0）：这条断言在本机没有区分力");
   const cell = { getAttribute: (n) => (n === "data-hday" ? dayKey : null), onclick: null };
   const snap = insightsSnap();
+  // 前一天本地正午：一定不属于 dayKey 那一天（不能拿 edge 减 24 小时凑——夏令时切换日会差一小时）
+  const otherDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 12).getTime();
   snap.sessions = [
     { id: "sess_1", title: "夜里的会话", directory: "C:\\Users\\me\\项目 alpha", updatedAt: edge, tokens: 5 },
     { id: "sess_2", title: "坏时间戳的会话", directory: "/tmp/proj", updatedAt: "not-a-date", tokens: 5 },
+    { id: "sess_3", title: "前一天的会话", directory: "/tmp/proj", updatedAt: otherDay, tokens: 5 },
   ];
   const v = loadView("extension-view-insights.js", { insights_snapshot: () => snap });
   v.hooks["[data-hday]"] = () => [cell];
@@ -431,6 +434,7 @@ test("insights: the day filter uses local calendar days, survives bad timestamps
   cell.onclick();
   const html = v.html();
   assert.ok(html.includes("夜里的会话"), "按本地自然日筛：与热力图格子同一天");
+  assert.ok(!html.includes("前一天的会话"), "不属于所选日的会话被筛掉（日筛选不只是放行）");
   assert.ok(!html.includes("bad-ts-title") && !html.includes("坏时间戳的会话"), "时间戳非法的会话不匹配日筛选，也不打断渲染");
   assert.match(html, /<span class="sess-proj">项目 alpha<\/span>/, "Windows 路径按反斜杠取目录名做项目名");
 });
