@@ -128,6 +128,15 @@ class DoctorTests(unittest.TestCase):
         self.assertLine(report, "OK", "客户端版本", "3.19.0")
         self.assertLine(report, "OK", "客户端版本适配", "已登记")
 
+    def test_loader_and_relay_diagnostics_share_the_entry_read(self):
+        with mock.patch.object(PLUGIN_ASAR, "entry_bytes_of", wraps=PLUGIN_ASAR.entry_bytes_of) as entry, \
+                mock.patch.object(PLUGIN_ASAR, "_archive_snapshot", wraps=PLUGIN_ASAR._archive_snapshot) as archive:
+            report, _ = self.run_doctor()
+        self.assertLine(report, "OK", "状态条注入", "指向当前运行目录")
+        self.assertLine(report, "WARN", "远控中继补丁", "无法检查")
+        entry.assert_not_called()
+        archive.assert_called_once_with(self.asar)
+
     def test_doctor_changes_nothing_on_disk(self):
         (self.runtime / "quota-secrets.json").write_text('{"token":"SECRET-SENTINEL-123"}', encoding="utf-8")
         before = {name: snapshot(path) for name, path in (("runtime", self.runtime),
@@ -276,6 +285,12 @@ class DoctorTests(unittest.TestCase):
         with mock.patch.object(INSTALLER, "_host_registered", return_value=False):
             report, _ = self.run_doctor()
         self.assertLine(report, "OK", "客户端版本适配", "按结构推导适配")
+
+    def test_missing_entry_still_reports_host_version(self):
+        make_asar(self.asar, files={"package.json": self.host_package})
+        report, _ = self.run_doctor()
+        self.assertLine(report, "OK", "客户端版本", "3.19.0")
+        self.assertLine(report, "FAIL", "客户端与注入", "这一组检查没能完成")
 
     def test_one_failing_section_does_not_hide_the_rest(self):
         with mock.patch.object(INSTALLER, "_host_build", side_effect=OSError("boom")):

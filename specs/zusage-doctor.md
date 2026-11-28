@@ -27,8 +27,8 @@
 | 插件登记 | 启用状态 | 宿主 CLI 配置的 `plugins.enabled` 与 `plugins.enabledPlugins` | 总开关关闭或本插件被禁用 `FAIL`；未显式设置按默认启用 `OK` |
 | 插件登记 | 市场登记 | 宿主插件存储的 `known_marketplaces.json` | `#plugin-releases` / `.git#plugin-releases-gitcode` 为正式渠道 `OK`；裸 GitHub 地址为「仓库源码」`WARN`；带刷新失败记录 `WARN` |
 | 客户端 | 归档位置、客户端版本、是否在运行 | `patch_install` 的目标探测、`read_asar_package`、`client_running` | 找不到归档 `FAIL`；其余如实报告（进程名探测可能漏检，输出里注明） |
-| 注入 | 状态条注入行 | `injected_state` 与注入行比对 | 未注入或归档读不出 `FAIL`；指向别的目录 `WARN` |
-| 注入 | 手机远控补丁 | `_mobile_check_status` | 「已注入」`OK`，其余 `WARN` |
+| 注入 | 状态条注入行 | 归档快照中的主入口与注入行比对 | 未注入或归档读不出 `FAIL`；指向别的目录 `WARN` |
+| 注入 | 远控中继补丁 | 与状态条注入检查共用归档快照，由 `patch_install.py` 返回判定及文案 | 钩子齐全时任何语言均为 `OK`，其余 `WARN` |
 | 注入 | 逐问速率行补丁（渲染桥） | `renderer_bridge._inspect_deploy` | `present` `OK`；缺桥或无法验证 `WARN` |
 | 注入 | 客户端版本适配 | `_host_registered` | 未登记 `WARN` |
 | 待替换 | 待替换包与收尾监控 | `pending_operation`、`pending_tmp`、`monitor_instance_lock` | 安装待替换 `FAIL`（客户端退出后才生效）；卸载待替换 `WARN`；输出注明监控是否在运行 |
@@ -54,6 +54,8 @@
 | 运行目录文件缺失或与来源不一致、配置损坏、存在卸载豁免、启动记录带故障提示 | 对应行 `WARN` 或 `FAIL` |
 | 某一项检查抛异常 | 该组记 `FAIL`，后续各组照常输出，退出码仍为 0 |
 | 运行目录里放一个带哨兵串的 `quota-secrets.json` | 输出不含该串 |
+| 状态条与远控中继补丁均可检查 | 两项共用一次主入口读取，语言设置不影响等级 |
+| 主入口读不出且客户端版本可读 | 仍报告客户端版本，注入检查报告读档失败 |
 | 体检前后 | 运行目录、归档、宿主插件存储的文件清单与字节不变 |
 | 归档找不到 | 仍输出完整报告与 `FAIL`，退出码 0 |
 

@@ -109,15 +109,44 @@ class PendingAsarTests(unittest.TestCase):
         self.assertFalse(self.pi.TMP_META.exists())
 
     def test_upgrade_between_entry_read_and_repack_is_rejected(self):
-        read = self.pi.entry_bytes_of
-        def upgrade(path):
-            entry = read(path)
-            self.upgrade_asar()
-            return entry
-        with mock.patch.object(self.pi, "entry_bytes_of", side_effect=upgrade), \
+        read = self.pi._archive_snapshot
+
+        def upgrade(path, *, with_hash=False):
+            if with_hash:
+                self.upgrade_asar()
+            return read(path, with_hash=with_hash)
+
+        intent = mock.Mock()
+        with mock.patch.object(self.pi, "_archive_snapshot", side_effect=upgrade), \
                 mock.patch.object(self.pi, "repack") as repack:
-            self.assertFalse(self.pi.install())
+            self.assertFalse(self.pi.install(before_publish=intent))
+        intent.assert_not_called()
         repack.assert_not_called()
+        self.assertIn(b"official v2", self.pi.entry_bytes_of(self.asar))
+
+    def test_archive_digest_covers_the_entry_bytes_used_for_planning(self):
+        body = b"console.log('official v1');" + b" " * 16000
+        make_asar(self.asar, files={"package.json": b'{"name":"@zcode/desktop","type":"module"}',
+                                    self.pi.ENTRY: body, "tail.bin": b"untouched"})
+        original = self.asar.read_bytes()
+        updated = original.replace(b"official v1", b"official v2")
+        self.assertNotEqual(original, updated)
+        stamp = self.pi.file_stamp(self.asar)
+        read_package = self.pi._read_relay_package
+
+        def change_entry_after_read(*args):
+            self.asar.write_bytes(updated)
+            return read_package(*args)
+
+        # Simulate an in-place change that metadata checks cannot distinguish.
+        with mock.patch.object(self.pi, "file_stamp", return_value=stamp), \
+                mock.patch.object(self.pi, "_stat_stamp", return_value=stamp), \
+                mock.patch.object(self.pi, "_read_relay_package", side_effect=change_entry_after_read):
+            source, entry, package = self.pi._archive_snapshot(self.asar, with_hash=True)
+        self.assertEqual(entry, body)
+        self.assertEqual(package["name"], "@zcode/desktop")
+        self.assertEqual(source["sha256"], hashlib.sha256(original).hexdigest())
+        self.assertEqual(self.asar.read_bytes(), updated)
 
     def test_finalize_consumes_existing_tmp_without_repacking(self):
         self.prepare()
@@ -1350,10 +1379,12 @@ class SingleTransactionTests(unittest.TestCase):
 
     def test_install_hashes_source_once_and_repacks_once(self):
         with mock.patch.object(self.pi, "source_fingerprint", wraps=self.pi.source_fingerprint) as hashes, \
+                mock.patch.object(self.pi, "_archive_snapshot", wraps=self.pi._archive_snapshot) as snapshots, \
                 mock.patch.object(self.pi, "repack", wraps=self.pi.repack) as repack, \
                 mock.patch.object(self.pi.os, "replace", wraps=os.replace) as replace:
             self.assertTrue(self.pi.install())
-        self.assertEqual([Path(call.args[0]) for call in hashes.call_args_list], [self.asar])
+        self.assertEqual(snapshots.call_args_list, [mock.call(self.asar), mock.call(self.asar, with_hash=True)])
+        hashes.assert_not_called()
         self.assertEqual(repack.call_count, 1)
         self.assertEqual((Path(replace.call_args.args[0]), Path(replace.call_args.args[1])), (self.pi.TMP, self.asar))
         self.assertIn(self.pi.INJECT_LINE.encode(), self.entry())
@@ -1364,17 +1395,18 @@ class SingleTransactionTests(unittest.TestCase):
         with mock.patch.object(self.pi, "source_fingerprint", wraps=self.pi.source_fingerprint) as hashes, \
                 mock.patch.object(self.pi, "repack", side_effect=AssertionError("must not repack")):
             self.assertTrue(self.pi.install())
-        # 复用的包不是本进程生成的：来源指纹之外，替换前仍整包验来源与 TMP
-        self.assertEqual([Path(call.args[0]) for call in hashes.call_args_list],
-                         [self.asar, self.asar, self.pi.TMP])
+        # 复用磁盘上的包，替换前各整包核验一次来源与 TMP。
+        self.assertEqual([Path(call.args[0]) for call in hashes.call_args_list], [self.asar, self.pi.TMP])
         self.assertIn(self.pi.INJECT_LINE.encode(), self.entry())
 
     def test_remove_hashes_source_once_after_a_fresh_package(self):
         self.assertTrue(self.pi.install())
         with mock.patch.object(self.pi, "source_fingerprint", wraps=self.pi.source_fingerprint) as hashes, \
+                mock.patch.object(self.pi, "_archive_snapshot", wraps=self.pi._archive_snapshot) as snapshots, \
                 mock.patch.object(self.pi, "repack", wraps=self.pi.repack) as repack:
             self.assertTrue(self.pi.remove())
-        self.assertEqual([Path(call.args[0]) for call in hashes.call_args_list], [self.asar])
+        self.assertEqual(snapshots.call_args_list, [mock.call(self.asar), mock.call(self.asar, with_hash=True)])
+        hashes.assert_not_called()
         self.assertEqual(repack.call_count, 1)
         self.assertNotIn(self.pi.INJECT_LINE.encode(), self.entry())
 
@@ -1426,20 +1458,6 @@ class SingleTransactionTests(unittest.TestCase):
         with mock.patch.object(self.pi, "repack", wraps=self.pi.repack) as repack:
             self.assertTrue(self.pi.install(extra_modify=self.plan(modify={"/package.json": b"{}"})))
         self.assertEqual(set(repack.call_args.args[1]), {"/" + self.pi.ENTRY})
-
-    def test_extra_modify_not_consulted_on_early_return_or_reuse(self):
-        forbidden = mock.Mock(side_effect=AssertionError("must not plan"))
-        self.pi.prepare_tmp({"/" + self.pi.ENTRY: self.entry() + self.pi.INJECT_LINE.encode()})
-        with mock.patch.object(self.pi, "repack", side_effect=AssertionError("must not repack")):
-            self.assertTrue(self.pi.install(extra_modify=forbidden))   # 复用磁盘上的待替换包
-        forbidden.assert_not_called()
-        self.assertTrue(self.pi.install())                             # 落盘后再次安装
-        with mock.patch.object(self.pi, "repack", side_effect=AssertionError("must not repack")):
-            self.assertTrue(self.pi.install(extra_modify=forbidden))   # 已安装早退
-        forbidden.assert_not_called()
-        # 手机补装只处理手机钩子（夹具没有 package.json，按布局无法验证返回 False），同样不问钩子
-        self.pi.install(mobile_only=True, extra_modify=forbidden)
-        forbidden.assert_not_called()
 
     def test_merged_package_becomes_pending_while_the_client_holds_the_archive(self):
         real_replace = os.replace

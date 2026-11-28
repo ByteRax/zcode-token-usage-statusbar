@@ -776,10 +776,11 @@ def _sync_runtime_locked(runtime, verify=lambda: None):
     return result
 
 
-def injected_status(pi):
+def injected_status(pi, *, entry=None):
     """True=当前运行时的唯一注入行 False=需修复 None=asar 不可读。"""
     try:
-        entry = pi.entry_bytes_of(pi.ASAR)
+        if entry is None:
+            entry = pi.entry_bytes_of(pi.ASAR)
         line = pi.INJECT_LINE
         if isinstance(line, str):
             line = line.encode("utf-8")
@@ -863,70 +864,62 @@ def _install_overlay(runtime, pi):
         runtime, {"state": "pending-install", "installation": installation}), **kwargs)
 
 
-_MOBILE_LOCK_RETRY_BUDGET_S = 15.0
-_MOBILE_LOCK_RETRY_DELAY_S = 1.5
-_MOBILE_RETRYABLE_LOCKS = {"target lock busy", "mobile build lock busy", "restart marker lock busy"}
+_PATCH_LOCK_RETRY_BUDGET_S = 15.0
+_PATCH_LOCK_RETRY_DELAY_S = 1.5
+_PATCH_RETRYABLE_LOCKS = {"target lock busy", "patch build lock busy", "restart marker lock busy"}
 
 
-def _ensure_mobile_relay_stash(pi, quiet_monitor=False):
-    """只对目标/构建/marker 锁竞争退避一次；待替换冲突和其它错误不重试。"""
-    attempts = 2 if quiet_monitor else 1
-    for attempt in range(attempts):
-        started = time.monotonic()
-        if attempt:
-            time.sleep(_MOBILE_LOCK_RETRY_DELAY_S)
-        pi.install(mobile_only=True, record_mobile_intent=True)
-        status = pi.mobile_status()
-        if (status.get("status") != "deferred"
-                or status.get("detail") not in _MOBILE_RETRYABLE_LOCKS):
-            return status
-        if attempt == 0 and time.monotonic() - started >= _MOBILE_LOCK_RETRY_BUDGET_S:
-            return status
-    return pi.mobile_status()
-
-
-def ensure_mobile_relay_stash(pi, quiet_monitor=False):
-    """Merge mobile hooks into the existing loader install transaction."""
+@contextlib.contextmanager
+def _quiet_hook_install():
+    names = ("ZUSAGE_NO_MONITOR", "ZUSAGE_MONITOR_QUIET")
+    monitor_env = {name: os.environ.get(name) for name in names}
     try:
-        redirect = contextlib.redirect_stdout(sys.stderr) if quiet_monitor else contextlib.nullcontext()
-        monitor_env = {name: os.environ.get(name) for name in
-                       ("ZUSAGE_NO_MONITOR", "ZUSAGE_MONITOR_QUIET")}
+        os.environ.update(dict.fromkeys(names, "1"))
+        with contextlib.redirect_stdout(sys.stderr):
+            yield
+    finally:
+        for name, value in monitor_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def ensure_archive_patches(pi, *, snapshot=None):
+    """Repair missing archive patches together and report their distinct diagnostics."""
+    can_supplement = getattr(pi, "PATCH_SUPPLEMENT", False) is True
+    plan_bridge = None
+    if can_supplement:
         try:
-            if quiet_monitor:
-                os.environ["ZUSAGE_NO_MONITOR"] = "1"
-                os.environ["ZUSAGE_MONITOR_QUIET"] = "1"
-            with redirect:
-                status = _ensure_mobile_relay_stash(pi, quiet_monitor=quiet_monitor)
-        finally:
-            for name, value in monitor_env.items():
-                if value is None:
-                    os.environ.pop(name, None)
-                else:
-                    os.environ[name] = value
-        if status.get("status") == "skipped-error":
-            print(f"[zusage-plugin] mobile relay archive update failed（已忽略）：{status.get('detail', '')}",
-                  file=sys.stderr)
-        return status
-    except Exception as e:  # noqa: BLE001 — 手机增强不得影响状态条主链
-        print(f"[zusage-plugin] mobile relay archive update failed（已忽略）：{e}", file=sys.stderr)
-        return {"status": "skipped-error", "detail": str(e)}
+            from renderer_bridge import plan_supplement as plan_bridge
+        except ImportError:
+            pass  # Older copies of renderer_bridge still use their own repair entry point.
+    bridge = None
+    if plan_bridge is None:
+        bridge = ensure_renderer_bridge(pi, quiet_monitor=True)
+        if bridge.get("status") in ("pending", "deferred"):
+            return bridge, {"status": "deferred", "detail": "existing pending operation"}
+        if not can_supplement:
+            return bridge, {"status": "skipped-error", "detail": "patch publication unavailable"}
+        snapshot = None  # The legacy bridge path may have replaced the archive.
 
-
-def _mobile_deferred_message():
-    return ("手机远控增强尚未就绪（不影响统计主链）：在输入框输入 /install-overlay "
-            "回车重试；提示「已排定」后点状态条 ⚙ 齿轮的「重启 ZCode」按钮即可自动完成。"
-            "若多次未成功，请从托盘完全退出 ZCode（关闭窗口不等于退出）后重新打开再试。")
-
-
-def _mobile_pending_scheduled_message():
-    return ("手机中继补丁已排定：完全退出 ZCode 后会自动完成替换，之后重新打开即可生效，"
-            "无需重试安装。注意关闭窗口不等于退出：若关窗后仍未生效，说明 ZCode 仍驻留"
-            "托盘/后台，请从托盘图标退出，或在任务管理器中确认没有 ZCode 进程残留。")
-
-
-def _mobile_deferred_waiting_message():
-    return ("手机中继补丁暂缓：已有待替换操作待收尾，完全退出 ZCode 后会自动完成，"
-            "之后的会话会自动补装，无需手动重试。")
+    kwargs = {"snapshot": snapshot} if snapshot is not None else {}
+    with _quiet_hook_install():
+        started = time.monotonic()
+        report = pi.supplement_patches(plan_bridge, **kwargs)
+        status = report["archive"]
+        if (status.get("status") == "deferred" and status.get("detail") in _PATCH_RETRYABLE_LOCKS
+                and time.monotonic() - started < _PATCH_LOCK_RETRY_BUDGET_S):
+            time.sleep(_PATCH_LOCK_RETRY_DELAY_S)
+            report = pi.supplement_patches(plan_bridge)
+    for key in ("bridge", "relay"):
+        if key == "bridge" and bridge is not None:
+            continue
+        result = report[key]
+        if result.get("status") == "skipped-error" or (key == "bridge" and result.get("status") == "skipped-unknown"):
+            print(f"[zusage-plugin] archive patch {key}: {result.get('status')} "
+                  f"(v{result.get('version')}) {result.get('detail', '')}", file=sys.stderr)
+    return report["bridge"] if bridge is None else bridge, report["relay"]
 
 
 def _mobile_relay_enabled(runtime):
@@ -970,29 +963,19 @@ def _mobile_pending_notice(out, pi, mobile):
         return out
     from restart_notice import PREFIX
     if status == "pending":
-        return _nudge(out, PREFIX + _mobile_pending_scheduled_message())
-    if (mobile or {}).get("detail") in ("existing pending operation", "bridge pending"):
-        return _nudge(out, PREFIX + _mobile_deferred_waiting_message())
+        return _nudge(out, PREFIX + "远控中继补丁已排定：完全退出 ZCode 后会自动完成替换，之后重新打开即可生效，"
+                      "无需重试安装。注意关闭窗口不等于退出：若关窗后仍未生效，说明 ZCode 仍驻留"
+                      "托盘/后台，请从托盘图标退出，或在任务管理器中确认没有 ZCode 进程残留。")
+    if (mobile or {}).get("detail") == "existing pending operation":
+        return _nudge(out, PREFIX + "远控中继补装暂缓：检测到已有待替换操作。请先按现有安装提示处理，"
+                      "或运行 /zusage-doctor 检查待替换状态。之后的会话会再次检查是否需要补装。")
     if not _deferred_notice_allowed(pi.RUNTIME):
         return out
-    result = _nudge(out, PREFIX + _mobile_deferred_message())
+    result = _nudge(out, PREFIX + "远控页面的用量推送尚未就绪：在输入框输入 /install-overlay "
+                    "回车重试，并按安装输出完成收尾。若提示需要重启，可点状态条 ⚙ 齿轮的「重启 ZCode」按钮。"
+                    "若多次未成功，请从托盘完全退出 ZCode（关闭窗口不等于退出）后重新打开再试。")
     _mark_deferred_notice_shown(pi.RUNTIME)
     return result
-
-
-def record_mobile_restart(runtime, pi, mobile):
-    """Compatibility hook for in-place mobile patches; marker is only written when changed."""
-    if (mobile or {}).get("status") != "patched":
-        return False
-    try:
-        if not pi.client_running():
-            return False
-        from restart_notice import record_restart
-        record_restart(runtime, {"state": "installed", "asarPatch": True})
-        return True
-    except Exception as e:
-        print(f"[zusage-plugin] mobile relay restart marker failed（已忽略）：{e}", file=sys.stderr)
-        return False
 
 
 def ensure_renderer_bridge(pi, quiet_monitor=False):
@@ -1173,13 +1156,14 @@ def _plugin_version():
         return ""
 
 
-def _host_build(pi):
+def _host_build(pi, *, package=None):
     """宿主客户端版本（asar 内 package.json）。读取失败返回 None：探测失败不改变
     既有行为，兼容性提示与强制更新都只建立在确凿读取之上。"""
     if pi.ASAR is None:
         return None
-    pkg = load_patch_install().read_asar_package(pi.ASAR, pi=pi)
-    version = pkg.get("version") if pkg else None
+    if not isinstance(package, dict):
+        package = load_patch_install().read_asar_package(pi.ASAR, pi=pi)
+    version = package.get("version") if package else None
     return version if isinstance(version, str) and version else None
 
 
@@ -1277,11 +1261,18 @@ def run_hook():
         except Exception as e:  # noqa: BLE001 — hook 契约：任何异常都不得上抛
             legacy_mcp = "skipped-error"
             print(f"[zusage-plugin] 遗留 MCP 清理失败（已忽略）：{e}", file=sys.stderr)
-        st = injected_status(pi)
+        snapshot = None
+        if pi.ASAR is not None and getattr(pi, "REUSE_ARCHIVE_SNAPSHOT", False) is True:
+            try:
+                snapshot = pi._archive_snapshot(pi.ASAR)
+            except Exception:
+                pass  # The legacy loader and version probes can still report what is readable.
+        entry, package = snapshot[1:] if snapshot is not None else (None, None)
+        st = injected_status(pi, entry=entry)
         # 兼容性预判（issue #247）：已装版本未登记适配当前宿主 build 时，未注入分支的
         # 自动更新绕过 1h 限频立即升级——只重装旧版永远修不好状态条。optout 不豁免
         # 更新（既有契约），故预判在 optout 检查之前。
-        host_version = _host_build(pi)
+        host_version = _host_build(pi, package=package)
         unregistered = host_version is not None and not _host_registered(host_version)
         LAST_DIAG = {"hostBuild": host_version, "pluginVersion": _plugin_version(), "injected": st}
         if legacy_mcp != "absent":   # 只在真有遗留注册或清理失败时留档，别给常态诊断加噪声
@@ -1297,10 +1288,7 @@ def run_hook():
             return out  # 本机没有可定位的桌面客户端（远程会话等），静默
         save_runtime_config(runtime, pi)
         if st:
-            bridge = ensure_renderer_bridge(pi, quiet_monitor=True)   # 先处理 renderer bridge，手机补装随后让位
-            mobile = ({"status": "deferred", "detail": "bridge pending"}
-                      if bridge.get("status") in ("pending", "deferred")
-                      else ensure_mobile_relay_stash(pi, quiet_monitor=True))
+            bridge, mobile = ensure_archive_patches(pi, snapshot=snapshot)
             if bridge.get("status") != "pending" and mobile.get("status") != "pending":
                 _revive_orphan_pending(pi)
             LAST_DIAG["bridge"] = bridge.get("status")
@@ -1309,7 +1297,7 @@ def run_hook():
                 _notify_compat_once(runtime, pi, out, host_version)
             _mobile_pending_notice(out, pi, mobile)
             return _bridge_notice(out, bridge, pi, quiet_hook=True)   # 桥缺席由运行时动态桥兜底
-        # 手机-only remove 可能在无 loader 的归档上留下待收尾包；后续 SessionStart
+        # 仅移除中继钩子也可能在无 loader 的归档上留下待收尾包；后续 SessionStart
         # 必须让位于显式卸载，否则自动安装会把 remove pending 反向覆盖成 install。
         try:
             pending = pi.pending_operation()
@@ -1320,19 +1308,8 @@ def run_hook():
             LAST_DIAG["pendingOperation"] = "remove"
             return out
         # 未注入：自动安装始终开启，失败只保留故障提示（补丁排定/受保护目录/请重试）
-        monitor_env = {name: os.environ.get(name) for name in
-                       ("ZUSAGE_NO_MONITOR", "ZUSAGE_MONITOR_QUIET")}
-        try:
-            os.environ["ZUSAGE_NO_MONITOR"] = "1"
-            os.environ["ZUSAGE_MONITOR_QUIET"] = "1"  # 无窗口后台收尾
-            with contextlib.redirect_stdout(sys.stderr):
-                ok = _install_overlay(runtime, pi)
-        finally:
-            for name, value in monitor_env.items():
-                if value is None:
-                    os.environ.pop(name, None)
-                else:
-                    os.environ[name] = value
+        with _quiet_hook_install():
+            ok = _install_overlay(runtime, pi)
         if ok:
             bridge = ensure_renderer_bridge(pi, quiet_monitor=True)
             clear_markers(runtime)
@@ -1521,10 +1498,19 @@ def doctor(runtime, pi):
                 "app.asar 的完整路径后重跑本命令", rank=1)
             return
         add("OK", "客户端归档", str(pi.ASAR))
-        facts["version"] = _host_build(pi)
+        read_error = None
+        try:
+            if getattr(pi, "REUSE_ARCHIVE_SNAPSHOT", False) is True:
+                _, entry, package = pi._archive_snapshot(pi.ASAR)
+            else:
+                entry, package = pi.entry_bytes_of(pi.ASAR), None
+        except Exception as error:
+            read_error, package = error, None
+        facts["version"] = _host_build(pi, package=package)
         add("OK" if facts["version"] else "WARN", "客户端版本",
             facts["version"] or "读不到归档内的 package.json")
-        entry = pi.entry_bytes_of(pi.ASAR)
+        if read_error is not None:
+            raise read_error
         loader_lines = [match.group() for match in pi.ZUSAGE_LINE_RE.finditer(entry)]
         if loader_lines == [pi.INJECT_LINE.encode()]:
             add("OK", "状态条注入", "已注入，指向当前运行目录")
@@ -1543,8 +1529,14 @@ def doctor(runtime, pi):
             add("FAIL" if not loader_lines else "WARN", "安装目录可写",
                 "当前身份写不了客户端安装目录（受保护目录）",
                 "运行 /install-overlay，权限不足时按它的提示以管理员身份或 sudo 重跑同一条命令", rank=2)
-        mobile = pi._mobile_check_status(pi.ASAR, entry)
-        add("OK" if mobile == "已注入" else "WARN", "手机远控补丁", mobile)
+        if package is not None:
+            relay_ready, relay_detail = pi._relay_check_status(entry, package)
+        else:
+            legacy_check = getattr(pi, "_mobile_check_status", None)
+            relay_detail = (legacy_check(pi.ASAR, entry) if callable(legacy_check)
+                            else "无法检查（安装模块不支持中继诊断）")
+            relay_ready = relay_detail in ("已注入", "patched")
+        add("OK" if relay_ready else "WARN", "远控中继补丁", relay_detail)
         from renderer_bridge import _inspect_deploy
         kind, payload = _inspect_deploy(pi.ASAR)
         if kind == "patch":
@@ -1715,13 +1707,6 @@ def main():
     if cmd == "install":
         clear_markers(runtime)  # 主动安装 = 重新参与提示逻辑
         ok = _install_overlay(runtime, pi)
-        mobile_status = pi.mobile_status().get("status")
-        if ok and mobile_status == "patched":
-            print("手机中继补丁已写入；完全退出并重开 ZCode 后生效。")
-        elif mobile_status == "pending":
-            print(_mobile_pending_scheduled_message())
-        elif ok and mobile_status == "skipped-unknown":
-            print("手机中继布局无法验证，保留原代码；状态条安装仍可继续。")
         if ok:
             bridge = ensure_renderer_bridge(pi)
             if bridge.get("status") == "pending":

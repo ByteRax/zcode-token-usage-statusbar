@@ -63,11 +63,6 @@ class PluginRuntimeTests(unittest.TestCase):
         patcher = mock.patch.object(installer, "_sync_verifier", fixture_verifier)
         patcher.start()
         self.addCleanup(patcher.stop)
-        # 手机补丁的真实安装与 deferred 行为由 test_mobile_relay_install 覆盖。
-        patcher = mock.patch.object(installer, "ensure_mobile_relay_stash",
-                                    return_value={"status": "present"})
-        patcher.start()
-        self.addCleanup(patcher.stop)
 
     def patch_install_stub(self):
         pi = mock.Mock()
@@ -744,9 +739,8 @@ class PluginRuntimeTests(unittest.TestCase):
         patch_install.target_writable.return_value = True
         result, _ = self.revive_fixture(patch_install, bridge_status="pending")
         patch_install.launch_monitor.assert_not_called()
-        installer.ensure_mobile_relay_stash.assert_not_called()
         self.assertTrue(result["suppressOutput"])
-        # bridge pending → mobile 延后（detail=bridge pending）：推送开关未开启（缺省）
+        # 旧版桥 pending → 归档补装让位：推送开关未开启（缺省）
         # 时不发会话文字（issue #455），重启需求由 ⚙ 红点标记承载。开启后的对照见
         # tests/test_mobile_relay_install.py 的 hook 链用例与 tests/test_bridge_pending.py
         self.assertNotIn("systemMessage", result)

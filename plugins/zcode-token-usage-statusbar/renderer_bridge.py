@@ -940,9 +940,9 @@ def _sweep_stale_stages(directory):
             pass
 
 
-def _inspect_deploy(asar_path):
+def _inspect_deploy(asar_path, source=None):
     """只读检查目标 asar 的桥状态：返回 ("result", dict) 或 ("patch", tuple)。"""
-    before = asar.source_fingerprint(asar_path)
+    before = source if source is not None else asar.source_fingerprint(asar_path)
     with asar_path.open("rb") as stream:
         header, base = asar.read_header(stream)
         nodes = dict(asar.iter_files(header))
@@ -1044,6 +1044,18 @@ def plan_deploy(asar_path):
         return {"source": before, "modify": {asset_path: modified}}
     except Exception:
         return None
+
+
+def plan_supplement(asar_path, source):
+    """Return bridge diagnostics and the asset change for the shared archive transaction."""
+    try:
+        kind, payload = _inspect_deploy(asar_path, source=source)
+    except Exception as error:
+        return {"status": "skipped-error", "detail": str(error)}, {}
+    if kind == "result":
+        return payload, {}
+    _, _, _, _, version, _, _, asset_path, _, modified = payload
+    return {"status": "planned", "version": version}, {asset_path: modified}
 
 
 def ensure_deployed(asar_path):
