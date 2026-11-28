@@ -2,6 +2,8 @@
 
 本文档定义 `distill-project-memory` 在写入 `.zcode/rules/*.md`、根 `AGENTS.md`、`specs/*.md` 或 `docs/*.md` 时的写法规范与本地状态格式。遵循目标项目的标点、术语与排版风格，不机械填空。
 
+**验收场景**：指定一个含 `MEMORY.md` 的项目记忆目录时，以该目录内实际存在的笔记为清单。未被索引收录的笔记仍参与筛选；失效链接只报缺失；指向目录外的链接不跟随。预览只给证据与拟落点；写入模式对同一批笔记、相同源码与已经覆盖的文档重跑，不产生新 diff。
+
 ## 1. 分层落点速查（以本仓库及 ZCode 规范为准）
 
 写入前先按下表定位唯一主落点，优先在既有文件的对应主题节内合并或追加，不新建重复文件：
@@ -27,7 +29,7 @@
 
 - **结论与动作（首句加粗锚点）**：一句话点明必须遵守的不变量或禁止动作。
 - **触发条件与模块范围**：具体文件/分片路径（如 `src/overlay/*.js`、`src/quota/*.cjs`）、函数名或运行相位。
-- **根因与历史先例（Why）**：简述违反后的真实故障机制及可复核先例（如 `issue #298`、`v345`），解释“为什么不能按直觉改”。
+- **根因（Why）**：解释违反约束后会发生什么；用实现或测试符号作锚点，不把版本、提交号与结案状态写进长期规则。
 - **边界与验证方式**：合法例外情况，以及对应的回归测试文件或静态/实机检查命令。
 
 **写法正例（高密度、有源码锚点与原因、无易变数字）**：
@@ -69,7 +71,7 @@
       "sourceDigest": "sha256:<normalized-content-hash>",
       "evidenceRefs": ["pending_zip_patch.py", ".zcode/rules/install-release.md"],
       "status": "verified",
-      "targets": [".zcode/rules/install-release.md", "AGENTS.md"],
+      "targets": [".zcode/rules/install-release.md"],
       "note": "已核实 Squirrel MacUpdater Content-Length 固化机制并同步规则"
     }
   ]
