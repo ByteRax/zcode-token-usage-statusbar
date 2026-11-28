@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""拼接手机传输分片并内嵌桌面同一份 overlay，生成正式/调试用户脚本。
+"""拼接远控传输分片并内嵌完整的桌面 overlay，生成正式版和调试版油猴脚本。
 
 不读取可能滞后的根 overlay.js；通过 build_overlay.assemble_bytes 取得含 VERSION
 台账折叠的桌面完整输出。运行时不下载代码，也不提取/复制 CSS、图标或设置子集。
@@ -22,10 +22,7 @@ DEBUG_NAME_REPL = (
     "// @name         ZCode 用量状态条（远控中继接收端）",
     "// @name         ZCode 用量状态条（远控中继接收端·调试版）",
 )
-DEBUG_DESC_REPL = (
-    "// @description  在 ZCode Web 远程控制页面渲染 token 用量；仅在确认宿主支持后同步显示偏好",
-    "// @description  调试版：默认显示排障面板（帧统计/overlay 加载状态）；日常使用请安装正式版 zusage-mobile.user.js",
-)
+DEBUG_DESC = "// @description  调试版：默认显示排障面板（帧统计/overlay 加载状态）；日常使用请安装正式版 zusage-mobile.user.js"
 DEBUG_URL_REPL = (
     "https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js",
     "https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.debug.user.js",
@@ -76,9 +73,9 @@ def replace_once(src, old, new, label):
 
 
 def assemble(src_dir=SRC_DIR, overlay_src_dir=OVERLAY_SRC_DIR):
-    """返回共同主体和构建信息；路径可注入，供隔离测试使用。"""
+    """返回两种油猴脚本共用的源码，可指定输入路径。"""
     src = assemble_mobile(src_dir)
-    # 只检查手机源码；桌面完整代码作为不透明字符串嵌入，不扫描其注释或字符串。
+    # 只检查油猴脚本源码；桌面完整代码作为不透明字符串嵌入，不扫描其注释或字符串。
     executable = re.sub(r"/\*[\s\S]*?\*/|(?m:^[ \t]*//[^\n]*)", "", src)
     for declaration in ("var OVERLAY_CODE = __ZM_OVERLAY_SOURCE__;", "var DEBUG_BUILD = __ZM_DEBUG__;"):
         executable = executable.replace(declaration, "")
@@ -90,7 +87,7 @@ def assemble(src_dir=SRC_DIR, overlay_src_dir=OVERLAY_SRC_DIR):
     literal = json.dumps(overlay.decode("utf-8"), ensure_ascii=True).replace("</", "<\\/")
     src = replace_once(src, "var OVERLAY_CODE = __ZM_OVERLAY_SOURCE__;",
                        "var OVERLAY_CODE = " + literal + ";", "__ZM_OVERLAY_SOURCE__")
-    return src, {"overlay_bytes": len(overlay)}
+    return src
 
 
 def finalize(common_src, debug):
@@ -101,7 +98,13 @@ def finalize(common_src, debug):
                            prefix + DEBUG_URL_REPL[1 if debug else 0], prefix.strip())
     if debug:
         src = replace_once(src, *DEBUG_NAME_REPL, "调试版 @name")
-        src = replace_once(src, *DEBUG_DESC_REPL, "调试版 @description")
+        header, end, body = src.partition("// ==/UserScript==")
+        if not end:
+            raise BuildError("油猴脚本缺少元数据结束标记")
+        header, count = re.subn(r"(?m)^// @description[ \t]+[^\r\n]*", DEBUG_DESC, header)
+        if count != 1:
+            raise BuildError(f"调试版 @description 替换点应恰有 1 处，实际 {count}")
+        src = header + end + body
     return src
 
 
@@ -113,7 +116,7 @@ def main(argv=None, root=ROOT):
         return 2
     root = Path(root)
     try:
-        common, _ = assemble(root / "src" / "mobile", root / "src" / "overlay")
+        common = assemble(root / "src" / "mobile", root / "src" / "overlay")
         variants = [
             (root / TARGET.name, finalize(common, False).encode("utf-8")),
             (root / TARGET_DEBUG.name, finalize(common, True).encode("utf-8")),
@@ -127,7 +130,7 @@ def main(argv=None, root=ROOT):
             current = target.read_bytes() if target.is_file() else None
             if "--check" in argv:
                 if current != expected:
-                    print(target.name + " 与手机分片及内嵌桌面 overlay 不一致（请运行构建脚本）", file=sys.stderr)
+                    print(target.name + " 与油猴脚本分片及内嵌桌面 overlay 不一致（请运行构建脚本）", file=sys.stderr)
                     failed = True
             elif current != expected:
                 target.parent.mkdir(parents=True, exist_ok=True)

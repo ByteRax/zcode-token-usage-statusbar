@@ -169,7 +169,7 @@
     return true;
   }
 
-  /* 唯一 UI 的源码随用户脚本构建固定；激活前显式启用移动快照上下文。 */
+  /* 唯一 UI 的源码随油猴脚本构建固定；激活前显式启用远控快照上下文。 */
   function loadOverlay() {
     if (overlayReady || !active || disposed || !document.body) return;
     var host = document.head || document.documentElement;
@@ -177,7 +177,7 @@
     var script = document.createElement("script");
     try {
       window.__zusageMobileMode = true;
-      /* 手机仅消费统计；即使页面残留桌面状态，也不授予配置推送的能力。 */
+      /* 远控页面只读取统计；即使页面残留桌面状态，也不授予配置推送的能力。 */
       window.__zusagePluginState = Object.assign({}, window.__zusagePluginState, {
         mobileRelayEnabled: false, mobileRelaySupported: false,
       });
