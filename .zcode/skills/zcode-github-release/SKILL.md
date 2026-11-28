@@ -69,7 +69,7 @@ git worktree add --detach .worktrees/release-vX.Y.Z <目标提交>              
 
 - **打包前先验渠道现状**：两个渠道分支各查一次——`git fetch fork <分支>` 与 `git fetch gitcode <分支>` 之后，两端 tip 相同、tip 有父提交、清单版本等于最新正式 Release 的版本。对不上说明渠道在上次发版之后被弄坏或一直没更新（#497 就是发版之后被改写）：先按[渠道分支不变量](#渠道分支不变量硬约束)修好并做消费者验收，再继续本次发版；不要把新版本叠在坏掉的渠道上。
 - **打包前**读取 [更新日志交付](references/update-log-delivery.md)，核对目标提交的日志消费者与来源合同；若已支持随包日志，先完成日志内容、版本关联和副本同步再 build。仅外置 Release 正文可在验证结果齐备后定稿，不能据此在 build 后再补包内文件。
-- 核对两份插件 manifest 与市场条目版本/name 一致。正式版与调试版 `@version` 都必须与脚本版本源一致，并满足上面的升号规则；`python3 scripts/build_mobile_userscript.py --check` 核对两份产物与发布源码一致，不能用桌面 `sync_plugin.py --check` 或脚本升号检查代替。若此后改了 overlay（含重排 `VERSION` 台账）或手机分片，必须重新构建并校验两份脚本。
+- 核对两份插件 manifest 与市场条目版本/name 一致。正式版与调试版 `@version` 都必须与脚本版本源一致，并满足上面的升号规则；`python3 scripts/build_mobile_userscript.py --check` 核对两份产物与发布源码一致，不能用桌面 `sync_plugin.py --check` 或脚本升号检查代替。若此后改了 overlay（含重排 `VERSION` 台账）或油猴脚本分片（`src/mobile/`），必须重新构建并校验两份脚本。
 - 直接使用仓库根 `release_tool.py` 与同目录可信 `release_unpack.py`，本技能不保存脚本副本。`build` 只读工作区文件，版本改动不必先提交：
 
 ```bash
