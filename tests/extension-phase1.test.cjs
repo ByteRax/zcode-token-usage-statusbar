@@ -7,6 +7,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { createRequire } = require("node:module");
+const { EventEmitter } = require("node:events");
 const requirePlugin = createRequire(__filename);
 // 扩展进程按 ZUSAGE_PLUGIN_RUNTIME 定位运行目录（未设则用标准的 ~/.zcode/zcode-token-usage-statusbar）：
 // 测试指向临时目录，activate() 的 mkdir / watch / 轮询都不落在个人运行目录上（AGENTS.md §6）
@@ -460,9 +461,19 @@ test("open-request bridge: a request file that predates activation is not replay
     fs.writeFileSync(reqPath, JSON.stringify({ id: "before-activate", viewId: "insights", ts: Date.now() }));
     handle = await activate(minimalCtx(opened));
     await sleep(250);   // 激活即取一次种子（异步 stat）
-    assert.deepEqual(opened, [], "激活前已在的请求文件只取 mtime 作种子，不重放");
+    // macOS 的 fs.watch 会把建监听之前刚落盘的写入补发给新 watcher：上面这 250ms 里 watcher 路径
+    // 已经排定并处理过一次，靠的是激活时按 id 种下的去重，而不是轮询的 mtime 种子
+    assert.deepEqual(opened, [], "激活前已在的请求文件不当成新请求，不重放");
     const poll = intervals.find((i) => i.ms === 3000);
     assert.ok(poll, "登记了 3 秒轮询");
+    // 平台无关的锁：直接触碰请求文件（id 与内容不变、mtime 前移），让 watcher 与轮询两条路径都
+    // 再次排定处理——已种下的 id 必须被去重（Windows / Linux 的 fs.watch 不补发既有文件，
+    // 只靠上面那次自然事件在这两个平台上锁不住这层保护）
+    const touched = new Date(Date.now() + 4000);
+    fs.utimesSync(reqPath, touched, touched);
+    poll.fn();
+    await sleep(150);
+    assert.deepEqual(opened, [], "激活前已在的请求文件经 watcher / 轮询再次被看到也不重放（按 id 去重）");
     const bump = (body) => {
       fs.writeFileSync(reqPath, JSON.stringify({ ts: Date.now(), ...body }));
       const later = new Date(Date.now() + 5000);
@@ -472,10 +483,15 @@ test("open-request bridge: a request file that predates activation is not replay
     poll.fn();
     await sleep(150);
     assert.deepEqual(opened, ["context"], "形状不对的 sessionId 不带会话打开");
+    // 前缀对、形状不对（sess_../x）：只认前缀的旧写法会把它当会话 id 带上，必须按同一道正则门拒掉
+    bump({ id: "after-1b", viewId: "context", sessionId: "sess_../x" });
+    poll.fn();
+    await sleep(150);
+    assert.deepEqual(opened, ["context", "context"], "形状不对的 sessionId 不带会话打开（不止看前缀）");
     bump({ id: "after-2", viewId: "context", sessionId: "sess_5f40506b-dfd2-4834-b948-844a9066f4e0" });
     poll.fn();
     await sleep(150);
-    assert.deepEqual(opened, ["context", { id: "context", sessionId: "sess_5f40506b-dfd2-4834-b948-844a9066f4e0" }]);
+    assert.deepEqual(opened, ["context", "context", { id: "context", sessionId: "sess_5f40506b-dfd2-4834-b948-844a9066f4e0" }]);
     handle.dispose();
     assert.equal(poll.cleared, true, "dispose 清掉轮询");
   } finally {
@@ -483,5 +499,54 @@ test("open-request bridge: a request file that predates activation is not replay
     global.setInterval = realSetInterval;
     global.clearInterval = realClearInterval;
     try { fs.rmSync(reqPath, { force: true }); } catch { /* ignore */ }
+  }
+});
+
+test("open-request bridge: a watcher that reports an error is closed and rebuilt by the next poll, and the poll delivers on its own", async () => {
+  const { activate } = requirePlugin("../plugins/zcode-token-usage-statusbar/extension-main.cjs");
+  fs.rmSync(path.join(RUNTIME_TMP, "ext-open-request.json"), { force: true });   // 上一条用例收尾已删，这里不依赖它
+  const opened = [];
+  const intervals = [];
+  const realSetInterval = global.setInterval, realClearInterval = global.clearInterval, realWatch = fs.watch;
+  global.setInterval = (fn, ms) => { const id = { fn, ms, cleared: false }; intervals.push(id); return id; };
+  global.clearInterval = (id) => { if (id && typeof id === "object") id.cleared = true; };
+  const watchers = [];
+  fs.watch = (dir, cb) => {
+    const w = new EventEmitter();
+    w.closed = 0;
+    w.close = () => { w.closed++; };
+    watchers.push(w);
+    return w;
+  };
+  let handle = null;
+  try {
+    handle = await activate(minimalCtx(opened));
+    const poll = intervals.find((i) => i.ms === 3000);
+    assert.ok(poll, "登记了 3 秒轮询");
+    assert.equal(watchers.length, 1, "激活时建一个 watcher");
+    // fs.watch 报 error 后不再派发事件：必须关掉并置空，留给轮询重建——否则唤起链到进程重启前只剩轮询
+    watchers[0].emit("error", new Error("EPERM"));
+    assert.equal(watchers[0].closed, 1, "报 error 的 watcher 被关掉");
+    poll.fn();
+    await sleep(150);
+    assert.equal(watchers.length, 2, "下一次轮询重建了 watcher");
+    assert.equal(watchers[1].closed, 0);
+    // 轮询兜底要能独立送达：这里的 watcher 是不会派发事件的替身，新请求只靠轮询被看到
+    // （真实监听在场的用例里，把轮询换成空操作照样能靠 fs.watch 过，锁不住这条路）
+    const reqPath = path.join(RUNTIME_TMP, "ext-open-request.json");
+    fs.writeFileSync(reqPath, JSON.stringify({ id: "after-rebuild", viewId: "context", sessionId: "sess_5f40506b-dfd2-4834-b948-844a9066f4e0", ts: Date.now() }));
+    const later = new Date(Date.now() + 5000);
+    fs.utimesSync(reqPath, later, later);
+    poll.fn();
+    await sleep(150);
+    assert.deepEqual(opened, [{ id: "context", sessionId: "sess_5f40506b-dfd2-4834-b948-844a9066f4e0" }], "watcher 不派发事件时，新请求经轮询送达");
+    handle.dispose();
+    assert.equal(watchers[1].closed, 1, "dispose 关掉在场的 watcher");
+  } finally {
+    if (handle) handle.dispose();
+    global.setInterval = realSetInterval;
+    global.clearInterval = realClearInterval;
+    fs.watch = realWatch;
+    try { fs.rmSync(path.join(RUNTIME_TMP, "ext-open-request.json"), { force: true }); } catch { /* ignore */ }
   }
 });

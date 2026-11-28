@@ -48,7 +48,7 @@
 | 当前 11 类上下文构成 | ZCode CLI → Window Host | `ctx.context.get({ sessionId })` + `ctx.context.onDidChange` 推送修订号 |
 | 屏幕焦点会话 / 草稿态 | ZCode Renderer → Window Host | `ctx.workbench.visibleSessions()` + `ctx.workbench.onDidChange` |
 | 历史用量、耗时、工具调用、消息正文 | 本地 `db.sqlite`（只读） | 扩展进程按需调用包内 `zusage.py`（解释器与主桥同源：运行目录 `config.json` 的 `python_path` 优先，没有时按 hooks 的回退链；候选不可用不只是 ENOENT，详见 §4.2） |
-| 弹层/设置按钮唤起视图信号 | `overlay.js` → `inject-main.cjs` → 扩展进程 | 见 §4.2 跨进程唤起协议 |
+| 弹层按钮唤起视图信号 | `overlay.js` → `inject-main.cjs` → 扩展进程 | 见 §4.2 跨进程唤起协议 |
 
 ### 关键约束
 - **进程隔离**：ZCode 扩展进程运行在独立的 Electron `utilityProcess` 中，**不可**直接操作客户端 DOM，也**不修改** `app.asar`；`overlay.js` 运行在渲染进程，无法直接调用 `ctx.views.open`。两者通过运行目录 `~/.zcode/zcode-token-usage-statusbar/` 桥接。
@@ -81,7 +81,7 @@
    ```json
    { "id": "<uuid>", "viewId": "context", "sessionId": "sess_...", "ts": 1700000000000 }
    ```
-3. **扩展进程（`extension-main.cjs`）**：监听运行目录（`fs.watch` 配合 `ts` 与 `id` 去重，忽略启动前超过 15 秒的陈旧请求（`STALE_OPEN_REQ_MS`）；`fs.watch` 报 error 后不再派发事件，另有每 3 秒比对请求文件 mtime 的轮询兜底（异步 `stat`，watcher 缺席时顺带重建），激活时已在的请求文件只取 mtime 作种子、不当成新请求——否则扩展进程在一次点击后 15 秒内重启会把那次打开重放一遍；请求里的 `sessionId` 过与工具入参同一道正则门 `^sess_[A-Za-z0-9_-]{1,120}$`，不过则不带会话打开），读到新请求后立即消费并调用：
+3. **扩展进程（`extension-main.cjs`）**：监听运行目录（`fs.watch` 配合 `ts` 与 `id` 去重，忽略启动前超过 15 秒的陈旧请求（`STALE_OPEN_REQ_MS`）；`fs.watch` 报 error 后不再派发事件，另有每 3 秒比对请求文件 mtime 的轮询兜底（异步 `stat`，watcher 缺席时顺带重建），激活时已在的请求文件不当成新请求：建监听之前同步读一次、把它的 `id` 记成已处理，`fs.watch` 与轮询两条路径一视同仁（macOS 的 `fs.watch` 会把建监听之前刚落盘的写入补发给新 watcher，只给轮询种 mtime 挡不住它），轮询另以它的 mtime 作种子——否则扩展进程在一次点击后 15 秒内重启会把那次打开重放一遍；请求里的 `sessionId` 过与工具入参同一道正则门 `^sess_[A-Za-z0-9_-]{1,120}$`，不过则不带会话打开），读到新请求后立即消费并调用：
    - `viewId === "context"`：`ctx.views.open("context", sessionId ? { sessionId } : undefined)`
    - `viewId === "insights"`：`ctx.views.open("insights", "app")`
 4. **降级与兜底**：若扩展未激活或宿主不支持 `views.open`（旧版 ZCode），`overlay.js` 提示用户“请在 ZCode 4.0+ 中启用本插件扩展能力”，不抛未捕获异常。

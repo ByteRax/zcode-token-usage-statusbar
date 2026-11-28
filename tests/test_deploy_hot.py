@@ -169,6 +169,18 @@ class DeployHotInstallTests(unittest.TestCase):
         self.assertEqual(self.target.read_bytes(), FOREIGN)
         self.assertEqual(self._leftovers(), ["overlay.js"], "备份与临时文件都不留")
 
+    def test_a_new_file_that_appears_after_planning_is_not_overwritten(self):
+        # 甄别时运行目录里没有这个热文件（run=None）；替换之前别处把它放了进来。这一支没有备份可复验，
+        # 写前比对是唯一防线：不覆盖、不留临时文件
+        def racing_check(path, name, node="node"):
+            _write(self.run, "zusage.py", FOREIGN)   # 甄别之后、替换之前，别处新建了同一个文件
+            return True, ""
+        state, detail = deploy_hot.install_file(self._step(work=b"x = 1\n", run=None, name="zusage.py"),
+                                                self.run, "issue-1", "20261126-120000", racing_check)
+        self.assertEqual(state, "race")
+        self.assertEqual((self.run / "zusage.py").read_bytes(), FOREIGN, "不覆盖别处刚放入的文件")
+        self.assertFalse(any(name.startswith(".zusage.py.") for name in self._leftovers()))
+
     def test_new_file_is_created_without_a_backup(self):
         state, detail = deploy_hot.install_file(self._step(work=b"x = 1\n", run=None, name="zusage.py"),
                                                 self.run, "issue-1", "20261126-120000", _ok_check)
