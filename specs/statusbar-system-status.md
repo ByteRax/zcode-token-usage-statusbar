@@ -28,9 +28,18 @@ Issue #338。在既有「排序 → 优先级 → 自适应 → 自动折叠 →
 
 - 容量一律原始字节；单位格式化只在展示层。未知/不支持值显式缺省（`null` 或字段缺席）或 `state` 降级，**绝不用 0 冒充**。
 - `state` 枚举：`loading`（首次采样不足）/ `ok` / `error`（采集失败）/ `unavailable`（平台不支持）。三指标各自独立，单项失败不拖垮其余；`stale` 与 `disabled` 由渲染端按 `ts` 年龄与本地开关推导，不进帧。
+- 每项实际采样完成时携带 `sampledAt` 毫秒时间戳；其他指标推帧不得更新它。黄色预警只按同一指标的不同采样时间计数，危险立即生效。旧帧缺少该字段时保持既有整帧兼容行为。
+- 新帧逐指标以 `max(3 × 对应采样周期, 20 秒)` 判断过期；过期项标灰且不参与综合预警。渲染端在订阅期间按最近到期时间安排重绘，断流时也能显示过期。旧帧沿用整帧过期口径。
+- 采样配置归一化后未改变时不触发重采；项目路径或磁盘目标变化时，丢弃变化前已启动的磁盘采样结果并重新采样，避免旧项目卷覆盖新目标。
+- 卷同时是系统卷和项目卷时保留 `roles`，显示角色遵循目标开关；只启用系统卷时不能标成项目卷。
+- 主进程合并各窗口的指标需求，任一订阅者需要的指标即采样；全部订阅者均不需要时停采该指标。CPU 从关闭恢复时重建差分基线。
+- 项目卷设备号探测使用异步 `stat`，同路径未完成的探测复用，限制在途数量并设等待超时；不能用主进程同步文件系统调用等待慢卷。
+- 多窗口与分栏各自上报本机项目路径集合，主进程按窗口保存并合并路径；单例磁盘采样返回路径到卷的映射和共享容量。分栏按自身路径挑选项目卷，未完成映射时显示定位中，无法定位时明确回退系统卷或显示不可用，绝不沿用其他项目的卷与预警。路径集合变化使旧采样结果失效，窗口销毁和热换重建同步清理或恢复订阅。
+- 项目路径在主进程入口仅接受不含控制字符、长度不超过 4096 的绝对路径；是否存在和归属哪个卷在异步采样中确认，不在请求入口同步访问磁盘。每个窗口最多申报 32 条路径，跨窗口合并后的采样集合也有 32 条上限。
+- 旧采样帧缺少项目卷映射时，不能把其中的项目卷冒充当前分栏：仅当该帧明确标注同一项目路径时可沿用项目卷，否则回退已启用的系统卷或显示不可用。退订或指标需求变更使在途 CPU/内存结果失效；重新订阅后立即启动新一代采样。
 - CPU：`pct` 为整机使用率（`os.cpus()` tick 差分，Σ(Δtotal−Δidle)/Δtotal×100，跨核汇总；Δtotal≤0 保持 `loading`）；`cores`=逻辑核心数；`load`=1/5/15 分钟负载（`os.loadavg()`，win32 恒 `null` 不伪造）。首帧差分未成立时 `state:"loading"`。
 - 内存口径：Linux `/proc/meminfo`（used = MemTotal − MemAvailable，含 SwapTotal/SwapFree）；macOS `vm_stat` 页数×pagesize（used = active + wired + compressor occupied，对齐活动监视器主口径；avail = free + inactive + speculative；wired 单列；Swap 走 `sysctl vm.swapusage`）；Windows `os.totalmem()/os.freemem()`（GlobalMemoryStatusEx），wired/swap 恒 null（字段缺席即隐藏，不显示假值）。
-- 磁盘：卷集 = 系统卷 + 当前本地项目卷（主进程从窗口工作区路径取，缺省退系统卷）+ 可可靠识别的其他本地固定卷（上限 8，按 `statfs` 设备去重）。容量经 `fs.statfs`（Node ≥18.15，宿主 Node 24 实测可用）；卷枚举 Linux 解析 `/proc/self/mounts`（真实文件系统白名单、排除 tmpfs/overlay/squashfs 等）、macOS `df -klP`（仅本地卷）、Windows 盘符经 `fs.promises.statfs` 逐盘探测（带超时防断连网络盘阻塞）。`role:"project"` 标注项目卷（Tooltip 突出行）；同名同设备卷去重。禁止递归扫描目录算占用。
+- 磁盘：卷集 = 系统卷 + 当前本地项目卷（主进程按各窗申报路径合并定位，缺省退系统卷）+ 可靠识别的其他本地固定卷（按 `statfs` 设备去重；卷集总上限随项目卷数放宽为 `max(8, 项目数+1)` 且 ≤33——单例帧要装下全部项目的映射卷，tooltip 展示端仍每栏钳 8）。容量经 `fs.statfs`（Node ≥18.15，宿主 Node 24 实测可用）；卷枚举 Linux 解析 `/proc/self/mounts`（真实文件系统白名单、排除 tmpfs/overlay/squashfs 等）、macOS `df -klP`（仅本地卷）、Windows 盘符经 `fs.promises.statfs` 逐盘探测（带超时防断连网络盘阻塞）。`role:"project"` 标注项目卷（Tooltip 突出行）；同名同设备卷去重。禁止递归扫描目录算占用。
 - APFS 共享容器（v362）：macOS firmlink 下 `/`（系统快照卷）与 `/System/Volumes/Data` 共享同一 APFS 容器空间，`statfs` 对两者返回相同容量。所有平台每卷恒带 `dev`（枚举源设备名，取不到为 null）；仅当 macOS 的 `/` 与 `/System/Volumes/Data` 两卷同时入选且设备名同 `diskN` 前缀（`/dev/disk3s1s1` 与 `/dev/disk3s5` → `disk3`）时，两卷才标 `container:"disk3"`。**容量相同不作为判据**（不同盘可能巧合相等）；外置卷之间无法与「非 APFS 多分区盘」区分，保守不标——前端对无 `container` 的卷恒展示各自真实容量，不擅自合并；Linux/Windows 无 `container` 字段（`dev` 为惰性透传，消费端不读）。
 
 ## 渲染端模型

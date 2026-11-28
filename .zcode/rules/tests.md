@@ -51,6 +51,7 @@
 
 ## 4. 实机验证
 
+- 桌面视觉与交互验收的顺序以根 [AGENTS.md](../../AGENTS.md) §6 为准，Goal 模式同样适用。先确认实际监听端口和目标 renderer，再通过 CDP 复现目标场景、核对结果与新增错误，按需截图。只连通端口不算验收；下文的内置浏览器视觉探针与 Electron 夹具用于独立网页或真机 CDP 无法覆盖时的补验。
 - 第二实例配方：复制 .app 到临时目录 + ad-hoc `codesign --force --deep --sign -` + 官方开关（`ZCODE_DESKTOP_APPLICATION_NAME` / `_HOME_DIR` / `_USER_DATA_DIR` / `_SESSION_DATA_DIR`）指向独立临时目录 + 删 `Singleton*`；勿改 bundle 名/BundleID（签名陷阱）；不加开关会静默 exit 0。（根级 `renderer_live_check.cjs` 是桥加载检查脚本，其隔离手段是覆盖 HOME，与该配方不同源。）
 - 热更新验证：改后部署到运行目录等热更（缺省 5s；`hot_reload:true` 2s。纪律见 [install-release.md](install-release.md)）；核对 `diag-0.json` 的 mount.anchorRect/barRect/version。diag 约每 15 次 payload 才落盘（可 `touch ~/.zcode/cli/db/db.sqlite` ×16、间隔 2s 强制刷）；空闲期数分钟不写 ≠ 热更失败；`pump.wants` 是 JSON 请求串，取 sids 须先解析。diag 的 `time` 从部署同一秒跳变才是重挂载实证；`version` 是浮层 VERSION 常量快照——忘升号会误读为「未生效」（VERSION 锁测试须同步升号：`overlay-notes`/`overlay-substat`/`overlay-subagent-row` 三处以精确正则锁 `var VERSION = "vNNN";`，每升一代必红 3 例，属维护锁非回归），且提交代际与运行时 version 可不一致；重注入后首条落盘可能是旧实例的写入竞态，判版本等下一条；diag 是滚动分片，判读遍历全部 `diag-*.json` 找 mtime 最新、gen 递增者——固定盯 diag-0 可能撞上失活窗口槽位，某分片长期不更新也可能是该面板实例已冻结（先怀疑实例冻结而非部署失败）；gen 计数在宿主重启后重新起算，跨重启比较无意义，version 翻转为新 VERSION 才是重注入硬证据；version/time 在 diag 顶层、不在 `d.mount.*` 下（结构随版本变，读错键误判）。拿不到渲染端运行时又无 CDP 时，可给 diag 加探针字段 → 部署热文件 → 等泵落盘 → 读 diag 实测，比逆向渲染 bundle 快且准。
 - 悬停/hover-card 行为只能真实指针复现（合成事件驱不动 Electron hover 卡）；伪 DOM 事件只在真浏览器可见，VM/stub 测不出（见 [overlay-ui.md](overlay-ui.md)）。

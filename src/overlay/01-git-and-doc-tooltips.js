@@ -2824,7 +2824,7 @@
   var sysTipHideTimer = 0;
   function showSysTip(chip) {
     if (stale() || !chip || !chip.isConnected) { hideSysTip(); return; }
-    var html = sysmonTipHtml(state.sysmonCfg, sysFrame);
+    var html = sysmonTipHtml(state.sysmonCfg, typeof chip.__zuSysmonFrame === "function" ? chip.__zuSysmonFrame() : sysFrame);
     if (sysTip.__zuTipSig !== html) {
       var keep = 0;
       if (sysTipFor === chip) { try { var prevRows = sysTip.querySelector(".zu-sys-vols"); if (prevRows) keep = prevRows.scrollTop; } catch (e) { } }

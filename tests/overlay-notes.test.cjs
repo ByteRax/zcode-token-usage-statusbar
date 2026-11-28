@@ -606,7 +606,7 @@ test("v413 wiring: boot sweep, cleanup chain, tip shell, prefetch hook and gear 
   assert.ok(/function showUpdNoteTip[\s\S]{0,300}cancelUpdNoteHide\(\)/.test(tips), "show 路径未取消在途收起（重入闪烁）");
   assert.ok(tips.includes("Math.max(8, Math.min(Math.round(r.right - tw)"), "tip 左缘 8px 视口钳边缺失");
   const dom = read("06-instance-dom-and-styles.js");
-  assert.ok(dom.includes('var VERSION = "v496"'), "VERSION 未升 v496");
+  assert.ok(dom.includes('var VERSION = "v497"'), "VERSION 未升 v497");
   assert.ok(dom.includes(".zusage-upd-note-tip .zu-un-body"), "tip 作用域样式缺失");
   const notes = read("09-instance-settings-and-notes.js");
   assert.ok(notes.includes('typeof pluginRequest === "function") updNotePrefetch()'), "syncUpdate 预取钩子缺失");

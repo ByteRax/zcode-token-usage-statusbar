@@ -233,11 +233,31 @@
    * 回落 1 拍即还原。计数器是模块级共享状态（原地更新，多实例同帧同判定）。 */
   var SYS_LEVEL_RANK = { normal: 0, warning: 1, critical: 2 };
   var sysLevelState = {};
-  function sysSeveritySmoothed(cfg, frame) {
+  function sysSeveritySmoothed(cfg, frame, scope) {
     var sev = sysSeverityOf(cfg, frame), out = { cpu: "normal", mem: "normal", disk: "normal" };
     ["cpu", "mem", "disk"].forEach(function (k) {
-      var s = sysLevelState[k] || (sysLevelState[k] = { level: "normal", hits: 0 });
+      var stateKey = k === "disk" && scope ? "disk:" + scope : k;
+      var s = sysLevelState[stateKey] || (sysLevelState[stateKey] = { level: "normal", hits: 0 });
       var target = sev[k];
+      var metric = frame && frame[k];
+      var stamp = metric && metric.sampledAt;
+      var thresholdSig = JSON.stringify(cfg.thresholds);
+      var vol = k === "disk" && metric && sysVolPick(metric.vols);
+      var identity = vol && (vol.id || vol.mount) || "";
+      if (k === "disk" && s.identity !== identity) { s.level = "normal"; s.hits = 0; s.stamp = null; s.identity = identity; }
+      if (!cfg.metrics[k] || !metric || metric.state !== "ok") { s.level = "normal"; s.hits = 0; s.stamp = stamp; out[k] = "normal"; return; }
+      if (typeof stamp === "number" && typeof s.stamp === "number" && stamp - s.stamp > Math.max(3 * (k === "disk" ? cfg.diskIntervalMs : cfg.intervalMs), 20000)) { s.level = "normal"; s.hits = 0; }
+      if (typeof stamp === "number" && stamp === s.stamp) {
+        if (s.thresholdSig !== thresholdSig) {
+          s.hits = 0;
+          if (target === "critical" || SYS_LEVEL_RANK[target] < SYS_LEVEL_RANK[s.level]) s.level = target;
+        }
+        s.thresholdSig = thresholdSig;
+        out[k] = s.level;
+        return;
+      }
+      s.thresholdSig = thresholdSig;
+      s.stamp = stamp;
       if (SYS_LEVEL_RANK[target] > SYS_LEVEL_RANK[s.level]) {
         s.hits++;
         if (target === "critical" || s.hits >= 2) { s.level = target; s.hits = 0; }
@@ -249,11 +269,74 @@
       ? out.cpu : (SYS_LEVEL_RANK[out.mem] >= SYS_LEVEL_RANK[out.disk] ? out.mem : out.disk);
     return out;
   }
+  function sysmonProjectFrame(cfg, frame, projectPath) {
+    if (!frame || !frame.disk) return frame;
+    if (!Array.isArray(frame.disk.projects)) {
+      /* legacyProjectPath 前向兼容缝（review 2026-11-28 定论）：主进程当前不写它（ok 帧
+       * 恒带 projects），本比较只对「有路径标注但无映射」的假想旧帧成立，保留作 spec
+       * 「明确标注同一项目路径可沿用项目卷」的形态位；现实旧帧一律走下方 fail-closed。 */
+      if (!cfg.projectVol || !projectPath || frame.disk.legacyProjectPath === projectPath) return frame;
+      /* 首帧未起采（state:"loading"）按「定位中」口径显示，不误报项目卷不可用——
+       * 不可用回退只覆盖「明确无映射」的旧帧（review 2026-11-28）。 */
+      if (frame.disk.state === "loading") {
+        var scopedLoading = Object.assign({}, frame, { disk: { state: "loading", vols: [], projectPending: true } });
+        scopedLoading.sysSeverity = sysSeveritySmoothed(cfg, scopedLoading, projectPath);
+        return scopedLoading;
+      }
+      var systemVols = (Array.isArray(frame.disk.vols) ? frame.disk.vols : []).filter(function (vol) {
+        return vol && (vol.role === "system" || Array.isArray(vol.roles) && vol.roles.indexOf("system") >= 0);
+      }).map(function (vol) { return Object.assign({}, vol, { role: "system" }); });
+      var fallback = Object.assign({}, frame, { disk: cfg.systemVol && systemVols.length
+        ? Object.assign({}, frame.disk, { vols: systemVols })
+        : { state: "unavailable", vols: [], projectUnavailable: true } });
+      var existing = sysSevSnapshot && frame === sysFrame ? sysSevSnapshot : sysSeverityOf(cfg, frame);
+      var fallbackSeverity = sysSeverityOf(cfg, fallback);
+      fallback.sysSeverity = { cpu: existing.cpu, mem: existing.mem, disk: fallbackSeverity.disk === "critical" ? "critical" : "normal" };
+      fallback.sysSeverity.overall = ["cpu", "mem", "disk"].reduce(function (level, key) { return SYS_LEVEL_RANK[fallback.sysSeverity[key]] > SYS_LEVEL_RANK[level] ? fallback.sysSeverity[key] : level; }, "normal");
+      return fallback;
+    }
+    var mapping = frame.disk.projects.find(function (item) { return item && item.path === projectPath; });
+    var disk = Object.assign({}, frame.disk);
+    if (cfg.projectVol && projectPath && !mapping) {
+      disk = { state: "loading", vols: [], projectPending: true };
+    } else {
+      var target = cfg.projectVol && mapping && mapping.mount;
+      var vols = Array.isArray(disk.vols) ? disk.vols : [];
+      if (target && !vols.some(function (vol) { return vol && vol.mount === target; })) target = null;
+      disk.vols = vols.map(function (vol) {
+        var roles = Array.isArray(vol.roles) ? vol.roles : [vol.role];
+        var role = target && vol.mount === target ? "project" : cfg.systemVol && roles.indexOf("system") >= 0 ? "system" : "other";
+        return Object.assign({}, vol, { role: role });
+      }).sort(function (left, right) {
+        function rank(vol) { return vol.role === "project" ? 0 : vol.role === "system" ? 1 : 2; }
+        return rank(left) - rank(right);
+      }).slice(0, 8);
+      if (cfg.projectVol && projectPath && !target && (!cfg.systemVol || !disk.vols.some(function (vol) { return vol.role === "system"; }))) {
+        disk = { state: "unavailable", vols: [], projectUnavailable: true, sampledAt: frame.disk.sampledAt };
+      }
+    }
+    var scoped = Object.assign({}, frame, { disk: disk });
+    scoped.sysSeverity = sysSeveritySmoothed(cfg, scoped, projectPath || "system");
+    return scoped;
+  }
   /* 数据过期：want 摘除（采样暂停）后旧帧保留展示但标灰；阈值取两侧间隔的较保守者。 */
   function sysIsStale(frame, cfg, now) {
     if (!frame || typeof frame.ts !== "number") return true;
     var maxAge = Math.max(3 * Math.max(cfg.intervalMs, cfg.diskIntervalMs), 20000);
     return (now || Date.now()) - frame.ts > maxAge;
+  }
+  function sysMetricStale(frame, cfg, key, now) {
+    var metric = frame && frame[key];
+    if (!metric || typeof metric.sampledAt !== "number") return sysIsStale(frame, cfg, now);
+    return (now === undefined ? Date.now() : now) - metric.sampledAt > Math.max(3 * (key === "disk" ? cfg.diskIntervalMs : cfg.intervalMs), 20000);
+  }
+  function sysVisibleSeverity(cfg, frame, severity, now) {
+    var out = { cpu: severity.cpu, mem: severity.mem, disk: severity.disk };
+    ["cpu", "mem", "disk"].forEach(function (key) {
+      if (frame && frame[key] && typeof frame[key].sampledAt === "number" && sysMetricStale(frame, cfg, key, now)) out[key] = "normal";
+    });
+    out.overall = ["cpu", "mem", "disk"].reduce(function (level, key) { return SYS_LEVEL_RANK[out[key]] > SYS_LEVEL_RANK[level] ? out[key] : level; }, "normal");
+    return out;
   }
   function sysFmtBytes(b) {
     if (typeof b !== "number" || !isFinite(b) || b < 0) return "";
@@ -271,9 +354,7 @@
     var m = cfg.metrics;
     var nOn = (m.cpu ? 1 : 0) + (m.mem ? 1 : 0) + (m.disk ? 1 : 0);
     if (!nOn) return "";
-    var sev = (sysSevSnapshot && frame === sysFrame) ? sysSevSnapshot : sysSeverityOf(cfg, frame);   // 快照缺失/异帧（预览、测试）回退瞬时判定，不推进防抖计数
-    var stale = sysIsStale(frame, cfg, now);
-    var loadCls = stale ? " zu-sys-stale" : "";
+    var sev = sysVisibleSeverity(cfg, frame, frame && frame.sysSeverity || ((sysSevSnapshot && frame === sysFrame) ? sysSevSnapshot : sysSeverityOf(cfg, frame)), now);
     function sevCls(key) {
       if (!cfg.warnColors || sev[key] === "normal") return "";
       return " zu-sys-" + (sev[key] === "critical" ? "crit" : "warn");
@@ -285,7 +366,7 @@
     function seg(label, value, key) {
       var hideLabel = format === "minimal" && nOn > 1;
       /* 值/标签挂 .v/.dim 基础类继承 .it 既有样式；zu-sys-* 只承载结构布局与预警色 */
-      return '<span class="zu-sys-seg' + loadCls + '"><span class="dim zu-sys-k"' + (hideLabel ? ' hidden' : '') + ">" + label +
+      return '<span class="zu-sys-seg' + (sysMetricStale(frame, cfg, key, now) ? " zu-sys-stale" : "") + '"><span class="dim zu-sys-k"' + (hideLabel ? ' hidden' : '') + ">" + label +
         '</span><span class="v zu-sys-v' + sevCls(key) + '">' + value + "</span></span>";
     }
     if (m.cpu) {
@@ -319,6 +400,29 @@
    * 任一成立即 want；签名（want|cfg|projectPath）不变不重发。api.sysmonInterested 由 12 分片
    * 逐实例上报（含本机 projectPath，供主进程定位项目卷）。 */
   var sysmonSubSent = "";
+  var sysmonExpiryTimer = null;
+  function sysmonScheduleExpiry() {
+    if (sysmonExpiryTimer) clearTimeout(sysmonExpiryTimer);
+    sysmonExpiryTimer = null;
+    if (!sysFrame || sysmonSubSent.charAt(0) !== "1" || typeof setTimeout !== "function") return;
+    var now = Date.now(), next = Infinity;
+    ["cpu", "mem", "disk"].forEach(function (key) {
+      var metric = sysFrame[key];
+      if (!state.sysmonCfg.metrics[key] || !metric || typeof metric.sampledAt !== "number") return;
+      var deadline = metric.sampledAt + Math.max(3 * (key === "disk" ? state.sysmonCfg.diskIntervalMs : state.sysmonCfg.intervalMs), 20000) + 1;
+      if (deadline > now) next = Math.min(next, deadline);
+      else if (sysLevelState[key]) { sysLevelState[key].level = "normal"; sysLevelState[key].hits = 0; }
+    });
+    if (!isFinite(next)) return;
+    sysmonExpiryTimer = setTimeout(function () {
+      sysmonExpiryTimer = null;
+      if (stale()) return;
+      for (var i = 0; i < instances.length; i++) {
+        try { if (instances[i].sysmonTick) instances[i].sysmonTick(); } catch (e) { }
+      }
+      sysmonScheduleExpiry();
+    }, Math.max(1, next - now));
+  }
   function sysSevCls(key, sev, cfg) {
     if (!cfg.warnColors || !sev || sev[key] === "normal") return "";
     return " zu-sys-" + (sev[key] === "critical" ? "crit" : "warn");
@@ -433,8 +537,8 @@
   function sysmonTipHtml(cfg, frame, now) {
     function sEsc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
     function sAttr(s) { return sEsc(s).replace(/"/g, "&quot;"); }
-    var sev = (sysSevSnapshot && frame === sysFrame) ? sysSevSnapshot : sysSeverityOf(cfg, frame);   // 同 face：只读防抖快照
-    var stale = sysIsStale(frame, cfg, now);
+    var sev = sysVisibleSeverity(cfg, frame, frame && frame.sysSeverity || ((sysSevSnapshot && frame === sysFrame) ? sysSevSnapshot : sysSeverityOf(cfg, frame)), now);
+    var stale = ["cpu", "mem", "disk"].some(function (key) { return cfg.metrics[key] && sysMetricStale(frame, cfg, key, now); });
     var refreshTitle = L("CPU/内存每 ", "CPU/mem every ") + Math.round(cfg.intervalMs / 1000) + "s · " +
       L("磁盘每 ", "disk every ") + Math.round(cfg.diskIntervalMs / 1000) + "s";
     var s = SYS_TIP_CSS + '<div class="zu-sys-tip">' +
@@ -447,6 +551,8 @@
       Math.round(cfg.intervalMs / 1000) + "s · " + Math.round(cfg.diskIntervalMs / 1000) + "s</span></div>";
     function secNote(st) {
       if (!st) return L("采集中…", "sampling…");
+      if (st.projectPending) return L("项目卷定位中…", "Locating project volume…");
+      if (st.projectUnavailable) return L("项目卷不可用", "Project volume unavailable");
       if (st.state === "loading") return L("采集中…", "sampling…");
       if (st.state === "error") return L("采集失败", "sampling failed") + (st.err ? "（" + sEsc(String(st.err).slice(0, 80)) + "）" : "");
       if (st.state === "unavailable") return L("本平台不支持", "unavailable on this platform");
@@ -539,26 +645,42 @@
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.2a2.5 2.5 0 1 1 3.6 2.3c-.8.4-1.2.9-1.2 1.8"/><path d="M12 16.8h.01"/></svg>' +
       L("阈值", "Thresholds") + '</button></div>' +
       '<div class="zu-sys-thexp" data-zu-sys-thexp hidden>' + sysThresholdTableHtml(cfg) + "</div>";
-    if (stale && frame) s += '<div class="zu-sys-note">' + L("数据已过期 · 采样暂停中", "Data stale · sampling paused") + "</div>";
+    if (stale && frame) {
+      var ageNow = now === undefined ? Date.now() : now;
+      var staleItems = ["cpu", "mem", "disk"].filter(function (key) { return cfg.metrics[key] && sysMetricStale(frame, cfg, key, ageNow); }).map(function (key) {
+        var stamp = frame[key] && frame[key].sampledAt;
+        return key.toUpperCase() + (typeof stamp === "number" ? " " + Math.max(0, Math.floor((ageNow - stamp) / 1000)) + "s" : "");
+      });
+      s += '<div class="zu-sys-note">' + L("数据已过期：", "Stale data: ") + staleItems.join(" · ") + "</div>";
+    }
     return s + "</div>";
   }
   function sysmonWantRecalc(force) {
-    var want = false, projectPath = "";
+    var want = false, projectPath = "", projectPaths = [], details = false;
     for (var i = 0; i < instances.length; i++) {
       try {
         var r = instances[i] && instances[i].sysmonInterested && instances[i].sysmonInterested();
         if (r && r.want) {
           want = true;
+          if (r.details) details = true;
           if (!projectPath && r.projectPath) projectPath = r.projectPath;
+          if (r.projectPath && projectPaths.indexOf(r.projectPath) < 0) projectPaths.push(r.projectPath);
         }
       } catch (e) { }
     }
+    var cfg = details ? Object.assign({}, state.sysmonCfg, { metrics: { cpu: true, mem: true, disk: true } }) : state.sysmonCfg;
     var sig;
-    try { sig = (want ? 1 : 0) + "|" + JSON.stringify(state.sysmonCfg) + "|" + projectPath; } catch (e) { return; }
+    projectPaths.sort();
+    Object.keys(sysLevelState).forEach(function (key) {
+      if (key.indexOf("disk:") === 0 && key !== "disk:system" && projectPaths.indexOf(key.slice(5)) < 0) delete sysLevelState[key];
+    });
+    try { sig = (want ? 1 : 0) + "|" + JSON.stringify(cfg) + "|" + JSON.stringify(projectPaths); } catch (e) { return; }
     if (!force && sig === sysmonSubSent) return;
     sysmonSubSent = sig;
+    if (sysFrame) sysSevSnapshot = sysSeveritySmoothed(state.sysmonCfg, sysFrame);
+    sysmonScheduleExpiry();
     if (typeof pluginRequest === "function" && !stale()) {
-      pluginRequest("sysmon-sub", { want: want, cfg: state.sysmonCfg, projectPath: projectPath });
+      pluginRequest("sysmon-sub", { want: want, cfg: cfg, projectPath: projectPath, projectPaths: projectPaths.slice(0, 32) });
     }
   }
 
@@ -1004,6 +1126,7 @@
     if (stale() || !frame || typeof frame !== "object" || !frame.cpu || !frame.mem || !frame.disk) return;
     sysFrame = frame;
     sysSevSnapshot = sysSeveritySmoothed(state.sysmonCfg, frame);   // 每采样拍推进一次防抖（消费端只读快照）
+    if (typeof sysmonScheduleExpiry === "function") sysmonScheduleExpiry();
     var f = FATAL.sysFrame || (FATAL.sysFrame = { t: 0, has: 0, want: 0 });
     f.t = Date.now();
     f.has = 1;

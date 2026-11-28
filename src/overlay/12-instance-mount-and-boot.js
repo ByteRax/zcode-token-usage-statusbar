@@ -1412,8 +1412,14 @@
         try {
           if (state.show.sysmon && state.theme !== "compact" && curDisplay !== "none" &&
             main.querySelector('.it[data-zu-key="sysmon"]')) r.want = true;
-          if (tipFor && tipFor.dataset && tipFor.dataset.zuKey === "sysmon" && tip.style.display === "block") r.want = true;
-          if (panel.classList.contains("open")) r.want = true;   // 设置页开着：预览需要真实采样
+          if (tipFor && tipFor.dataset && tipFor.dataset.zuKey === "sysmon" && tip.style.display === "block") { r.want = true; r.details = true; }
+          if (panel.classList.contains("open")) {
+            var sysCard = panel.querySelector(".zu-syscfg"), sysBody = panel.querySelector(".zu-settings-body");
+            if (sysCard && sysBody && !sysCard.closest("[hidden]")) {
+              var cardRect = sysCard.getBoundingClientRect(), bodyRect = sysBody.getBoundingClientRect();
+              if (cardRect.bottom > bodyRect.top && cardRect.top < bodyRect.bottom) r.want = true;
+            }
+          }
           if (typeof sysmonChipMounted === "function" && sysmonChipMounted()) r.want = true;
           /* v445：getScope 只是本 api 对象的属性、不是作用域里的变量——此前裸调必抛
            * ReferenceError 被下面的 catch 吞掉，projectPath 恒空，主进程永远定位不到项目卷。 */

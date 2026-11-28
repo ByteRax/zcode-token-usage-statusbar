@@ -114,7 +114,7 @@ python3 sync_plugin.py --check
    - `zusage.py`：同一轮询发现变化后自动重启已有常驻 Python（若单独修改被导入的 `usage_stats.py` 或 `token_pricing.py`，因主桥仅监听 `zusage.py` mtime，须连带更新运行目录 `zusage.py` mtime 或确认常驻进程已重启）；未启动常驻进程时，下一次启动读取新代码。
    - 八个 .cjs 子模块 `quota-client.cjs`、`model-puller.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`engine-patch.cjs`、`sysmon-client.cjs`、`mobile-relay.cjs`：部署后由 loader `hotReloadMainModules` 在同一 mtime 轮询内热换（语法预检→dispose→清 require.cache→按依赖方向重建→`_hotLoadedAt`→ack 自动销账 marker），零重启生效；旧版 loader（未含热换循环）上仍需完全重启。`inject-main.cjs` 自身与首次注入、加载路径、asar 桥补丁变化：不能热重载，只记录并报告待完全重启，不自行退出或重启 ZCode。关闭热重载（`hot_reload:false`）时上述文件一律回退为重启生效。
    - 其它 Python 工具按下一次相关调用／新进程生效；MCP 已导入的模块需重启对应 MCP 进程，不能把文件同步或下一次工具调用当作重新载入。
-5. **验证确实生效。** 部署热文件前记录基线，部署后至少留出一个轮询周期，再检查运行证据：同一 renderer 未导航、未刷新时 `window.__zusageGen` 递增；Python 则核对常驻子进程更替及启动日志；主进程子模块热换的证据是 sync 链写入的 `.plugin-restart-required` 在一个热 tick 内被 `_hotLoadedAt` 路径自动销账（或该模块行为恢复），`__zusageGen` 只证明渲染端。**轮询本身可能被宿主窗口后台节流无限期延迟**（客户端被遮挡时部署可数十分钟不重注入，2026-11-07 实证）：部署后可 `touch` 运行目录热文件强制重触发，并以 `diag-0.json` 的 `FATAL.*` 计数字段归零/消失作为重注入证据（判定法与边界见 [.zcode/rules/install-release.md](.zcode/rules/install-release.md) §2）；未拿到归零证据前交付措辞保持「已部署、待重注入验证」。随后验证本次目标行为，UI 按根约束使用内置浏览器优先验收，并检查新增错误。文件 hash 一致、单条触发日志或可能滞后的 `diag-*.json` 均不能单独证明成功；客户端未运行、通道不可用或受保护而未部署时，如实标记「未触发／未验证」，不得声称热更完成。
+5. **验证确实生效。** 部署热文件前记录基线，部署后至少留出一个轮询周期，再检查运行证据：同一 renderer 未导航、未刷新时 `window.__zusageGen` 递增；Python 则核对常驻子进程更替及启动日志；主进程子模块热换的证据是 sync 链写入的 `.plugin-restart-required` 在一个热 tick 内被 `_hotLoadedAt` 路径自动销账（或该模块行为恢复），`__zusageGen` 只证明渲染端。**轮询本身可能被宿主窗口后台节流无限期延迟**（客户端被遮挡时部署可数十分钟不重注入，2026-11-07 实证）：部署后可 `touch` 运行目录热文件强制重触发，并以 `diag-0.json` 的 `FATAL.*` 计数字段归零/消失作为重注入证据（判定法与边界见 [.zcode/rules/install-release.md](.zcode/rules/install-release.md) §2）；未拿到归零证据前交付措辞保持「已部署、待重注入验证」。随后按 §6 验证本次目标行为，桌面 UI 优先用真机 CDP，并检查新增错误。文件 hash 一致、单条触发日志或可能滞后的 `diag-*.json` 均不能单独证明成功；客户端未运行、通道不可用或受保护而未部署时，如实标记「未触发／未验证」，不得声称热更完成。
 
 ## 4. 开发与兼容性约定
 
@@ -200,6 +200,8 @@ python3 sync_plugin.py --check
 - 手敲完整命令与桌面补全是两条通道：执行路径（parse/load/expand）无字段过滤，补全缺失先查引擎 `listProtocolSlashCommands` 的过滤条件，不要先怀疑安装或重装插件。
 
 ## 6. 测试与验证
+
+**桌面视觉与交互验收（含 Goal 模式）优先使用真机 CDP。** 目标是 ZCode 桌面状态条、浮层或宿主集成时，先连接正在运行的 ZCode Electron 调试端口，确认是目标窗口，再实际操作、检查结果和新增错误，按需截图。目标不涉及桌面视觉或交互时，仍按改动范围选择测试。此条是桌面宿主验收对通用「内置浏览器优先」规则的例外：只有真机 CDP 不可用或无法覆盖该场景时，才用内置浏览器或 Electron 夹具补验，并报告原因和仍未验证的真机行为。独立网页仍优先使用内置浏览器。操作细则见 [测试与实机验证方法](.zcode/rules/tests.md#4-实机验证)。
 
 在仓库根运行；除 `scripts/build_overlay.py`、`scripts/build_quota.py`、`scripts/build_puller.py` 与 `scripts/build_mobile_userscript.py`（零依赖拼接 `src/overlay/*.js` → `overlay.js`、`src/quota/*.cjs` → `quota-client.cjs`、`src/puller/*.cjs` → `model-puller.cjs`、`src/mobile/*.js` + 完整桌面 overlay → 根目录 `zusage-mobile.user.js` 与 `zusage-mobile.debug.user.js`）外没有第三方构建、lint 或格式化脚本。基础命令：
 

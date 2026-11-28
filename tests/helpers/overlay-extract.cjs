@@ -122,6 +122,9 @@ const INJECT_SLICES = {
   pendingZipBlock: ['/* ---------- v339 pending 更新包清理自愈', '/* ---------- v202 更新日志'],
   handleReleaseNotesRequest: ['async function handleReleaseNotesRequest(req, wc) {', '\n/* 逐问速率行开关'],
   sysmonBlock: ['function pushSysmonTo(wc, frame) {', '\n/* ---------- v202 更新日志'],
+  /* v497 sysmon 三 Map 的两处窗口销毁清理（变异 S6）：maybeSpawn 兜底清扫 + destroyed hook */
+  sysmonPruneBlock: ['let sysmonPruned = false;', 'if (sysmonPruned) sysmonSyncSubscribed();', { includeEnd: true }],
+  sysmonDestroyBlock: ['windowQuotaSelections.delete(wc.id);', 'if (sysmonSubs.delete(wc.id)) sysmonSyncSubscribed();', { includeEnd: true }],
 };
 
 function getNamedSlice(name, opts = {}) {

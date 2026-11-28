@@ -227,11 +227,14 @@ function pickProjectMount(cands, projectPath) {
   }
   return best || prefix;
 }
-function longestMountPrefix(mounts, p) {
+function longestMountPrefix(mounts, p, platform) {
   let best = null;
+  const windows = (platform || process.platform) === "win32";
+  const project = windows ? String(p).replace(/\//g, "\\").toUpperCase() : p;   // 宿主可能上报正斜杠形态，比较前归一反斜杠
   for (const m of mounts) {
     const mount = m.mount || m;
-    if (p === mount || p.startsWith(mount.endsWith("/") || mount.endsWith("\\") ? mount : mount + (process.platform === "win32" ? "\\" : "/"))) {
+    const prefix = windows ? String(mount).replace(/\//g, "\\").toUpperCase() : mount;
+    if (project === prefix || project.startsWith(prefix.endsWith("/") || prefix.endsWith("\\") ? prefix : prefix + (windows ? "\\" : "/"))) {
       if (!best || mount.length > (best.mount || best).length) best = m;
     }
   }
@@ -248,7 +251,7 @@ function darwinVolAllowed(mount) {
 /* 编排核心（纯函数，供单测注入候选；sampleDisk 枚举后调用）：系统/项目角色标注 → 目标过滤
  * （other 恒过；带角色的卷任一角色开关开着即保留——同卷双角色只关其一时不消失，review M1）
  * → 同挂载去重（Windows 盘符大小写不敏感，review m5）→ 系统卷→项目卷→其余排序 → 上限裁剪。 */
-function pickVolumes(cands, platform, projectPath, cfg) {
+function pickVolumes(cands, platform, projectPath, cfg, resolvedProject, maxVolumes) {
   const useSystem = cfg.systemVol !== false, useProject = cfg.projectVol !== false;
   if (platform !== "win32") {
     const root = cands.find((c) => c.mount === "/");
@@ -256,7 +259,7 @@ function pickVolumes(cands, platform, projectPath, cfg) {
   }
   let projectMount = null;
   if (projectPath && typeof projectPath === "string") {
-    const hit = pickProjectMount(cands, projectPath);
+    const hit = resolvedProject === undefined ? pickProjectMount(cands, projectPath) : resolvedProject;
     if (hit) projectMount = hit;
   }
   if (projectMount && projectMount.roles.indexOf("project") < 0) projectMount.roles.push("project");
@@ -277,7 +280,7 @@ function pickVolumes(cands, platform, projectPath, cfg) {
   });
   const roleRank = (c) => (c.roles.indexOf("system") >= 0 ? 0 : c.roles.indexOf("project") >= 0 ? 1 : 2);
   picked.sort((a, b) => roleRank(a) - roleRank(b));
-  if (picked.length > MAX_VOLS) picked = picked.slice(0, MAX_VOLS);
+  if (picked.length > (maxVolumes || MAX_VOLS)) picked = picked.slice(0, maxVolumes || MAX_VOLS);
   return picked;
 }
 /* APFS 共享容器标注（v362）：macOS firmlink 下 /（系统快照卷）与 /System/Volumes/Data
@@ -303,6 +306,58 @@ function markDarwinContainer(vols) {
  * 模块级 Map：热换 purge 后随新模块实例自然清零。 */
 const probeState = { pending: new Map(), timeouts: new Map(), blockedUntil: new Map() };
 const PROBE_BLOCK_MS = 5 * 60 * 1000, PROBE_TIMEOUT_LIMIT = 2;
+/* 项目卷 dev 归属的 stat 探测与 statfs 同款三层防御（在途复用 → 连续超时计数 → 2 次超时
+ * 进 5 分钟黑名单）。pending 存的是 race 本身：超时即结算释放槽位——旧实现 pending 挂在
+ * 底层 stat 上，不可中断 NFS/断连 UNC 永不结算会把 MAX_VOLS 个名额耗尽、项目卷定位整体
+ * 降级；黑名单再拦住对同一慢目标的逐 tick 重发（底层迟到的成功会清零计数——黑名单只对
+ * 永不结算目标累积，与 statfs 同款）。模块级 Map：热换 purge 后自然清零。 */
+const statState = { pending: new Map(), timeouts: new Map(), blockedUntil: new Map() };
+function statWithTimeout(target, timeoutMs) {
+  const blocked = statState.blockedUntil.get(target) || 0;
+  if (blocked > Date.now()) return Promise.resolve(null);   // 黑名单内：跳过底层调用
+  const inflight = statState.pending.get(target);
+  if (inflight) return inflight;   // 在途复用：不重发 uv 工作项
+  if (statState.pending.size >= MAX_VOLS) return Promise.resolve(null);
+  let timer = null, timedOut = false;
+  const p = Promise.race([
+    fsp.stat(target).then(
+      (st) => { statState.timeouts.delete(target); return st; },
+      () => null),
+    new Promise((resolve) => {
+      timer = setTimeout(() => { timedOut = true; resolve(null); }, timeoutMs || 1000);
+      if (timer && typeof timer.unref === "function") timer.unref();
+    }),
+  ]).finally(() => {
+    if (timer && typeof clearTimeout === "function") clearTimeout(timer);
+    statState.pending.delete(target);
+    if (timedOut) {
+      const n = (statState.timeouts.get(target) || 0) + 1;
+      statState.timeouts.set(target, n);
+      if (n >= PROBE_TIMEOUT_LIMIT) {
+        statState.blockedUntil.set(target, Date.now() + PROBE_BLOCK_MS);
+        statState.timeouts.delete(target);
+      }
+    }
+  });
+  p.catch(() => { });
+  statState.pending.set(target, p);
+  return p;
+}
+async function resolveProjectMount(cands, projectPath) {
+  if (!projectPath) return null;
+  if (process.platform === "win32") return longestMountPrefix(cands, projectPath);
+  const project = await statWithTimeout(projectPath, 1000);
+  if (!project) return null;
+  const matches = [];
+  for (let start = 0; start < cands.length; start += MAX_VOLS) {
+    const batch = cands.slice(start, start + MAX_VOLS);
+    const stats = await Promise.all(batch.map((candidate) => statWithTimeout(candidate.mount, 1000)));
+    batch.forEach((candidate, index) => {
+      if (stats[index] && stats[index].dev === project.dev) matches.push(candidate);
+    });
+  }
+  return longestMountPrefix(matches, projectPath) || (matches.length === 1 ? matches[0] : null);
+}
 function statfsWithTimeout(mount, timeoutMs) {
   const blocked = probeState.blockedUntil.get(mount) || 0;
   if (blocked > Date.now()) return Promise.resolve(null);   // 黑名单内：跳过底层调用
@@ -328,7 +383,7 @@ function statfsWithTimeout(mount, timeoutMs) {
   probeState.pending.set(mount, p);
   return p;
 }
-async function sampleDisk(projectPath, cfg) {
+async function sampleDisk(projectPath, cfg, projectPaths) {
   try {
     if (typeof fsp.statfs !== "function") return { state: "unavailable", vols: [] };
     let cands = [];   // [{device, mount, roles:[...]}]
@@ -355,7 +410,14 @@ async function sampleDisk(projectPath, cfg) {
       return { state: "unavailable", vols: [] };
     }
     /* 角色/过滤/去重/排序/裁剪全部在 pickVolumes 纯编排核心（可单测注入候选）。 */
-    const picked = pickVolumes(cands, process.platform, projectPath, cfg);
+    const paths = Array.isArray(projectPaths) ? projectPaths : (projectPath ? [projectPath] : []);
+    const projects = [];
+    for (const project of paths) {
+      const mount = await resolveProjectMount(cands, project);
+      if (mount && !mount.roles.includes("project")) mount.roles.push("project");
+      projects.push({ path: project, mount: mount ? mount.mount : null });
+    }
+    const picked = pickVolumes(cands, process.platform, "", cfg, null, Math.max(MAX_VOLS, Math.min(33, projects.length + 1)));
     const vols = [];
     for (const c of picked) {
       const st = await statfsWithTimeout(c.mount, STATFS_TIMEOUT_MS);
@@ -364,7 +426,8 @@ async function sampleDisk(projectPath, cfg) {
       const avail = st.bavail * st.bsize;   // bavail=非特权可用（df Avail 同源）
       vols.push({
         id: c.mount, name: volNameOf(c.mount), mount: c.mount,
-        role: c.roles.indexOf("project") >= 0 ? "project" : c.roles.indexOf("system") >= 0 ? "system" : "other",
+        role: c.roles.indexOf("project") >= 0 && cfg.projectVol !== false ? "project" : c.roles.indexOf("system") >= 0 && cfg.systemVol !== false ? "system" : "other",
+        roles: c.roles.slice(),
         total, used: Math.max(0, (st.blocks - st.bfree) * st.bsize), avail,
         free_pct: total > 0 ? r1(avail / total * 100) : null,
         dev: c.device || null,
@@ -372,7 +435,7 @@ async function sampleDisk(projectPath, cfg) {
     }
     if (process.platform === "darwin") markDarwinContainer(vols);   // v362：仅 macOS 系统卷对判 APFS 共享容器
     if (!vols.length) return { state: "error", err: "statfs failed", vols: [] };
-    return { state: "ok", vols };
+    return { state: "ok", vols, projects };
   } catch (e) {
     return { state: "error", err: String((e && e.message) || e), vols: [] };
   }
@@ -391,17 +454,20 @@ function createSysmonClient(opts) {
   const diskFn = (opts && typeof opts.diskFn === "function") ? opts.diskFn : sampleDisk;
   let cfg = normalizeSysmonConfig(null);
   let projectPath = "";
+  let projectPaths = null;
   let subscribed = false;
   let disposed = false;
   let cpuTimer = null, diskTimer = null, cpuBusy = false, diskBusy = false;
   let prevCpuTicks = null;
   let lastCpu = null, lastMem = null, lastDisk = null;
   let lastFrame = null;
+  let cpuGeneration = 0;
+  let diskGeneration = 0;
 
   const buildFrame = () => {
     lastFrame = {
       v: 1, ts: Date.now(),
-      cpu: lastCpu || { state: "loading", pct: null, cores: os.cpus().length, load: process.platform === "win32" ? null : loadavgOr(os.loadavg()) },
+      cpu: lastCpu || { state: "loading", pct: null, cores: null, load: null },
       mem: lastMem || { state: "loading" },
       disk: lastDisk || { state: "loading", vols: [] },
     };
@@ -412,48 +478,64 @@ function createSysmonClient(opts) {
     try { onFrame(buildFrame()); } catch (e) { log("sysmon onFrame failed:", (e && e.message) || e); }
   };
   const schedCpu = () => {
-    if (!subscribed || disposed || cpuTimer) return;
+    if (!subscribed || disposed || cpuTimer || (!cfg.metrics.cpu && !cfg.metrics.mem)) return;
     cpuTimer = setTimeout(() => { cpuTimer = null; cpuTick(); }, cfg.intervalMs);
     if (cpuTimer && typeof cpuTimer.unref === "function") cpuTimer.unref();
   };
   const schedDisk = () => {
-    if (!subscribed || disposed || diskTimer) return;
+    if (!subscribed || disposed || diskTimer || !cfg.metrics.disk) return;
     diskTimer = setTimeout(() => { diskTimer = null; diskTick(); }, cfg.diskIntervalMs);
     if (diskTimer && typeof diskTimer.unref === "function") diskTimer.unref();
   };
-  const cpuTick = async () => {
-    if (!subscribed || disposed || cpuBusy) { schedCpu(); return; }
+  const cpuTick = async (needed) => {
+    if (!subscribed || disposed || cpuBusy || (!cfg.metrics.cpu && !cfg.metrics.mem)) { schedCpu(); return; }
     cpuBusy = true;
+    const generation = cpuGeneration;
     try {
-      const snap = cpuSnapshot(prevCpuTicks);
-      prevCpuTicks = snap.nextTicks;
-      lastCpu = { state: snap.state, pct: snap.pct, cores: snap.cores, load: snap.load };
-      lastMem = await memFn();
+      if (cfg.metrics.cpu && (!needed || needed.cpu)) {
+        const snap = cpuSnapshot(prevCpuTicks);
+        prevCpuTicks = snap.nextTicks;
+        lastCpu = { state: snap.state, pct: snap.pct, cores: snap.cores, load: snap.load, sampledAt: Date.now() };
+      }
+      if (cfg.metrics.mem && (!needed || needed.mem)) {
+        try {
+          const memory = await memFn();
+          if (generation === cpuGeneration) lastMem = Object.assign({}, memory, { sampledAt: Date.now() });
+        } catch (e) {
+          if (generation === cpuGeneration) lastMem = { state: "error", err: String((e && e.message) || e), sampledAt: Date.now() };
+        }
+      }
     } catch (e) {
       log("sysmon cpu/mem tick failed:", (e && e.message) || e);
     } finally {
       cpuBusy = false;
     }
-    emit();
-    schedCpu();
+    if (generation !== cpuGeneration && subscribed && !disposed) cpuTick();
+    else { emit(); schedCpu(); }
   };
   const diskTick = async () => {
-    if (!subscribed || disposed || diskBusy) { schedDisk(); return; }
+    if (!subscribed || disposed || diskBusy || !cfg.metrics.disk) { schedDisk(); return; }
     diskBusy = true;
+    const generation = diskGeneration;
     try {
-      lastDisk = await diskFn(projectPath, cfg);
+      const result = await diskFn(projectPath, cfg, projectPaths);
+      if (generation === diskGeneration) lastDisk = Object.assign({}, result, { sampledAt: Date.now() });
     } catch (e) {
       log("sysmon disk tick failed:", (e && e.message) || e);
+      if (generation === diskGeneration) lastDisk = { state: "error", err: String((e && e.message) || e), vols: [], sampledAt: Date.now() };
     } finally {
       diskBusy = false;
     }
-    emit();
-    schedDisk();
+    if (generation !== diskGeneration && subscribed && !disposed) diskTick();
+    else { emit(); schedDisk(); }
   };
   const stopTimers = () => {
     if (cpuTimer) { clearTimeout(cpuTimer); cpuTimer = null; }
     if (diskTimer) { clearTimeout(diskTimer); diskTimer = null; }
   };
+  /* 立即起采。旧代 tick 仍在途时退化为「完成即重入」：kick 早退只排下一拍，新一代采样
+   * 由 tick 尾部代际失配分支接棒（review 2026-11-28：重订「立即」为尽力语义，旧结果
+   * 不会被误用）。 */
   const kick = () => { cpuTick(); diskTick(); };
   return {
     setSubscribed(want) {
@@ -464,17 +546,47 @@ function createSysmonClient(opts) {
         prevCpuTicks = null;   // 重新订阅从新差分窗口起步，避免长窗均值冒充实测
         kick();
       } else {
+        cpuGeneration++;
+        diskGeneration++;
         stopTimers();   // 最近一帧保留：view() 仍可回读，渲染端按 ts 判过期
       }
     },
     applyConfig(rawCfg, rawProjectPath) {
-      let changed = false;
-      if (rawCfg && typeof rawCfg === "object" && !Array.isArray(rawCfg)) { cfg = normalizeSysmonConfig(rawCfg); changed = true; }
-      if (typeof rawProjectPath === "string") {
-        if (rawProjectPath && rawProjectPath.length <= 4096) { projectPath = rawProjectPath; changed = true; }
-        else if (rawProjectPath === "" && projectPath) { projectPath = ""; changed = true; }
+      let cpuChanged = false, cpuNeeded = null, diskChanged = false, diskIntervalChanged = false;
+      if (rawCfg && typeof rawCfg === "object" && !Array.isArray(rawCfg)) {
+        const next = normalizeSysmonConfig(rawCfg);
+        if (cfg.metrics.cpu !== next.metrics.cpu || cfg.metrics.mem !== next.metrics.mem) cpuGeneration++;
+        cpuChanged = cfg.intervalMs !== next.intervalMs || (!cfg.metrics.cpu && next.metrics.cpu) || (!cfg.metrics.mem && next.metrics.mem);
+        if (cfg.intervalMs === next.intervalMs) cpuNeeded = { cpu: !cfg.metrics.cpu && next.metrics.cpu, mem: !cfg.metrics.mem && next.metrics.mem };
+        diskIntervalChanged = cfg.diskIntervalMs !== next.diskIntervalMs;
+        if (!cfg.metrics.cpu && next.metrics.cpu) prevCpuTicks = null;
+        diskChanged = cfg.projectVol !== next.projectVol || cfg.systemVol !== next.systemVol || cfg.metrics.disk !== next.metrics.disk;
+        cfg = next;
       }
-      if (changed && subscribed && !disposed) { stopTimers(); kick(); }   // 间隔/目标变化立即按新配置重采；纯 want 抖动不重置
+      if (typeof rawProjectPath === "string") {
+        if (rawProjectPath.length <= 4096 && rawProjectPath !== projectPath) { projectPath = rawProjectPath; diskChanged = true; }
+      }
+      if (diskChanged) { diskGeneration++; lastDisk = null; }
+      if (subscribed && !disposed) {
+        if (cpuChanged || (!cfg.metrics.cpu && !cfg.metrics.mem)) {
+          if (cpuTimer) clearTimeout(cpuTimer);
+          cpuTimer = null;
+          if (cpuChanged) cpuTick(cpuNeeded);
+        }
+        if (diskChanged || diskIntervalChanged) {
+          if (diskTimer) clearTimeout(diskTimer);
+          diskTimer = null;
+          diskTick();
+        }
+      }
+    },
+    setProjectPaths(paths) {
+      const next = Array.isArray(paths) ? Array.from(new Set(paths.filter((value) => typeof value === "string" && value && value.length <= 4096))).sort().slice(0, 32) : [];
+      if (projectPaths && JSON.stringify(projectPaths) === JSON.stringify(next)) return;
+      projectPaths = next;
+      diskGeneration++;
+      lastDisk = null;
+      if (subscribed && !disposed) { if (diskTimer) clearTimeout(diskTimer); diskTimer = null; diskTick(); }
     },
     refreshNow() {
       if (subscribed && !disposed) kick();
@@ -497,7 +609,7 @@ module.exports = {
     cpuUsageFromTicks, cpuSnapshot, loadavgOr,
     parseMemInfo, parseSwapusage, parseVmStat,
     parseProcMounts, parseDfLocal, longestMountPrefix, pickProjectMount, volNameOf, pathDriveMount, statfsWithTimeout,
-    sampleMem, sampleDisk, pickVolumes, darwinVolAllowed, apfsContainerOf, markDarwinContainer,
+    sampleMem, sampleDisk, pickVolumes, resolveProjectMount, statWithTimeout, darwinVolAllowed, apfsContainerOf, markDarwinContainer,
     LIMITS: { CPU_DEFAULT_MS, DISK_DEFAULT_MS, CPU_MIN_MS, CPU_MAX_MS, DISK_MIN_MS, DISK_MAX_MS, MAX_VOLS },
   },
 };

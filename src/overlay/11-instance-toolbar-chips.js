@@ -1895,7 +1895,7 @@
     var sysmonChipCache = null;
     function sysmonChipMounted() { return !!(sysmonChipCache && sysmonChipCache.isConnected); }
     function sysmonChipAria() {
-      var parts = [], f = sysFrame;
+      var parts = [], f = sysmonInstanceFrame();
       if (state.sysmonCfg.metrics.cpu && f && f.cpu && f.cpu.state === "ok") parts.push("CPU " + Math.round(f.cpu.pct) + "%");
       if (state.sysmonCfg.metrics.mem && f && f.mem && f.mem.state === "ok") parts.push(L("内存", "Memory") + " " + Math.round(f.mem.pct) + "%");
       if (state.sysmonCfg.metrics.disk && f && f.disk && f.disk.state === "ok") {
@@ -1960,7 +1960,8 @@
         }
         sysmonChipCache = chip;
       }
-      var face = sysmonFaceHtml(state.sysmonCfg, sysFrame, state.sysmonCfg.format === "auto" ? "compact" : state.sysmonCfg.format);
+      chip.__zuSysmonFrame = sysmonInstanceFrame;
+      var face = sysmonFaceHtml(state.sysmonCfg, sysmonInstanceFrame(), state.sysmonCfg.format === "auto" ? "compact" : state.sysmonCfg.format);
       if (!face) { restoreSysmonChip(); return; }   // 监控全关（运行中被关）兜底
       var gitIn = !!(gitChipCache && gitChipCache.isConnected);
       var slotNode = mount.after ? mount.after.nextElementSibling : null;

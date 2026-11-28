@@ -227,6 +227,9 @@ const windowTasks = new Map();
 const scopeBindings = new Map();
 const windowQuotaSelections = new Map();   // webContents.id → {paneId: {sid, providerId, modelId}}
 const sysmonSubs = new Map();   // v356 系统状态订阅：webContents.id → true（want）；声明前置——maybeSpawn 启动首拉（:866 附近）早于模块尾部声明会踩 TDZ
+const sysmonConfigs = new Map();
+const sysmonPaths = new Map();
+let sysmonAdmittedPaths = [];
 let sysmonClient = null;        // v356 系统状态采样器实例（onFrame 闭包读它做存活判断）
 let sysmonSubMeta = null;       // v358 最近一次 want 请求的 {cfg, hasProjectPath, projectPath}：采样器缺席（热模块未部署）时也保留，实例建好/热换重建时回放，格自愈不丢配置与项目卷标注。单例「最后写者胜」——与 v356 既有 applyConfig 每次覆盖实例配置的语义一致，跨热换延续同一限制
 /* 本窗是否出现过任何远端工作区/任务证据：issue #40 的无桥本地兜底只在确认
@@ -820,7 +823,7 @@ function maybeSpawn() {
   for (const id of scopeBindings.keys()) if (!liveIds.has(id)) scopeBindings.delete(id);
   for (const id of windowQuotaSelections.keys()) if (!liveIds.has(id)) windowQuotaSelections.delete(id);
   let sysmonPruned = false;   // v356：兜底清订阅（destroyed 常规路径之外）；删过要补一次同步，否则渲染端请求在队列中时窗口销毁会留下泄漏订阅
-  for (const id of sysmonSubs.keys()) if (!liveIds.has(id)) { sysmonSubs.delete(id); sysmonPruned = true; }
+  for (const id of sysmonSubs.keys()) if (!liveIds.has(id)) { sysmonSubs.delete(id); sysmonConfigs.delete(id); sysmonPaths.delete(id); sysmonPruned = true; }
   if (sysmonPruned) sysmonSyncSubscribed();
   const withTimeout = (p, ms) => {
     let timer;
@@ -1459,7 +1462,31 @@ function sysmonWantAny() {
 }
 function sysmonSyncSubscribed() {
   const client = sysmonClient || createSysmonClientInstance();
-  if (client) client.setSubscribed(sysmonWantAny());
+  if (client) {
+    const want = sysmonWantAny();
+    if (!want) client.setSubscribed(false);
+    const configs = Array.from(sysmonConfigs.values());
+    if (configs.length) {
+      const merged = Object.assign({}, configs[configs.length - 1]);
+      merged.metrics = { cpu: false, mem: false, disk: false };
+      for (const cfg of configs) {
+        for (const key of ["cpu", "mem", "disk"]) if (!cfg.metrics || (cfg.metrics[key] !== false && cfg.metrics[key] !== 0)) merged.metrics[key] = true;
+      }
+      for (const key of ["intervalMs", "diskIntervalMs"]) {
+        const values = configs.map((cfg) => Number(cfg[key])).filter((value) => Number.isFinite(value) && value > 0);
+        if (values.length) merged[key] = Math.min(...values);
+      }
+      /* 兼容窗成本（review 2026-11-28）：旧版采样器无 setProjectPaths，applyConfig 每次都
+       * 全量重采——热换完成前每次 sync 会重复起采，速率受渲染端签名守卫约束，属可容忍
+       * 过渡面；新模块按归一化未变不重采。 */
+      client.applyConfig(merged, undefined);
+    }
+    if (typeof client.setProjectPaths === "function") {
+      sysmonAdmittedPaths = Array.from(new Set(Array.from(sysmonPaths.values()).flat())).sort().slice(0, 32);
+      client.setProjectPaths(sysmonAdmittedPaths);
+    }
+    if (want) client.setSubscribed(true);
+  }
 }
 function createSysmonClientInstance() {
   try {
@@ -1470,7 +1497,11 @@ function createSysmonClientInstance() {
         if (!sysmonClient) return;   // dispose 在途竞窗：旧实例回调不再外发
         for (const wc of webContents.getAllWebContents()) {
           if (sysmonSubs.get(wc.id) !== true) continue;
-          pushSysmonTo(wc, frame);
+          const paths = sysmonPaths.get(wc.id) || [];
+          const scopedFrame = frame && frame.disk && Array.isArray(frame.disk.projects)
+            ? Object.assign({}, frame, { disk: Object.assign({}, frame.disk, { projects: frame.disk.projects.filter((project) => project && paths.includes(project.path)).concat(paths.filter((project) => !sysmonAdmittedPaths.includes(project)).map((project) => ({ path: project, mount: null }))) }) })
+            : frame;
+          pushSysmonTo(wc, scopedFrame);
         }
       },
     });
@@ -1487,11 +1518,27 @@ function createSysmonClientInstance() {
 }
 function handleSysmonRequest(req, wc) {
   const want = req.want === true;
-  if (typeof req.projectPath === "string" && req.projectPath !== "" && !gitPathOk(req.projectPath)) {
+  if (!want) {   // 退订先于字段校验：取消订阅不该被无关的路径字段否决（review 2026-11-28）
+    sysmonConfigs.delete(wc.id);
+    sysmonPaths.delete(wc.id);
+    sysmonSubs.set(wc.id, false);
+    sysmonSyncSubscribed();
+    deliverPluginRequest(wc, req.requestId, { ok: true });
+    return;
+  }
+  const validPath = (value) => typeof value === "string" && value.length <= 4096 && value.length > 0 && !/[\x00-\x1f\x7f]/.test(value) && path.isAbsolute(value);
+  if (typeof req.projectPath === "string" && req.projectPath !== "" && !validPath(req.projectPath)) {
     deliverPluginRequest(wc, req.requestId, { ok: false, error: "invalid project path" });
     return;
   }
-  if (want) {
+  if (req.projectPaths !== undefined && (!Array.isArray(req.projectPaths) || req.projectPaths.length > 32 || req.projectPaths.some((value) => !validPath(value)))) {
+    deliverPluginRequest(wc, req.requestId, { ok: false, error: "invalid project paths" });
+    return;
+  }
+  {
+    sysmonConfigs.set(wc.id, req.cfg && typeof req.cfg === "object" && !Array.isArray(req.cfg) ? req.cfg : {});
+    if (Array.isArray(req.projectPaths)) sysmonPaths.set(wc.id, Array.from(new Set(req.projectPaths)));
+    else if (typeof req.projectPath === "string") sysmonPaths.set(wc.id, req.projectPath ? [req.projectPath] : []);
     /* v358 先留档再建实例：sysmon-client.cjs 是热模块，运行目录尚未部署（或热换前）时
      * require 失败——此时仍把 want 记进 sysmonSubs 并返回 ok:false。否则热换路径
      * 「按现存订阅重放」永远等不到订阅者，渲染端签名守卫又不重发，格停在 loading
@@ -1507,9 +1554,9 @@ function handleSysmonRequest(req, wc) {
       deliverPluginRequest(wc, req.requestId, { ok: false, error: "sysmon unavailable; fully restart ZCode to load it" });
       return;
     }
-    client.applyConfig(sysmonSubMeta.cfg, sysmonSubMeta.hasProjectPath ? sysmonSubMeta.projectPath : undefined);
+    if (typeof client.setProjectPaths !== "function") client.applyConfig(null, sysmonSubMeta.hasProjectPath ? sysmonSubMeta.projectPath : undefined);
   }
-  sysmonSubs.set(wc.id, want);
+  sysmonSubs.set(wc.id, true);
   sysmonSyncSubscribed();
   deliverPluginRequest(wc, req.requestId, { ok: true });
 }
@@ -2957,6 +3004,8 @@ const hook = (wc) => {
     scopeBindings.delete(wc.id);
     remoteEvidence.delete(wc.id);
     windowQuotaSelections.delete(wc.id);
+    sysmonConfigs.delete(wc.id);
+    sysmonPaths.delete(wc.id);
     if (sysmonSubs.delete(wc.id)) sysmonSyncSubscribed();   // v356：窗口销毁摘订阅，末窗关闭即停采样
     invalidateMobileTarget(wc.id);
     syncQuotaProviders();

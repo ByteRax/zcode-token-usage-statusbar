@@ -1047,11 +1047,16 @@
     }
     /* 原地刷新（__zusageSysmon 帧 / 窄宽档位切换共用）：只写变化的格面与 __tip，
      * 不整条 render；tooltip 开在本格时经 drawTip 签名幂等重建并保留磁盘表滚动位。 */
+    function sysmonInstanceFrame() {
+      var scope = typeof api !== "undefined" && api && typeof api.getScope === "function" ? api.getScope() : null;
+      var projectPath = scope && scope.sid && !scope.identity ? scope.workspacePath || "" : "";
+      return typeof sysmonProjectFrame === "function" ? sysmonProjectFrame(state.sysmonCfg, sysFrame, projectPath) : sysFrame;
+    }
     function sysmonApplyFace() {
       var cells = main.querySelectorAll('.it[data-zu-key="sysmon"]');
-      if (!cells.length) return;
-      var face = sysmonFaceHtml(state.sysmonCfg, sysFrame, sysFormatResolve());
-      var tipStr = "\x01" + sysmonTipHtml(state.sysmonCfg, sysFrame);
+      var scopedFrame = sysmonInstanceFrame();
+      var face = sysmonFaceHtml(state.sysmonCfg, scopedFrame, sysFormatResolve());
+      var tipStr = "\x01" + sysmonTipHtml(state.sysmonCfg, scopedFrame);
       for (var i = 0; i < cells.length; i++) {
         var el = cells[i];
         if (el.innerHTML !== face) el.innerHTML = face;
@@ -1062,7 +1067,7 @@
         var prev = panel.querySelector(".zu-syscfg-prev");
         if (prev) {
           var cfgL = (state.sysmonCfg && state.sysmonCfg.thresholds) ? state.sysmonCfg : normalizeSysmonCfg(null);
-          var pvHtml = sysmonPreviewHtml(cfgL, sysFrame);   // v362：预览跟随显示格式，空状态/采集中注记同 buildPanel
+          var pvHtml = sysmonPreviewHtml(cfgL, scopedFrame);   // v362：预览跟随显示格式，空状态/采集中注记同 buildPanel
           if (prev.innerHTML !== pvHtml) prev.innerHTML = pvHtml;
         }
       } catch (e) { }
@@ -1541,8 +1546,9 @@
        * （sysmonApplyFace）共用 sysmonFaceHtml 同一产出；监控全关时整格不渲染。 */
       barItemKey = "sysmon";
       if (state.show.sysmon && !d.remote && !d.not_local) {
-        var sysFace = sysmonFaceHtml(state.sysmonCfg, sysFrame, sysFormatResolve());
-        if (sysFace) it(sysFace, "\x01" + sysmonTipHtml(state.sysmonCfg, sysFrame));
+        var scopedSysFrame = sysmonInstanceFrame();
+        var sysFace = sysmonFaceHtml(state.sysmonCfg, scopedSysFrame, sysFormatResolve());
+        if (sysFace) it(sysFace, "\x01" + sysmonTipHtml(state.sysmonCfg, scopedSysFrame));
       }
 
       /* 一格一组，按稳定 key 排序后提示内容继续与 .it 下标严格对应。 */
