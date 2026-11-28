@@ -669,7 +669,6 @@ class OverlayBridgeNoticeTests(unittest.TestCase):
         bridge_module.ensure_deployed.return_value = bridge_result
         pi = self.pi_stub(writable=writable)
         with mock.patch.dict(sys.modules, {"renderer_bridge": bridge_module}), \
-                mock.patch.object(self.installer, "ensure_mobile_relay_stash", return_value={"status": "present"}), \
                 mock.patch.object(self.installer, "resolve_paths", return_value=(self.runtime, pi)), \
                 mock.patch.object(self.installer, "sync_runtime", return_value={"changed": []}), \
                 mock.patch.object(self.installer, "injected_status", return_value=injected), \
@@ -691,7 +690,7 @@ class OverlayBridgeNoticeTests(unittest.TestCase):
         config.write_text('{"mobile_relay": {"enabled": true}}', encoding="utf-8")
         outcome, stdout = self.hook_output(pending)
         config.unlink()
-        self.assertIn("自动补装", outcome["systemMessage"])
+        self.assertIn("/zusage-doctor", outcome["systemMessage"])
         self.assertEqual(stdout, "")
         # v258：SessionStart 自动链（quiet_hook=True）且注入行在位时，桥缺席/打不上
         # 静默放行——fiber 兜底 + 渲染端运行时合成桥接手，DB 轮询保底；受保护目录
@@ -905,7 +904,7 @@ class RealHookChainTests(unittest.TestCase):
 
         def replace_refused(stage, destination):
             if Path(destination) == refused_target:
-                raise OSError(5, "拒绝访问", str(destination))
+                raise PermissionError(13, "拒绝访问", str(destination), 32)
             return real_replace(stage, destination)
 
         with mock.patch.object(bridge.os, "replace", side_effect=replace_refused), \
@@ -918,10 +917,7 @@ class RealHookChainTests(unittest.TestCase):
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
                 outcome = self.installer.run_hook()
         self.assertEqual(stdout.getvalue(), "", "hook stdout 只能是 hook JSON")
-        # 桥 publish pending → mobile 延后（detail=bridge pending）：推送开关未开启
-        # （缺省）时整条会话静默（issue #455）——重启需求由下方 ⚙ 红点标记承载。
-        # 开启开关后「提示等待自动补装、不含手动命令」的对照已移到
-        # tests/test_mobile_relay_install.py 的 hook 链用例（同为真实 pending 链）
+        # 夹具只有桥可补。归档排定由重启标记承载，hook 的会话输出保持静默。
         self.assertNotIn("systemMessage", outcome)
         self.assertTrue(self.pi.TMP.is_file())
         self.assertEqual(self.pi.pending_tmp(operation="install")["operation"], "install")

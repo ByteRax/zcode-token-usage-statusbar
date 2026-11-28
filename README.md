@@ -57,9 +57,11 @@ A community toolkit for ZCode desktop: generation speed, token usage, context tr
 请排查 https://github.com/ByteRax/zcode-token-usage-statusbar 插件的状态条或工具栏 chip 未显示的原因，先检查插件启用状态、安装结果、实际加载路径及相关开关。修改客户端文件前先征求我确认；需要反馈时，整理脱敏后的复现步骤与诊断摘要，待我确认后再提交到 https://github.com/ByteRax/zcode-token-usage-statusbar/issues，不要上传凭据或完整本地日志。
 ```
 
-### 手机远控页面（当前源码功能）
+### 移动端远程控制页面
 
-想在手机或浏览器远控页看同样的状态条：在浏览器装好油猴扩展后[点击安装手机脚本](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js)，然后在桌面状态条 **⚙ → 维护 → 移动端远程控制** 开启推送开关，打开宿主「Web 远程控制」并访问 `https://zcode.z.ai/remote/` 即可（详情见[手机远控指南](docs/user-guide.md#手机远控页面)）。
+在打开远控页面的浏览器中，用 Tampermonkey 等脚本管理器[安装正式版油猴脚本](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js)。在桌面状态栏的 **⚙ → 维护 → 移动端远程控制** 开启「推送状态栏数据到远控页」（默认关闭）。同一分区也可复制「正式版脚本链接」。随后开启 ZCode 自带的「移动端远程控制」，打开 `https://zcode.z.ai/remote/`。
+
+脚本链接提供 `main` 上的发布快照，可能落后于桌面源码。请搭配支持同一中继协议的桌面插件。桌面正式渠道的功能可用性以对应 Release 说明为准。安装、数据范围与排障见[移动端远程控制页面指南](docs/user-guide.md#移动端远程控制页面)。
 
 ### 故障排查与自动修复以及卸载说明
 
@@ -101,7 +103,7 @@ ZCode 每次官方升级后，状态条可能会暂时消失。保持插件启�
 | **搜索弹框加宽**           | 把命令中心等搜索弹窗放宽加高，长文件名和长标题不用左右滚动就能看全                                                                            | <a href="docs/promo/features/search.webp"><img src="docs/promo/features/search.webp" width="224" alt="搜索弹框加宽"></a><br><sub>演示</sub> |
 | **状态轮播**               | 默认关闭；开启后，AI 思考和生成时会在加载行轮播有趣短语（内置 16 个词包与日程排程，支持自定义词包），并附上工作耗时和估算速度                  | <a href="docs/promo/features/live/rotator.webp"><img src="docs/promo/features/live/rotator.webp" width="224" alt="状态轮播"></a> |
 | **SSH / WSL 远端会话**     | 连远程服务器或 WSL 时，也能独立查询和显示远端的用量统计（需先按[远程会话指南](docs/user-guide.md#远程会话)在远端放好查询脚本）               | <a href="docs/promo/features/ssh.webp"><img src="docs/promo/features/ssh.webp" width="224" alt="SSH / WSL 远端会话"></a><br><sub>演示</sub> |
-| **Web 远控状态条**         | 通过浏览器油猴脚本，在远控页面复用这套桌面状态条、悬停卡和设置面板（见[手机远控指南](docs/user-guide.md#手机远控页面)）                       | <a href="docs/promo/features/live/web-remote.webp"><img src="docs/promo/features/live/web-remote.webp" width="224" alt="Web 远控状态条"></a><br><sub>桌面设置入口</sub> |
+| **移动端远程控制页面**     | 通过油猴脚本，在移动端远程控制页面复用桌面状态栏、悬停卡和设置面板，支持本地及 WSL/SSH 会话（见[移动端远程控制页面指南](docs/user-guide.md#移动端远程控制页面)）             | <a href="docs/promo/features/live/web-remote.webp"><img src="docs/promo/features/live/web-remote.webp" width="224" alt="移动端远程控制页面"></a><br><sub>桌面设置入口</sub> |
 | **子智能体与工作流明细**   | 独立统计后台子智能体与动态工作流卡片的消耗；展开面板查看各子任务的模型、状态、速度和费用，会话流 Agent 行内也会显示对应子任务速率             | <a href="docs/promo/features/live/subagents.webp"><img src="docs/promo/features/live/subagents.webp" width="224" alt="子智能体与工作流明细"></a> |
 | **自动更新、日志与体检**   | 支持 GitHub / GitCode 双渠道更新、在线查看版本更新日志、本地热修保护、待重启红点提醒与一键重启 ZCode；输入 `/zusage-doctor` 可做只读环境体检   | <a href="docs/promo/features/live/update-notes.webp"><img src="docs/promo/features/live/update-notes.webp" width="224" alt="自动更新、日志与体检"></a> |
 | **用量查询**               | 除了看状态条，还能在对话里发 `/usage today`、在终端跑 `python3 zusage.py days 7`，或让 AI 调用 MCP 工具 `token_usage` 查历史用量             | <a href="docs/promo/features/usage-query.webp"><img src="docs/promo/features/usage-query.webp" width="224" alt="用量查询"></a><br><sub>演示</sub> |
@@ -128,8 +130,8 @@ python zusage.py --host workbuddy now # 临时查一次 WorkBuddy 用量
 ## 隐私与安全
 
 - **非官方插件**：本工具通过修改 ZCode 程序文件（`app.asar`）显示界面增强，卸载时只清理自己添加的部分。
-- **哪些操作会联网**：本地用量查询完全在本地完成，不上传任何数据；只有查询套餐额度/重置卡、每 12 小时同步一次公开价表与汇率、检查插件更新、使用提示词增强/模型探测，以及你手动开启的远程会话或手机远控才会联网。各功能开关独立，可随时关闭。
-- **手机远控安全边界**：只有你在 ⚙ 手动打开开关后，才会把当前会话的数值统计（不含对话正文、文件路径或密钥）经 ZCode 官方中继推给远控页；该通道无端到端加密。
+- **哪些操作会联网**：本地用量查询完全在本地完成，不上传任何数据；只有查询套餐额度/重置卡、每 12 小时同步一次公开价表与汇率、检查插件更新、使用提示词增强/模型探测，以及你手动开启的远程会话或远控页面用量推送才会联网。各功能开关独立，可随时关闭。
+- **远控页面用量推送**：只有显式开启 `mobile_relay.enabled` 后，才会经 ZCode 官方中继向远控页面推送状态栏数据；该通道无端到端加密，中继服务端可读取载荷。下行包括当前远控会话标识及数值统计、所属主机的今日和项目聚合。聚合可能包含其他会话的贡献。载荷不含对话正文、工作区路径或凭据，远控页面上行仅含显示偏好与代际计数。关闭开关不影响宿主自带的远程控制消息。
 - **本地调试端口**：为方便排查问题和自动测试，插件默认尝试开启本地调试端口 `9229`（仅限本机，请勿转发到公网）。如不需要，启动前设置环境变量 `ZCODE_DISABLE_FIXED_REMOTE_DEBUGGING_PORT=1` 并完全重启即可关闭。
 - **凭据与密钥**：你在 ⚙ 填写的额度密钥仅保存在本地运行目录的 `quota-secrets.json`（0600 权限），不会写入日志；内置账号凭据只在内存解密使用，SSH 密码和私钥口令不会被插件读取。
 - **用量 ≠ 账单**：估算费用和额度展示仅供参考，不代表实际扣费账单。

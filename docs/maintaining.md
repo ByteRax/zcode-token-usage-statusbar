@@ -51,7 +51,7 @@ python install.py --dev
 
 代码修改后先检查并同步插件副本。`sync_plugin.py` 构建桌面 overlay、额度客户端和模型拉取产物，再同步共享清单；它的普通同步和 `--check` 都不处理油猴脚本。
 
-根目录 `zusage-mobile.user.js` 与 `zusage-mobile.debug.user.js` 是通过上游 `main` 的 Raw HTTPS 链接分发的发布快照，可落后于当前桌面源码。日常功能提交不打包、不暂存、不提交这两份产物，也不升脚本 `@version`。只有明确需要打包油猴脚本或[正式发版](#本地打包与校验)时才单独运行构建器。预览产物不提交；若对外更新，应升号后同时提交版本源与两份产物。管理器更新策略见[用户指南](user-guide.md#手机远控页面)。
+根目录 `zusage-mobile.user.js` 与 `zusage-mobile.debug.user.js` 是通过上游 `main` 的 Raw HTTPS 链接分发的发布快照，可落后于当前桌面源码。日常功能提交不打包、不暂存、不提交这两份产物，也不升脚本 `@version`。只有明确需要打包油猴脚本或[正式发版](#本地打包与校验)时才单独运行构建器。预览产物不提交；若对外更新，应升号后同时提交版本源与两份产物。油猴脚本的更新方式见[用户指南](user-guide.md#移动端远程控制页面)。
 
 ```bash
 python3 sync_plugin.py
@@ -62,7 +62,7 @@ node --check zusage-mobile.user.js
 node --check zusage-mobile.debug.user.js
 ```
 
-不要通过直接删运行目录来更新文件；同步器用可信 hash 基线保护本地热修、协调并发更新。overlay、查询库与主进程插件模块（八个 .cjs 子模块：六个基础模块 + v356 起的 sysmon-client.cjs + mobile-relay.cjs）可热更新（子模块经 loader 热换循环），`inject-main.cjs` 和 `app.asar` 内的持久手机钩子在完全重启后生效。手机钩子的写入与待替换流程见 [app.asar 安装规格](../specs/asar-install.md)。
+不要通过直接删运行目录来更新文件；同步器用可信 hash 基线保护本地热修、协调并发更新。overlay、查询库与主进程插件模块（八个 .cjs 子模块：六个基础模块 + v356 起的 sysmon-client.cjs + mobile-relay.cjs）可热更新（子模块经 loader 热换循环），`inject-main.cjs` 和 `app.asar` 内的持久中继钩子在完全重启后生效。中继钩子的写入与待替换流程见 [app.asar 安装规格](../specs/asar-install.md)。
 
 ## 渲染端桥与客户端升级
 
@@ -109,7 +109,7 @@ python3 sync_plugin.py --check
 
 每次正式发布插件新版本时，在独立发布 worktree 内更新两份 `plugin.json` 和根 `marketplace.json` 的插件版本，并递增 `src/mobile/00-meta.js` 的 `@version`。新脚本版本必须高于上一正式插件 tag 中的脚本版本及当前公开分发的脚本版本；若上一 tag 无脚本，以当前公开分发版本为准。脚本版本独立编号，正式版与调试版必须一致。重建并检查两份脚本后，将三个 manifest、脚本版本源和两份脚本产物一并纳入专用 `release: vX.Y.Z` 提交，tag 指向该提交。脚本不加入插件 ZIP；现有流程在正式 Release 验收后合并源码 PR，届时上游 `main` 的 Raw 链接才提供新的 `@version`。
 
-若正式版已经发布但漏升脚本版本，从包含该发版提交的上游 `main` 创建独立 PR，递增脚本 `@version` 并重建两份产物，不改插件版本、不移动既有 tag，也不重发插件。若发版前又改动桌面浮层或手机源码，须重建后重新校验；`release_tool.py build` 只构建插件 ZIP，不会替你构建或检查脚本。
+若正式版已经发布但漏升脚本版本，从包含该发版提交的上游 `main` 创建独立 PR，递增脚本 `@version` 并重建两份产物，不改插件版本、不移动既有 tag，也不重发插件。若发版前又改动桌面浮层或油猴脚本源码，须重建后重新校验；`release_tool.py build` 只构建插件 ZIP，不会替你构建或检查脚本。
 
 在发布 worktree 根目录执行，输出目录必须尚不存在：
 

@@ -120,7 +120,7 @@
       }
       var mobileStatus = panel.querySelector(".zu-mobile-relay-status");
       if (mobileStatus) mobileStatus.textContent = mobileReadOnly
-        ? L("手机端不可修改此开关；请在桌面端 ZCode 的「设置 → 维护 → 移动端远程控制」中开启或关闭统计推送。手机端不显示桌面当前值。", "This switch cannot be changed on mobile; turn statistics push on or off in ZCode on your desktop (Settings → Maintenance → Mobile remote control). The mobile page does not show the desktop's current value.")
+        ? L("此开关在远控页面为只读，此处不显示桌面的当前状态。请在桌面用量状态栏点击 ⚙，进入「移动端远程控制」查看或修改设置。", "This switch is read-only on the Remote Control page and does not show the current desktop setting. To view or change it, click ⚙ on the desktop usage status bar and open Mobile remote control.")
         : state.mobileRelaySupported !== true
           ? L("需要新版桌面插件主进程支持；请完全退出并重启 ZCode，仍不可用时请升级桌面插件。", "Requires a newer desktop plugin main process; quit ZCode completely and restart it, or upgrade the desktop plugin if still unavailable.")
           : state.mobileRelayPending ? L("操作已发出，等待确认…", "Sent; awaiting confirmation…") : "";

@@ -55,6 +55,8 @@ class SessionStartChannelTests(unittest.TestCase):
         self.patch(mock.patch.object(self.installer, "load_patch_install", return_value=self.pi))
         self.sync = self.patch(mock.patch.object(self.installer, "sync_runtime", return_value={"changed": []}))
         self.install = self.patch(mock.patch.object(self.pi, "install", return_value=False))
+        self.supplement = self.patch(mock.patch.object(self.pi, "supplement_patches", return_value={
+            "archive": {"status": "present"}, "relay": {"status": "present"}, "bridge": {"status": "present"}}))
         self.pi.set_runtime(self.runtime)
         self.pi.set_target(self.asar)
         self.make_asar()
@@ -245,7 +247,7 @@ class SessionStartChannelTests(unittest.TestCase):
     def test_session_record_carries_host_diagnostic(self):
         # issue #247：plugin-session-start.json 带 host 诊断，排障不再只有「补丁已排定」；
         # 夹具 asar 无 package.json，hostBuild 如实为 None（探测失败不猜），bridge 字段
-        # 在已注入分支由 ensure_renderer_bridge 结果补充，未注入失败分支缺省不写。
+        # 在已注入分支由归档补装结果补充，未注入失败分支缺省不写。
         self.invoke()
         record = json.loads((self.runtime / "plugin-session-start.json").read_text(encoding="utf-8"))
         self.assertIsNone(record["host"]["hostBuild"])
@@ -256,9 +258,8 @@ class SessionStartChannelTests(unittest.TestCase):
     def test_session_record_carries_bridge_status_when_injected(self):
         # 已注入分支的桥状态进诊断（变异 B-8a：此前只走安装成功分支测不到）
         self.make_asar(injected=True)
-        with mock.patch.object(self.installer, "ensure_renderer_bridge",
-                               return_value={"status": "skipped-unknown", "version": None}):
-            self.invoke()
+        self.supplement.return_value["bridge"] = {"status": "skipped-unknown", "version": None}
+        self.invoke()
         record = json.loads((self.runtime / "plugin-session-start.json").read_text(encoding="utf-8"))
         self.assertIs(record["host"]["injected"], True)
         self.assertEqual(record["host"]["bridge"], "skipped-unknown")
@@ -292,8 +293,8 @@ class SessionStartChannelTests(unittest.TestCase):
         output, _ = self.invoke()
         self.assertEqual(output, {"suppressOutput": True})
         self.assertEqual((marker.read_bytes(), marker.stat().st_mtime_ns), before)
-        self.install.assert_called_once()
-        self.assertTrue(self.install.call_args.kwargs.get("mobile_only"))
+        self.install.assert_not_called()
+        self.supplement.assert_called_once()
 
     def test_successful_auto_install_stays_silent(self):
         # v172：自动安装成功同样不注入文字（红点由 marker → restartRequired 推送驱动）。
@@ -333,8 +334,8 @@ class SessionStartChannelTests(unittest.TestCase):
         self.make_asar(injected=True)
         output, _ = self.invoke()
         self.assertEqual(output, {"suppressOutput": True})
-        self.install.assert_called_once()
-        self.assertTrue(self.install.call_args.kwargs.get("mobile_only"))
+        self.install.assert_not_called()
+        self.supplement.assert_called_once()
 
     def test_unreadable_client_stays_silent_and_skips_mobile_supplement(self):
         self.asar.write_bytes(b"fixture unreadable asar")

@@ -575,20 +575,6 @@ def main():
         ok = True
     else:
         ok = pi.install()
-        status = pi.mobile_status().get("status")
-        if ok and status == "patched":
-            if pi.client_running():
-                print(L("手机中继补丁已写入；请完全退出并重开 ZCode 后生效（只关窗口或重开会话无效）。",
-                        "The mobile relay patch was written; quit ZCode completely and reopen it to take effect."))
-            else:
-                print(L("手机中继补丁已写入；下次打开 ZCode 时生效。",
-                        "The mobile relay patch was written; it takes effect next time ZCode starts."))
-        elif status == "pending":
-            print(L("手机中继补丁已排定：完全退出 ZCode 后会随状态条补丁自动完成替换。",
-                    "The mobile relay patch is scheduled and will be replaced with the status bar patch after ZCode exits."))
-        elif ok and status == "skipped-unknown":
-            print(L("手机中继布局无法验证，保留原代码；状态条安装仍可继续。",
-                    "Mobile relay layout could not be verified; existing code was preserved."))
         remember_asar(asar, args.dev)   # 无论注入是否收尾成功都记住（卸载/收尾要用）
     if not ok:
         # 收尾/重试命令指向运行目录副本并带上本次目标：clone 被删/移动后提示仍可执行

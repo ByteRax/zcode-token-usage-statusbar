@@ -128,6 +128,13 @@ class TransformTests(unittest.TestCase):
         with self.assertRaises(pi.RelayPatchError):
             pi.transform_mobile_entry(damaged, "remove")
 
+    def test_unpinned_apply_rejects_duplicate_replacement_bytes(self):
+        # The extra text matches the replacement bytes without the bridge prefix.
+        body = b"// " + STASH_ANCHOR + b"\n" + SYNTHETIC_BODY
+        for kwargs in ({"package": PKG}, {"target": {"anchor": STASH_ANCHOR, "anchor2": UPLINK_ANCHOR}}):
+            with self.subTest(**kwargs), self.assertRaisesRegex(pi.RelayPatchError, "Missing or duplicate relay anchor"):
+                pi.transform_mobile_entry(body, "apply", **kwargs)
+
     def test_unknown_duplicate_or_mixed_injections_are_rejected(self):
         full = marked_entry()
         marker = b"globalThis.__zusageRelayUplinkGeneration=2,"
@@ -288,7 +295,7 @@ class PinnedArchiveTests(ArchiveFixture):
         path = self.archive(body=body + (OLD_LOADER_LINE if old_loader else b""))
         self.assert_check(path, f"unavailable ({reason})", injected=old_loader)
         install = self.run_command(path, "install")
-        self.assertIn(f"Mobile relay patch left unchanged ({reason})", install.splitlines())
+        self.assertIn(f"Could not verify the remote control relay layout ({reason})", install)
         self.assert_archive(path, self.with_loader(body))
         self.assert_check(path, f"unavailable ({reason})", injected=True)
         if has_mobile_markers:

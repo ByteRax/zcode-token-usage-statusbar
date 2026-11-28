@@ -170,6 +170,21 @@ test('mobile empty states and incomplete ready frames never fabricate zero cells
   assert.ok(incomplete.tips.every(t => !t || !t.includes('zu-stat-tip--tools')));
 });
 
+test('legacy frames without a target show the upgrade prompt with a selected page session', () => {
+  const h = fixture();
+  const d = { session: {}, recent: [], mine: '', mobile: {
+    taskId: '', binding: '', scopeKind: '', state: 'upgrade',
+  } };
+  const upgrade = h.ctx.html(h.view(d, 'task-a'));
+  assert.match(upgrade.s, /请更新桌面插件/);
+  assert.doesNotMatch(upgrade.s, /class="v">0/);
+
+  d.mobile.taskId = 'task-b';
+  const waiting = h.ctx.html(h.view(d, 'task-a'));
+  assert.match(waiting.s, /等待当前会话数据/);
+  assert.doesNotMatch(waiting.s, /请更新桌面插件/);
+});
+
 test('ordinary desktop ignores mobile metadata and retains zero values and sticky fallback', () => {
   const h = fixture(false), d = frame({ state: 'upgrade', row: numbers(0), today: numbers(0) });
   h.update(d);

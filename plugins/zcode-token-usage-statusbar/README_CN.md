@@ -23,15 +23,15 @@
 2. 新建或重新打开会话，插件会自动安装 / 修复状态条。**这一步会修改 `app.asar`，请确认信任此项目。**
 3. **完全退出并重开 ZCode。**
 
-自动安装始终开启（旧配置 `plugin_auto_install_overlay` 与环境变量 `ZUSAGE_PLUGIN_AUTO_INSTALL` 已不再读取）；`/uninstall-overlay` 会留下卸载豁免标记，是阻止自动重注入的唯一出口。待重启/有新版本时状态条 ⚙ 齿轮显示红点（点进 ⚙ 面板「插件更新」分区后消失），也可在该分区直接点「重启 ZCode」；不再注入会话内文字提醒（自动安装失败时的故障提示除外）。自动安装失败时执行 `/install-overlay` 按输出排查，成功后仍需完全重启。状态条、工具栏 chip 或回答末尾的速率行不显示时，新开一个会话运行 `/zusage-doctor`：它只读、不改任何文件，逐项报告哪里不对并给出对应的修法。
+自动安装始终开启（旧配置 `plugin_auto_install_overlay` 与环境变量 `ZUSAGE_PLUGIN_AUTO_INSTALL` 已不再读取）；`/uninstall-overlay` 会留下卸载豁免标记，是阻止自动重注入的唯一出口。待重启/有新版本时状态条 ⚙ 齿轮显示红点（点进 ⚙ 面板「插件更新」分区后消失），也可在该分区直接点「重启 ZCode」；不再注入会话内文字提醒（自动安装失败的故障提示和远控中继补装提示除外）。自动安装失败时执行 `/install-overlay` 按输出排查，成功后仍需完全重启。状态条、工具栏 chip 或回答末尾的速率行不显示时，新开一个会话运行 `/zusage-doctor`：它只读、不改任何文件，逐项报告哪里不对并给出对应的修法。
 
 GitHub 访问受限时，改用 `https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode` 添加市场（同一份经过校验的正式 Release；需本机装有 Git，地址里的 `.git` 不能省）。
 
-## 手机远控页面（当前源码功能）
+## 移动端远程控制页面
 
-在打开远控页的浏览器中，通过 Tampermonkey 等用户脚本管理器[安装正式版手机脚本](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js)。在桌面状态条 **⚙ → 维护 → 移动端远程控制** 开启默认关闭的「推送状态栏数据到远控页」，再开启宿主「Web 远程控制」并打开 `https://zcode.z.ai/remote/`。
+在打开远控页面的浏览器中，用 Tampermonkey 等脚本管理器[安装正式版油猴脚本](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js)。在桌面状态栏的 **⚙ → 维护 → 移动端远程控制** 开启「推送状态栏数据到远控页」（默认关闭）。同一分区也可复制「正式版脚本链接」。随后开启 ZCode 自带的「移动端远程控制」，打开 `https://zcode.z.ai/remote/`。
 
-安装地址提供 `main` 根目录的发布快照，可能落后于桌面源码。请使用支持同一中继协议的桌面插件，正式渠道可用性以对应 Release 说明为准。安装、数据范围与排障见[手机远控指南](https://github.com/ByteRax/zcode-token-usage-statusbar/blob/main/docs/user-guide.md#手机远控页面)。
+脚本链接提供 `main` 上的发布快照，可能落后于桌面源码。请搭配支持同一中继协议的桌面插件。桌面正式渠道的功能可用性以对应 Release 说明为准。安装、数据范围与排障见[移动端远程控制页面指南](https://github.com/ByteRax/zcode-token-usage-statusbar/blob/main/docs/user-guide.md#手机远控页面)。
 
 ## 工作原理与副作用
 
@@ -42,7 +42,7 @@ GitHub 访问受限时，改用 `https://gitcode.com/tanranran/zcode-token-usage
 | 文件写入 | `~/.zcode/zcode-token-usage-statusbar/`（运行文件、配置、会话状态；凭据文件权限 `0600`）；ZCode 客户端目录内的补丁与备份（`app.asar`）；`~/.zcode/zusage3` 中的浮层设置；仅当存在独立安装遗留的 MCP 注册时改写 `~/.zcode/cli/config.json`（移除条目并在同目录留 `.zusage-mcp.bak` 改前备份，见上表 Hook 行）。卸载插件不删除个人配置。 |
 | 网络 | 本地统计查询只读 SQLite，不主动上传用量；显式开启的移动端中继另见下表说明。套餐额度 chip 默认开启（⚙ 面板可关）：在**内存中**解密宿主持有的 OAuth 凭据，直连 BigModel / Z.ai 用量端点展示套餐额度；凭据绝不写入配置、日志或诊断。预估费用在常驻进程内每 12 小时匿名同步公开模型单价（`models.dev`）与美元汇率（只下载不上传，设 `"pricing": {"fetch": false}` 可彻底关闭）。插件更新会从已配置来源下载代码（更新日志卡片从 GitHub/GitCode 接口拉取 Release 说明）。可选的 SSH/WSL 远端查询走你自行配置的连接通道；插件不解密复用宿主密码或私钥口令，也不自动部署。Git chip 只在本机只读执行 `git` 查询（不 fetch、不联网）。 |
 | 提示词增强 | 仅在主动增强或测试时，将草稿发送给相应的模型供应商，可能消耗额度或产生费用。 |
-| 移动端中继 | 默认关闭，仅显式布尔 `mobile_relay.enabled: true` 启用，经官方中继 `wss://zcode.z.ai/api/v1/remote/ws2` 推送，本项目不新增自有服务器。插件载荷无端到端加密，服务端可见；下行包括当前远控会话标识与数值统计、所属主机的今日及项目聚合（可能包含其他会话贡献），不含正文、工作区路径或凭据。手机上行仅含显示偏好与代际计数。此开关只控制插件扩展，不影响官方远控普通消息。 |
+| 远控页面用量推送 | 默认关闭，仅显式布尔 `mobile_relay.enabled: true` 启用，经官方中继 `wss://zcode.z.ai/api/v1/remote/ws2` 推送，本项目不新增自有服务器。插件载荷无端到端加密，服务端可见；下行包括当前远控会话标识与数值统计、所属主机的今日及项目聚合（可能包含其他会话贡献），不含正文、工作区路径或凭据。远控页面上行仅含显示偏好与代际计数。此开关只控制插件扩展，不影响官方远控普通消息。 |
 | 执行的命令 | 随插件分发的 Python 脚本；`git`（只读状态查询）；仅对你配置过的远端查询使用 `ssh`/`wsl.exe`。 |
 | 第三方代码 | 不捆绑任何第三方代码——纯 Python 3.8 标准库 + 原生 JavaScript（Electron 主进程 CommonJS）。MIT 许可证；源码在 [ByteRax/zcode-token-usage-statusbar](https://github.com/ByteRax/zcode-token-usage-statusbar)。 |
 
@@ -58,7 +58,7 @@ SSH/WSL 远端会话需要在每台远端手工部署同版本 `zusage.py`；远
 - `"quota_enabled": false`——停止套餐额度查询并隐藏额度 chip（此后不再读取凭据）。
 - `"auto_compact_patch": false`——关闭自动压缩上下文阈值注入（v188 起默认开；建议用 ⚙ 面板开关）。给客户端引擎打按版本白名单的补丁，使压缩触发点成为可配置的窗口百分比；关闭开关即还原引擎字节。只影响桌面客户端，终端 CLI 不受影响。
 - `"plugin_auto_update": false`——关闭更新检查。
-- `"mobile_relay": {"enabled": false}`——停止插件握手公告、统计查询及快照推送，默认关闭；不影响官方远控，无需另行关闭手机上行。
+- `"mobile_relay": {"enabled": false}`——停止插件握手公告、统计查询及快照推送，默认关闭；不影响官方远控，无需另行关闭远控页面上行。
 - 彻底移除：先关自动更新，执行 `/uninstall-overlay`，再在 ZCode 设置里卸载插件并完全重启。**只卸载插件不会移除状态条。**
 
 ## 配置

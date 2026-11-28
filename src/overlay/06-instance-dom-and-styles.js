@@ -366,8 +366,9 @@
      * → v493 子代理窗格亲历完成轮不再显示「本轮统计不可用」（用户实报）：宿主投影只给主会话轮（query_source='main_turn'）的轮头累计 outputTokens，子代理会话的轮头从不带该字段（tracker 读数 outputTokens=null），开着窗格看子代理跑完的那一轮此前被 v74 当成「真实零输出」——插「本轮统计不可用」且不查库，而库里该轮数据齐全。03 分片新增 zuSubDetHeaderNoOutput（观察器 owner + tracker 已完成 + 亲历 + outputTokens 为 null），这类轮按纯富文本轮处理：缓存命中直接插富文本，未命中且非压缩轮即发带页面轮号的请求（不限窗格最后一轮），不插占位、不插「不可用」；已插行在缓存条目淘汰后走 v86 keep 分支原文保留。outputTokens 为 0 的轮、非亲历轮与主会话实例行为不变（specs/subagent-turn-stats-line.md 规则 13）
      * → v494 ⚙ 设置面板撤掉上下文洞察扩展的两颗快捷按钮（用户决定，设置面板不放功能入口）：v492 在设置面板顶部挂的「当前会话明细」「全部会话洞察」（.zu-ext-quick）按用户要求移除；这两个功能的入口保留左侧主导航、右侧边栏新标签页、容量弹层「上下文明细」按钮与 /context 命令。06 分片的按钮与样式、09 分片面板点击委托里的 fiber 直开与 open-ext-view 回退分支一并删除，容量弹层按钮的同一链路不变
      * → v495 近三天提交的 Windows 兼容性审查修复：①项目菜单「在文件资源管理器中打开」的来源行改为按下即记录（pointerdown：鼠标右键、触控与笔）、contextmenu 记录后补排一次扫描（幂等）、落在已开菜单里的 contextmenu 不清记录——contextmenu 在 Windows 上松开时才派发，当前宿主（4.0.0 引擎包实证）的鼠标右键菜单在 contextmenu 里才开所以未断链，宿主若换成按下即开的实现就会「菜单先挂载、扫描先跑、记录后到」；触控与笔的长按菜单由定时器打开、不保证派发 contextmenu，此前取不到来源行；路径形态补认 Windows 原生 UNC 与 \\?\ 长路径前缀（网络共享做根的本地项目此前不出项）。②上下文明细气泡的「内置引擎路径」在 Windows 渲染页地址（file:///D:/…）上归一成反斜杠路径，不再与同气泡内其它路径正反混排。③.zusage-ctx-bkd-tip 登记进 isOwnOverlay（v487 漏了四处登记的第 ③ 处，窄分栏里盖住输入框中心会收条→复显闪烁）
+     * → v496 远控页面保留旧格式帧的升级提示（specs/mobile-unified-overlay.md）：00 分片移动上下文对「无目标」（taskId 为空串）的旧格式 upgrade 帧不再一律改判为等待态——页面已选中会话时同样显示「请更新桌面插件」的全局升级提示（该提示不带任何统计，不跨会话带出数据；带目标且与当前分栏不符的帧仍为等待态）。09 分片同步只读提示文案：远控页面的推送开关只读且不显示桌面当前值，指引到桌面用量状态栏 ⚙ 的「移动端远程控制」分区查看或修改
     */
-    var VERSION = "v495";
+    var VERSION = "v496";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -2613,7 +2614,7 @@
       '<div class="pnote">' + L("仅更新此插件。GitHub/GitCode 来源会联网，本地目录来源只检查本地文件，不上传用量数据。", "Only this plugin is updated. GitHub/GitCode sources use the network; directory sources check local files. Usage data is never uploaded.") + '</div></div>' +
       /* v202 更新日志卡片：骨架静态，内容由 syncNotes 按状态填充（幂等签名，不抢滚动/焦点） */
       notesCardHtml() + '</section>' +
-      /* 移动端推送独立分区：脚本链接仅供选择复制，配置真值由主进程回填；手机端保留该分区但开关只读。 */
+      /* 移动端推送独立分区：脚本链接仅供选择复制，配置真值由主进程回填；远控页面保留该分区，开关只读。 */
       '<section class="zu-settings-section" data-sec="mobile"' + secOpen("mobile") + '><div class="cap">' + L("移动端远程控制", "Mobile remote control") + '</div><div class="zu-settings-card">' +
       settingRow('<input type="checkbox" class="zu-mobile-relay">', L("推送状态栏数据到远控页", "Push status bar data to Remote Control"), L("默认关闭。仅控制插件统计推送，不影响宿主远控；安装下方脚本后仍需在此开启。", "Off by default. Controls only the plugin's statistics push; the host's remote control is unaffected. Installing the script below does not enable this switch.")) +
       '<div class="pnote zu-mobile-relay-status" role="status" aria-live="polite"></div>' +

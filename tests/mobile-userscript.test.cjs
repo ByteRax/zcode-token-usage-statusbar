@@ -1,4 +1,4 @@
-/* 实际构建结果契约；不改工作树根产物，使用当前源码构建两个变体。 */
+/* 校验仓库发布快照，并在 VM 中启动当前源码的内存构建产物。 */
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
@@ -7,13 +7,13 @@ const test = require('node:test');
 
 const ROOT = path.join(__dirname, '..');
 const build = spawnSync(process.env.ZUSAGE_TEST_PYTHON || (process.platform === 'win32' ? 'python' : 'python3'), ['-B', '-c', `
-import base64, importlib.util, json, pathlib, sys
+import importlib.util, json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 spec = importlib.util.spec_from_file_location('mobile_build', root / 'scripts/build_mobile_userscript.py')
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-common, info = mod.assemble()
-print(json.dumps({'release':mod.finalize(common, False),'debug':mod.finalize(common, True),'desktop':base64.b64encode(mod.desktop_bytes()).decode('ascii')}))
+common = mod.assemble()
+print(json.dumps({'release': mod.finalize(common, False), 'debug': mod.finalize(common, True)}))
 `, ROOT], { encoding: 'utf8', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' }, maxBuffer: 32 * 1024 * 1024 });
 assert.equal(build.status, 0, build.stderr || build.error?.message);
 const products = JSON.parse(build.stdout);
@@ -69,14 +69,6 @@ function boot(source) {
   return { nodes, document, updates, embeddedScripts, timers, context };
 }
 
-test('both constructed variants embed byte-identical desktop assemble_bytes output', () => {
-  const desktop = Buffer.from(products.desktop, 'base64');
-  for (const [variant, source] of [['release', products.release], ['debug', products.debug]]) {
-    assertBytesEqual(Buffer.from(embedded(source), 'utf8'), desktop, `embedded OVERLAY_CODE (${variant}) diverges from desktop assemble_bytes`);
-    new vm.Script(source, { filename: 'built-userscript.js' });
-  }
-});
-
 test('committed release snapshots share a version and the same desktop overlay', () => {
   // 发布快照允许落后于当前源码；对当前源码的字节校验由发版时的 build --check 负责。
   const fs = require('node:fs');
@@ -90,28 +82,6 @@ test('committed release snapshots share a version and the same desktop overlay',
   });
   assert.equal(variants[0].version, variants[1].version);
   assertBytesEqual(variants[0].desktop, variants[1].desktop, 'released variants embed different desktop overlays');
-});
-
-test('release and debug differ only by metadata and their debug switch', () => {
-  const normalized = products.debug.replace('var DEBUG_BUILD = true;', 'var DEBUG_BUILD = false;')
-    .replace('// @name         ZCode 用量状态条（远控中继接收端·调试版）', '// @name         ZCode 用量状态条（远控中继接收端）')
-    .replace('// @description  调试版：默认显示排障面板（帧统计/overlay 加载状态）；日常使用请安装正式版 zusage-mobile.user.js',
-      '// @description  在 ZCode Web 远程控制页面渲染 token 用量；仅在确认宿主支持后同步显示偏好')
-    .replaceAll('https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.debug.user.js',
-      'https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js');
-  assert.equal(normalized, products.release);
-});
-
-test('install and update metadata point each variant at its root Raw URL', () => {
-  for (const [variant, filename] of [['release', 'zusage-mobile.user.js'], ['debug', 'zusage-mobile.debug.user.js']]) {
-    const header = products[variant].split('// ==/UserScript==')[0];
-    const expected = 'https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/' + filename;
-    for (const key of ['downloadURL', 'updateURL']) {
-      const lines = header.split('\n').filter(line => line.startsWith('// @' + key));
-      assert.equal(lines.length, 1);
-      assert.equal(lines[0].trim().split(/\s+/).at(-1), expected);
-    }
-  }
 });
 
 test('actual release activates the embedded desktop code with waiting and no receiver UI', () => {

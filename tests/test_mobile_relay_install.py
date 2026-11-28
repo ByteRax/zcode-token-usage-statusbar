@@ -60,6 +60,8 @@ class MobileInstallTests(unittest.TestCase):
         self.client_running = stack.enter_context(mock.patch.object(self.pi, "client_running", return_value=False))
         self.monitor_launch = stack.enter_context(mock.patch.object(self.pi, "launch_monitor", return_value=True))
         stack.enter_context(mock.patch.dict(sys.modules, {"patch_install": self.pi}))
+        self.bridge = load_module("mobile_install_bridge", ROOT / "renderer_bridge.py")
+        stack.enter_context(mock.patch.dict(sys.modules, {"renderer_bridge": self.bridge}))
         plugin_root = ROOT / "plugins" / "zcode-token-usage-statusbar"
         self.installer = load_module("mobile_install_overlay", plugin_root / "overlay_install.py")
         self.notice = load_module("mobile_install_notice", plugin_root / "restart_notice.py")
@@ -201,48 +203,230 @@ class MobileInstallTests(unittest.TestCase):
     def test_session_start_upgrades_legacy_hooks_in_the_existing_archive(self):
         self.write_archive(self.with_loader(self.legacy_body(LEGACY)))
         updates = mock.Mock()
-        with mock.patch.object(self.installer, "resolve_paths", return_value=(self.runtime, self.pi)),                 mock.patch.object(self.installer, "sync_runtime"),                 mock.patch.object(self.installer, "dedupe_legacy_mcp", return_value="absent"),                 mock.patch.object(self.installer, "ensure_renderer_bridge", return_value={"status": "present"}),                 mock.patch.dict(sys.modules, {"plugin_auto_update": updates}),                 contextlib.redirect_stderr(io.StringIO()):
+        with mock.patch.object(self.installer, "resolve_paths", return_value=(self.runtime, self.pi)),                 mock.patch.object(self.installer, "sync_runtime"),                 mock.patch.object(self.installer, "dedupe_legacy_mcp", return_value="absent"),                 mock.patch.object(self.bridge, "plan_supplement", return_value=({"status": "present"}, {})),                 mock.patch.dict(sys.modules, {"plugin_auto_update": updates}),                 contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(self.installer.run_hook(), {"suppressOutput": True})
         self.assert_installed(self.target)
         self.assert_no_pending_or_stage()
+
+    def test_session_start_commits_bridge_and_relay_in_one_archive(self):
+        asset = "/out/main/after.bin"
+        replacement = b"bridge fixture replacement"
+        updates = mock.Mock()
+        for deny_target in (False, True):
+            with self.subTest(deny_target=deny_target):
+                self.write_archive(self.with_loader(BODY))
+                planned = ({"status": "planned", "version": "9.9.9"}, {asset: replacement})
+                with mock.patch.object(self.installer, "resolve_paths", return_value=(self.runtime, self.pi)),                         mock.patch.object(self.installer, "sync_runtime"),                         mock.patch.object(self.installer, "dedupe_legacy_mcp", return_value="absent"),                         mock.patch.object(self.bridge, "plan_supplement", return_value=planned),                         mock.patch.object(self.installer, "ensure_renderer_bridge", side_effect=AssertionError("separate deployment")),                         mock.patch.dict(sys.modules, {"plugin_auto_update": updates}),                         self.observe_archive_io(deny_target=deny_target) as (repack, replacements):
+                    self.assertEqual(self.installer.run_hook(), {"suppressOutput": True})
+                repack.assert_called_once()
+                self.assertEqual(len(replacements), 1)
+                product = self.pi.TMP if deny_target else self.target
+                self.assert_installed(product)
+                self.assertEqual(self.assets(product)[asset], replacement)
+                marker = json.loads(self.marker.read_bytes())
+                self.assertEqual(marker["installation"]["entryHash"],
+                                 hashlib.sha256(self.installed_entry()).hexdigest())
+                self.assertEqual("publishedAt" in marker, not deny_target)
+                if deny_target:
+                    self.assertTrue(self.pi.pending_tmp("install", verify_hash=True))
+                    self.assertTrue(self.pi.finalize_tmp(operation="install"))
+                    self.assertEqual(self.assets(self.target)[asset], replacement)
+
+    def test_session_start_reads_the_already_patched_entry_once(self):
+        self.write_archive(self.installed_entry())
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(self.installer, "resolve_paths",
+                                                  return_value=(self.runtime, self.pi)))
+            stack.enter_context(mock.patch.object(self.installer, "sync_runtime"))
+            stack.enter_context(mock.patch.object(self.installer, "dedupe_legacy_mcp",
+                                                  return_value="absent"))
+            stack.enter_context(mock.patch.object(self.bridge, "plan_supplement",
+                                                  return_value=({"status": "present"}, {})))
+            stack.enter_context(mock.patch.dict(sys.modules, {"plugin_auto_update": mock.Mock()}))
+            entry_bytes = stack.enter_context(mock.patch.object(
+                self.pi, "entry_bytes_of", wraps=self.pi.entry_bytes_of))
+            snapshot = stack.enter_context(mock.patch.object(
+                self.pi, "_archive_snapshot", wraps=self.pi._archive_snapshot))
+            stack.enter_context(mock.patch.object(self.pi, "source_fingerprint",
+                                                  side_effect=AssertionError("unexpected archive hash")))
+            repack, replacements = stack.enter_context(self.observe_archive_io())
+            self.assertEqual(self.installer.run_hook(), {"suppressOutput": True})
+        entry_bytes.assert_not_called()
+        snapshot.assert_called_once_with(self.target)
+        repack.assert_not_called()
+        self.assertEqual(replacements, [])
+
+    def test_already_installed_archive_needs_no_source_hash(self):
+        self.write_archive(self.installed_entry())
+        with mock.patch.object(self.pi, "_archive_snapshot", wraps=self.pi._archive_snapshot) as snapshot, \
+                mock.patch.object(self.pi, "source_fingerprint", wraps=self.pi.source_fingerprint) as source, \
+                self.observe_archive_io() as (repack, replacements):
+            self.assertTrue(self.pi.install())
+        snapshot.assert_called_once_with(self.target)
+        source.assert_not_called()
+        repack.assert_not_called()
+        self.assertEqual(replacements, [])
+
+    def test_absent_uninstall_needs_no_source_hash(self):
+        with mock.patch.object(self.pi, "_archive_snapshot", wraps=self.pi._archive_snapshot) as snapshot, \
+                mock.patch.object(self.pi, "source_fingerprint", wraps=self.pi.source_fingerprint) as source, \
+                self.observe_archive_io() as (repack, replacements):
+            self.assertTrue(self.pi.remove())
+        snapshot.assert_called_once_with(self.target)
+        source.assert_not_called()
+        repack.assert_not_called()
+        self.assertEqual(replacements, [])
+
+    def test_older_bridge_still_allows_relay_supplement(self):
+        self.write_archive(self.with_loader(BODY))
+        snapshot = self.pi._archive_snapshot(self.target)
+        with mock.patch.dict(sys.modules, {"renderer_bridge": mock.Mock(spec=[])}), \
+                mock.patch.object(self.installer, "ensure_renderer_bridge",
+                                  return_value={"status": "present"}), \
+                contextlib.redirect_stderr(io.StringIO()):
+            bridge, relay = self.installer.ensure_archive_patches(self.pi, snapshot=snapshot)
+        self.assertEqual(bridge, {"status": "present"})
+        self.assertEqual(relay, {"status": "patched"})
+        self.assert_installed(self.target)
+
+    def test_older_bridge_pending_yields_before_relay_supplement(self):
+        """旧版 renderer_bridge（没有 plan_supplement）仍走自己的补桥入口：桥进入待替换或让位
+        时整体让位——中继补装不启动，不改写归档，也不产生新的待替换包。"""
+        self.write_archive(self.with_loader(BODY))
+        before = self.target.read_bytes()
+        for status in ("pending", "deferred"):
+            with self.subTest(status=status), \
+                    mock.patch.dict(sys.modules, {"renderer_bridge": mock.Mock(spec=[])}), \
+                    mock.patch.object(self.installer, "ensure_renderer_bridge",
+                                      return_value={"status": status}) as bridge, \
+                    mock.patch.object(self.pi, "supplement_patches") as supplement, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                result = self.installer.ensure_archive_patches(self.pi)
+            bridge.assert_called_once_with(self.pi, quiet_monitor=True)
+            supplement.assert_not_called()
+            self.assertEqual(result, ({"status": status},
+                                      {"status": "deferred", "detail": "existing pending operation"}))
+        self.assertEqual(self.target.read_bytes(), before)
+        self.assert_no_pending_or_stage()
+
+    def test_mobile_pending_publication_rejects_a_swapped_package(self):
+        # 锁外校验过的私有 stage 改名成 TMP 后若已不是同一文件（校验与发布之间被换包），
+        # 拒绝发布并回滚：不留 TMP/sidecar，重启意图还原，也不拉监控
+        self.write_archive(self.with_loader(BODY))
+        before = self.target.read_bytes()
+        real_stamp = self.pi.file_stamp
+        swapped = []
+
+        def stamp(path):
+            current = real_stamp(path)
+            if Path(path) == self.pi.TMP and not swapped:
+                swapped.append(True)
+                return dict(current, ino=current["ino"] + 1)
+            return current
+
+        with self.observe_archive_io(deny_target=True), \
+                mock.patch.object(self.pi, "file_stamp", side_effect=stamp):
+            result = self.pi.supplement_patches()["relay"]
+
+        self.assertEqual(swapped, [True])
+        self.assertEqual(result["status"], "skipped-error")
+        self.assertIn("published TMP does not match validated stage", result["detail"])
+        self.monitor_launch.assert_not_called()
+        self.assertFalse(self.marker.exists())
+        self.assertEqual(self.target.read_bytes(), before)
+        self.assert_no_pending_or_stage()
+
+    def test_supplement_rejects_a_stage_whose_bridge_asset_differs_from_the_plan(self):
+        # stage 里的非入口资产（渲染桥）没有逐字节等于规划值：校验失败、不发布、不写重启意图
+        asset = "/out/main/after.bin"
+        self.write_archive(self.with_loader(BODY))
+        before = self.target.read_bytes()
+        planned = ({"status": "planned", "version": "9.9.9"}, {asset: b"bridge fixture replacement"})
+        real_repack = self.pi.repack
+
+        def stale_repack(source, modify, stage):
+            return real_repack(source, dict(modify, **{asset: b"stale bridge bytes"}), stage)
+
+        with mock.patch.object(self.bridge, "plan_supplement", return_value=planned), \
+                mock.patch.object(self.pi, "repack", side_effect=stale_repack), \
+                self.observe_archive_io() as (repack, replacements):
+            report = self.pi.supplement_patches(self.bridge.plan_supplement)
+
+        repack.assert_called_once()
+        self.assertEqual(replacements, [])
+        self.assertEqual(report["archive"]["status"], "skipped-error")
+        self.assertIn("stage asset differs from intended bytes: " + asset, report["archive"]["detail"])
+        for key in ("bridge", "relay"):
+            self.assertEqual(report[key]["status"], "skipped-error", key)
+        self.assertFalse(self.marker.exists())
+        self.monitor_launch.assert_not_called()
+        self.assertEqual(self.target.read_bytes(), before)
+        self.assert_no_pending_or_stage()
+
+    def test_overlapping_package_metadata_is_unverifiable(self):
+        # package.json 的归档区间与主入口重叠（畸形归档）：不把重叠字节当宿主包元数据，
+        # 中继判为无法检查；loader 照常安装
+        entry = b"console.log('fixture entry');"
+        package = json.dumps(self.package).encode("utf-8")
+        make_asar(self.target, files={self.pi.ENTRY: entry, "package.json": package})
+        data = self.target.read_bytes()
+        literal = '"offset":"' + str(len(entry)) + '"'
+        self.assertEqual(data.count(literal.encode("ascii")), 1)
+        overlapping = '"offset":"' + str(len(entry) - 1).zfill(len(str(len(entry)))) + '"'
+        self.target.write_bytes(data.replace(literal.encode("ascii"), overlapping.encode("ascii")))
+
+        _, current, package_meta = self.pi._archive_snapshot(self.target)
+        self.assertEqual(current, entry)
+        self.assertEqual(package_meta, "package.json overlaps the archive entry")
+        ready, detail = self.pi._relay_check_status(current, package_meta)
+        self.assertFalse(ready)
+        self.assertIn("package.json overlaps the archive entry", detail)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertTrue(self.pi.install())
+        self.assertEqual(self.pi.entry_bytes_of(self.target), entry + self.pi.INJECT_LINE.encode("utf-8"))
+        self.assertIn("Could not verify the remote control relay layout (package.json overlaps the archive entry)",
+                      out.getvalue())
+        self.assert_no_pending_or_stage()
+
+    def test_doctor_reports_complete_relay_in_english(self):
+        self.write_archive(self.installed_entry())
+        report, _ = self.installer.doctor(self.runtime, self.pi)
+        self.assertIn("[OK] 远控中继补丁: patched", report)
 
     def sharing_violation(self):
         """Windows 上另一句柄正开着 app.asar（不带 FILE_SHARE_DELETE）时读档的形态。"""
         return PermissionError(13, "The process cannot access the file because it is being used"
                                    " by another process", str(self.target), 32)
 
-    def test_full_install_leaves_mobile_patch_when_second_archive_read_is_refused(self):
-        """完整安装在读完入口后再读一次归档来变换手机补丁。这次读档撞上瞬时占用
-        （杀软/索引器）时按「布局无法验证」处理：状态条照常装上、手机补丁留给之后的
-        SessionStart 补装——不能穿成「安装锁获取失败」让整轮安装失败。"""
+    def test_full_install_keeps_loader_when_relay_metadata_read_is_refused(self):
+        """A relay metadata failure leaves the entry available for installing the loader."""
         self.write_archive()
 
-        def refused_snapshot(path, **kwargs):
+        def refused_metadata(*args):
             raise self.sharing_violation()
 
         out = io.StringIO()
-        with mock.patch.object(self.pi, "_archive_snapshot", side_effect=refused_snapshot), \
+        with mock.patch.object(self.pi, "_read_relay_package", side_effect=refused_metadata), \
                 contextlib.redirect_stdout(out):
             result = self.pi.install()
 
         self.assertTrue(result, out.getvalue())
         self.assertEqual(self.pi.entry_bytes_of(self.target), self.with_loader(BODY))
-        self.assertEqual(self.pi.mobile_status(), {"status": "skipped-unknown"})
-        self.assertIn("Mobile relay patch left unchanged", out.getvalue())
+        self.assertIn("Could not verify the remote control relay layout", out.getvalue())
         self.assertNotIn("Cannot acquire install lock", out.getvalue())
         self.assert_no_pending_or_stage()
 
-    def test_remove_reports_refused_second_archive_read_as_mobile_patch_not_lock(self):
+    def test_remove_reports_refused_relay_metadata_read_as_mobile_patch_not_lock(self):
         """卸载同理：读不到归档就无法安全剥离手机注入，按原语义失败并说明原因，
         归档不动；不能报成「卸载锁获取失败」。"""
         self.write_archive(self.installed_entry())
         before = self.target.read_bytes()
 
-        def refused_snapshot(path, **kwargs):
+        def refused_metadata(*args):
             raise self.sharing_violation()
 
         out = io.StringIO()
-        with mock.patch.object(self.pi, "_archive_snapshot", side_effect=refused_snapshot), \
+        with mock.patch.object(self.pi, "_read_relay_package", side_effect=refused_metadata), \
                 contextlib.redirect_stdout(out):
             result = self.pi.remove()
 
@@ -257,15 +441,16 @@ class MobileInstallTests(unittest.TestCase):
 
         with self.observe_target_lock() as lock, \
                 self.observe_archive_io(lock_state=lock) as (repack, replacements):
-            result = self.pi.install(mobile_only=True, record_mobile_intent=True)
+            result = self.pi.supplement_patches()["relay"]
 
-        self.assertTrue(result)
         self.assertTrue(lock["events"])
         self.assertTrue(any(event[0] == "stage_validate" for event in lock["events"]), lock["events"])
+        self.assertFalse(any(event[0] == "sha" and event[2].startswith(".zusage-mobile-stage-")
+                             for event in lock["events"]), lock["events"])
         self.assertTrue(all(event[1] == 0 for event in lock["events"]
                             if event[0] in ("repack", "sha", "validate", "stage_validate")), lock["events"])
         self.assertEqual(lock["value"], 0)
-        self.assertEqual(self.pi.mobile_status(), {"status": "patched"})
+        self.assertEqual(result, {"status": "patched"})
         repack.assert_called_once()
         self.assertEqual(len(replacements), 1)
         self.assertEqual(replacements[0][1], self.target)
@@ -288,8 +473,7 @@ class MobileInstallTests(unittest.TestCase):
         orphan = b'{"untrusted":"orphan"}'
         self.pi.TMP_META.write_bytes(orphan)
         before_archive = self.target.read_bytes()
-        self.assertFalse(self.pi.install(mobile_only=True, record_mobile_intent=True))
-        self.assertEqual(self.pi.mobile_status()["status"], "deferred")
+        self.assertEqual(self.pi.supplement_patches()["relay"]["status"], "deferred")
         self.assertEqual(self.pi.TMP_META.read_bytes(), orphan)
         self.assertEqual(self.target.read_bytes(), before_archive)
         self.assertFalse(self.marker.exists())
@@ -304,7 +488,7 @@ class MobileInstallTests(unittest.TestCase):
         except (OSError, NotImplementedError):
             self.skipTest("symlink creation unavailable in this environment")
         before_archive = self.target.read_bytes()
-        self.assertFalse(self.pi.install(mobile_only=True, record_mobile_intent=True))
+        self.assertEqual(self.pi.supplement_patches()["relay"]["status"], "deferred")
         self.assertTrue(self.pi.TMP_META.is_symlink())
         self.assertEqual(symlink_target.read_bytes(), orphan)
         self.assertEqual(self.target.read_bytes(), before_archive)
@@ -315,7 +499,7 @@ class MobileInstallTests(unittest.TestCase):
         self.pi.prepare_tmp({"/" + self.pi.ENTRY: self.installed_entry()})
         original_pending = self.pending_pair()
         with self.pi._target_lock(), mock.patch.object(self.installer.time, "sleep") as sleep:
-            status = self.installer.ensure_mobile_relay_stash(self.pi, quiet_monitor=True)
+            status = self.installer.ensure_archive_patches(self.pi)[1]
         sleep.assert_not_called()
         self.assertEqual(status, {"status": "deferred", "detail": "existing pending operation"})
         self.assertEqual(self.pending_pair(), original_pending)
@@ -334,10 +518,9 @@ class MobileInstallTests(unittest.TestCase):
         before_stage = sorted(path.name for path in self.target.parent.glob("*.stage"))
 
         with self.observe_archive_io() as (repack, replacements):
-            result = self.pi.install(mobile_only=True)
+            result = self.pi.supplement_patches()["relay"]
 
-        self.assertFalse(result)
-        self.assertEqual(self.pi.mobile_status()["status"], "deferred")
+        self.assertEqual(result["status"], "deferred")
         repack.assert_not_called()
         self.assertEqual(replacements, [])
         self.assertEqual(self.target.read_bytes(), before_archive)
@@ -359,10 +542,9 @@ class MobileInstallTests(unittest.TestCase):
             return result
 
         with mock.patch.object(self.pi, "repack", side_effect=race_repack):
-            result = self.pi.install(mobile_only=True, record_mobile_intent=True)
+            result = self.pi.supplement_patches()["relay"]
 
-        self.assertFalse(result)
-        self.assertEqual(self.pi.mobile_status()["status"], "deferred")
+        self.assertEqual(result["status"], "deferred")
         self.assertEqual(self.target.read_bytes(), before_archive)
         self.assertEqual(self.pi.pending_operation(), "install")
         self.assertTrue(self.pi.pending_tmp("install"))
@@ -389,12 +571,11 @@ class MobileInstallTests(unittest.TestCase):
 
         with mock.patch.object(self.pi, "repack", side_effect=observed_repack), \
                 mock.patch.object(self.lock_module, "_write_marker", side_effect=record_then_change):
-            result = self.pi.install(mobile_only=True, record_mobile_intent=True)
+            result = self.pi.supplement_patches()["relay"]
 
-        self.assertTrue(result)
         self.assertEqual(calls, [False, False])
         self.assertEqual(len(intents), 2)
-        self.assertEqual(self.pi.mobile_status()["status"], "patched")
+        self.assertEqual(result["status"], "patched")
         entry = self.pi.entry_bytes_of(self.target)
         self.assertIn(b"// concurrent entry edit", entry)
         self.assertIn(b"__zusageRelayStash", entry)
@@ -407,11 +588,12 @@ class MobileInstallTests(unittest.TestCase):
         self.write_archive(self.installed_entry())
         with mock.patch.object(self.pi, "file_lock", side_effect=AssertionError("unexpected lock")), \
                 mock.patch.object(self.pi, "_archive_snapshot", wraps=self.pi._archive_snapshot) as snapshot, \
-                mock.patch.object(self.pi, "source_fingerprint", side_effect=AssertionError("unexpected archive hash")):
-            result = self.pi.install(mobile_only=True)
-        self.assertTrue(result)
-        self.assertEqual(self.pi.mobile_status(), {"status": "present"})
+                mock.patch.object(self.pi, "source_fingerprint", side_effect=AssertionError("unexpected archive hash")), \
+                mock.patch.object(self.pi, "_strip_injects", wraps=self.pi._strip_injects) as strip_injects:
+            result = self.pi.supplement_patches()["relay"]
+        self.assertEqual(result, {"status": "present"})
         snapshot.assert_called_once_with(self.target)
+        strip_injects.assert_called_once()
 
     def test_mobile_only_rebuilds_once_when_source_changes_during_stage(self):
         self.write_archive(self.with_loader(BODY))
@@ -427,16 +609,15 @@ class MobileInstallTests(unittest.TestCase):
 
         with mock.patch.object(self.pi, "repack", side_effect=replace_source_after_first_build), \
                 self.observe_target_lock() as lock:
-            result = self.pi.install(mobile_only=True)
+            result = self.pi.supplement_patches()["relay"]
 
-        self.assertTrue(result)
         self.assertEqual(len(calls), 2)
         self.assertTrue(lock["events"])
         self.assertTrue(any(event[0] == "stage_validate" for event in lock["events"]), lock["events"])
         self.assertTrue(all(event[1] == 0 for event in lock["events"]
                             if event[0] in ("repack", "sha", "validate", "stage_validate")), lock["events"])
         self.assertEqual(lock["value"], 0)
-        self.assertEqual(self.pi.mobile_status()["status"], "patched")
+        self.assertEqual(result["status"], "patched")
         self.assertIn(b"// host update", self.pi.entry_bytes_of(self.target))
 
     def test_mobile_only_restarts_when_source_changes_between_inspections(self):
@@ -453,11 +634,10 @@ class MobileInstallTests(unittest.TestCase):
             return result
 
         with mock.patch.object(self.pi, "_archive_snapshot", side_effect=snapshot_then_swap):
-            result = self.pi.install(mobile_only=True, record_mobile_intent=True)
+            result = self.pi.supplement_patches()["relay"]
 
-        self.assertTrue(result)
-        self.assertEqual(len(calls), 4)   # 首轮两次快照不一致，按新源重来一轮
-        self.assertEqual(self.pi.mobile_status(), {"status": "patched"})
+        self.assertEqual(len(calls), 3)   # 首轮两次快照不一致，按新源重来一轮
+        self.assertEqual(result, {"status": "patched"})
         self.assertIn(b"// host update mid-inspection", self.pi.entry_bytes_of(self.target))
         self.assertIn(b"__zusageRelayStash", self.pi.entry_bytes_of(self.target))
         self.assert_no_pending_or_stage()
@@ -479,11 +659,10 @@ class MobileInstallTests(unittest.TestCase):
                     return alter(*result) if len(seen) == 2 else result
 
                 with mock.patch.object(self.pi, "_archive_snapshot", side_effect=drift_second):
-                    result = self.pi.install(mobile_only=True, record_mobile_intent=True)
+                    result = self.pi.supplement_patches()["relay"]
 
-                self.assertTrue(result)
                 self.assertEqual(len(seen), 4)
-                self.assertEqual(self.pi.mobile_status(), {"status": "patched"})
+                self.assertEqual(result, {"status": "patched"})
                 self.assert_installed(self.target)
                 self.assert_no_pending_or_stage()
 
@@ -497,7 +676,7 @@ class MobileInstallTests(unittest.TestCase):
         ordinary_stage = self.root / (self.pi.TMP.name + ".old.stage")
         ordinary_stage.write_bytes(b"ordinary stage")
         os.utime(ordinary_stage, (0, 0))
-        self.pi._sweep_stale_stages(self.root, mobile_only=True)
+        self.pi._sweep_stale_stages(self.root, supplement=True)
         self.assertTrue(ordinary_stage.exists(), "mobile cleaner must not match ordinary stage")
         self.assertFalse(mobile_stage.exists(), "mobile cleaner removes only stale private mobile stages")
 
@@ -506,19 +685,19 @@ class MobileInstallTests(unittest.TestCase):
         self.enable_mobile_relay()
         lock_path = self.target.with_name(self.target.name + ".zusage.mobile-build.lock")
         calls = []
-        original_install = self.pi.install
+        original_install = self.pi.supplement_patches
 
-        def install(**kwargs):
+        def install(*args):
             calls.append(1)
-            return original_install(**kwargs)
+            return original_install(*args)
 
         with self.pi.file_lock(lock_path), \
-                mock.patch.object(self.pi, "install", side_effect=install), \
+                mock.patch.object(self.pi, "supplement_patches", side_effect=install), \
                 mock.patch.object(self.installer.time, "sleep") as sleep:
-            status = self.installer.ensure_mobile_relay_stash(self.pi, quiet_monitor=True)
+            status = self.installer.ensure_archive_patches(self.pi)[1]
         self.assertEqual(calls, [1, 1])
-        sleep.assert_called_once_with(self.installer._MOBILE_LOCK_RETRY_DELAY_S)
-        self.assertEqual(status, {"status": "deferred", "detail": "mobile build lock busy"})
+        sleep.assert_called_once_with(self.installer._PATCH_LOCK_RETRY_DELAY_S)
+        self.assertEqual(status, {"status": "deferred", "detail": "patch build lock busy"})
         self.assertFalse((self.runtime / ".mobile-deferred-notice.json").exists())
         self.assert_no_pending_or_stage()
 
@@ -527,18 +706,18 @@ class MobileInstallTests(unittest.TestCase):
         self.enable_mobile_relay()
         lock_path = self.runtime / "plugin-restart.lock"
         calls = []
-        original_install = self.pi.install
+        original_install = self.pi.supplement_patches
 
-        def install(**kwargs):
+        def install(*args):
             calls.append(1)
-            return original_install(**kwargs)
+            return original_install(*args)
 
         with self.lock_module.file_lock(lock_path), \
-                mock.patch.object(self.pi, "install", side_effect=install), \
+                mock.patch.object(self.pi, "supplement_patches", side_effect=install), \
                 mock.patch.object(self.installer.time, "sleep") as sleep:
-            status = self.installer.ensure_mobile_relay_stash(self.pi, quiet_monitor=True)
+            status = self.installer.ensure_archive_patches(self.pi)[1]
         self.assertEqual(calls, [1, 1])
-        sleep.assert_called_once_with(self.installer._MOBILE_LOCK_RETRY_DELAY_S)
+        sleep.assert_called_once_with(self.installer._PATCH_LOCK_RETRY_DELAY_S)
         self.assertEqual(status, {"status": "deferred", "detail": "restart marker lock busy"})
         self.assert_no_pending_or_stage()
         self.assertFalse((self.runtime / ".plugin-restart-required").exists())
@@ -549,22 +728,21 @@ class MobileInstallTests(unittest.TestCase):
         busy = {"status": "deferred", "detail": "target lock busy"}
 
         def run(clocks):
-            with mock.patch.object(self.pi, "install", return_value=False) as install, \
-                    mock.patch.object(self.pi, "mobile_status", return_value=dict(busy)), \
-                    mock.patch.object(self.installer.time, "monotonic", side_effect=clocks), \
+            report = dict.fromkeys(("archive", "bridge", "relay"), busy)
+            with mock.patch.object(self.pi, "supplement_patches", return_value=report) as install,                     mock.patch.object(self.installer.time, "monotonic", side_effect=clocks), \
                     mock.patch.object(self.installer.time, "sleep") as sleep:
-                status = self.installer.ensure_mobile_relay_stash(self.pi, quiet_monitor=True)
+                status = self.installer.ensure_archive_patches(self.pi)[1]
             return status, install.call_count, sleep.call_count
 
         status, attempts, sleeps = run([0.0, 16.0])
         self.assertEqual(status, busy)
         self.assertEqual((attempts, sleeps), (1, 0))   # 首轮 16 秒：不再重试
 
-        status, attempts, sleeps = run([0.0, 15.0, 0.0])
+        status, attempts, sleeps = run([0.0, 15.0])
         self.assertEqual(status, busy)
         self.assertEqual((attempts, sleeps), (1, 0))   # 恰好 15 秒：已到预算，不再重试
 
-        status, attempts, sleeps = run([0.0, 1.0, 0.0])
+        status, attempts, sleeps = run([0.0, 1.0])
         self.assertEqual(status, busy)
         self.assertEqual((attempts, sleeps), (2, 1))   # 首轮 1 秒：退避后重试一次
 
@@ -582,7 +760,7 @@ class MobileInstallTests(unittest.TestCase):
 
             with self.observe_archive_io(deny_target=True), \
                     mock.patch.object(self.pi, "launch_monitor", side_effect=launch):
-                result = self.installer.ensure_mobile_relay_stash(self.pi, quiet_monitor=True)
+                result = self.installer.ensure_archive_patches(self.pi)[1]
 
             self.assertEqual(result["status"], "pending")
             self.assertEqual(captured, {"no_monitor": "1", "quiet": "1"})   # SessionStart 静默链不弹监控窗口
@@ -594,10 +772,9 @@ class MobileInstallTests(unittest.TestCase):
         before = self.target.read_bytes()
 
         with self.observe_archive_io() as (repack, replacements):
-            result = self.pi.install(mobile_only=True)
+            result = self.pi.supplement_patches()["relay"]
 
-        self.assertFalse(result)
-        self.assertEqual(self.pi.mobile_status()["status"], "deferred")
+        self.assertEqual(result["status"], "deferred")
         repack.assert_not_called()
         self.assertEqual(replacements, [])
         self.assertEqual(self.target.read_bytes(), before)
@@ -621,10 +798,9 @@ class MobileInstallTests(unittest.TestCase):
         with self.observe_target_lock() as lock, \
                 mock.patch.object(self.pi.os, "replace", side_effect=deny_asar_replace), \
                 mock.patch.object(self.pi, "repack", wraps=self.pi.repack) as repack:
-            result = self.pi.install(mobile_only=True, record_mobile_intent=True)
+            result = self.pi.supplement_patches()["relay"]
 
-        self.assertFalse(result)
-        self.assertEqual(self.pi.mobile_status(), {"status": "pending"})
+        self.assertEqual(result, {"status": "pending"})
         self.assertEqual([dest for _src, dest in attempts], [self.target, self.pi.TMP])
         stage = attempts[0][0]
         self.assertEqual(attempts[1][0], stage)
@@ -664,10 +840,10 @@ class MobileInstallTests(unittest.TestCase):
         self.write_archive(self.with_loader(BODY))
         with mock.patch.object(self.pi, "_checked_tmp_metadata",
                                side_effect=self.pi.PendingTmpError("fixture stage validation failure")) as validate:
-            self.assertFalse(self.pi.install(mobile_only=True, record_mobile_intent=True))
+            result = self.pi.supplement_patches()["relay"]
         validate.assert_called_once()
         self.assertFalse(self.marker.exists())
-        self.assertEqual(self.pi.mobile_status()["status"], "skipped-error")
+        self.assertEqual(result["status"], "skipped-error")
         self.assert_no_pending_or_stage()
 
     def test_marker_io_timeout_is_not_retried_as_lock_contention(self):
@@ -675,7 +851,7 @@ class MobileInstallTests(unittest.TestCase):
         before = self.target.read_bytes()
         with mock.patch.object(self.lock_module, "_write_marker",
                                side_effect=TimeoutError("marker write timed out")) as write_marker:
-            status = self.installer.ensure_mobile_relay_stash(self.pi, quiet_monitor=True)
+            status = self.installer.ensure_archive_patches(self.pi)[1]
         self.assertEqual(status, {"status": "skipped-error", "detail": "marker write timed out"})
         self.assertEqual(write_marker.call_count, 1)
         self.assertEqual(self.target.read_bytes(), before)
@@ -698,12 +874,10 @@ class MobileInstallTests(unittest.TestCase):
             return real_replace(source, destination)
 
         with mock.patch.object(self.pi.os, "replace", side_effect=deny_both_publications):
-            result = self.pi.install(mobile_only=True, record_mobile_intent=True)
+            result = self.pi.supplement_patches()["relay"]
 
-        self.assertFalse(result)
-        self.assertEqual(self.pi.mobile_status()["status"], "skipped-error")
-        # 待替换包的发布替换有界重试（Windows 上杀毒 / 索引的瞬时句柄）：持续被拒时试满上限才回滚；
-        # 目标 asar 的直接替换仍是一次，被拒即转待替换流程
+        self.assertEqual(result["status"], "skipped-error")
+        # 目标 asar 直接替换一次。待替换包的发布持续被拒时，试满上限才回滚。
         self.assertEqual([dest for _source, dest in attempts],
                          [self.target] + [self.pi.TMP] * self.lock_module._REPLACE_ATTEMPTS)
         self.assertEqual((self.runtime / ".plugin-restart-required").read_bytes(), before_marker)
@@ -722,8 +896,8 @@ class MobileInstallTests(unittest.TestCase):
 
         with self.observe_archive_io(deny_target=True), \
                 mock.patch.object(self.pi, "_atomic_tmp_metadata", side_effect=refuse_final_sidecar):
-            self.assertFalse(self.pi.install(mobile_only=True, record_mobile_intent=True))
-        self.assertEqual(self.pi.mobile_status()["status"], "skipped-error")
+            result = self.pi.supplement_patches()["relay"]
+        self.assertEqual(result["status"], "skipped-error")
         self.assertEqual(self.target.read_bytes(), original_archive)
         self.assertFalse(self.marker.exists())
         self.assert_no_pending_or_stage()
@@ -740,7 +914,7 @@ class MobileInstallTests(unittest.TestCase):
 
         with mock.patch.object(self.pi.os, "replace", side_effect=interrupt_after_swap), \
                 self.assertRaises(KeyboardInterrupt):
-            self.pi.install(mobile_only=True, record_mobile_intent=True)
+            self.pi.supplement_patches()
         self.assert_installed(self.target)
         marker = json.loads(self.marker.read_bytes())
         self.assertEqual(marker["installation"]["entryHash"], hashlib.sha256(self.installed_entry()).hexdigest())
@@ -758,7 +932,7 @@ class MobileInstallTests(unittest.TestCase):
         with self.observe_archive_io(deny_target=True), \
                 mock.patch.object(self.pi, "_publish_pending", side_effect=interrupt_after_publish), \
                 self.assertRaises(KeyboardInterrupt):
-            self.pi.install(mobile_only=True, record_mobile_intent=True)
+            self.pi.supplement_patches()
         self.assertTrue(self.pi.pending_tmp("install", verify_hash=True))
         marker = json.loads(self.marker.read_bytes())
         self.assertEqual(marker["installation"]["entryHash"], hashlib.sha256(self.installed_entry()).hexdigest())
@@ -776,7 +950,7 @@ class MobileInstallTests(unittest.TestCase):
             return write_marker(path, data)
 
         with mock.patch.object(self.lock_module, "_write_marker", side_effect=refuse_confirmation):
-            self.assertTrue(self.pi.install(mobile_only=True, record_mobile_intent=True))
+            self.assertEqual(self.pi.supplement_patches()["relay"]["status"], "patched")
         self.assert_installed(self.target)
         self.assertNotIn("publishedAt", json.loads(self.marker.read_bytes()))
         self.assert_no_pending_or_stage()
@@ -791,9 +965,9 @@ class MobileInstallTests(unittest.TestCase):
             installer = load_module("mobile_install_mixed_pi", ROOT / "patch_install.py")
         installer.set_target(self.target)
         installer.set_runtime(self.runtime)
-        self.assertFalse(installer.install(mobile_only=True, record_mobile_intent=True))
-        self.assertEqual(installer.mobile_status(), {
-            "status": "skipped-error", "detail": "mobile publication unavailable"})
+        self.assertFalse(installer.PATCH_SUPPLEMENT)
+        self.assertEqual(installer.supplement_patches()["relay"], {
+            "status": "skipped-error", "detail": "patch publication unavailable"})
         self.assert_no_pending_or_stage()
         expected = self.installed_entry()
         self.record_full_intent({"asar": str(self.target.resolve()),
@@ -818,8 +992,9 @@ class MobileInstallTests(unittest.TestCase):
         with mock.patch.object(self.pi.os, "replace", side_effect=deny_asar_replace),                 mock.patch.object(self.installer, "resolve_paths", return_value=(self.runtime, self.pi)),                 mock.patch.object(self.installer, "sync_runtime"),                 mock.patch.object(self.installer, "chown_runtime_to_user"),                 mock.patch.dict(sys.modules, {"restart_notice": self.notice}),                 mock.patch.object(sys, "argv", ["overlay_install.py", "install"]),                 contextlib.redirect_stdout(io.StringIO()) as stdout, self.assertRaises(SystemExit) as exit_code:
             self.installer.main()
         self.assertEqual(exit_code.exception.code, 1)
-        self.assertIn("手机中继补丁已排定", stdout.getvalue())
-        self.assertEqual(self.pi.mobile_status()["status"], "pending")
+        self.assertIn("Replacement while running failed", stdout.getvalue())
+        self.assertEqual(stdout.getvalue().count("install --finalize"), 1)
+        self.assertIn("fixture archive is in use", stdout.getvalue())
         self.assertEqual(self.pi.pending_operation(), "install")
         self.assertTrue(self.pi.pending_tmp("install", verify_hash=True))
         self.assertEqual(self.pi.entry_bytes_of(self.pi.TMP), self.installed_entry())
@@ -834,8 +1009,10 @@ class MobileInstallTests(unittest.TestCase):
         self.pi._atomic_tmp_metadata(meta)
         pending_before = self.pending_pair()
 
-        self.assertFalse(self.pi.install(before_publish=self.record_full_intent))
-        self.assertEqual(self.pi.mobile_status()["status"], "skipped-error")
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            self.assertFalse(self.pi.install(before_publish=self.record_full_intent))
+        self.assertIn("Pending package invalidated", stdout.getvalue())
+        self.monitor_launch.assert_not_called()
         self.assertEqual(self.pending_pair(), pending_before)
         with self.assertRaisesRegex(self.pi.PendingTmpError, "hash mismatch"):
             self.pi.pending_tmp("install", verify_hash=True)
@@ -855,7 +1032,6 @@ class MobileInstallTests(unittest.TestCase):
         with mock.patch.object(self.pi, "source_fingerprint", side_effect=fail_hash_read) as read_hash:
             self.assertFalse(self.pi.install(before_publish=self.record_full_intent))
         read_hash.assert_any_call(self.pi.TMP)
-        self.assertEqual(self.pi.mobile_status()["status"], "skipped-error")
         self.assertEqual(self.pending_pair(), pending_before)
         self.assertTrue(self.pi.pending_tmp("install", verify_hash=True))
 
@@ -896,6 +1072,83 @@ class MobileInstallTests(unittest.TestCase):
         self.assertFalse(self.marker.exists())
         self.assert_no_pending_or_stage()
 
+    def test_standalone_loader_only_pending_keeps_original_feedback(self):
+        standalone = load_module("mobile_standalone_pending", ROOT / "install.py")
+        # 中继钩子已经齐全，本次只需写入 loader。
+        self.write_archive(self.pi.transform_mobile_entry(BODY, "apply"))
+        # 最终替换前客户端恰好启动，此时不能交换已验证的包。
+        self.client_running.side_effect = [False, True]
+        argv = ["install.py", "--asar", str(self.target), "--no-mcp", "--lang", "en"]
+        with mock.patch.object(standalone, "DATA_DIR", self.runtime), \
+                mock.patch.object(standalone, "copy_runtime"), \
+                mock.patch.object(sys, "argv", argv), \
+                mock.patch.object(self.pi, "_reusable_pending_install", wraps=self.pi._reusable_pending_install) as reusable, \
+                contextlib.redirect_stdout(io.StringIO()) as stdout:
+            self.assertEqual(standalone.main(), 1)
+        self.assertTrue(self.pi.pending_tmp("install", verify_hash=True))
+        reusable.assert_called_once()
+        self.assertIn("re-run later", stdout.getvalue())
+        self.assertIn("Installation did not finish", stdout.getvalue())
+
+    def test_standalone_keeps_generic_retry_when_relay_replacement_is_pending(self):
+        standalone = load_module("mobile_standalone_relay_pending", ROOT / "install.py")
+        self.client_running.side_effect = [False, True]
+        argv = ["install.py", "--asar", str(self.target), "--lang", "en"]
+        with mock.patch.object(standalone, "DATA_DIR", self.runtime), \
+                mock.patch.object(standalone, "copy_runtime"), \
+                mock.patch.object(standalone, "register_mcp") as register_mcp, \
+                mock.patch.object(standalone, "install_command") as install_command, \
+                mock.patch.object(self.pi, "_reusable_pending_install", wraps=self.pi._reusable_pending_install) as reusable, \
+                mock.patch.object(sys, "argv", argv), \
+                contextlib.redirect_stdout(io.StringIO()) as stdout:
+            self.assertEqual(standalone.main(), 1)
+        register_mcp.assert_called_once_with(False, False)
+        install_command.assert_called_once_with(False)
+        reusable.assert_called_once()
+        self.monitor_launch.assert_called_once()
+        self.assertTrue(self.pi.pending_tmp("install", verify_hash=True))
+        self.assertEqual(self.pi.entry_bytes_of(self.pi.TMP), self.installed_entry())
+        text = stdout.getvalue()
+        tool = self.runtime / "patch_install.py"
+        self.assertIn(f're-run later: python "{tool}" install --asar "{self.target}"', text)
+        self.assertIn("Installation did not finish", text)
+        self.assertIn("MCP and /usage command parts were still processed", text)
+        self.assertNotIn("The remote control relay patch is scheduled", text)
+
+    def test_relay_replacement_denied_after_exit_keeps_pending_and_reports_cause(self):
+        self.write_archive(self.with_loader(BODY))
+        original = self.target.read_bytes()
+        replace = os.replace
+
+        def deny_asar_replace(source, destination):
+            if Path(destination) == self.target:
+                raise PermissionError("fixture target denies replacement")
+            return replace(source, destination)
+
+        with mock.patch.object(self.pi.os, "replace", side_effect=deny_asar_replace), \
+                contextlib.redirect_stdout(io.StringIO()) as stdout:
+            self.assertFalse(self.pi.install())
+        text = stdout.getvalue()
+        self.assertIn("Replacement failed; monitor will wait for exit and retry: fixture target denies replacement", text)
+        self.assertNotIn("The remote control relay patch is scheduled", text)
+        self.assertEqual(self.target.read_bytes(), original)
+        self.assertTrue(self.pi.pending_tmp("install", verify_hash=True))
+        self.monitor_launch.assert_called_once()
+
+    def test_relay_change_only_uses_the_generic_install_feedback(self):
+        for running, activation in ((False, "Done. Start ZCode"),
+                                    (True, "The floating bar activates after restarting ZCode")):
+            with self.subTest(running=running):
+                self.write_archive(self.with_loader(BODY))
+                self.client_running.return_value = running
+                with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                    self.assertTrue(self.pi.install())
+                self.assert_installed(self.target)
+                text = stdout.getvalue()
+                self.assertNotIn("Old injection line detected", text)
+                self.assertNotIn("The remote control relay patch was written", text)
+                self.assertIn(activation, text)
+
     def test_existing_loader_upgrades_legacy_or_missing_mobile_hooks(self):
         for label, body in (
             ("v1", self.legacy_body(LEGACY)),
@@ -907,7 +1160,6 @@ class MobileInstallTests(unittest.TestCase):
                 with self.observe_archive_io() as (repack, replacements):
                     result = self.pi.install()
                 self.assertTrue(result)
-                self.assertEqual(self.pi.mobile_status(), {"status": "patched"})
                 repack.assert_called_once()
                 self.assertEqual(len(replacements), 1)
                 self.assert_installed(self.target)
@@ -919,7 +1171,6 @@ class MobileInstallTests(unittest.TestCase):
         with self.observe_archive_io() as (repack, replacements):
             result = self.pi.install()
         self.assertTrue(result)
-        self.assertEqual(self.pi.mobile_status(), {"status": "present"})
         repack.assert_not_called()
         self.assertEqual(replacements, [])
         self.assertEqual(self.target.read_bytes(), before)
@@ -944,7 +1195,6 @@ class MobileInstallTests(unittest.TestCase):
         with self.observe_archive_io() as (repack, replacements):
             result = self.pi.install()
         self.assertTrue(result)
-        self.assertEqual(self.pi.mobile_status(), {"status": "skipped-unknown"})
         repack.assert_called_once()
         self.assertEqual(len(replacements), 1)
         expected[self.pi.ASSET] = self.with_loader(unknown)
@@ -1018,7 +1268,7 @@ class MobileInstallTests(unittest.TestCase):
                  b'{"mobile_relay":{"enabled":true},"bad":Infinity}',
                  b'\xef\xbb\xbf{"mobile_relay":{"enabled":true}}')
         states = ({"status": "pending"},
-                  {"status": "deferred", "detail": "bridge pending"})
+                  {"status": "deferred", "detail": "existing pending operation"})
         for raw in cases:
             with self.subTest(config=raw):
                 if raw is None:
@@ -1050,7 +1300,8 @@ class MobileInstallTests(unittest.TestCase):
         waiting = {"suppressOutput": True}
         self.installer._mobile_pending_notice(
             waiting, self.pi, {"status": "deferred", "detail": "existing pending operation"})
-        self.assertIn("自动补装", waiting["systemMessage"])
+        self.assertIn("/zusage-doctor", waiting["systemMessage"])
+        self.assertNotIn("退出 ZCode 后会自动完成替换", waiting["systemMessage"])
         self.assertNotIn("/install-overlay", waiting["systemMessage"])
         self.assertEqual(deferred_file.read_bytes(), before)
 
@@ -1065,15 +1316,18 @@ class MobileInstallTests(unittest.TestCase):
 
         waiting = {"suppressOutput": True}
         self.installer._mobile_pending_notice(
-            waiting, self.pi, {"status": "deferred", "detail": "bridge pending"})
-        self.assertIn("自动补装", waiting["systemMessage"])
+            waiting, self.pi, {"status": "deferred", "detail": "existing pending operation"})
+        self.assertIn("/zusage-doctor", waiting["systemMessage"])
+        self.assertNotIn("退出 ZCode 后会自动完成替换", waiting["systemMessage"])
         self.assertNotIn("/install-overlay", waiting["systemMessage"])
 
         retry = {"suppressOutput": True}
         self.installer._mobile_pending_notice(
             retry, self.pi, {"status": "deferred", "detail": "lock busy"})
-        self.assertIn("手机远控增强尚未就绪", retry["systemMessage"])
+        self.assertIn("远控页面的用量推送尚未就绪", retry["systemMessage"])
         self.assertIn("/install-overlay", retry["systemMessage"])
+        self.assertIn("按安装输出完成收尾", retry["systemMessage"])
+        self.assertNotIn("已排定", retry["systemMessage"])
         self.assertTrue(deferred_file.exists())
 
         repeated = {"suppressOutput": True}

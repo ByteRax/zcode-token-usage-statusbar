@@ -461,8 +461,8 @@ class RestartMarkerBusy(TimeoutError):
 
 
 @contextmanager
-def publish_mobile_install(runtime, installation, *, record_intent, committed):
-    """Own the mobile intent through direct replacement or validated pending publication."""
+def publish_supplement(runtime, installation, *, committed):
+    """Own the patch intent through direct replacement or validated pending publication."""
     runtime = Path(runtime)
     marker = runtime / ".plugin-restart-required"
     pending = False
@@ -471,33 +471,26 @@ def publish_mobile_install(runtime, installation, *, record_intent, committed):
         nonlocal pending
         pending = True
 
-    if not record_intent and not marker.is_file():
-        yield keep_pending
-        return
     with ExitStack() as stack:
         try:
             stack.enter_context(file_lock(runtime / "plugin-restart.lock", timeout=0.0))
         except FileLockBusy as error:
             raise RestartMarkerBusy("restart marker lock is busy") from error
-        if record_intent:
-            try:
-                previous = marker.read_bytes()
-            except FileNotFoundError:
-                previous = None
-            data = _merge_restart(_parse_marker(previous) if previous is not None else {},
-                                  {"state": "pending-install", "installation": installation})
-        else:
-            data = _read_marker(marker)
         try:
-            if record_intent:
-                _write_marker(marker, data)
+            previous = marker.read_bytes()
+        except FileNotFoundError:
+            previous = None
+        data = _merge_restart(_parse_marker(previous) if previous is not None else {},
+                              {"state": "pending-install", "installation": installation})
+        try:
+            _write_marker(marker, data)
             yield keep_pending
         except BaseException:
-            if record_intent and not pending and _read_marker(marker) == data and not committed():
+            if not pending and _read_marker(marker) == data and not committed():
                 try:
                     _restore_marker_bytes(marker, previous)
                 except OSError as exc:
-                    print("[zusage-plugin] mobile installation intent rollback failed: " + str(exc),
+                    print("[zusage-plugin] patch installation intent rollback failed: " + str(exc),
                           file=sys.stderr)
             raise
         if not pending and data.get("installation") == installation:

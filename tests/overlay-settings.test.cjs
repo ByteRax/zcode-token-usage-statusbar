@@ -662,12 +662,12 @@ test('mobile mode keeps desktop relay authorization in navigation and content in
 });
 test('mobile mode keeps the relay switch read-only and never queues desktop configuration', () => {
   for (const lang of ['zh', 'en']) {
-    const h = relaySettingsHarness({ mobileRelayEnabled: false, mobileRelaySupported: false }, lang, { mobileMode: true });
+    const h = relaySettingsHarness({ mobileRelayEnabled: true, mobileRelaySupported: true }, lang, { mobileMode: true });
     const p = h.panel();
     assert.equal(p.get('.zu-mobile-relay').checked, false);
     assert.equal(p.get('.zu-mobile-relay').disabled, true);
     const status = p.get('.zu-mobile-relay-status').textContent;
-    assert.match(status, lang === 'zh' ? /手机端不可修改此开关/ : /cannot be changed on mobile/);
+    assert.match(status, lang === 'zh' ? /在远控页面为只读.*不显示桌面的当前状态.*桌面用量状态栏.*移动端远程控制/ : /read-only on the Remote Control page.*does not show the current desktop setting.*desktop usage status bar.*Mobile remote control/);
     assert.doesNotMatch(status, /完全退出并重启|Requires a newer desktop plugin/);
     p.toggle(true);
     assert.equal(p.get('.zu-mobile-relay').checked, false);

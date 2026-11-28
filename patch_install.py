@@ -88,6 +88,9 @@ ZCODE_EXE = ZCODE_EXE_DEFAULT
 # install(extra_modify=...) 的能力标记：调用方（overlay_install）按此探测——旧运行目录里的
 # 模块或测试替身没有该常量时不传钩子，install() 的调用形状保持不变。
 EXTRA_MODIFY = True
+PATCH_SUPPLEMENT = hasattr(runtime_lock, "publish_supplement")
+# overlay_install checks this before passing an initial snapshot or consuming diagnostic status.
+REUSE_ARCHIVE_SNAPSHOT = True
 ALIGN = 4
 BLOCK = 4194304
 
@@ -404,10 +407,6 @@ class RelayPatchError(ValueError):
     pass
 
 
-def _digest(data):
-    return hashlib.sha256(data).hexdigest()
-
-
 def inject_for(anchor):
     """锚点 → 注入表达式。锚点形如 relayProtocol=<r>,<b>.disposeBridge；
     注入串插在 `relayProtocol=<r>,` 之后，捕获 <r>.protocol 与 <b> 整体。
@@ -430,8 +429,6 @@ def inject_for_uplink(anchor2):
     if not m:
         raise RelayPatchError("Malformed uplink anchor")
     head = b"onRawTransportPayload:"
-    if not anchor2.startswith(head):
-        raise RelayPatchError("Malformed uplink anchor")
     wrapper, param, _fn, runtime = m.groups()
     bridge = b"__zuBridge"
     while bridge in m.groups():
@@ -449,15 +446,13 @@ def inject_for_uplink(anchor2):
 def _injection_state(prefix):
     """只接受完整、唯一的已知指纹；未知或混合代际一律拒绝。"""
     stash = list(_INJECT_RE.finditer(prefix))
-    uplinks = ([(1, m) for m in _UPLINK_V1_RE.finditer(prefix)]
-               + [(2, m) for m in _UPLINK_V2_RE.finditer(prefix)]
-               + [(2, m) for m in _UPLINK_V2_MARKED_RE.finditer(prefix)])
+    marked = list(_UPLINK_V2_MARKED_RE.finditer(prefix))
+    uplinks = list(_UPLINK_V1_RE.finditer(prefix)) + list(_UPLINK_V2_RE.finditer(prefix)) + marked
     if len(stash) > 1 or prefix.count(_STASH_MARKER) != 2 * len(stash):
         raise RelayPatchError("Unknown or duplicate stash inject")
     if len(uplinks) > 1 or prefix.count(_UPLINK_MARKER) != 2 * len(uplinks):
         raise RelayPatchError("Unknown or duplicate uplink inject")
-    marked = len(_UPLINK_V2_MARKED_RE.findall(prefix))
-    if prefix.count(_UPLINK_GENERATION_MARKER) != marked:
+    if prefix.count(_UPLINK_GENERATION_MARKER) != len(marked):
         raise RelayPatchError("Unknown or duplicate uplink generation marker")
     return stash[0] if stash else None, uplinks[0] if uplinks else None
 
@@ -466,11 +461,10 @@ def _strip_injects(prefix):
     """剥离已知两代注入，逐字节还原 pristine 前缀。"""
     stash, uplink = _injection_state(prefix)
     if uplink:
-        _generation, match = uplink
-        original = (b'onRawTransportPayload:' + match.group('w') + b'(' + match.group('p')
-                    + b'=>' + match.group('f') + b'(' + match.group('r') + b','
-                    + match.group('p') + b'),"onRawTransportPayload")')
-        prefix = prefix[:match.start()] + original + prefix[match.end():]
+        original = (b'onRawTransportPayload:' + uplink.group('w') + b'(' + uplink.group('p')
+                    + b'=>' + uplink.group('f') + b'(' + uplink.group('r') + b','
+                    + uplink.group('p') + b'),"onRawTransportPayload")')
+        prefix = prefix[:uplink.start()] + original + prefix[uplink.end():]
     if stash:
         # 上行还原后重新定位 stash，且注入串两侧必须仍是同一桥的原始锚点。
         match = _INJECT_RE.search(prefix)
@@ -504,12 +498,17 @@ def _split_tail(data):
     return data[:m.start()], data[m.start():]
 
 
-def transform_mobile_entry(data, operation, target=None):
-    """apply 升级旧代并补齐两段；remove 剥离已知注入并保留尾缀。"""
+def transform_mobile_entry(data, operation, target=None, *, package=None):
+    """以同一份原始前缀校验布局并变换钩子，保留 loader 尾缀。"""
     if operation not in ("apply", "remove"):
         raise RelayPatchError("Unknown operation")
+    if isinstance(package, str):
+        raise RelayPatchError(package)
     prefix, tail = _split_tail(data)
     pristine = _strip_injects(prefix)
+    pinned = False
+    if package is not None:
+        target, pinned = _resolve_target(package, pristine)
     if operation == "remove":
         if pristine != prefix and target is None:
             _derive_anchor(pristine)
@@ -522,10 +521,11 @@ def transform_mobile_entry(data, operation, target=None):
     anchor2 = (target or {}).get("anchor2")
     if anchor2 is None:
         anchor2 = _derive_uplink_anchor(pristine)
-    if pristine.count(anchor) != 1:
-        raise RelayPatchError("Missing or duplicate relay anchor")
-    if pristine.count(anchor2) != 1:
-        raise RelayPatchError("Missing or duplicate uplink anchor")
+    if not pinned:
+        if pristine.count(anchor) != 1:
+            raise RelayPatchError("Missing or duplicate relay anchor")
+        if pristine.count(anchor2) != 1:
+            raise RelayPatchError("Missing or duplicate uplink anchor")
     inject = inject_for(anchor)
     split = anchor.split(b",", 1)[0] + b","  # relayProtocol=<sym>,
     patched_anchor = split + inject + anchor[len(split):]
@@ -543,69 +543,56 @@ def _derive_anchor(prefix):
     return b"relayProtocol=" + relay + b"," + bridge + b".disposeBridge"
 
 
-def _resolve_target(package, data):
-    """指纹表优先；表外版本推导锚点。已打补丁的资产先剥离两段注入得到原始前缀
-    再做 SHA/锚点校验（注入恰好插在锚点中间，未剥离时锚点不连续）。"""
+def _resolve_target(package, pristine):
+    """返回目标锚点及是否已按登记指纹校验其唯一性。"""
     version = package.get("version")
-    prefix, _tail = _split_tail(data)
-    pristine = _strip_injects(prefix)
     target = next((t for t in MOBILE_RELAY_TARGETS if t["version"] == version), None)
     if target is not None:
-        if _digest(pristine) != target["sha256"]:
+        if hashlib.sha256(pristine).hexdigest() != target["sha256"]:
             raise RelayPatchError(f"asset hash mismatch for pinned version {version}")
         if pristine.count(target["anchor"]) != 1:
             raise RelayPatchError("Pinned anchor drift")
-        if pristine.count(target.get("anchor2", b"\x00")) != 1:
+        anchor2 = target.get("anchor2")
+        if anchor2 is None or pristine.count(anchor2) != 1:
             raise RelayPatchError("Pinned uplink anchor drift")
-        return dict(target, derived=False)
-    anchor = _derive_anchor(pristine)
-    anchor2 = _derive_uplink_anchor(pristine)
-    return {"version": version, "asset": ASSET, "anchor": anchor,
-            "anchor2": anchor2, "derived": True}
+        return target, True
+    return {"anchor": _derive_anchor(pristine), "anchor2": _derive_uplink_anchor(pristine)}, False
 
 
-
-
-def _mobile_archive_context(asar_path, entry):
-    _fingerprint, _entry, package = _archive_snapshot(asar_path)
-    if _entry != entry:
-        raise PendingTmpError("archive entry changed during inspection")
-    return package
-
-
-def _mobile_for_archive(asar_path, entry, operation, package=None):
-    if package is None:
-        package = _mobile_archive_context(asar_path, entry)
-    target = _resolve_target(package, entry)
-    return transform_mobile_entry(entry, operation, target)
-
-
-_LAST_MOBILE_STATUS = {"status": "unknown"}
-
-
-def mobile_status():
-    return dict(_LAST_MOBILE_STATUS)
+def _relay_check_status(entry, package):
+    """Return whether the current hooks are complete along with the localized detail."""
+    try:
+        updated = transform_mobile_entry(entry, "apply", package=package)
+    except RelayPatchError as error:
+        return False, L(f"无法检查（{error}）", f"unavailable ({error})")
+    if updated == entry:
+        return True, L("已注入", "patched")
+    if _STASH_MARKER in entry or _UPLINK_MARKER in entry or _UPLINK_GENERATION_MARKER in entry:
+        return False, L("可升级或补齐", "can be upgraded or completed")
+    return False, L("未注入，可补装", "not patched; install can add it")
 
 
 def _mobile_check_status(asar_path, entry):
+    """Compatibility entry point for an older overlay_install doctor."""
     try:
-        updated = _mobile_for_archive(asar_path, entry, "apply")
+        _, current, package = _archive_snapshot(asar_path)
+        if current != entry:
+            raise PendingTmpError("archive entry changed during inspection")
     except (OSError, ValueError, TypeError, KeyError, OverflowError, struct.error) as error:
         return L(f"无法检查（{error}）", f"unavailable ({error})")
-    if updated == entry:
-        return L("已注入", "patched")
-    if _STASH_MARKER in entry or _UPLINK_MARKER in entry or _UPLINK_GENERATION_MARKER in entry:
-        return L("可升级或补齐", "can be upgraded or completed")
-    return L("未注入，可补装", "not patched; install can add it")
+    return _relay_check_status(entry, package)[1]
 
 
-
-def read_header(f):
+def read_header(f, *, digest=None):
     f.seek(0)
-    a, b, c, d = struct.unpack("<4I", f.read(16))
+    prefix = f.read(16)
+    a, b, c, d = struct.unpack("<4I", prefix)
     assert a == 4, f"unexpected pickle prefix {a}"
-    header = json.loads(f.read(d))
-    return header, 8 + b
+    raw = f.read(d)
+    if digest is not None:
+        digest.update(prefix)
+        digest.update(raw)
+    return json.loads(raw), 8 + b
 
 
 def read_asar_package(asar_path, pi=None):
@@ -817,12 +804,12 @@ class PendingTmpError(ValueError):
     """来源/身份不可信：立即取消收尾，保留文件供诊断，不按文件占用重试。"""
 
 
-class MobileSourceChanged(PendingTmpError):
-    """手机补装的锁外构建遇到源归档变化；调用方可基于新入口重建一次。"""
+class PatchSourceChanged(PendingTmpError):
+    """补装的锁外构建遇到源归档变化；调用方可基于新入口重建一次。"""
 
 
-class MobileLockBusy(TimeoutError):
-    """零等待手机补装锁竞争，可由 SessionStart 按预算退避重试。"""
+class PatchLockBusy(TimeoutError):
+    """零等待补装锁竞争，可由 SessionStart 按预算退避重试。"""
 
 
 class PendingTmpBusy(PendingTmpError):
@@ -856,60 +843,111 @@ def file_stamp(path):
     return _stat_stamp(Path(path).lstat())
 
 
+def _hash_up_to(stream, digest, offset):
+    """Feed the bytes up to an absolute offset into the same running digest."""
+    if offset < digest.size:
+        raise PendingTmpError("archive assets overlap")
+    stream.seek(digest.size)
+    while digest.size < offset:
+        block = stream.read(min(BLOCK, offset - digest.size))
+        if not block:
+            raise PendingTmpError("file truncated while hashing")
+        digest.update(block)
+
+
 def source_fingerprint(path):
     """流式 SHA256；hash 前后及打开的 inode 都须一致，避免读取升级中的混合包。"""
     before = file_stamp(path)
-    digest = hashlib.sha256()
+    digest = _Digest()
     with open(path, "rb") as stream:
         if _stat_stamp(os.fstat(stream.fileno())) != before:
             raise PendingTmpError("file changed before hashing")
-        for block in iter(lambda: stream.read(BLOCK), b""):
-            digest.update(block)
+        _hash_up_to(stream, digest, before["size"])
         if _stat_stamp(os.fstat(stream.fileno())) != before:
             raise PendingTmpError("file changed while hashing")
     if file_stamp(path) != before:
         raise PendingTmpError("file replaced while hashing")
-    return dict(before, sha256=digest.hexdigest())
+    return dict(before, sha256=digest.hash.hexdigest())
+
+
+def _read_relay_package(raw, nodes, entry):
+    if raw is None:
+        raise RelayPatchError("Missing packed package.json")
+    package = json.loads(raw.decode("utf-8"))
+    if (not isinstance(package, dict)
+            or (package.get("name"), package.get("type")) != ("@zcode/desktop", "module")):
+        raise RelayPatchError("Unknown host package")
+    if b"sourceMappingURL" in entry or any(
+            item in nodes for item in (ASSET + ".map", ASSET[:-3] + ".map")):
+        raise RelayPatchError("Unverified source map layout")
+    return package
+
+
+def _archive_extent(node, base, size):
+    offset = base + int(node["offset"])
+    length = int(node["size"])
+    if offset < base or length < 0 or offset + length > size:
+        raise PendingTmpError("archive asset extent is invalid")
+    return offset, length
 
 
 def _archive_snapshot(path, *, with_hash=False):
-    """从同一文件句柄读取入口与包元数据；仅写路径计算整包 SHA。"""
+    """Read the entry and package metadata, hashing those same bytes in write paths."""
     before = file_stamp(path)
-    digest = hashlib.sha256() if with_hash else None
+    digest = _Digest() if with_hash else None
+    entry_path, package_path = "/" + ENTRY, "/package.json"
+    read_errors = (OSError, ValueError, TypeError, KeyError, OverflowError, struct.error)
     with open(path, "rb") as stream:
         if _stat_stamp(os.fstat(stream.fileno())) != before:
             raise PendingTmpError("file changed before archive read")
-        header, base = read_header(stream)
+        header, base = read_header(stream, digest=digest)
         nodes = dict(iter_files(header))
-        entry_node = nodes["/" + ENTRY]
-        stream.seek(base + int(entry_node["offset"]))
-        entry = stream.read(int(entry_node["size"]))
-        if len(entry) != int(entry_node["size"]):
-            raise PendingTmpError("archive entry truncated")
-        package_node = nodes.get("/package.json")
-        if (not isinstance(package_node, dict) or package_node.get("unpacked")
-                or "size" not in package_node or "offset" not in package_node):
-            raise RelayPatchError("Missing packed package.json")
-        stream.seek(base + int(package_node["offset"]))
-        package = json.loads(stream.read(int(package_node["size"])).decode("utf-8"))
-        if (not isinstance(package, dict)
-                or (package.get("name"), package.get("type")) != ("@zcode/desktop", "module")):
-            raise RelayPatchError("Unknown host package")
-        if b"sourceMappingURL" in entry or any(
-                item in nodes for item in (ASSET + ".map", ASSET[:-3] + ".map")):
-            raise RelayPatchError("Unverified source map layout")
+        entry_offset, entry_size = _archive_extent(nodes[entry_path], base, before["size"])
+        regions = [(entry_offset, entry_size, entry_path)]
+        package, package_node = None, nodes.get(package_path)
+        if isinstance(package_node, dict) and not package_node.get("unpacked"):
+            try:
+                offset, length = _archive_extent(package_node, base, before["size"])
+                if offset < entry_offset + entry_size and entry_offset < offset + length:
+                    raise RelayPatchError("package.json overlaps the archive entry")
+                regions.append((offset, length, package_path))
+            except read_errors as error:
+                package = str(error)
+
+        payloads = {}
+        for offset, length, name in sorted(regions):
+            try:
+                if digest is None:
+                    stream.seek(offset)
+                else:
+                    _hash_up_to(stream, digest, offset)
+                data = stream.read(length)
+                if digest is not None:
+                    digest.update(data)
+                if len(data) != length:
+                    raise PendingTmpError(f"archive asset truncated: {name}")
+                payloads[name] = data
+            except read_errors as error:
+                if name == entry_path:
+                    raise
+                package = str(error)
+
+        entry = payloads[entry_path]
+        if package is None:
+            try:
+                package = _read_relay_package(payloads.get(package_path), nodes, entry)
+            except read_errors as error:
+                # Loader and bridge work can proceed when only relay metadata is unavailable.
+                package = str(error)
         if digest is not None:
-            stream.seek(0)
-            for block in iter(lambda: stream.read(BLOCK), b""):
-                digest.update(block)
+            _hash_up_to(stream, digest, before["size"])
         if _stat_stamp(os.fstat(stream.fileno())) != before:
             raise PendingTmpError("archive changed while reading")
     if file_stamp(path) != before:
         raise PendingTmpError("archive replaced while reading")
-    fingerprint = dict(before)
     if digest is not None:
-        fingerprint["sha256"] = digest.hexdigest()
-    return fingerprint, entry, package
+        before["sha256"] = digest.hash.hexdigest()
+    return before, entry, package
 
 
 def _same_stamp(path, fingerprint):
@@ -926,6 +964,16 @@ def _same_fingerprint(current, recorded):
     缺字段或非对象（未经校验的 previous_tmp）按不匹配处理。"""
     return isinstance(recorded, dict) and all(
         recorded.get(key) == value for key, value in current.items())
+
+
+def _source_for_repack(inspection):
+    """Bind the full source digest to the entry and metadata used to plan the patch."""
+    stamp, entry, package = inspection
+    source, current_entry, current_package = _archive_snapshot(ASAR, with_hash=True)
+    if (not _same_fingerprint(stamp, source) or current_entry != entry
+            or current_package != package):
+        raise PendingTmpError("archive source content changed during inspection")
+    return source
 
 
 def _load_tmp_metadata():
@@ -1136,12 +1184,11 @@ def _same_renamed_file(current, before):
     return all(current[key] == before[key] for key in ("size", "mtime_ns", "dev", "ino"))
 
 
-def _publish_pending(stage, source, operation, previous, *, validated_mobile=None, fingerprint=None):
-    """按 journal→原子发布→sidecar 落成 TMP。普通调用完整校验；手机只复用锁外校验的私有 stage。
+def _publish_pending(stage, source, operation, previous, *, validated=None, fingerprint=None):
+    """按 journal→原子发布→sidecar 落成 TMP。可复用已在锁外校验的私有 stage。
     fingerprint 是本进程重打包边写边算的 stage 指纹：有则免掉 stage 与落成后 TMP 的两次整包回读。"""
-    mobile = validated_mobile is not None
-    meta = (_checked_tmp_metadata(stage, source, operation, fingerprint) if not mobile
-            else dict(validated_mobile))
+    meta = (dict(validated) if validated is not None
+            else _checked_tmp_metadata(stage, source, operation, fingerprint))
     # Two files cannot be atomically published together. Persist a cancelled
     # ownership journal first, so any interruption is safe and recoverable.
     old_stamp = _tmp_stamp()
@@ -1155,21 +1202,14 @@ def _publish_pending(stage, source, operation, previous, *, validated_mobile=Non
         # stage 是刚落盘的整包：Windows 上杀毒 / 索引的瞬时句柄会让裸 os.replace 被拒，
         # 而这次拒绝的代价是整轮「待替换包生成失败」——有界重试，永久性拒绝照常上抛走回滚
         _replace_retrying(stage, TMP)
-        if mobile:
-            # This is an exclusive private stage whose content and syntax were fully checked
-            # outside the target lock. Preserve that SHA across the same-directory rename;
-            # the monitor still performs its own complete verification before replacement.
-            moved = file_stamp(TMP)
-            if not _same_renamed_file(moved, meta["tmp"]):
-                raise PendingTmpError("published TMP does not match validated mobile stage")
+        moved = file_stamp(TMP)
+        same_file = _same_renamed_file(moved, meta["tmp"])
+        if validated is not None and not same_file:
+            raise PendingTmpError("published TMP does not match validated stage")
+        if same_file and (validated is not None or fingerprint is not None):
             meta["tmp"] = dict(moved, sha256=meta["tmp"]["sha256"])
         else:
-            moved = file_stamp(TMP)
-            if fingerprint is None or not _same_renamed_file(moved, meta["tmp"]):
-                meta["tmp"] = source_fingerprint(TMP)
-            else:
-                # 同目录 rename 只动 ctime：内容未变，沿用写入期摘要，只换身份戳
-                meta["tmp"] = dict(moved, sha256=meta["tmp"]["sha256"])
+            meta["tmp"] = source_fingerprint(TMP)
         _same_stamp(ASAR, source)
         _atomic_tmp_metadata(meta)
     except BaseException:
@@ -1184,7 +1224,7 @@ def reclaim_stale_journal():
     """回收被硬杀的发布留下的空 journal（cancelled+publishing、无 TMP、早于
     STALE_STAGE_SECONDS）。发布窗口只有秒级且全程持目标锁：锁内看到超龄的 publishing
     journal 必然无主；没有 TMP 就没有可收尾的包，留着只会让只读 sidecar 让位的调用链
-    （手机中继补丁）永久 deferred。带 TMP 的（rename 后被杀）不在此列——那是可认领的完整
+    （远控中继补丁）永久 deferred。带 TMP 的（rename 后被杀）不在此列——那是可认领的完整
     包，交 _owned_tmp_metadata 由下一次 publish 重发；空壳对 publish 本身无碍（同样被认领后
     改写），所以只有「只读 sidecar 就让位」的链需要在让位前调用本函数。调用方必须已持有
     _target_lock。"""
@@ -1204,10 +1244,10 @@ def reclaim_stale_journal():
 STALE_STAGE_SECONDS = 600
 
 
-def _sweep_stale_stages(directory, *, mobile_only=False):
+def _sweep_stale_stages(directory, *, supplement=False):
     """清理过期 stage；手机使用普通和旧版手机清扫器都不匹配的独立前缀。"""
     now = time.time()
-    prefix = ".zusage-mobile-stage-" if mobile_only else TMP.name + "."
+    prefix = ".zusage-mobile-stage-" if supplement else TMP.name + "."
     for stale in Path(directory).glob(prefix + "*.stage"):
         try:
             if now - stale.stat().st_mtime > STALE_STAGE_SECONDS:
@@ -1217,8 +1257,8 @@ def _sweep_stale_stages(directory, *, mobile_only=False):
 
 
 @contextmanager
-def _archive_stage(*, mobile_only=False):
-    prefix = ".zusage-mobile-stage-" if mobile_only else TMP.name + "."
+def _archive_stage(*, supplement=False):
+    prefix = ".zusage-mobile-stage-" if supplement else TMP.name + "."
     fd, name = bounded_mkstemp(prefix=prefix, suffix=".stage", dir=TMP.parent)
     os.close(fd)
     stage = Path(name)
@@ -1249,36 +1289,42 @@ def _repack_stage(stage, modify):
 
 
 @contextmanager
-def _mobile_lock(path, busy_detail):
+def _patch_lock(path, busy_detail):
     with ExitStack() as stack:
         try:
             stack.enter_context(file_lock(path, timeout=0.0))
         except runtime_lock.FileLockBusy as error:
-            raise MobileLockBusy(busy_detail) from error
+            raise PatchLockBusy(busy_detail) from error
         yield
 
 
-def _check_mobile_source(source):
+def _check_patch_source(source):
     try:
         _same_stamp(ASAR, source)
     except PendingTmpError as error:
-        raise MobileSourceChanged(str(error)) from error
+        raise PatchSourceChanged(str(error)) from error
 
 
-def _stage_mobile_archive(stage, modify, source):
+def _validate_patch_stage(stage, modify, source):
     """锁外构建并完整验证独占 stage；返回短锁内复验身份所需的凭证。"""
-    _check_mobile_source(source)
+    _check_patch_source(source)
     try:
-        _repack_stage(stage, modify)
+        fingerprint = _repack_stage(stage, modify)
         if not _same_fingerprint(source_fingerprint(ASAR), source):
-            raise MobileSourceChanged("mobile source content changed during build")
-        meta = _checked_tmp_metadata(stage, source, "install")
-        if entry_bytes_of(stage) != modify["/" + ENTRY]:
-            raise PendingTmpError("mobile stage entry differs from intended bytes")
+            raise PatchSourceChanged("patch source content changed during build")
+        meta = _checked_tmp_metadata(stage, source, "install", fingerprint)
+        with stage.open("rb") as stream:
+            header, base = read_header(stream)
+            nodes = dict(iter_files(header))
+            for name, expected in modify.items():
+                node = nodes[name]
+                stream.seek(base + int(node["offset"]))
+                if stream.read(node["size"]) != expected:
+                    raise PendingTmpError(f"stage asset differs from intended bytes: {name}")
         _same_stamp(stage, meta["tmp"])
         return meta
     except PendingTmpError:
-        _check_mobile_source(source)
+        _check_patch_source(source)
         raise
 
 
@@ -1295,11 +1341,11 @@ def _prepare_tmp(modify, operation="install", source=None):
         return _publish_pending(stage, source, operation, previous, fingerprint=fingerprint)
 
 
-def _mobile_pending_exists():
+def _has_pending_artifacts():
     return any(path.exists() or path.is_symlink() for path in (TMP, TMP_META))
 
 
-def _mobile_stage_published(stamp):
+def _patch_stage_published(stamp):
     """Check disk after an interrupted commit, with the target and marker locks still held."""
     try:
         if _same_renamed_file(file_stamp(ASAR), stamp):
@@ -1317,21 +1363,21 @@ def _mobile_stage_published(stamp):
         return True
 
 
-def _commit_mobile_pending(stage, source, validated, installation, record_mobile_intent):
+def _commit_patch_stage(stage, source, validated, installation):
     """目标锁已持有：复查盘面、发布 intent，并直替或在同一把锁内发布 pending。"""
     reclaim_stale_journal()
-    if _mobile_pending_exists():
+    if _has_pending_artifacts():
         return {"status": "deferred", "detail": "existing pending operation"}
 
     stamp = validated["tmp"]
-    _check_mobile_source(source)
+    _check_patch_source(source)
     _same_stamp(stage, stamp)
     try:
-        with runtime_lock.publish_mobile_install(
-                RUNTIME, installation, record_intent=record_mobile_intent,
-                committed=lambda: _mobile_stage_published(stamp)) as keep_pending:
+        with runtime_lock.publish_supplement(
+                RUNTIME, installation,
+                committed=lambda: _patch_stage_published(stamp)) as keep_pending:
             # Recheck identities next to the rename after writing the restart intent.
-            _check_mobile_source(source)
+            _check_patch_source(source)
             _same_stamp(stage, stamp)
             try:
                 os.replace(stage, ASAR)
@@ -1339,41 +1385,42 @@ def _commit_mobile_pending(stage, source, validated, installation, record_mobile
                 if not isinstance(error, PermissionError) and getattr(error, "winerror", None) not in (5, 32):
                     raise
                 try:
-                    _publish_pending(stage, source, "install", None, validated_mobile=validated)
+                    _publish_pending(stage, source, "install", None, validated=validated)
                 except (OSError, PendingTmpError):
-                    _check_mobile_source(source)
+                    _check_patch_source(source)
                     raise
                 keep_pending()
                 return {"status": "pending"}
         return {"status": "patched"}
     except runtime_lock.RestartMarkerBusy as error:
-        raise MobileLockBusy("restart marker lock busy") from error
+        raise PatchLockBusy("restart marker lock busy") from error
 
 
-def _mobile_pending_gate():
+def _supplement_blocked():
     """Only acquire the target lock when a pending artifact needs stale-journal arbitration."""
-    if not _mobile_pending_exists():
+    if not _has_pending_artifacts():
         return False
-    if not hasattr(runtime_lock, "publish_mobile_install"):
+    if not PATCH_SUPPLEMENT:
         return True
     try:
-        with _mobile_lock(ASAR.with_name(ASAR.name + ".zusage.lock"), "target lock busy"):
+        with _patch_lock(ASAR.with_name(ASAR.name + ".zusage.lock"), "target lock busy"):
             reclaim_stale_journal()
-    except MobileLockBusy:
+    except PatchLockBusy:
         return True  # A pending operation was already observed. Let its owner finish.
-    return _mobile_pending_exists()
+    return _has_pending_artifacts()
 
 
-def _prepare_mobile_archive(modify, source, record_mobile_intent):
+def _apply_patch_plan(entry, modify, source):
+    # Coordinate with sessions still running the older relay-only installer.
     build_lock_path = ASAR.with_name(ASAR.name + ".zusage.mobile-build.lock")
-    with _mobile_lock(build_lock_path, "mobile build lock busy"):
-        _sweep_stale_stages(TMP.parent, mobile_only=True)
-        with _archive_stage(mobile_only=True) as stage:
-            validated = _stage_mobile_archive(stage, modify, source)
+    with _patch_lock(build_lock_path, "patch build lock busy"):
+        _sweep_stale_stages(TMP.parent, supplement=True)
+        with _archive_stage(supplement=True) as stage:
+            validated = _validate_patch_stage(stage, modify, source)
             installation = {"asar": validated["asar"],
-                            "entryHash": hashlib.sha256(modify["/" + ENTRY]).hexdigest()}
-            with _mobile_lock(ASAR.with_name(ASAR.name + ".zusage.lock"), "target lock busy"):
-                return _commit_mobile_pending(stage, source, validated, installation, record_mobile_intent)
+                            "entryHash": hashlib.sha256(modify.get("/" + ENTRY, entry)).hexdigest()}
+            with _patch_lock(ASAR.with_name(ASAR.name + ".zusage.lock"), "target lock busy"):
+                return _commit_patch_stage(stage, source, validated, installation)
 
 
 def prepare_tmp(modify, operation="install", source=None):
@@ -1575,18 +1622,15 @@ def sudo_hint(operation="install"):
             '  sudo env HOME="$HOME" PATH="$PATH" python3 "{}" {}'.format(script, cmd).rstrip()))
 
 
-def _reusable_pending_install(new_entry, *, verified=None):
+def _reusable_pending_install(new_entry):
     """磁盘已有「同来源、同运行时、入口与本次安装目标完全一致」的有效待收尾包时
     判定可复用（issue #120）：pending_tmp 以 stat 级校验 sidecar 的 validated/runtime
     与来源、TMP 的 stamp 未变——sidecar 发布时已做过整包 hash、自检与语法检查，
     stamp 未变即内容未变；再比对 TMP 入口与本次将写入的 new_entry 逐字节一致。
     最终替换仍走原有全量校验链。任何不确定（文件缺失、stamp 变化、结构异常）都
-    返回 False 走原有重打包路径：复用只是优化，不是新的信任边界。显式安装报告
-    已排定时传入 verified，要求当前包正是本次完整校验过的包。"""
+    返回 False 走原有重打包路径。"""
     try:
-        meta = pending_tmp("install")
-        if verified is not None and meta != verified.get("metadata"):
-            return False
+        pending_tmp("install")
         return entry_bytes_of(TMP) == new_entry
     except (OSError, ValueError, AssertionError, KeyError, struct.error):
         return False
@@ -1614,81 +1658,80 @@ def _extra_modifications(hook, source):
         return {}
 
 
-def install(finalize=False, before_publish=None, mobile_only=False, *, record_mobile_intent=False,
-            extra_modify=None):
-    """Serialize install/remove/finalize; optional callback records a new package intent.
+def supplement_patches(plan_bridge=None, *, snapshot=None):
+    """Apply available archive patches to the current loader in one short-lock transaction."""
+    for attempt in range(2):
+        report = {"archive": {"status": "present"}}
+        try:
+            if _supplement_blocked():
+                status = {"status": "deferred", "detail": "existing pending operation"}
+                return {"archive": status, "relay": status, "bridge": status}
+            if attempt == 0 and snapshot is not None:
+                inspection = snapshot
+                _check_patch_source(inspection[0])
+            else:
+                try:
+                    inspection = _archive_snapshot(ASAR)
+                except PendingTmpError as error:
+                    raise PatchSourceChanged(str(error)) from error
+            stamp, entry, package = inspection
+            loader_lines = [match.group() for match in ZUSAGE_LINE_RE.finditer(entry)]
+            if loader_lines != [INJECT_LINE.encode()]:
+                status = {"status": "deferred", "detail": "loader path does not match runtime"}
+                return {"archive": status, "relay": status, "bridge": status}
 
-    mobile_only 仅供已有当前 loader 的 SessionStart 补装手机钩子，不改变 loader 路径。
-    extra_modify() 只在完整安装确需生成新包时调用：返回
-    {"source": <计算改写时的归档指纹>, "modify": {归档内路径: bytes}} 且来源指纹与本次一致时，
-    改写并入同一次重打包（specs/asar-single-transaction.md）；其余情形一律不并入。
-    """
-    global _LAST_MOBILE_STATUS
+            modify = {}
+            if plan_bridge is not None:
+                report["bridge"], bridge_modify = plan_bridge(ASAR, stamp)
+                modify.update(bridge_modify)
+            try:
+                relay_entry = transform_mobile_entry(entry, "apply", package=package)
+                if relay_entry == entry:
+                    report["relay"] = {"status": "present"}
+                else:
+                    modify["/" + ENTRY] = relay_entry
+                    report["relay"] = {"status": "planned"}
+            except RelayPatchError as error:
+                report["relay"] = {"status": "skipped-unknown", "detail": str(error)}
+            _check_patch_source(stamp)
+            if not modify:
+                return report
+            if not PATCH_SUPPLEMENT:
+                raise PendingTmpError("patch publication unavailable")
+            try:
+                source = _source_for_repack(inspection)
+            except PendingTmpError as error:
+                raise PatchSourceChanged(str(error)) from error
+            except (OSError, ValueError, TypeError, KeyError, OverflowError, struct.error):
+                _check_patch_source(stamp)
+                raise
+            if not target_writable():
+                raise PermissionError("target not writable")
+            outcome = _apply_patch_plan(entry, modify, source)
+            if outcome["status"] == "pending":
+                launch_monitor(time.time())
+        except PatchSourceChanged as error:
+            if attempt == 0:
+                continue
+            outcome = {"status": "deferred", "detail": str(error)}
+        except PatchLockBusy as error:
+            detail = "existing pending operation" if _has_pending_artifacts() else str(error)
+            outcome = {"status": "deferred", "detail": detail}
+        except Exception as error:
+            outcome = {"status": "skipped-error", "detail": str(error)}
+            if isinstance(error, PermissionError):
+                outcome["permission"] = True
+        report["archive"] = outcome
+        for key in ("bridge", "relay"):
+            if report.get(key, {}).get("status", "planned") == "planned":
+                report[key] = dict(report.get(key, {}), **outcome)
+        return report
+
+
+def install(finalize=False, before_publish=None, *, extra_modify=None):
+    """Install the loader and available archive patches in a single package."""
     if finalize:
         return _install(finalize=True)
-    _LAST_MOBILE_STATUS = {"status": "not-run"}
-    if mobile_only:
-        _LAST_MOBILE_STATUS = {"status": "installing"}
-        for attempt in range(2):
-            try:
-                if _mobile_pending_gate():
-                    _LAST_MOBILE_STATUS = {"status": "deferred", "detail": "existing pending operation"}
-                    return False
-                try:
-                    snapshot, entry, package = _archive_snapshot(ASAR)
-                except PendingTmpError as error:
-                    raise MobileSourceChanged(str(error)) from error
-                loader_lines = [match.group() for match in ZUSAGE_LINE_RE.finditer(entry)]
-                if loader_lines != [INJECT_LINE.encode()]:
-                    _LAST_MOBILE_STATUS = {"status": "deferred", "detail": "loader path does not match runtime"}
-                    return False
-                mobile_entry = _mobile_for_archive(ASAR, entry, "apply", package=package)
-
-                if mobile_entry == entry:
-                    # The read-only fast path deliberately takes neither archive lock.
-                    _check_mobile_source(snapshot)
-                    _LAST_MOBILE_STATUS = {"status": "present"}
-                    return True
-                if not hasattr(runtime_lock, "publish_mobile_install"):
-                    _LAST_MOBILE_STATUS = {"status": "skipped-error", "detail": "mobile publication unavailable"}
-                    return False
-                # A source package SHA is only needed if we will build an archive.
-                try:
-                    source, entry_again, package_again = _archive_snapshot(ASAR, with_hash=True)
-                except PendingTmpError as error:
-                    raise MobileSourceChanged(str(error)) from error
-                except (OSError, ValueError, TypeError, KeyError, OverflowError, struct.error):
-                    _check_mobile_source(snapshot)
-                    raise
-                if (not _same_fingerprint(snapshot, source) or entry_again != entry
-                        or package_again != package):
-                    raise MobileSourceChanged("mobile source content changed during inspection")
-                if not target_writable():
-                    _LAST_MOBILE_STATUS = {"status": "skipped-error", "detail": "target not writable"}
-                    return False
-                result = _prepare_mobile_archive({"/" + ENTRY: mobile_entry}, source, record_mobile_intent)
-                _LAST_MOBILE_STATUS = result
-                if result["status"] == "pending":
-                    launch_monitor(time.time())
-                return result["status"] == "patched"
-            except MobileSourceChanged as error:
-                if attempt == 0:
-                    continue
-                _LAST_MOBILE_STATUS = {"status": "deferred", "detail": str(error)}
-                return False
-            except MobileLockBusy as error:
-                detail = "existing pending operation" if _mobile_pending_exists() else str(error)
-                _LAST_MOBILE_STATUS = {"status": "deferred", "detail": detail}
-                return False
-            except RelayPatchError as error:
-                _LAST_MOBILE_STATUS = {"status": "skipped-unknown", "detail": str(error)}
-                return False
-            except Exception as error:
-                _LAST_MOBILE_STATUS = {"status": "skipped-error", "detail": str(error)}
-                print(L(f"手机补装失败（已忽略）：{error}", f"Mobile supplement failed: {error}"))
-                return False
-        return False
-
     assert LOADER.exists(), L(f"loader 缺失：{LOADER}", f"loader missing: {LOADER}")
     if not target_writable():
         sudo_hint()
@@ -1703,7 +1746,6 @@ def install(finalize=False, before_publish=None, mobile_only=False, *, record_mo
 
 def _install(finalize=False, before_publish=None, extra_modify=None):
     """返回 True=已安装/已指向当前目录，False=失败或待收尾。"""
-    global _LAST_MOBILE_STATUS
     if finalize:
         try:
             ok = finalize_tmp(operation="install")
@@ -1716,37 +1758,34 @@ def _install(finalize=False, before_publish=None, extra_modify=None):
         return ok
     assert LOADER.exists(), L(f"loader 缺失：{LOADER}", f"loader missing: {LOADER}")
     try:
-        source = source_fingerprint(ASAR)  # 必须在读取待修改入口和 repack 前取得。
-        entry = entry_bytes_of(ASAR)
-        _same_stamp(ASAR, source)
-    except (OSError, PendingTmpError) as e:
+        inspection = _archive_snapshot(ASAR)
+        stamp, entry, package = inspection
+        try:
+            mobile_entry = transform_mobile_entry(entry, "apply", package=package)
+        except RelayPatchError as error:
+            mobile_entry = entry
+            print(L(f"远控中继布局无法验证（{error}），保留原代码，继续安装用量状态栏。",
+                    f"Could not verify the remote control relay layout ({error}). Preserving the existing code and continuing the status bar install."))
+        loader_line = INJECT_LINE.encode()
+        new_entry = ZUSAGE_LINE_RE.sub(b"", mobile_entry) + loader_line
+        _same_stamp(ASAR, stamp)
+        changed = new_entry != entry
+        reuse_pending = changed and _reusable_pending_install(new_entry)
+        source = _source_for_repack(inspection) if changed and not reuse_pending else None
+    except (OSError, ValueError, AssertionError, KeyError, TypeError, OverflowError, struct.error) as e:
         print(L(f"来源校验失败：{e}", f"Source validation failed: {e}"))
         return False
-    try:
-        mobile_entry = _mobile_for_archive(ASAR, entry, "apply")
-        mobile_status = "patched" if mobile_entry != entry else "present"
-    except (OSError, KeyError, ValueError, TypeError, OverflowError, struct.error) as error:
-        # OSError：entry_bytes_of 之后的这次读档也会撞上瞬时占用（Windows 上杀软/索引器正开着
-        # app.asar，WinError 32）。穿出去会被 install() 的 except OSError 报成「安装锁获取
-        # 失败」；按布局无法验证处理——手机补丁留原样，状态条照常安装，之后的 SessionStart
-        # 手机补装再补。
-        mobile_entry = entry
-        mobile_status = "skipped-unknown"
-        print(L(f"手机中继补丁未更改（{error}）", f"Mobile relay patch left unchanged ({error})"))
-    mobile_changed = mobile_status == "patched"
-    _LAST_MOBILE_STATUS = {"status": "installing" if mobile_changed else mobile_status}
-    stripped = ZUSAGE_LINE_RE.sub(b"", mobile_entry)   # 剥离任何旧注入行（含指向旧目录的）
-    if not mobile_changed and stripped + INJECT_LINE.encode() == entry:
+    if not changed:
         print(L("已安装，注入行已指向当前目录。", "Already installed; the injection points at the current directory."))
         cleanup_legacy_bak()
         return True
 
-    new_entry = stripped + INJECT_LINE.encode()
-    if stripped != entry:
+    original_without_loader = ZUSAGE_LINE_RE.sub(b"", entry)
+    if original_without_loader != entry and original_without_loader + loader_line != entry:
         print(L("检测到旧注入行（可能指向旧目录），将替换为新路径。",
                 "Old injection line detected (possibly pointing to an old directory); it will be replaced with the new path."))
     verified = {}
-    if _reusable_pending_install(new_entry):
+    if reuse_pending:
         # 客户端持续运行期间每次 SessionStart 自动安装都会走到这里：直接复用磁盘上
         # 已排定的待收尾包，不再整包重打包/重写（issue #120 的写放大）。不新建意图。
         print(L("已有有效的待收尾包（内容一致），跳过重打包。",
@@ -1767,8 +1806,6 @@ def _install(finalize=False, before_publish=None, extra_modify=None):
             except PendingTmpError:
                 pass
         except (OSError, PendingTmpError) as e:
-            if mobile_changed:
-                _LAST_MOBILE_STATUS = {"status": "skipped-error", "detail": str(e)}
             print(L(f"待替换包生成失败，未替换：{e}", f"Pending package preparation failed; not replaced: {e}"))
             return False
     if client_running():
@@ -1778,21 +1815,13 @@ def _install(finalize=False, before_publish=None, extra_modify=None):
                     "\nZCode is running, but the asar was replaced atomically (running processes keep reading the old data)."))
             print(L("重启 ZCode 后悬浮条生效。若弹出了监控窗口，它会确认结果后自动关闭。",
                     "The floating bar activates after restarting ZCode. If a monitor window opened, it confirms the result and closes automatically."))
-            if _LAST_MOBILE_STATUS.get("status") == "installing":
-                _LAST_MOBILE_STATUS = {"status": "patched"}
             cleanup_legacy_bak()
             launch_monitor(time.time())
             return True
         except PendingTmpError as e:
-            if _LAST_MOBILE_STATUS.get("status") == "installing":
-                _LAST_MOBILE_STATUS = {"status": "skipped-error", "detail": str(e)}
             print(L(f"待替换包已失效，未替换：{e}", f"Pending package invalidated; not replaced: {e}"))
             return False
         except OSError as e:
-            if _LAST_MOBILE_STATUS.get("status") == "installing":
-                _LAST_MOBILE_STATUS = {
-                    "status": "pending" if _reusable_pending_install(new_entry, verified=verified) else "skipped-error",
-                    "detail": str(e)}
             tool = RUNTIME / "patch_install.py"
             win_why = L("Windows 下运行中的 ZCode 会锁定 app.asar，这是预期现象而非安装故障。",
                         "On Windows a running ZCode locks app.asar; this is expected, not an install fault. ") if IS_WIN else ""
@@ -1804,27 +1833,15 @@ def _install(finalize=False, before_publish=None, extra_modify=None):
             return False
     try:
         if not _replace_pending("install", verified=verified, client_closed=lambda: not client_running()):
-            if _LAST_MOBILE_STATUS.get("status") == "installing":
-                matches = _reusable_pending_install(new_entry, verified=verified)
-                _LAST_MOBILE_STATUS = {
-                    "status": "pending" if matches else "skipped-error",
-                    "detail": "client is running" if matches else "pending package changed"}
             launch_monitor(time.time())
             return False
     except PendingTmpError as e:
-        if _LAST_MOBILE_STATUS.get("status") == "installing":
-            _LAST_MOBILE_STATUS = {"status": "skipped-error", "detail": str(e)}
         print(L(f"待替换包已失效，未替换：{e}", f"Pending package invalidated; not replaced: {e}"))
         return False
     except OSError as e:
-        if _LAST_MOBILE_STATUS.get("status") == "installing":
-            _LAST_MOBILE_STATUS = {
-                "status": "pending" if _reusable_pending_install(new_entry, verified=verified) else "skipped-error",
-                "detail": str(e)}
         print(L(f"替换失败，监控将等待退出并重试：{e}", f"Replacement failed; monitor will wait for exit and retry: {e}"))
         launch_monitor(time.time())
         return False
-    _LAST_MOBILE_STATUS = {"status": "patched" if mobile_changed else mobile_status}
     print(L("完成。启动 ZCode 即可在窗口底部看到悬浮条。", "Done. Start ZCode and the floating bar appears at the bottom of the window."))
     cleanup_legacy_bak()
     launch_monitor(time.time())
@@ -1877,22 +1894,21 @@ def _remove():
     返回 True=已卸载/本就未注入，False=需人工处理（替换失败待收尾）。"""
     try:
         _cancel_pending_install()  # 即使目标未注入，也不能让旧 install TMP 在 optout 后重注入。
-        source = source_fingerprint(ASAR)
-        old = entry_bytes_of(ASAR)
-        _same_stamp(ASAR, source)
-    except (OSError, PendingTmpError) as e:
+        inspection = _archive_snapshot(ASAR)
+        stamp, original, package = inspection
+        old = original
+        if (_STASH_MARKER in old or _UPLINK_MARKER in old or _UPLINK_GENERATION_MARKER in old):
+            try:
+                old = transform_mobile_entry(old, "remove", package=package)
+            except RelayPatchError as e:
+                print(L(f"无法安全移除远控中继补丁：{e}", f"Cannot safely remove the mobile relay patch: {e}"))
+                return False
+        stripped = ZUSAGE_LINE_RE.sub(b"", old)
+        _same_stamp(ASAR, stamp)
+        source = _source_for_repack(inspection) if stripped != original else None
+    except (OSError, ValueError, AssertionError, KeyError, TypeError, OverflowError, struct.error) as e:
         print(L(f"卸载安全校验失败，未替换：{e}", f"Remove safety validation failed; not replaced: {e}"))
         return False
-    original = old
-    if (_STASH_MARKER in old or _UPLINK_MARKER in old or _UPLINK_GENERATION_MARKER in old):
-        try:
-            old = _mobile_for_archive(ASAR, old, "remove")
-        except (OSError, KeyError, ValueError, TypeError, OverflowError, struct.error) as e:
-            # OSError 同 _install：读不到归档（含 Windows 瞬时占用）就无法安全剥离手机注入，
-            # 按原语义失败并说明原因，不穿成 remove() 的「卸载锁获取失败」。
-            print(L(f"无法安全移除手机中继补丁：{e}", f"Cannot safely remove the mobile relay patch: {e}"))
-            return False
-    stripped = ZUSAGE_LINE_RE.sub(b"", old)
     if stripped == original:
         print(L("当前 asar 未注入。", "The current asar is not injected."))
         cleanup_legacy_bak()
@@ -1931,14 +1947,13 @@ def _remove():
 def check():
     # CLI 诊断入口：坏目标（缺文件/非 asar）给可读提示，不抛裸 traceback
     try:
-        entry = entry_bytes_of(ASAR)
+        stamp, entry, package = _archive_snapshot(ASAR)
         injected = bool(ZUSAGE_LINE_RE.search(entry))   # 宽松匹配任意目录的历史注入行（独立运行时 INJECT_LINE 指向仓库路径，精确匹配会误报未注入）
-        size = ASAR.stat().st_size
-    except (OSError, ValueError, KeyError, struct.error) as e:
+    except (OSError, ValueError, AssertionError, KeyError, TypeError, OverflowError, struct.error) as e:
         print(L(f"[check] 读取 asar 失败（{e}）：{ASAR}",
                 f"[check] failed to read asar ({e}): {ASAR}"))
         return 1
-    print("asar:", ASAR, size, "bytes")
+    print("asar:", ASAR, stamp["size"], "bytes")
     print(L("注入状态:", "Injection:"), L("已注入", "injected") if injected else L("未注入", "not injected"))
     print(L("遗留备份（机制已退役，成功安装/卸载后自动清理）:", "Legacy backup (retired; auto-removed on successful install/remove):"), BAK.exists())
     if injected:
@@ -1958,7 +1973,8 @@ def check():
             hint = L(f'（退出 ZCode 后跑 install --finalize --asar "{ASAR}" --runtime "{RUNTIME}"）',
                      f'(quit ZCode, then run install --finalize --asar "{ASAR}" --runtime "{RUNTIME}")')
         print(L("存在待替换 TMP:", "Pending replacement TMP exists:"), TMP, hint)
-    print(L("手机中继补丁:", "Mobile relay patch:"), _mobile_check_status(ASAR, entry))
+    _, relay_detail = _relay_check_status(entry, package)
+    print(L("远控中继补丁:", "Mobile relay patch:"), relay_detail)
 
 
 def _consume_flag_arg(argv, name):

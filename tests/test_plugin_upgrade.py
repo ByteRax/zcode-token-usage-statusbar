@@ -791,8 +791,8 @@ print(json.dumps(operations))
         self.write_config({"asar_path": str(self.asar)})
         self.write_asar(self.asar, version="9.9.9")
         self.assertEqual(self.main("install")[0], 0)   # 注入行由安装器写入（指向本临时运行目录）
-        with mock.patch.object(self.installer, "ensure_renderer_bridge",
-                               return_value={"status": "skipped-unknown", "version": "9.9.9"}), \
+        with mock.patch.object(self.installer, "ensure_archive_patches", return_value=(
+                {"status": "skipped-unknown", "version": "9.9.9"}, {"status": "present"})), \
                 mock.patch.object(self.installer, "_host_registered", return_value=False):
             output, _ = self.hook()
         self.assertIn("未登记适配 ZCode 9.9.9", output["systemMessage"])
@@ -802,8 +802,8 @@ print(json.dumps(operations))
         self.updater.start_auto_update.assert_has_calls(
             [mock.call(self.runtime, self.pi, force=False), mock.call(self.runtime, self.pi, force=True)])
         self.updater.start_auto_update.reset_mock()
-        with mock.patch.object(self.installer, "ensure_renderer_bridge",
-                               return_value={"status": "skipped-unknown", "version": "9.9.9"}), \
+        with mock.patch.object(self.installer, "ensure_archive_patches", return_value=(
+                {"status": "skipped-unknown", "version": "9.9.9"}, {"status": "present"})), \
                 mock.patch.object(self.installer, "_host_registered", return_value=False):
             output2, _ = self.hook()
         self.assertNotIn("systemMessage", output2)   # 去重：不再提示（运行时动态桥兜底）
@@ -844,8 +844,8 @@ print(json.dumps(operations))
         self.assertEqual(self.main("install")[0], 0)
         marker_file = self.runtime / ".plugin-compat-notice.json"
         marker_file.write_text(json.dumps({"hostBuild": "9.9.9", "pluginVersion": "0.0.9"}), encoding="utf-8")
-        with mock.patch.object(self.installer, "ensure_renderer_bridge",
-                               return_value={"status": "skipped-unknown", "version": "9.9.9"}), \
+        with mock.patch.object(self.installer, "ensure_archive_patches", return_value=(
+                {"status": "skipped-unknown", "version": "9.9.9"}, {"status": "present"})), \
                 mock.patch.object(self.installer, "_host_registered", return_value=False):
             output, _ = self.hook()
         self.assertIn("未登记适配 ZCode 9.9.9", output["systemMessage"])
