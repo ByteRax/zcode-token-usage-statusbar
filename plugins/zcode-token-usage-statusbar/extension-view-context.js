@@ -148,6 +148,9 @@
     }
     html[data-theme="light"] pre { background: rgba(0,0,0,.05); }
     .empty { color: var(--muted); text-align: center; padding: 22px 12px; }
+    .credit { margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 10.5px; color: var(--muted); text-align: center; }
+    .credit a { color: var(--accent); text-decoration: none; }
+    .credit a:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -161,6 +164,7 @@
     <button class="tab" data-tab="events" id="tabEvents">事件 &amp; 活动</button>
   </div>
   <div id="content"><div class="card"><div class="empty">正在读取当前会话上下文…</div></div></div>
+  <div class="credit" id="credit"><span id="creditLabel">界面移植自开源项目</span> <a id="creditLink" href="https://github.com/bowenliang123/dsh-context" rel="noopener noreferrer" target="_blank">dsh-context</a> (Apache-2.0)</div>
   <div id="toast" class="toast"></div>
 
   <script>
@@ -718,6 +722,7 @@
         var badge = document.getElementById("tBadge");
         var zh = isZh(snap && snap.locale);
         document.getElementById("tTitle").textContent = zh ? "Context 上下文仪表板" : "Context Dashboard";
+        document.getElementById("creditLabel").textContent = zh ? "界面移植自开源项目" : "Ported from the open-source project";
         document.getElementById("tabStats").textContent = zh ? "Stats & 构成" : "Stats & Composition";
         document.getElementById("tabBrowser").textContent = zh ? "上下文浏览器" : "Context Browser";
         document.getElementById("tabEvents").textContent = zh ? "事件 & 活动" : "Events & Activity";

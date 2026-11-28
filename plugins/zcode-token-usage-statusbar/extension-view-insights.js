@@ -120,6 +120,9 @@
     .tps-badge { font-size: 10.5px; padding: 1px 6px; border-radius: 999px; background: rgba(16,185,129,.14); color: #10b981; font-weight: 600; white-space: nowrap; }
     .loading { opacity: 0.65; pointer-events: none; }
     .empty { color: var(--muted); text-align: center; padding: 16px; }
+    .credit { margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 10.5px; color: var(--muted); text-align: center; }
+    .credit a { color: var(--accent); text-decoration: none; }
+    .credit a:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -138,6 +141,7 @@
     </div>
   </div>
   <div id="content"><div class="card"><div class="empty">正在聚合跨会话统计…</div></div></div>
+  <div class="credit" id="credit"><span id="creditLabel">界面移植自开源项目</span> <a id="creditLink" href="https://github.com/bowenliang123/dsh-context" rel="noopener noreferrer" target="_blank">dsh-context</a> (Apache-2.0)</div>
 
   <script>
     (function () {
@@ -334,6 +338,7 @@
         var el = document.getElementById("content");
         var zh = isZh(snap && snap.locale);
         document.getElementById("tTitle").textContent = zh ? "上下文洞察" : "Context Insights";
+        document.getElementById("creditLabel").textContent = zh ? "界面移植自开源项目" : "Ported from the open-source project";
         document.querySelectorAll("[data-days]").forEach(function (b) {
           var d = Number(b.getAttribute("data-days"));
           b.classList.toggle("on", d === days);

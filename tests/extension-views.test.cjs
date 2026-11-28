@@ -438,3 +438,32 @@ test("insights: the day filter uses local calendar days, survives bad timestamps
   assert.ok(!html.includes("bad-ts-title") && !html.includes("坏时间戳的会话"), "时间戳非法的会话不匹配日筛选，也不打断渲染");
   assert.match(html, /<span class="sess-proj">项目 alpha<\/span>/, "Windows 路径按反斜杠取目录名做项目名");
 });
+
+/* ---------- 出处标注：两视图页脚 ---------- */
+const CREDIT_URL = "https://github.com/bowenliang123/dsh-context";
+
+test("credit footer: both views carry the dsh-context attribution link outside the content area", () => {
+  for (const file of ["extension-view-insights.js", "extension-view-context.js"]) {
+    const src = fs.readFileSync(path.join(DIR, file), "utf8");
+    const foot = src.match(/<div class="credit" id="credit">([\s\S]*?)<\/div>/);
+    assert.ok(foot, file + "：缺少出处页脚");
+    assert.ok(src.indexOf('<div class="credit"') > src.indexOf('<div id="content"'), file + "：页脚在内容区之后");
+    assert.ok(foot[1].includes('<a id="creditLink" href="' + CREDIT_URL + '"'), file + "：链接指向 dsh-context 仓库");
+    assert.ok(foot[1].includes('rel="noopener noreferrer"') && foot[1].includes('target="_blank"'), file + "：链接兜底属性齐全");
+    assert.ok(foot[1].includes(">dsh-context</a>") && foot[1].includes("(Apache-2.0)"), file + "：写明项目名与许可证");
+  }
+});
+
+test("credit footer: the label follows the snapshot locale on both views", async () => {
+  const zhView = loadView("extension-view-insights.js", { insights_snapshot: insightsSnap });
+  await zhView.flush();
+  assert.equal(zhView.get("creditLabel").textContent, "界面移植自开源项目");
+  const enSnap = { ...insightsSnap(), locale: "en" };
+  const enView = loadView("extension-view-insights.js", { insights_snapshot: () => enSnap });
+  await enView.flush();
+  assert.equal(enView.get("creditLabel").textContent, "Ported from the open-source project");
+  assert.equal(enView.get("tTitle").textContent, "Context Insights", "对照：标题随 locale 切换，页脚与之同源");
+  const ctx = loadView("extension-view-context.js", contextTools());
+  await ctx.flush();
+  assert.equal(ctx.get("creditLabel").textContent, "界面移植自开源项目", "上下文组成视图同样标注");
+});

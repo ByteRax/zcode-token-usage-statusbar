@@ -217,3 +217,10 @@
 - **快捷入口的「fiber 直开」未按插件名收窄匹配**（`src/overlay/11-instance-toolbar-chips.js`）：弹层按钮先用 `[data-extension-item$="/insights"]` 找导航项、从其属性推出插件 id，再沿 React fiber 取宿主 `onOpenTab` 直开视图。若别的扩展也有 id 为 `insights` 的视图，可能取到别人的插件 id，且此时 `openedDirect=true` 不再走 `open-ext-view` 文件链回退，按钮会静默无效。修法是只认属性里含本插件名 `zcode-token-usage-statusbar@` 的导航项；该改动属于点击交互路径，须在真实页面走一遍完整点击后才能交付（本轮未做桌面验收，故未改）。
 - 代理/自定义证书那条 `node:http(s)` 抓包路径只有真实 Node 本地服务器用例覆盖。
 - **指向受信根之外的「文件」符号链接仍可在文件管理器里定位**（`revealOrOpenFolder` 只对目录换真实路径并复查）：文件管理器只是选中并高亮根内的那个链接条目，不读取目标内容；而文件级链接在工程里很常见（链接进来的配置、资源），一律拦截会误伤，故保持现状。
+
+## 11. 出处标注（2026-11-28 增补）
+
+- **来源事实**：引言所列四项能力（上下文洞察页面、Context 标签页、Context Stats、上下文浏览器）移植自开源项目 [dsh-context](https://github.com/bowenliang123/dsh-context)（作者 bowenliang123，Apache-2.0），为适配 ZCode 扩展运行时与本项目的数据源做过修改。
+- **页脚标注**：两张扩展视图（`extension-view-insights.js`、`extension-view-context.js`）在 `#content` 之后、页面末尾显示一行出处页脚：`界面移植自开源项目 dsh-context (Apache-2.0)`，英文为 `Ported from the open-source project dsh-context (Apache-2.0)`；`dsh-context` 是指向上述仓库的 `<a>` 链接。文案跟随快照 `locale`（与标题同一处切换）；页脚在 `#content` 之外，内容重绘不影响它。
+- **链接打开方式**：页面不自写点击逻辑。宿主在扩展视图里拦截 `<a>` 的点击并经 `window.zcode.openExternal({ href })` 走 `ui/open-link`（ZCode 4.0.0 渲染层实证，与官方 UI 插件文档一致：只放行 http/https，先弹确认）。链接同时带 `target="_blank" rel="noopener noreferrer"` 作兜底。
+- **验收**：`tests/extension-views.test.cjs` 锁定两视图页脚的链接地址、项目名与许可证文案、所在位置与中英文跟随。
