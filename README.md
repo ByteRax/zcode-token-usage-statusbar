@@ -28,7 +28,7 @@ A community toolkit for ZCode desktop: generation speed, token usage, context tr
 - **ZCode 桌面版**：支持 Windows 和 macOS（Linux 已做基础适配，未逐一测试所有发行版）。
 - **Python 3.8+**：系统自带或自行安装即可，**不需要装任何第三方库**，也不用单独装 Node.js。
 - **可选 MCP 查询**：`token_usage` 工具需要 **ZCode 3.19.0+**；更老版本依然可以使用状态条、`/usage` 命令和终端查询。
-- **上下文洞察面板（ZCode 4.0+）**：左侧导航「上下文洞察」看跨会话总览，右侧「上下文组成」看当前会话的构成、逐轮消息与错误/重试；对话里发 `/context` 可让 AI 汇总当前会话用量。详见[用户指南](docs/user-guide.md#上下文洞察与上下文组成)。
+- **上下文洞察**：需要 **ZCode 4.0+**。
 
 ### 安装方法
 
@@ -95,6 +95,7 @@ ZCode 每次官方升级后，状态条可能会暂时消失。保持插件启�
 | **拉取模型列表与探测**     | 在自定义供应商和套餐源里一键拉取模型列表；支持自动测试连通性与思考档位，顺手补齐上下文窗口和输出上限（测试会发最小请求，可能消耗少量额度）     | <a href="docs/promo/features/model-pull.webp"><img src="docs/promo/features/model-pull.webp" width="224" alt="拉取模型列表与探测"></a><br><sub>演示</sub> |
 | **增强提示词与历史记录**   | 模型按钮左边的 ✦ 按钮：点一下把草稿润色改写，悬停可查看最近增强历史（含原始/增强文本对照、耗时与 Token 消耗），也可指定专门的润色模型          | <a href="docs/promo/features/live/prompt-enhance.webp"><img src="docs/promo/features/live/prompt-enhance.webp" width="224" alt="增强提示词与历史记录"></a> |
 | **预估费用**               | 鼠标悬停本轮、会话、项目、今日或子代理用量，按公开官方价格估算花了多少钱，支持美元（`$`）和人民币（`¥`）切换；仅供参考，不是真实账单           | <a href="docs/promo/features/estimated-cost.webp"><img src="docs/promo/features/estimated-cost.webp" width="224" alt="预估费用"></a><br><sub>演示</sub> |
+| **上下文洞察与上下文组成** | ZCode 4.0+：左侧查看跨会话 Token、预估费用、模型和错误趋势；右侧查看当前会话的上下文构成、逐轮消息与压缩记录，也可用 `/context` 查询。移植自 [dsh-context](https://github.com/bowenliang123/dsh-context) | <a href="docs/promo/features/live/context-insights.webp"><img src="docs/promo/features/live/context-insights.webp" width="224" alt="上下文洞察面板"></a> |
 | **上下文按钮增强**         | 给原生上下文按钮加上进度圆环、变色预警和百分比；不占状态条格子                                                                                | <a href="docs/promo/features/live/context-ring.webp"><img src="docs/promo/features/live/context-ring.webp" width="80" alt="上下文按钮增强"></a> |
 | **上下文构成明细**         | 悬停「上下文容量」弹层时，在每一项旁边显示估算 Token 数；鼠标放上去能看大白话解释、对应文件位置和省空间建议（可在 ⚙ 关闭）                     | <a href="docs/promo/features/live/context-breakdown.webp"><img src="docs/promo/features/live/context-breakdown.webp" width="224" alt="上下文构成明细"></a> |
 | **一键压缩与分隔线统计**   | 在上下文面板点确认，直接给当前会话发 `/compact` 压缩记忆且不碰输入框草稿；时间线「上下文已压缩」分隔线下方还会标注压缩前后水位变化与耗时       | <a href="docs/promo/features/live/compact.webp"><img src="docs/promo/features/live/compact.webp" width="224" alt="一键压缩与分隔线统计"></a> |
