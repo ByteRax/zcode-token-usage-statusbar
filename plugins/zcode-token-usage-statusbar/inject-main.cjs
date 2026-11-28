@@ -936,7 +936,7 @@ function watchDb() {
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         maybeSpawn();
-        /* v348：手机远控与桌面同款触发模型——DB 写入（每次请求落库）即对账推送，
+        /* v348：远控页面用量与桌面用量采用相同的刷新触发条件——DB 写入（每次请求落库）即对账推送，
          * 不再由 mobile-relay 自己 1.5s 轮询；查询节流在其内部（MIN_PUSH_INTERVAL_MS）。 */
         try { if (mobileRelay) mobileRelay.pump(); } catch (e) { }
       }, 300);
@@ -1063,7 +1063,7 @@ function initEnginePatcher() {
   }
 }
 initEnginePatcher();
-/* v331：mobile-relay（手机远控中继，热换模块 #7）。stash 由 patch_install.py
+/* v331：mobile-relay（移动端远程控制中继，热换模块 #7）。stash 由 patch_install.py
  * 合并注入主 bundle；本模块只消费——加载失败只少推送，不拖垮主链。
  * 目标发现与发送前复验均读取宿主 mobileTaskView，并绑定唯一官方 live 桥；
  * config mobile_relay.enabled 仅显式 true 开启。 */
@@ -1122,7 +1122,7 @@ function mobileTargetTrusted(wc, target) {
   if (!sameMobileTarget(resolveMobileTarget(target), target)) return false;
   const tasks = windowTasks.get(wc.id);
   const scopes = tasks && tasks.get(target.taskId);
-  /* 手机可打开未出现在桌面 tabs 的动态项目；身份由官方 live 桥确认，任务明确矛盾仍拒绝。
+  /* 远控页面可打开未出现在桌面 tabs 的动态项目；身份由官方 live 桥确认，任务明确矛盾仍拒绝。
    * 普通桌面 pane 继续使用 maybeSpawn 中的 windowWorkspaces 白名单。 */
   return !scopes || scopes.has(target.workspaceIdentity);
 }
@@ -1143,7 +1143,6 @@ function initMobileRelay() {
   try {
     const { createMobileRelay } = require("./mobile-relay.cjs");
     mobileRelay = createMobileRelay({
-      log: (...a) => LOG("[mobile-relay]", ...a),
       getMinIntervalMs: () => readCfgCached().activity_min_ms | 0 || 1500,
       getRemotePollMs: remotePollMs,
       strictOptIn: true, // 旧 cold loader 缺此能力时，新 relay 必须关闭。

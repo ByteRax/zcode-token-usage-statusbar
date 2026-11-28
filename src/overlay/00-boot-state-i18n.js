@@ -854,7 +854,11 @@
     out.binding = typeof m.binding === "string" && id.test(m.binding) ? m.binding : "";
     out.scopeKind = m.scopeKind === "local" || m.scopeKind === "remote" ? m.scopeKind : "";
     out.state = ["ready", "waiting", "unavailable", "upgrade"].indexOf(m.state) >= 0 ? m.state : "unavailable";
-    if (sid && sid !== out.taskId) { out.state = "waiting"; return out; }
+    /* 没有目标的旧帧只提供全局升级提示，没有可跨会话显示的数据。 */
+    if (sid && sid !== out.taskId && !(out.state === "upgrade" && m.taskId === "")) {
+      out.state = "waiting";
+      return out;
+    }
     if (out.state !== "ready") return out;
     var rows = d.recent, row = Array.isArray(rows) && rows.length === 1 ? rows[0] : null;
     if (d.error || !out.taskId || !out.binding || !out.scopeKind || d.mine !== out.taskId ||

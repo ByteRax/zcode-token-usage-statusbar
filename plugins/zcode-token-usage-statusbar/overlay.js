@@ -854,7 +854,11 @@
     out.binding = typeof m.binding === "string" && id.test(m.binding) ? m.binding : "";
     out.scopeKind = m.scopeKind === "local" || m.scopeKind === "remote" ? m.scopeKind : "";
     out.state = ["ready", "waiting", "unavailable", "upgrade"].indexOf(m.state) >= 0 ? m.state : "unavailable";
-    if (sid && sid !== out.taskId) { out.state = "waiting"; return out; }
+    /* 没有目标的旧帧只提供全局升级提示，没有可跨会话显示的数据。 */
+    if (sid && sid !== out.taskId && !(out.state === "upgrade" && m.taskId === "")) {
+      out.state = "waiting";
+      return out;
+    }
     if (out.state !== "ready") return out;
     var rows = d.recent, row = Array.isArray(rows) && rows.length === 1 ? rows[0] : null;
     if (d.error || !out.taskId || !out.binding || !out.scopeKind || d.mine !== out.taskId ||
@@ -17267,7 +17271,7 @@
       '<div class="pnote">' + L("仅更新此插件。GitHub/GitCode 来源会联网，本地目录来源只检查本地文件，不上传用量数据。", "Only this plugin is updated. GitHub/GitCode sources use the network; directory sources check local files. Usage data is never uploaded.") + '</div></div>' +
       /* v202 更新日志卡片：骨架静态，内容由 syncNotes 按状态填充（幂等签名，不抢滚动/焦点） */
       notesCardHtml() + '</section>' +
-      /* 移动端推送独立分区：脚本链接仅供选择复制，配置真值由主进程回填；手机端保留该分区但开关只读。 */
+      /* 移动端推送独立分区：脚本链接仅供选择复制，配置真值由主进程回填；远控页面保留该分区，开关只读。 */
       '<section class="zu-settings-section" data-sec="mobile"' + secOpen("mobile") + '><div class="cap">' + L("移动端远程控制", "Mobile remote control") + '</div><div class="zu-settings-card">' +
       settingRow('<input type="checkbox" class="zu-mobile-relay">', L("推送状态栏数据到远控页", "Push status bar data to Remote Control"), L("默认关闭。仅控制插件统计推送，不影响宿主远控；安装下方脚本后仍需在此开启。", "Off by default. Controls only the plugin's statistics push; the host's remote control is unaffected. Installing the script below does not enable this switch.")) +
       '<div class="pnote zu-mobile-relay-status" role="status" aria-live="polite"></div>' +
@@ -21602,7 +21606,7 @@
       }
       var mobileStatus = panel.querySelector(".zu-mobile-relay-status");
       if (mobileStatus) mobileStatus.textContent = mobileReadOnly
-        ? L("手机端不可修改此开关；请在桌面端 ZCode 的「设置 → 维护 → 移动端远程控制」中开启或关闭统计推送。手机端不显示桌面当前值。", "This switch cannot be changed on mobile; turn statistics push on or off in ZCode on your desktop (Settings → Maintenance → Mobile remote control). The mobile page does not show the desktop's current value.")
+        ? L("此开关在远控页面为只读，此处不显示桌面的当前状态。请在桌面用量状态栏点击 ⚙，进入「移动端远程控制」查看或修改设置。", "This switch is read-only on the Remote Control page and does not show the current desktop setting. To view or change it, click ⚙ on the desktop usage status bar and open Mobile remote control.")
         : state.mobileRelaySupported !== true
           ? L("需要新版桌面插件主进程支持；请完全退出并重启 ZCode，仍不可用时请升级桌面插件。", "Requires a newer desktop plugin main process; quit ZCode completely and restart it, or upgrade the desktop plugin if still unavailable.")
           : state.mobileRelayPending ? L("操作已发出，等待确认…", "Sent; awaiting confirmation…") : "";

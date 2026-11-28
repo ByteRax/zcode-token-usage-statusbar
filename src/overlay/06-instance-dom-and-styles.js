@@ -2613,7 +2613,7 @@
       '<div class="pnote">' + L("仅更新此插件。GitHub/GitCode 来源会联网，本地目录来源只检查本地文件，不上传用量数据。", "Only this plugin is updated. GitHub/GitCode sources use the network; directory sources check local files. Usage data is never uploaded.") + '</div></div>' +
       /* v202 更新日志卡片：骨架静态，内容由 syncNotes 按状态填充（幂等签名，不抢滚动/焦点） */
       notesCardHtml() + '</section>' +
-      /* 移动端推送独立分区：脚本链接仅供选择复制，配置真值由主进程回填；手机端保留该分区但开关只读。 */
+      /* 移动端推送独立分区：脚本链接仅供选择复制，配置真值由主进程回填；远控页面保留该分区，开关只读。 */
       '<section class="zu-settings-section" data-sec="mobile"' + secOpen("mobile") + '><div class="cap">' + L("移动端远程控制", "Mobile remote control") + '</div><div class="zu-settings-card">' +
       settingRow('<input type="checkbox" class="zu-mobile-relay">', L("推送状态栏数据到远控页", "Push status bar data to Remote Control"), L("默认关闭。仅控制插件统计推送，不影响宿主远控；安装下方脚本后仍需在此开启。", "Off by default. Controls only the plugin's statistics push; the host's remote control is unaffected. Installing the script below does not enable this switch.")) +
       '<div class="pnote zu-mobile-relay-status" role="status" aria-live="polite"></div>' +

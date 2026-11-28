@@ -121,7 +121,7 @@ function harness(t, options = {}, setup = {}) {
     { filename: sourcePath });
   load(isolatedRequire, module, module.exports, path.dirname(sourcePath));
   const createRelay = () => module.exports.createMobileRelay({
-    log() {}, minIntervalMs: 300, strictOptIn: true, isEnabled: () => true,
+    minIntervalMs: 300, strictOptIn: true, isEnabled: () => true,
     spawnProc,
     ...options,
   });
@@ -334,7 +334,7 @@ test('远端无本地写入时按配置周期重新查询', async (t) => {
   await waitFor(() => h.requests.length === 2, '远端轮询查询');
 });
 
-test('数据心跳只驱动本地目标，远端仍严格按 poll_ms', async (t) => {
+test('10s 数据心跳不驱动远端目标，远端周期定时器遵守 poll_ms', async (t) => {
   const h = harness(t, { getRemotePollMs: () => 60000 }, { fakeClock: true });
   h.push(target());
   await waitFor(() => h.requests.length === 1, '首次查询');
@@ -351,6 +351,17 @@ test('数据心跳只驱动本地目标，远端仍严格按 poll_ms', async (t)
   h.advance(1);       // 60000ms
   h.remoteTick();
   await waitFor(() => h.requests.length === 2, 'poll_ms 到期按远端周期查询');
+});
+
+test('30s 桥维护为远端目标兜底，即使 poll_ms 尚未到期', async (t) => {
+  const h = harness(t, { getRemotePollMs: () => 60000 }, { fakeClock: true });
+  h.push(target());
+  await waitFor(() => h.requests.length === 1, '首次查询');
+  h.respond(snapshot());
+  await waitFor(() => h.dataFrames().length === 1, '首次发送');
+  h.advance(30000);
+  h.bridgeTick();
+  await waitFor(() => h.requests.length === 2, '30s 桥维护触发兜底查询');
 });
 
 test('多桥瞬态下的 v1 裸帧仍被识别，恢复单桥也不发假公告', async (t) => {
