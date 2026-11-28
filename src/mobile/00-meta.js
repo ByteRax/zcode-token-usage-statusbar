@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZCode 用量状态条（远控中继接收端）
 // @namespace    zusage-mobile
-// @version      0.1.5
+// @version      0.1.6
 // @description  在 ZCode 移动端远程控制页面显示 token 用量。确认宿主支持后才同步显示偏好
 // @downloadURL  https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js
 // @updateURL    https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js
