@@ -289,6 +289,105 @@ class MobileInstallTests(unittest.TestCase):
         self.assertEqual(relay, {"status": "patched"})
         self.assert_installed(self.target)
 
+    def test_older_bridge_pending_yields_before_relay_supplement(self):
+        """旧版 renderer_bridge（没有 plan_supplement）仍走自己的补桥入口：桥进入待替换或让位
+        时整体让位——中继补装不启动，不改写归档，也不产生新的待替换包。"""
+        self.write_archive(self.with_loader(BODY))
+        before = self.target.read_bytes()
+        for status in ("pending", "deferred"):
+            with self.subTest(status=status), \
+                    mock.patch.dict(sys.modules, {"renderer_bridge": mock.Mock(spec=[])}), \
+                    mock.patch.object(self.installer, "ensure_renderer_bridge",
+                                      return_value={"status": status}) as bridge, \
+                    mock.patch.object(self.pi, "supplement_patches") as supplement, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                result = self.installer.ensure_archive_patches(self.pi)
+            bridge.assert_called_once_with(self.pi, quiet_monitor=True)
+            supplement.assert_not_called()
+            self.assertEqual(result, ({"status": status},
+                                      {"status": "deferred", "detail": "existing pending operation"}))
+        self.assertEqual(self.target.read_bytes(), before)
+        self.assert_no_pending_or_stage()
+
+    def test_mobile_pending_publication_rejects_a_swapped_package(self):
+        # 锁外校验过的私有 stage 改名成 TMP 后若已不是同一文件（校验与发布之间被换包），
+        # 拒绝发布并回滚：不留 TMP/sidecar，重启意图还原，也不拉监控
+        self.write_archive(self.with_loader(BODY))
+        before = self.target.read_bytes()
+        real_stamp = self.pi.file_stamp
+        swapped = []
+
+        def stamp(path):
+            current = real_stamp(path)
+            if Path(path) == self.pi.TMP and not swapped:
+                swapped.append(True)
+                return dict(current, ino=current["ino"] + 1)
+            return current
+
+        with self.observe_archive_io(deny_target=True), \
+                mock.patch.object(self.pi, "file_stamp", side_effect=stamp):
+            result = self.pi.supplement_patches()["relay"]
+
+        self.assertEqual(swapped, [True])
+        self.assertEqual(result["status"], "skipped-error")
+        self.assertIn("published TMP does not match validated stage", result["detail"])
+        self.monitor_launch.assert_not_called()
+        self.assertFalse(self.marker.exists())
+        self.assertEqual(self.target.read_bytes(), before)
+        self.assert_no_pending_or_stage()
+
+    def test_supplement_rejects_a_stage_whose_bridge_asset_differs_from_the_plan(self):
+        # stage 里的非入口资产（渲染桥）没有逐字节等于规划值：校验失败、不发布、不写重启意图
+        asset = "/out/main/after.bin"
+        self.write_archive(self.with_loader(BODY))
+        before = self.target.read_bytes()
+        planned = ({"status": "planned", "version": "9.9.9"}, {asset: b"bridge fixture replacement"})
+        real_repack = self.pi.repack
+
+        def stale_repack(source, modify, stage):
+            return real_repack(source, dict(modify, **{asset: b"stale bridge bytes"}), stage)
+
+        with mock.patch.object(self.bridge, "plan_supplement", return_value=planned), \
+                mock.patch.object(self.pi, "repack", side_effect=stale_repack), \
+                self.observe_archive_io() as (repack, replacements):
+            report = self.pi.supplement_patches(self.bridge.plan_supplement)
+
+        repack.assert_called_once()
+        self.assertEqual(replacements, [])
+        self.assertEqual(report["archive"]["status"], "skipped-error")
+        self.assertIn("stage asset differs from intended bytes: " + asset, report["archive"]["detail"])
+        for key in ("bridge", "relay"):
+            self.assertEqual(report[key]["status"], "skipped-error", key)
+        self.assertFalse(self.marker.exists())
+        self.monitor_launch.assert_not_called()
+        self.assertEqual(self.target.read_bytes(), before)
+        self.assert_no_pending_or_stage()
+
+    def test_overlapping_package_metadata_is_unverifiable(self):
+        # package.json 的归档区间与主入口重叠（畸形归档）：不把重叠字节当宿主包元数据，
+        # 中继判为无法检查；loader 照常安装
+        entry = b"console.log('fixture entry');"
+        package = json.dumps(self.package).encode("utf-8")
+        make_asar(self.target, files={self.pi.ENTRY: entry, "package.json": package})
+        data = self.target.read_bytes()
+        literal = '"offset":"' + str(len(entry)) + '"'
+        self.assertEqual(data.count(literal.encode("ascii")), 1)
+        overlapping = '"offset":"' + str(len(entry) - 1).zfill(len(str(len(entry)))) + '"'
+        self.target.write_bytes(data.replace(literal.encode("ascii"), overlapping.encode("ascii")))
+
+        _, current, package_meta = self.pi._archive_snapshot(self.target)
+        self.assertEqual(current, entry)
+        self.assertEqual(package_meta, "package.json overlaps the archive entry")
+        ready, detail = self.pi._relay_check_status(current, package_meta)
+        self.assertFalse(ready)
+        self.assertIn("package.json overlaps the archive entry", detail)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertTrue(self.pi.install())
+        self.assertEqual(self.pi.entry_bytes_of(self.target), entry + self.pi.INJECT_LINE.encode("utf-8"))
+        self.assertIn("Could not verify the remote control relay layout (package.json overlaps the archive entry)",
+                      out.getvalue())
+        self.assert_no_pending_or_stage()
+
     def test_doctor_reports_complete_relay_in_english(self):
         self.write_archive(self.installed_entry())
         report, _ = self.installer.doctor(self.runtime, self.pi)

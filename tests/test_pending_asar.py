@@ -1452,6 +1452,17 @@ class SingleTransactionTests(unittest.TestCase):
                 self.assertEqual(self.packed(ASSET), ASSET_BYTES)
                 self.assertIn(self.pi.INJECT_LINE.encode(), self.entry())
 
+    def test_extra_modify_not_consulted_on_early_return_or_reuse(self):
+        forbidden = mock.Mock(side_effect=AssertionError("must not plan"))
+        self.pi.prepare_tmp({"/" + self.pi.ENTRY: self.entry() + self.pi.INJECT_LINE.encode()})
+        with mock.patch.object(self.pi, "repack", side_effect=AssertionError("must not repack")):
+            self.assertTrue(self.pi.install(extra_modify=forbidden))   # 复用磁盘上的待替换包
+        forbidden.assert_not_called()
+        self.assertTrue(self.pi.install())                             # 落盘后再次安装
+        with mock.patch.object(self.pi, "repack", side_effect=AssertionError("must not repack")):
+            self.assertTrue(self.pi.install(extra_modify=forbidden))   # 已安装早退
+        forbidden.assert_not_called()
+
     def test_extra_modify_skips_unpacked_paths(self):
         self.reset(files={"out/main/index.js": b"console.log('official v1');", "package.json": b'{"name":"x"}'},
                    unpacked=True)

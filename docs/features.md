@@ -150,7 +150,7 @@
 
   <sub>演示</sub>
 
-- **Web 远控状态条**：在浏览器安装油猴脚本并在 **⚙ → 维护 → 移动端远程控制** 开启推送后，可在 `zcode.z.ai/remote` 页面直接复用桌面状态条、悬停卡与设置面板（详见 [手机远控指南](user-guide.md#手机远控页面)）。
+- **移动端远程控制页面**：在浏览器安装油猴脚本并在 **⚙ → 维护 → 移动端远程控制** 开启推送后，可在 `zcode.z.ai/remote` 页面直接复用桌面状态条、悬停卡与设置面板（详见 [移动端远程控制页面指南](user-guide.md#移动端远程控制页面)）。
 
   [<img src="promo/features/live/web-remote.webp" width="680" alt="Web 远控状态条设置入口">](promo/features/live/web-remote.webp)
 
