@@ -367,8 +367,9 @@
      * → v494 ⚙ 设置面板撤掉上下文洞察扩展的两颗快捷按钮（用户决定，设置面板不放功能入口）：v492 在设置面板顶部挂的「当前会话明细」「全部会话洞察」（.zu-ext-quick）按用户要求移除；这两个功能的入口保留左侧主导航、右侧边栏新标签页、容量弹层「上下文明细」按钮与 /context 命令。06 分片的按钮与样式、09 分片面板点击委托里的 fiber 直开与 open-ext-view 回退分支一并删除，容量弹层按钮的同一链路不变
      * → v495 近三天提交的 Windows 兼容性审查修复：①项目菜单「在文件资源管理器中打开」的来源行改为按下即记录（pointerdown：鼠标右键、触控与笔）、contextmenu 记录后补排一次扫描（幂等）、落在已开菜单里的 contextmenu 不清记录——contextmenu 在 Windows 上松开时才派发，当前宿主（4.0.0 引擎包实证）的鼠标右键菜单在 contextmenu 里才开所以未断链，宿主若换成按下即开的实现就会「菜单先挂载、扫描先跑、记录后到」；触控与笔的长按菜单由定时器打开、不保证派发 contextmenu，此前取不到来源行；路径形态补认 Windows 原生 UNC 与 \\?\ 长路径前缀（网络共享做根的本地项目此前不出项）。②上下文明细气泡的「内置引擎路径」在 Windows 渲染页地址（file:///D:/…）上归一成反斜杠路径，不再与同气泡内其它路径正反混排。③.zusage-ctx-bkd-tip 登记进 isOwnOverlay（v487 漏了四处登记的第 ③ 处，窄分栏里盖住输入框中心会收条→复显闪烁）
      * → v496 远控页面保留旧格式帧的升级提示（specs/mobile-unified-overlay.md）：00 分片移动上下文对「无目标」（taskId 为空串）的旧格式 upgrade 帧不再一律改判为等待态——页面已选中会话时同样显示「请更新桌面插件」的全局升级提示（该提示不带任何统计，不跨会话带出数据；带目标且与当前分栏不符的帧仍为等待态）。09 分片同步只读提示文案：远控页面的推送开关只读且不显示桌面当前值，指引到桌面用量状态栏 ⚙ 的「移动端远程控制」分区查看或修改
+     * → v497 系统状态逐指标过期与多窗合并订阅（specs/statusbar-system-status.md 新 9 条契约）：采样器每项指标携带 sampledAt，渲染端按 max(3×周期, 20 秒) 逐指标过期标灰且不参与综合预警，同时间戳重复渲染幂等短路、阈值签名变化重置防抖、disk 按项目路径分键；主进程按窗合并指标需求（OR）与间隔（min）单例采样，项目路径集合按窗申报合并（单窗/合并 32 条上限、入口校验绝对路径 ≤4096 无控制字符、退订先于校验摘账），磁盘采样返回路径→挂载点映射，各分栏只认自己路径的项目卷（未定位显示「定位中」、首帧未起采同样定位中，失败回退系统卷或不可用，绝不冒用其他项目的卷与预警），stat 探测与 statfs 同款在途复用+超时黑名单，win32 前缀匹配大小写/分隔符归一
     */
-    var VERSION = "v496";
+    var VERSION = "v497";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -2441,6 +2442,7 @@
       /* 切片沙箱纪律：state.sysmonCfg/sysFrame 可能缺字段（VM 夹具/旧代际），一律守卫回退 */
       var c = (state.sysmonCfg && state.sysmonCfg.thresholds) ? state.sysmonCfg : normalizeSysmonCfg(null);
       var sysFrameL = (typeof sysFrame !== "undefined") ? sysFrame : null;
+      if (typeof sysmonInstanceFrame === "function") sysFrameL = sysmonInstanceFrame();
       var th = c.thresholds;
       function item(cls, attr, label, checked) {
         return '<label class="zu-syscfg-item"><input type="checkbox" class="' + cls + '" ' + attr + (checked ? " checked" : "") + '><span>' + label + "</span></label>";
@@ -2737,6 +2739,7 @@
       if (typeof sysmonWantRecalc === "function") sysmonWantRecalc();   // v356：设置页关闭后若无其他兴趣源则停采样（签名不变零开销；typeof 守卫兼容切片沙箱）
     }
     panel.addEventListener("scroll", syncSettingsScroll, true);
+    panel.addEventListener("scroll", function () { if (typeof sysmonWantRecalc === "function") sysmonWantRecalc(); }, true);
     panel.addEventListener("keydown", function (e) {
       if (e.key === "Escape") {
         closeSettings(true);

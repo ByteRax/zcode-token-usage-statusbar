@@ -79,6 +79,7 @@
       var navBody = panel.querySelector(".zu-settings-body");
       if (navBody) navBody.scrollTop = 0;
       syncSettingsScroll();
+      if (typeof sysmonWantRecalc === "function") sysmonWantRecalc();
     }
     function canStartEnhanceTest() {
       return !(typeof mobileMode !== "undefined" && mobileMode) && state.enhanceEnabled !== false && !state.enhancePending;

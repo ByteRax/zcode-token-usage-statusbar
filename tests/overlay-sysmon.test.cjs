@@ -22,7 +22,7 @@ function sliceText(start, end) {
 }
 function evalHelpers(extra) {
   const ctx = extra || {};
-  vm.runInNewContext(helpers + '\nglobalThis.api = {normalizeSysmonCfg, sysmonFaceHtml, sysmonTipHtml, sysmonPreviewHtml, sysSeverityOf, sysSeveritySmoothed, sysFmtBytes, sysVolPick, sysIsStale, SYSMON_ICONS, sysSevCls};', ctx);
+  vm.runInNewContext(helpers + '\nglobalThis.api = {normalizeSysmonCfg, sysmonFaceHtml, sysmonTipHtml, sysmonPreviewHtml, sysSeverityOf, sysSeveritySmoothed, sysmonProjectFrame, sysFmtBytes, sysVolPick, sysIsStale, sysMetricStale, SYSMON_ICONS, sysSevCls};', ctx);
   return ctx.api;
 }
 function frameOf(over) {
@@ -87,6 +87,82 @@ test('sysSeveritySmoothed: 预警连续 2 拍确认、危险立即生效、回�
   assert.equal(api.sysSeveritySmoothed(warnCfg, cFrame).cpu, 'critical');
   // 回落 1 拍即还原
   assert.equal(api.sysSeveritySmoothed(warnCfg, nFrame).cpu, 'normal');
+});
+
+test('重复推送同一指标样本不推进预警确认', () => {
+  const api = evalHelpers();
+  const disk = (sampledAt, free_pct) => ({ state: 'ok', sampledAt, vols: [{ id: '/', role: 'system', free_pct }] });
+  const first = frameOf({ disk: disk(100, 12) });
+  assert.equal(api.sysSeveritySmoothed(CFG, first).disk, 'normal');
+  assert.equal(api.sysSeveritySmoothed(CFG, frameOf({ disk: disk(100, 12), cpu: { state: 'ok', pct: 30, sampledAt: 200 } })).disk, 'normal');
+  assert.equal(api.sysSeveritySmoothed(CFG, frameOf({ disk: disk(200, 12) })).disk, 'warning');
+  assert.equal(api.sysSeveritySmoothed(CFG, frameOf({ disk: disk(300, 9) })).disk, 'critical');
+});
+
+test('CPU 与磁盘分别按实际采样时间判定过期', () => {
+  const api = evalHelpers();
+  const frame = frameOf({ ts: 119000, cpu: { state: 'ok', pct: 95, sampledAt: 100000 }, disk: { state: 'ok', sampledAt: 119000, vols: [] } });
+  assert.equal(api.sysMetricStale(frame, CFG, 'cpu', 120001), true);
+  assert.equal(api.sysMetricStale(frame, CFG, 'disk', 120001), false);
+  const face = api.sysmonFaceHtml(CFG, frame, 'compact', 120001);
+  assert.match(face, /zu-sys-seg zu-sys-stale[^]*CPU/);
+  assert.doesNotMatch(face, /zu-sys-crit/);
+});
+
+test('过期后的新样本不能继承旧的黄色确认次数', () => {
+  const api = evalHelpers();
+  const cpu = (sampledAt) => frameOf({ cpu: { state: 'ok', pct: 82, sampledAt } });
+  assert.equal(api.sysSeveritySmoothed(CFG, cpu(1000)).cpu, 'normal');
+  assert.equal(api.sysSeveritySmoothed(CFG, cpu(22001)).cpu, 'normal');
+  assert.equal(api.sysSeveritySmoothed(CFG, cpu(27001)).cpu, 'warning');
+});
+
+test('分栏按自身项目选择卷，预警计数不跨项目', () => {
+  const api = evalHelpers(), now = Date.now();
+  const frame = frameOf({ ts: now, disk: { state: 'ok', sampledAt: now, projects: [{ path: '/a', mount: '/a' }, { path: '/b', mount: '/b' }], vols: [
+    { id: '/', mount: '/', role: 'system', roles: ['system'], avail: 50, free_pct: 50 },
+    { id: '/a', mount: '/a', role: 'project', roles: ['project'], avail: 12, free_pct: 12 },
+    { id: '/b', mount: '/b', role: 'project', roles: ['project'], avail: 70, free_pct: 70 },
+  ] } });
+  const a = api.sysmonProjectFrame(CFG, frame, '/a');
+  const b = api.sysmonProjectFrame(CFG, frame, '/b');
+  assert.equal(api.sysVolPick(a.disk.vols).id, '/a');
+  assert.equal(api.sysVolPick(b.disk.vols).id, '/b');
+  assert.equal(a.sysSeverity.disk, 'normal');
+  frame.disk.sampledAt++;
+  assert.equal(api.sysmonProjectFrame(CFG, frame, '/a').sysSeverity.disk, 'warning');
+  assert.equal(api.sysmonProjectFrame(CFG, frame, '/b').sysSeverity.disk, 'normal');
+  assert.equal(api.sysmonProjectFrame(CFG, frame, '/c').disk.projectPending, true);
+});
+
+test('旧采样帧无法证明项目卷归属时只显示系统卷或不可用', () => {
+  const api = evalHelpers();
+  const frame = frameOf({ disk: { state: 'ok', vols: [
+    { id: '/', mount: '/', role: 'system', avail: 40, free_pct: 40 },
+    { id: '/other', mount: '/other', role: 'project', avail: 1, free_pct: 1 },
+  ] } });
+  const scoped = api.sysmonProjectFrame(CFG, frame, '/mine');
+  assert.equal(api.sysVolPick(scoped.disk.vols).id, '/');
+  assert.equal(scoped.sysSeverity.disk, 'normal');
+  const withoutSystem = JSON.parse(JSON.stringify(CFG)); withoutSystem.systemVol = false;
+  assert.equal(api.sysmonProjectFrame(withoutSystem, frame, '/mine').disk.state, 'unavailable');
+  frame.disk.legacyProjectPath = '/mine';
+  assert.equal(api.sysmonProjectFrame(CFG, frame, '/mine'), frame);
+});
+
+test('状态格关闭时设置预览仍随采样帧更新', () => {
+  const preview = { innerHTML: '' };
+  const ctx = {
+    main: { querySelectorAll: () => [] },
+    state: { sysmonCfg: CFG },
+    sysmonInstanceFrame: () => ({ disk: { state: 'ok' } }),
+    sysmonFaceHtml: () => 'face', sysmonTipHtml: () => 'tip', sysFormatResolve: () => 'full',
+    panel: { querySelector: () => preview },
+    sysmonPreviewHtml: () => 'live preview', tipFor: null,
+  };
+  vm.runInNewContext(sliceText('    function sysmonApplyFace() {', '    function html(d) {') + '\nglobalThis.run = sysmonApplyFace;', ctx);
+  ctx.run();
+  assert.equal(preview.innerHTML, 'live preview');
 });
 
 test('sysFmtBytes 与 sysVolPick', () => {
@@ -530,7 +606,7 @@ test('源码契约：条面格门控/远程排除/原地刷新/窄宽钩子/订�
   assert.match(source, /tip\.__zuSysExp = false;   \/\/ v362：关闭即收起阈值说明/, 'hideTip 清展开态（重开默认收起）');
   assert.match(source, /sysTip\.__zuSysExp = !sysTip\.__zuSysExp/, '精简 chip sysTip ⓘ 切换委托');
   assert.match(source, /t\.closest\("\.zu-sv-tab"\) \|\| t\.closest\("\[data-zu-sys-th\]"\)/, 'mousedown 名单含阈值按钮（防焦点逸出关 tooltip）');
-  assert.match(source, /sysmonPreviewHtml\(cfgL, sysFrame\)/, '07 预览行走共享函数（跟随显示格式）');
+  assert.match(source, /sysmonPreviewHtml\(cfgL, scopedFrame\)/, '07 预览行按当前分栏选择数据');
   const clientSrc = fs.readFileSync(path.join(root, 'sysmon-client.cjs'), 'utf8');
   assert.match(clientSrc, /markDarwinContainer\(vols\)/, '采样器 darwin 分支标注 APFS 共享容器');
   assert.match(clientSrc, /process\.platform === "darwin"\) markDarwinContainer/, '仅 darwin 标注（Linux/Windows 不受影响）');
@@ -546,8 +622,11 @@ test('inject-main sysmon 订阅链：want 记账/配置透传/非法 projectPath
   const calls = { apply: [], sub: [], delivered: [] };
   const ctx = {
     sysmonSubs: subs,
+    sysmonConfigs: new Map(),
+    sysmonPaths: new Map(),
     sysmonClient: { applyConfig: (c, p) => calls.apply.push([c, p]), setSubscribed: (w) => calls.sub.push(w) },
     gitPathOk: (p) => p === '/ok',
+    path: { isAbsolute: (p) => p === '/ok' },
     deliverPluginRequest: (wc, id, result) => calls.delivered.push(result),
   };
   ctx.sysmonWantAny = () => { for (const v of ctx.sysmonSubs.values()) { if (v) return true; } return false; };
@@ -557,7 +636,7 @@ test('inject-main sysmon 订阅链：want 记账/配置透传/非法 projectPath
   ctx.h({ want: true, cfg: { intervalMs: 3000 }, projectPath: '/ok' }, wc);
   assert.equal(subs.get(7), true);
   assert.equal(calls.delivered[0].ok, true);
-  assert.equal(calls.apply[0][0].intervalMs, 3000, 'cfg 透传采样器');
+  assert.equal(calls.apply[0][0], null, '配置由订阅聚合链设置');
   assert.equal(calls.apply[0][1], '/ok');
   assert.deepEqual(calls.sub, [true], '任一订阅即开采样');
   ctx.h({ want: true, projectPath: 'bad path' }, wc);
@@ -725,4 +804,102 @@ test('v445：sysmonInterested 经 api.getScope 上报本机工作区路径（此
   assert.equal(remote.projectPath, '', '远端分栏不上报本机路径');
   assert.equal(remote.want, true);
   assert.equal(JSON.stringify(mk(local, { inactive: () => true })()), JSON.stringify({ want: false, projectPath: '' }), '失活实例全空');
+});
+
+test('逐指标过期：20 秒保守下限覆盖 3×周期不足的区间（15000–20000 判定带）', () => {
+  const api = evalHelpers();
+  const cfg = Object.assign({}, CFG, { intervalMs: 5000, diskIntervalMs: 30000 });
+  const now = 1700000000000;
+  const f = (age) => frameOf({ cpu: { state: 'ok', pct: 23, sampledAt: now - age } });
+  assert.equal(api.sysMetricStale(f(17000), cfg, 'cpu', now), false, 'age 17000 < 20s 下限：不过期（变异 S7：下限归零即红）');
+  assert.equal(api.sysMetricStale(f(21000), cfg, 'cpu', now), true, 'age 21000 > 20s 下限：过期');
+  const cfg8 = Object.assign({}, cfg, { intervalMs: 8000 });
+  assert.equal(api.sysMetricStale(f(21000), cfg8, 'cpu', now), false, '3×8000=24000 更保守：不过期');
+  assert.equal(api.sysMetricStale(f(25000), cfg8, 'cpu', now), true, '超过 3×周期判过期');
+});
+
+test('sysmonInstanceFrame 接线：scope.workspacePath 驱动项目卷裁剪（变异 S1）', () => {
+  const fnSrc = sliceText('function sysmonInstanceFrame() {', 'function sysmonApplyFace() {');
+  const frame = frameOf({ disk: { state: 'ok', sampledAt: 1700000000000, projects: [
+    { path: '/proj-a', mount: '/System/Volumes/Data' },
+    { path: '/proj-b', mount: '/Volumes/B' },
+  ], vols: [
+    { id: '/', mount: '/', role: 'system', roles: ['system'], total: 1, used: 0, avail: 1, free_pct: 90 },
+    { id: '/System/Volumes/Data', mount: '/System/Volumes/Data', role: 'project', roles: ['system', 'project'], total: 1, used: 0, avail: 1, free_pct: 27.7 },
+    { id: '/Volumes/B', mount: '/Volumes/B', role: 'project', roles: ['project'], total: 1, used: 0, avail: 1, free_pct: 50 },
+  ] } });
+  function runWith(scope) {
+    /* helpers 自带 var sysFrame 声明会覆盖 ctx 预置值：先跑切片再赋依赖，调用时解析 */
+    const ctx = { api: { getScope: () => scope } };
+    vm.runInNewContext(helpers + '\n' + fnSrc + '\nglobalThis.__run = sysmonInstanceFrame;', ctx);
+    ctx.state = { sysmonCfg: JSON.parse(JSON.stringify(CFG)) };
+    ctx.sysFrame = frame;
+    return ctx.__run();
+  }
+  const scoped = runWith({ sid: 's1', identity: '', workspacePath: '/proj-a' });
+  assert.notEqual(scoped, frame, '本地分栏必须拿到裁剪帧（恒返回原帧即变异 S1）');
+  assert.ok(scoped.sysSeverity, '裁剪帧带实例级 sysSeverity');
+  assert.equal(scoped.disk.vols[0].mount, '/System/Volumes/Data', '本栏项目卷排前');
+  assert.equal(scoped.disk.vols[0].role, 'project');
+  assert.equal(scoped.disk.vols.find((v) => v.mount === '/Volumes/B').role, 'other', '他栏项目卷不得标 project');
+  const remote = runWith({ sid: 's1', identity: 'ident', workspacePath: '/proj-a' });
+  assert.ok(!remote.disk.vols.some((v) => v.role === 'project'), '远端分栏不认领项目卷');
+  const noScope = runWith(null);
+  assert.ok(noScope.disk.vols.every((v) => v.role !== 'project'), '无 scope 不认领项目卷');
+});
+
+test('sysmonWantRecalc：载荷排序去重 projectPaths、32 上限、签名去重与 disk: 键 GC（变异 S8）', () => {
+  const calls = [];
+  function makeRun(insts) {
+    /* helpers 自带 var sysFrame/sysSevSnapshot/sysLevelState 声明：先跑切片再赋依赖（同 S1） */
+    const ctx = {};
+    vm.runInNewContext(helpers, ctx);
+    ctx.instances = insts;
+    ctx.state = { sysmonCfg: Object.assign(JSON.parse(JSON.stringify(CFG)), { metrics: { cpu: true, mem: true, disk: false } }) };
+    ctx.sysLevelState = { 'disk:system': { level: 'normal', hits: 0 }, 'disk:/gone': { level: 'warning', hits: 1 }, 'disk:/a': { level: 'normal', hits: 0 } };
+    ctx.sysmonSubSent = null;
+    ctx.sysFrame = null;
+    ctx.sysmonScheduleExpiry = () => { };
+    ctx.pluginRequest = (action, payload) => calls.push({ action, payload });
+    ctx.stale = () => false;
+    return { ctx, run: () => ctx.sysmonWantRecalc() };
+  }
+  const inst = (projectPath, details) => ({ sysmonInterested: () => ({ want: true, projectPath, details: !!details }) });
+  const first = makeRun([inst('/b'), inst('/a'), inst('/a', true)]);
+  first.run();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].action, 'sysmon-sub');
+  assert.equal(JSON.stringify(calls[0].payload.projectPaths), JSON.stringify(['/a', '/b']), '排序去重（变异 S8：删字段即红；跨 realm 用序列化断言）');
+  assert.equal(calls[0].payload.projectPath, '/b', '主 projectPath 取第一个申报');
+  assert.equal(calls[0].payload.cfg.metrics.disk, true, 'details 置全指标');
+  first.run();
+  assert.equal(calls.length, 1, '签名未变不重发');
+  assert.equal(first.ctx.sysLevelState['disk:/gone'], undefined, '离开的路径键被 GC（变异 S8）');
+  assert.ok(first.ctx.sysLevelState['disk:/a'], '在用路径键保留');
+  assert.ok(first.ctx.sysLevelState['disk:system'], 'system 键豁免 GC');
+  const big = makeRun(Array.from({ length: 40 }, (_, i) => inst('/w' + String(i).padStart(2, '0'))));
+  big.run();
+  assert.equal(calls.at(-1).payload.projectPaths.length, 32, '载荷 32 条上限');
+  const second = makeRun([inst('/b'), inst('/a'), inst('/a', true)]);
+  second.ctx.instances[0] = inst('/c');
+  second.run();
+  assert.equal(calls.length, 3, '路径集合变化必改签名重发');
+  assert.equal(JSON.stringify(calls.at(-1).payload.projectPaths), JSON.stringify(['/a', '/c']));
+});
+
+test('旧形态首帧（无 projects、state:"loading"）按定位中显示，不误报不可用', () => {
+  const api = evalHelpers();
+  const cfg = JSON.parse(JSON.stringify(CFG));
+  const loading = frameOf({ disk: { state: 'loading', vols: [] } });
+  const out = api.sysmonProjectFrame(cfg, loading, '/proj-a');
+  assert.equal(out.disk.state, 'loading');
+  assert.equal(out.disk.projectPending, true, '首帧未起采显示定位中（review 2026-11-28 修复）');
+  assert.ok(!out.disk.projectUnavailable, '不得误报项目卷不可用');
+  const old = frameOf();   // 已有卷但无 projects：旧帧回退系统卷
+  const outOld = api.sysmonProjectFrame(cfg, old, '/proj-x');
+  assert.equal(outOld.disk.state, 'ok');
+  assert.ok(outOld.disk.vols.every((v) => v.role === 'system'), '旧帧回退系统卷');
+  assert.ok(!outOld.disk.vols.some((v) => v.role === 'project'), '不冒充项目卷');
+  const noSys = api.sysmonProjectFrame(Object.assign({}, cfg, { systemVol: 0 }), old, '/proj-x');
+  assert.equal(noSys.disk.state, 'unavailable', '系统卷关闭且无映射：明确不可用');
 });

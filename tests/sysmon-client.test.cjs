@@ -163,6 +163,17 @@ test("longestMountPrefix win32 盘符/子目录前缀（反斜杠拼接语义）
   assert.strictEqual(I.longestMountPrefix(mounts, "E:\\elsewhere"), null);
 });
 
+test("Windows 挂载路径大小写不影响归卷", () => {
+  const mounts = [{ mount: 'C:\\' }, { mount: 'D:\\Work' }];
+  assert.equal(I.longestMountPrefix(mounts, 'd:\\work\\project', 'win32'), mounts[1]);
+  assert.equal(I.longestMountPrefix(mounts, 'D:\\workspace', 'win32'), null);
+  /* 正斜杠形态（宿主 workspacePath 可能上报）：斜杠归一后同样命中（本用例直接传平台参数，macOS 也会执行） */
+  assert.equal(I.longestMountPrefix(mounts, 'd:/work/project', 'win32'), mounts[1], "正斜杠项目路径归一（变异 M3）");
+  const slashMounts = [{ mount: 'D:/Work' }];
+  assert.equal(I.longestMountPrefix(slashMounts, 'd:\\work\\project', 'win32'), slashMounts[0], "正斜杠挂载点归一");
+  assert.equal(I.longestMountPrefix([{ mount: 'D:\\Other' }], 'd:/work/project', 'win32'), null, "不误配其它盘");
+});
+
 test("pickProjectMount st_dev 精确归卷（macOS firmlink：/Users 实落 Data 卷）", { skip: process.platform !== "darwin" }, () => {
   const fs = require("node:fs");
   const mounts = [{ device: "d3", mount: "/", roles: [] }, { device: "d3", mount: "/System/Volumes/Data", roles: [] }];
@@ -306,6 +317,285 @@ test("applyConfig 运行时改间隔立即按新配置重采；纯 want 抖动�
   } finally {
     client.dispose();
   }
+});
+
+test("项目切换丢弃旧磁盘结果并重新采样", async () => {
+  const pending = [];
+  const frames = [];
+  const client = mod.createSysmonClient({
+    onFrame: (frame) => frames.push(frame),
+    memFn: async () => ({ state: "ok" }),
+    diskFn: (projectPath) => new Promise((resolve) => pending.push({ projectPath, resolve })),
+  });
+  try {
+    client.applyConfig(null, "/a");
+    client.setSubscribed(true);
+    client.applyConfig(null, "/b");
+    pending[0].resolve({ state: "ok", vols: [{ id: "/a" }] });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(pending[1].projectPath, "/b");
+    assert.ok(frames.every((frame) => !frame.disk.vols.some((vol) => vol.id === "/a")));
+    pending[1].resolve({ state: "ok", vols: [{ id: "/b" }] });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(client.view().disk.vols[0].id, "/b");
+  } finally { client.dispose(); }
+});
+
+test("项目路径集合切换丢弃旧结果并去重", async () => {
+  const pending = [], frames = [];
+  const client = mod.createSysmonClient({
+    onFrame: frame => frames.push(frame),
+    memFn: async () => ({ state: "ok" }),
+    diskFn: (path, cfg, paths) => new Promise(resolve => pending.push({ paths, resolve })),
+  });
+  try {
+    client.setProjectPaths(['/a', '/b', '/a']);
+    client.setSubscribed(true);
+    assert.deepEqual(pending[0].paths, ['/a', '/b']);
+    client.setProjectPaths(['/b', '/c']);
+    pending[0].resolve({ state: 'ok', vols: [{ id: '/a' }] });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(pending[1].paths, ['/b', '/c']);
+    pending[1].resolve({ state: 'ok', vols: [{ id: '/c' }] });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(frames.every(frame => !frame.disk.vols.some(vol => vol.id === '/a')));
+    assert.equal(client.view().disk.vols[0].id, '/c');
+  } finally { client.dispose(); }
+});
+
+test("重新订阅后忽略上一代迟到内存结果", async () => {
+  const pending = [], frames = [];
+  const client = mod.createSysmonClient({
+    onFrame: frame => frames.push(frame),
+    memFn: () => new Promise(resolve => pending.push(resolve)),
+    diskFn: async () => ({ state: 'ok', vols: [] }),
+  });
+  try {
+    client.setSubscribed(true);
+    client.setSubscribed(false);
+    client.setSubscribed(true);
+    pending[0]({ state: 'ok', total: 10, used: 9, pct: 90 });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(pending.length, 2);
+    assert.ok(frames.every(frame => frame.mem.pct !== 90));
+    pending[1]({ state: 'ok', total: 10, used: 2, pct: 20 });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(client.view().mem.pct, 20);
+  } finally { client.dispose(); }
+});
+
+test("stat 探测：窗口内复用、超时释放槽位、连续超时拉黑", async () => {
+  /* 注意：/stuck-sysmon-a 用例结束后在模块级 statState 黑名单挂 5 分钟，勿在其他用例复用该路径 */
+  const fs = require("node:fs");
+  const original = fs.promises.stat;
+  let calls = 0;
+  const pendingUnderlying = [];
+  fs.promises.stat = () => { calls++; return new Promise((resolve) => pendingUnderlying.push(resolve)); };
+  const keepAlive = setTimeout(() => {}, 1000);
+  try {
+    /* 窗口内并发复用：两个调用共享同一次底层 stat */
+    const p1 = I.statWithTimeout("/reuse-sysmon-test", 50);
+    const p2 = I.statWithTimeout("/reuse-sysmon-test", 50);
+    assert.equal(calls, 1, "在途复用不重发 uv 工作项");
+    pendingUnderlying.pop()({ dev: 7 });
+    assert.equal((await p1).dev, 7);
+    assert.equal((await p2).dev, 7, "共享 pending 的并发调用同享结果");
+    /* 超时即结算：槽位释放、重试允许新一轮底层调用。旧实现 pending 挂在底层 stat 上，
+     * 永不结算的挂死目标会把 MAX_VOLS 名额耗尽（review 2026-11-28 收口，契约已改）。 */
+    assert.equal(await I.statWithTimeout("/stuck-sysmon-a", 5), null);
+    assert.equal(await I.statWithTimeout("/stuck-sysmon-a", 5), null);
+    assert.equal(calls, 3, "首次超时后槽位已释放：重试发出第二次底层调用");
+    assert.equal(await I.statWithTimeout("/stuck-sysmon-a", 50), null, "连续 2 次超时进黑名单");
+    const before = calls;
+    assert.equal(await I.statWithTimeout("/stuck-sysmon-a", 50), null, "黑名单内短路返回 null");
+    assert.equal(calls, before, "黑名单拦截不新增 uv 工作项");
+  } finally {
+    clearTimeout(keepAlive);
+    fs.promises.stat = original;
+  }
+});
+
+test("逐指标 sampledAt：cpu/mem/disk 采样完成均携带毫秒时间戳（渲染端过期判定前提）", async () => {
+  const client = mod.createSysmonClient({
+    onFrame: () => { },
+    memFn: async () => ({ state: "ok", total: 1, used: 0, avail: 1, pct: 0 }),
+    diskFn: async () => ({ state: "ok", vols: [{ id: "/a" }] }),
+  });
+  try {
+    client.setSubscribed(true);
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    const view = client.view();
+    assert.equal(typeof view.cpu.sampledAt, "number", "cpu sampledAt 缺失会废掉渲染端逐指标过期（变异 S3）");
+    assert.equal(typeof view.mem.sampledAt, "number", "mem sampledAt 缺失同上");
+    assert.equal(typeof view.disk.sampledAt, "number", "disk sampledAt 缺失同上");
+  } finally { client.dispose(); }
+});
+
+test("已完成帧存在时切换项目：中间帧不得再带旧项目卷（lastDisk 立即失效）", async () => {
+  const pending = [], frames = [];
+  const client = mod.createSysmonClient({
+    onFrame: (frame) => frames.push(frame),
+    memFn: async () => ({ state: "ok" }),
+    diskFn: (projectPath) => new Promise((resolve) => pending.push({ projectPath, resolve })),
+  });
+  try {
+    client.applyConfig(null, "/a");
+    client.setSubscribed(true);
+    pending[0].resolve({ state: "ok", vols: [{ id: "/a" }] });
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(client.view().disk.vols[0].id, "/a");
+    client.applyConfig(null, "/b");   // 磁盘重采在途（pending[1] 未落）
+    client.refreshNow();              // CPU 拍触发中间帧：disk 必须已是 loading 而非旧 /a 帧
+    await new Promise((r) => setImmediate(r));
+    const mid = frames.at(-1);
+    assert.ok(!mid.disk.vols.some((v) => v.id === "/a"), "切项目即弃旧卷（变异 S2：lastDisk=null 不可省）");
+    assert.equal(mid.disk.state, "loading");
+    pending[1].resolve({ state: "ok", vols: [{ id: "/b" }] });
+    await new Promise((r) => setImmediate(r));
+    assert.equal(client.view().disk.vols[0].id, "/b");
+  } finally { client.dispose(); }
+});
+
+test("setProjectPaths 超量截断为 32 条（与主进程入口上限对称）", async () => {
+  const pending = [];
+  const client = mod.createSysmonClient({
+    onFrame: () => { },
+    memFn: async () => ({ state: "ok" }),
+    diskFn: (path, cfg, paths) => new Promise((resolve) => pending.push({ paths, resolve })),
+  });
+  try {
+    client.setProjectPaths(Array.from({ length: 40 }, (_, i) => "/p" + String(i + 1).padStart(2, "0")));
+    client.setSubscribed(true);
+    assert.equal(pending[0].paths.length, 32, "客户端侧仍钳 32（变异 S5）");
+    assert.deepEqual(pending[0].paths.slice(0, 2), ["/p01", "/p02"], "截断保排序头部");
+  } finally { client.dispose(); }
+});
+
+test("空闲态路径变更立即重采（不等下一拍）", async () => {
+  const pending = [];
+  const client = mod.createSysmonClient({
+    onFrame: () => { },
+    memFn: async () => ({ state: "ok" }),
+    diskFn: (path, cfg, paths) => new Promise((resolve) => pending.push({ paths, resolve })),
+  });
+  try {
+    client.setProjectPaths(["/a"]);
+    client.setSubscribed(true);
+    pending[0].resolve({ state: "ok", vols: [{ id: "/a" }] });
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(pending.length, 1);
+    client.setProjectPaths(["/b"]);
+    assert.equal(pending.length, 2, "无在途采样时路径变更同步触发重采（变异 S9）");
+    assert.deepEqual(pending[1].paths, ["/b"]);
+  } finally { client.dispose(); }
+});
+
+test("已完成帧存在时经 setProjectPaths 切换：中间帧不得再带旧项目卷", async () => {
+  const pending = [], frames = [];
+  const client = mod.createSysmonClient({
+    onFrame: (frame) => frames.push(frame),
+    memFn: async () => ({ state: "ok" }),
+    diskFn: (path, cfg, paths) => new Promise((resolve) => pending.push({ paths, resolve })),
+  });
+  try {
+    client.setProjectPaths(["/a"]);
+    client.setSubscribed(true);
+    pending[0].resolve({ state: "ok", vols: [{ id: "/a" }] });
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(client.view().disk.vols[0].id, "/a");
+    client.setProjectPaths(["/b"]);   // 磁盘重采在途
+    client.refreshNow();              // CPU 拍触发中间帧：disk 必须已是 loading 而非旧 /a 帧
+    await new Promise((r) => setImmediate(r));
+    const mid = frames.at(-1);
+    assert.ok(!mid.disk.vols.some((v) => v.id === "/a"), "setProjectPaths 同样立即弃旧卷（变异 M9a）");
+    assert.equal(mid.disk.state, "loading");
+    pending[1].resolve({ state: "ok", vols: [{ id: "/b" }] });
+    await new Promise((r) => setImmediate(r));
+    assert.equal(client.view().disk.vols[0].id, "/b");
+  } finally { client.dispose(); }
+});
+
+test("pickVolumes 上限随项目数扩容（多项目单例帧装下全部映射卷）", () => {
+  const many = Array.from({ length: 20 }, (_, i) => vol("/v" + String(i).padStart(2, "0")));
+  const expanded = I.pickVolumes(many, "linux", "", { systemVol: true, projectVol: false }, null, 15);
+  assert.strictEqual(expanded.length, 15, "maxVolumes 参数生效（变异 S10）");
+  const capped = I.pickVolumes(many, "linux", "", { systemVol: true, projectVol: false });
+  assert.strictEqual(capped.length, I.LIMITS.MAX_VOLS, "缺省仍钳 MAX_VOLS");
+});
+
+test("同设备多个挂载点优先选择项目路径所属的挂载点", { skip: process.platform === 'win32' }, async () => {
+  const fs = require('node:fs'), original = fs.promises.stat;
+  const mounts = [{ mount: '/mnt/data' }, { mount: '/var/lib/longer-mount' }];
+  fs.promises.stat = async () => ({ dev: 42 });
+  try {
+    assert.equal(await I.resolveProjectMount(mounts, '/mnt/data/project'), mounts[0]);
+    assert.equal(await I.resolveProjectMount(mounts, '/ambiguous/project'), null);
+  } finally { fs.promises.stat = original; }
+});
+
+test("仅启用 CPU 时不调用内存与磁盘采样", async () => {
+  let memCalls = 0, diskCalls = 0;
+  const client = mod.createSysmonClient({
+    memFn: async () => { memCalls++; return { state: "ok" }; },
+    diskFn: async () => { diskCalls++; return { state: "ok", vols: [] }; },
+  });
+  try {
+    client.applyConfig({ metrics: { cpu: true, mem: false, disk: false } });
+    client.setSubscribed(true);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(memCalls, 0);
+    assert.equal(diskCalls, 0);
+  } finally { client.dispose(); }
+});
+
+test("仅改变展示配置不会重新采样", async () => {
+  let calls = 0;
+  const client = mod.createSysmonClient({
+    memFn: async () => { calls++; return { state: "ok" }; },
+    diskFn: async () => ({ state: "ok", vols: [] }),
+  });
+  try {
+    client.setSubscribed(true);
+    await new Promise((resolve) => setImmediate(resolve));
+    client.applyConfig({ format: "minimal", warnColors: false }, "");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls, 1);
+  } finally { client.dispose(); }
+});
+
+test("切换磁盘采样需求不重采 CPU 或内存", async () => {
+  let memCalls = 0, diskCalls = 0;
+  const client = mod.createSysmonClient({
+    memFn: async () => { memCalls++; return { state: 'ok' }; },
+    diskFn: async () => { diskCalls++; return { state: 'ok', vols: [] }; },
+  });
+  try {
+    client.applyConfig({ metrics: { cpu: true, mem: true, disk: false } });
+    client.setSubscribed(true);
+    await new Promise(resolve => setImmediate(resolve));
+    client.applyConfig({ metrics: { cpu: true, mem: true, disk: true } });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(memCalls, 1);
+    assert.equal(diskCalls, 1);
+  } finally { client.dispose(); }
+});
+
+test("仅启用 CPU 不重采已启用的内存", async () => {
+  let memCalls = 0;
+  const client = mod.createSysmonClient({ memFn: async () => { memCalls++; return { state: 'ok' }; }, diskFn: async () => ({ state: 'ok', vols: [] }) });
+  try {
+    client.applyConfig({ metrics: { cpu: false, mem: true, disk: false } });
+    client.setSubscribed(true);
+    await new Promise(resolve => setImmediate(resolve));
+    client.applyConfig({ metrics: { cpu: true, mem: true, disk: false } });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(memCalls, 1);
+  } finally { client.dispose(); }
 });
 
 test("apfsContainerOf/markDarwinContainer：同 diskN 前缀标共享、容量相同不作为判据（v362）", () => {
