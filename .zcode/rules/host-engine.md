@@ -11,6 +11,8 @@
 
 ## 2. 宿主机制事实
 
+- **压缩阈值补丁要兼容已打补丁的引擎**：修改 `engine-patch.cjs` 的 `PROLOGUE` 时，先确认各旧代构造仍能逐字节生成当时安装的正文，再核对 `ensure` 的原位迁移与 `restore` 的旧代识别。只测从干净引擎安装，会漏掉老用户无法升级或关闭补丁的问题。用 `tests/engine-patch.test.cjs` 分别验证「旧代升级」及「不先升级，直接还原原件」。
+
 - 侧栏 footer 营销横幅是宿主完整链路：10min 轮询 `/api/v1/marketing/touch` → 可信源 URL+SHA256 登记 → 安全下载解包 → 127.0.0.1 随机端口 loopback server → sandbox iframe（`zcode-cloud-hero-v1` 通道、5s ready 超时降级）。排查「侧栏横幅异常 / 莫名本机监听端口」按此链对账，不是异常进程；未来要在侧栏挂远程内容可复用该可信源模式。
 - 宿主自更新：macOS 走 Squirrel.Mac 整包 move（sha512 在下载完成时与缓存复用轮由 `getValidCachedUpdateFile` 的 `hashFile` 对账各验一次，**安装拉流阶段不复验字节**），无 fuses、无 asar 哈希校验；Windows NSIS 验安装包签名。**改写 pending zip 结构性不可行（issue #298 定案）**：宿主 `autoInstallOnAppQuit=false`，下载完成时 MacUpdater 本地代理即把官方 Content-Length 固化（manifest size 或下载完成时 stat），Squirrel 在用户点「重启以更新」时经代理按该长度拉流——改写后的 zip 大小必然偏离（实测 3.18.0 +11.6MB），拉包截断即静默失败（仅 `~/.zcode/v2/logs/` 一行 warn + relaunch），restage 缓存命中反复复现；「安装阶段无字节复验」不等于「字节可改」。ShipIt 是目录级整包 rename，`/Applications/ZCode.app` 包内多余文件（锁/备份/改写的 zcode.cjs）不阻碍更新。
 - 引擎 prologue 是**拼接的多段 hook**：阈值 hook（`PROLOGUE_BASE`，历史装机字节不可改）+ 抓包 hook（`CAPTURE_PROLOGUE`）。再加一段时沿用同款：`PROLOGUE = BASE + 新段`，旧代际 V1/V2 从 BASE 推导、不含新段；迁移判定里「旧串不残留」对「旧串是新串前缀」的段恒假，要改用前缀标记计数。往模板字符串里写 hook 代码时，代码里的换行转义必须写成 `\\n`（写 `\n` 会被模板提前解成真换行，生成非法 JS）——注入引擎的 prologue 坏一个字符，新会话进程全部起不来；改完先 `new vm.Script(PROLOGUE)` 再谈部署。

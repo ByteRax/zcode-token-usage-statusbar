@@ -1,7 +1,7 @@
 interface:
   display_name: 项目经验沉淀
-  short_description: 扫描本地记忆、会话计划与提交复盘，对照源码核验去重并增量沉淀到 .zcode/rules、AGENTS.md 与 docs
-  default_prompt: 使用 $distill-project-memory 扫描当前项目关联的本地记忆、.zcode/plans 与近期提交经验，对照当前检出源码和既有规则交叉核验，将可复用的长期契约与陷阱增量沉淀到 .zcode/rules/、根 AGENTS.md、specs/ 或 docs/。
+  short_description: "清点项目记忆，用当前源码与测试核验，只补已有文档缺少的维护经验"
+  default_prompt: "使用 $distill-project-memory 整理指定来源的项目经验，对照当前检出核验，将尚未覆盖的维护规则沉淀到合适的文档。"
   icon_small: assets/icon.svg
   icon_large: assets/icon.svg
 policy:
